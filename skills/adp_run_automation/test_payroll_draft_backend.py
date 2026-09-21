@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from skills.adp_run_automation.payroll_draft_backend import (
     _aggregate_grid_rows,
+    _attribute_grid_rows,
     _paginate_timecard_hours,
     abort_if_forbidden_label,
     combine_preview_totals,
@@ -295,6 +296,81 @@ def grid_row(employee: str, *, row_index: str, rate: float, reg: float = 0.0,
         "employee": employee, "row_index": row_index, "rate": rate,
         "reg": reg, "pers": pers, "hol": hol, "ot": ot,
     }
+
+
+def pinned(row_index: str, name_text: str, *, reg: float = 0.0, rate: float = 15.25,
+           has_body: bool = True) -> dict:
+    return {
+        "row_index": row_index, "name_text": name_text, "has_body": has_body,
+        "rate": rate, "reg": reg, "pers": 0.0, "hol": 0.0, "ot": 0.0,
+    }
+
+
+class TestContinuationRowsAreAttributed(unittest.TestCase):
+    """#309: ADP names an employee's first line item only.
+
+    A second rate line comes back with an empty pinned-left cell. The reader used
+    to skip nameless rows, so the row it had just added was invisible — and the
+    "not the base index" fallback then picked the employee's own renumbered
+    original row. Live 2026-09-21: the premium landed on the original row and the
+    reduced base hours landed on a different employee's row.
+    """
+
+    def test_a_nameless_row_belongs_to_the_named_row_above_it(self):
+        rows = _attribute_grid_rows([
+            pinned("0", "Garcia, Jacob", reg=41.65),
+            pinned("1", "", reg=11.48, rate=16.25),
+            pinned("2", "Guerrero, Amy", reg=29.35),
+        ])
+        self.assertEqual(
+            [(r["employee"], r["row_index"], r["reg"]) for r in rows],
+            [
+                ("Garcia, Jacob", "0", 41.65),
+                ("Garcia, Jacob", "1", 11.48),
+                ("Guerrero, Amy", "2", 29.35),
+            ],
+        )
+        self.assertEqual([r["continuation"] for r in rows], [False, True, False])
+
+    def test_the_added_row_is_visible_before_any_hours_are_typed(self):
+        """Straight after "Add row" the new line is empty — still must be seen."""
+        rows = _attribute_grid_rows([
+            pinned("0", "Garcia, Jacob", reg=53.13),
+            pinned("1", "", reg=0.0, rate=0.0),
+        ])
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[1]["continuation"])
+
+    def test_rows_are_attributed_in_grid_order_not_dom_order(self):
+        rows = _attribute_grid_rows([
+            pinned("1", "", reg=11.48),
+            pinned("0", "Garcia, Jacob", reg=41.65),
+        ])
+        self.assertEqual([r["employee"] for r in rows], ["Garcia, Jacob"] * 2)
+
+    def test_filler_rows_before_the_first_name_are_dropped(self):
+        rows = _attribute_grid_rows([
+            pinned("0", "", reg=0.0, has_body=False),
+            pinned("1", "Garcia, Jacob", reg=53.13),
+        ])
+        self.assertEqual([r["employee"] for r in rows], ["Garcia, Jacob"])
+
+    def test_a_bodyless_nameless_row_is_not_charged_to_anyone(self):
+        """A rendering artifact must not become a phantom pay line."""
+        rows = _attribute_grid_rows([
+            pinned("0", "Garcia, Jacob", reg=53.13),
+            pinned("1", "", reg=0.0, has_body=False),
+        ])
+        self.assertEqual(len(rows), 1)
+
+    def test_hours_still_aggregate_to_the_employees_total(self):
+        rows = _attribute_grid_rows([
+            pinned("0", "Garcia, Jacob", reg=41.65),
+            pinned("1", "", reg=11.48, rate=16.25),
+        ])
+        agg = _aggregate_grid_rows(rows)
+        self.assertAlmostEqual(agg["Garcia, Jacob"]["reg"], 53.13, places=2)
+        self.assertEqual(agg["Garcia, Jacob"]["rate"], 15.25)
 
 
 class FakePaginatedGrid:

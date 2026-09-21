@@ -856,6 +856,45 @@ def _click_start_if_present(page) -> bool:
     return True
 
 
+def _attribute_grid_rows(raw: list[dict]) -> list[dict]:
+    """Name every grid row, including an employee's unnamed continuation lines.
+
+    ADP prints the employee name on their *first* line item only, so a second
+    rate line (#309) comes back with an empty pinned-left cell. Skipping nameless
+    rows — which this reader used to do — made the row we had just added
+    invisible, and the "the index that is not the base index" fallback then
+    resolved to the employee's own renumbered original row. Live 2026-09-21: the
+    premium landed on the original row and the reduced base hours landed on a
+    different employee's row, twice reported as `no_new_row` / `total_changed`.
+
+    Attribution is carry-forward in grid order, which is exactly how the grid
+    reads on screen: a nameless row belongs to the nearest named row above it.
+    Rows before any named row are dropped — they are headers or filler, not pay.
+    """
+    out: list[dict] = []
+    current = ""
+    for row in sorted(raw, key=lambda r: int(r.get("row_index") or -1)):
+        name = (row.get("name_text") or "").strip()
+        if "," in name:
+            current = name.split("\n")[0].strip()
+            continuation = False
+        elif current and row.get("has_body"):
+            continuation = True
+        else:
+            continue
+        out.append({
+            "employee": current,
+            "row_index": str(row.get("row_index")),
+            "rate": float(row.get("rate") or 0),
+            "reg": float(row.get("reg") or 0),
+            "pers": float(row.get("pers") or 0),
+            "hol": float(row.get("hol") or 0),
+            "ot": float(row.get("ot") or 0),
+            "continuation": continuation,
+        })
+    return out
+
+
 def _ag_grid_rows(page) -> list[dict]:
     """One entry per visible Enter-payroll grid row, in grid order.
 
@@ -875,10 +914,10 @@ def _ag_grid_rows(page) -> list[dict]:
             '.ag-pinned-left-cols-container [role="row"]'
           )) {
             const idx = row.getAttribute('row-index');
-            const name = (row.innerText || '').replace(/\\s+/g, ' ').trim()
+            if (idx === null) continue;
+            const text = (row.innerText || '').replace(/\\s+/g, ' ').trim()
               .replace(/\\s*\\$[\\d.]+\\s*\\/\\s*hr.*$/i, '')
               .trim();
-            if (!name || !name.includes(',')) continue;
             const body = document.querySelector(
               '.ag-center-cols-container [role="row"][row-index="' + idx + '"]'
             );
@@ -886,10 +925,16 @@ def _ag_grid_rows(page) -> list[dict]:
               const el = body && body.querySelector('[col-id="' + id + '"]');
               return el ? num(el.innerText) : 0;
             };
-            const rateM = (row.innerText || '').match(/\\$?([0-9]+\\.[0-9]+)/);
+            // A continuation row carries no name, so its rate lives in the body's
+            // rate cell rather than in the pinned text.
+            const rateText = (body
+              && body.querySelector('[col-id="rate_employee"]')
+              || {}).innerText || row.innerText || '';
+            const rateM = (rateText || '').match(/\\$?([0-9]+\\.[0-9]+)/);
             out.push({
-              employee: name.split('\\n')[0].trim(),
+              name_text: text,
               row_index: idx,
+              has_body: Boolean(body),
               rate: rateM ? parseFloat(rateM[1]) : 0,
               reg: cell('REGH'),
               pers: cell('PERSH'),
@@ -900,7 +945,7 @@ def _ag_grid_rows(page) -> list[dict]:
           return out;
         }"""
     )
-    return raw or []
+    return _attribute_grid_rows(raw or [])
 
 
 def _aggregate_grid_rows(rows: list[dict]) -> dict[str, dict]:

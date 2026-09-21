@@ -8,6 +8,7 @@ isolation. Run from the repo root: `python3 -m pytest skills/_browser_runtime/`.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -496,3 +497,80 @@ def test_a_corrupt_cookie_jar_never_fails_the_run(monkeypatch, tmp_path):
     jar.write_text("{not json", encoding="utf-8")
 
     assert runtime._seed_cookies(FakeContext(), str(jar), portal="adp") is None
+
+
+# --- profile must never be able to fail a run ------------------------------
+#
+# A killed run leaves Chromium's SingletonLock behind and the next launch aborts
+# with "Failed to create a ProcessSingleton for your profile directory". Hit live
+# 2026-09-21 mid-payroll: a dead lock file blocked every subsequent run.
+
+
+def test_a_stale_lock_from_a_killed_run_is_cleared(monkeypatch, tmp_path, capsys):
+    prof = tmp_path / "adp"
+    prof.mkdir()
+    # A dead PID: os.kill(pid, 0) raises ProcessLookupError.
+    (prof / "SingletonLock").symlink_to("somehost-999999")
+    (prof / "SingletonSocket").write_text("", encoding="utf-8")
+
+    runtime._clear_stale_singleton(prof, portal="adp")
+
+    assert not (prof / "SingletonLock").is_symlink()
+    assert not (prof / "SingletonSocket").exists()
+    assert "cleared a stale singleton lock" in capsys.readouterr().err
+
+
+def test_a_lock_held_by_a_live_process_is_respected(tmp_path):
+    """Never steal the profile from a concurrent run — that corrupts it."""
+    prof = tmp_path / "adp"
+    prof.mkdir()
+    (prof / "SingletonLock").symlink_to(f"somehost-{os.getpid()}")
+
+    with pytest.raises(runtime._ProfileUnavailable):
+        runtime._clear_stale_singleton(prof, portal="adp")
+
+    assert (prof / "SingletonLock").is_symlink(), "the live holder's lock survives"
+
+
+def test_no_lock_present_is_not_an_error(tmp_path):
+    prof = tmp_path / "adp"
+    prof.mkdir()
+
+    assert runtime._clear_stale_singleton(prof, portal="adp") is None
+
+
+def test_an_unusable_profile_falls_back_to_ephemeral(monkeypatch, tmp_path, capsys):
+    """One OTP is an acceptable price; a failed payroll run is not."""
+    monkeypatch.delenv("BHAGA_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", str(tmp_path))
+
+    class _ProfileRefuses(FakeChromium):
+        def launch_persistent_context(self, user_data_dir, **kwargs):
+            self.profile_dirs.append(str(user_data_dir))
+            raise RuntimeError("Failed to create a ProcessSingleton")
+
+    chromium = _ProfileRefuses()
+    _install_fake(monkeypatch, chromium)
+
+    with runtime.launch_persistent("adp") as (ctx, page):
+        assert ctx is not None and page is not None
+
+    err = capsys.readouterr().err
+    assert "persistent profile unusable" in err
+    assert "falling back to an ephemeral profile" in err
+    assert chromium.launch_kwargs, "the ephemeral launch must have happened"
+
+
+def test_a_busy_profile_still_yields_a_working_session(monkeypatch, tmp_path):
+    """Two overlapping runs: the second one runs ephemeral rather than dying."""
+    monkeypatch.delenv("BHAGA_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", str(tmp_path))
+    (tmp_path / "adp").mkdir()
+    (tmp_path / "adp" / "SingletonLock").symlink_to(f"somehost-{os.getpid()}")
+    chromium = FakeChromium()
+    _install_fake(monkeypatch, chromium)
+
+    with runtime.launch_persistent("adp") as (ctx, page):
+        assert ctx is not None and page is not None
+
+    assert chromium.profile_dirs == [], "must not have touched the busy profile"

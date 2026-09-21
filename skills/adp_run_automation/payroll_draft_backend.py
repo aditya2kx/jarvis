@@ -1071,41 +1071,81 @@ def _open_row_action_menu(page, *, row_index: str) -> bool:
     )
 
 
-def _click_menu_item(page, label: str, *, test_id: str = "") -> bool:
-    """Click a row-menu item, preferring ADP's stable ``data-test-id``.
+# A closed row menu still has its items in the DOM, so "exists" is never enough
+# to identify the menu we just opened — only "rendered" is.
+_JS_VISIBLE = """
+  const visible = (el) => {
+    if (!el || !el.getClientRects || !el.getClientRects().length) return false;
+    if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return false;
+    for (let n = el; n; n = n.parentElement) {
+      if (n.hasAttribute && n.hasAttribute('hidden')) return false;
+    }
+    return true;
+  };
+"""
 
-    Text is the fallback only: the items carry ids like ``optionsAddRowButton``
-    that survive copy changes, and matching "Add row" by text would also match a
-    different menu that happens to be open.
+
+def _click_menu_item(
+    page, label: str, *, test_id: str = "", row_index: str = ""
+) -> bool:
+    """Click a row-menu item belonging to ``row_index``, not merely one that matches.
+
+    ADP renders an action menu for *every* grid row, so a document-wide
+    ``querySelector('[data-test-id="optionsAddRowButton"]')`` returns the first
+    row's item regardless of which menu is open. That is what it used to do, and
+    it is why "Add row" always landed on the first row of the page — live
+    2026-09-21 the empty rows piled up on Alvarez (page 1, index 0) and Krause
+    (page 2, index 0) while the employees we targeted never got one.
+
+    So: prefer the opened row's own subtree, and in every case require the
+    element to be *rendered*. A closed menu's items are present but have no
+    client rects, which is what distinguishes them from the menu just opened.
     """
     abort_if_forbidden_label(label)
     return bool(
         page.evaluate(
-            """({ label, testId }) => {
+            """({ label, testId, rowIndex }) => {
+              %s
               const clickIt = (el) => {
                 el.scrollIntoView({ block: 'center' });
                 el.click();
                 return true;
               };
-              if (testId) {
-                const byId = document.querySelector(
-                  '[data-test-id="' + testId + '"]'
-                );
-                if (byId) return clickIt(byId);
-              }
               const want = label.toLowerCase();
-              const menus = [...document.querySelectorAll('sdf-menu, [role="menu"]')];
-              for (const menu of menus.reverse()) {
-                for (const item of menu.querySelectorAll(
-                  'sdf-menu-item, [role="menuitem"], li, button'
-                )) {
-                  const t = (item.innerText || '').replace(/\\s+/g, ' ').trim();
-                  if (t.toLowerCase() === want) return clickIt(item);
+              const sel = 'sdf-menu-item, [role="menuitem"], [role="option"], '
+                + 'li, button, sdf-button';
+              const hit = (el) => {
+                if (testId && el.getAttribute
+                    && el.getAttribute('data-test-id') === testId) return true;
+                const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                return t.toLowerCase() === want;
+              };
+              const search = (root) => {
+                const pool = [...root.querySelectorAll(sel)];
+                if (testId) {
+                  for (const el of root.querySelectorAll(
+                    '[data-test-id="' + testId + '"]'
+                  )) pool.unshift(el);
                 }
+                for (const el of pool) {
+                  if (hit(el) && visible(el)) return el;
+                }
+                return null;
+              };
+              if (rowIndex !== '') {
+                const row = document.querySelector(
+                  '.ag-pinned-left-cols-container [role="row"][row-index="'
+                  + rowIndex + '"]'
+                );
+                const inRow = row && search(row);
+                if (inRow) return clickIt(inRow);
               }
-              return false;
-            }""",
-            {"label": label, "testId": test_id},
+              // The menu may portal out of the row; fall back to any rendered
+              // match, which is still only ever the open menu.
+              const anywhere = search(document);
+              return anywhere ? clickIt(anywhere) : false;
+            }""" % _JS_VISIBLE,
+            {"label": label, "testId": test_id, "rowIndex": row_index},
         )
     )
 
@@ -1139,14 +1179,18 @@ def _select_available_rate(page, *, row_index: str, rate_dollars: float) -> bool
         return False
     page.wait_for_timeout(600)
     want = f"${rate_dollars:.2f}"
+    # Only rendered options: every row's collapsed selector has its rates in the
+    # DOM, so an unguarded document scan can pick another employee's rate.
     picked = page.evaluate(
         """({ want }) => {
+          %s
           const nodes = [...document.querySelectorAll(
             'sdf-menu-item, [role="menuitem"], [role="option"], li, button, div'
           )];
           for (const el of nodes.reverse()) {
             const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
             if (!/\\/\\s*hr/i.test(t)) continue;
+            if (!visible(el)) continue;
             if (t.split('/')[0].trim().startsWith(want)) {
               el.scrollIntoView({ block: 'center' });
               el.click();
@@ -1154,7 +1198,7 @@ def _select_available_rate(page, *, row_index: str, rate_dollars: float) -> bool
             }
           }
           return '';
-        }""",
+        }""" % _JS_VISIBLE,
         {"want": want},
     )
     print(
@@ -1267,15 +1311,28 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
             if premium <= 0:
                 continue
             try:
+                rows_before = len(_ag_grid_rows(page))
                 if not _open_row_action_menu(page, row_index=base_idx):
                     raise RuntimeError("no_row_menu")
                 page.wait_for_timeout(600)
                 if not _click_menu_item(
-                    page, "Add row", test_id="optionsAddRowButton"
+                    page,
+                    "Add row",
+                    test_id="optionsAddRowButton",
+                    row_index=base_idx,
                 ):
                     raise RuntimeError("no_add_row")
                 page.wait_for_timeout(1_500)
                 _dismiss_adp_error_dialog(page)
+                # Distinguish "no row appeared" from "a row appeared on someone
+                # else", which is what a document-wide menu lookup used to do and
+                # which otherwise reads identically from this employee's side.
+                grew = len(_ag_grid_rows(page)) - rows_before
+                mine = _employee_line_count(page, name)
+                if grew > 0 and mine < 2:
+                    raise RuntimeError(
+                        f"add_row_landed_elsewhere grew={grew} mine={mine}"
+                    )
 
                 # Re-resolve BOTH indices from the post-insert grid. The original
                 # row can move too, so neither the remembered base index nor

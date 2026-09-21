@@ -570,11 +570,15 @@ class TestApplySoloRate2(unittest.TestCase):
         with patch(f"{self.MOD}._merge_solo_hours", side_effect=lambda r, _p: r):
             return packet_from_view_rows(rows)
 
-    def _run(self, grid_states, after_rows=None, **over):
+    def _run(self, grid_states, after_rows=None, grew=1,
+             line_count_after_add=2, **over):
         """Run the orchestrator against a scripted sequence of grid reads.
 
         ``after_rows`` is what the post-split verification read returns; it
         defaults to a correct two-line split of the first state's hours.
+        ``grew`` is how many rows the whole grid gained from "Add row", and
+        ``line_count_after_add`` how many of them landed on this employee —
+        the two differ precisely when the click hit the wrong row.
         """
         calls: list[tuple] = []
         states = list(grid_states)
@@ -592,18 +596,29 @@ class TestApplySoloRate2(unittest.TestCase):
                 {"employee": self.NAME, "row_index": "5", "reg": 4.75, "ot": 0.0},
             ]
 
+        # Whole-grid row count: one row before the insert, plus `grew` after.
+        reads = {"n": 0}
+
+        def _all_rows(_page):
+            reads["n"] += 1
+            base = 10
+            return [{}] * (base if reads["n"] == 1 else base + grew)
+
+        def _item(p, label, *, test_id="", row_index=""):
+            calls.append(("item", label, row_index))
+            return True
+
         patches = {
             "_ag_enter_page_hours": _grid,
+            "_ag_grid_rows": _all_rows,
             "_dismiss_adp_error_dialog": lambda _p: False,
             "_open_row_action_menu": lambda p, *, row_index: calls.append(
                 ("menu", row_index)
             ) is None,
-            "_click_menu_item": lambda p, label, *, test_id="": calls.append(
-                ("item", label)
-            ) is None,
+            "_click_menu_item": _item,
             "_rate2_row_indices": lambda p, *, employee, base_reg: ("4", "5"),
             "_employee_rows": lambda p, employee: list(after_rows),
-            "_employee_line_count": lambda p, employee: len(after_rows),
+            "_employee_line_count": lambda p, employee: line_count_after_add,
             "_select_available_rate": lambda p, *, row_index, rate_dollars: calls.append(
                 ("rate", row_index, rate_dollars)
             ) is None,
@@ -638,8 +653,42 @@ class TestApplySoloRate2(unittest.TestCase):
     def test_adds_the_row_then_picks_the_premium_rate_on_it(self):
         _out, calls = self._run([self._one_row_grid(), self._one_row_grid()])
         self.assertEqual(calls[0], ("menu", "4"))
-        self.assertEqual(calls[1], ("item", "Add row"))
+        self.assertEqual(calls[1], ("item", "Add row", "4"))
         self.assertEqual(calls[2], ("rate", "5", 16.25))
+
+    def test_add_row_is_scoped_to_the_row_whose_menu_was_opened(self):
+        """ADP renders a menu per row; an unscoped click hits the first one.
+
+        Live 2026-09-21: every "Add row" landed on the page's index-0 row —
+        Alvarez on page 1, Krause on page 2 — so the row index must travel with
+        the click, not just with the menu-open.
+        """
+        _out, calls = self._run([self._one_row_grid(), self._one_row_grid()])
+        opened = [c for c in calls if c[0] == "menu"][0][1]
+        clicked = [c for c in calls if c[0] == "item"][0][2]
+        self.assertEqual(clicked, opened)
+
+    def test_a_row_added_to_someone_else_is_named_as_such(self):
+        """Grid grew but not on this employee: report it, do not write hours.
+
+        This is distinct from "no row appeared" and used to be indistinguishable
+        from it, which is why the misdirected clicks went unnoticed for hours.
+        """
+        out, calls = self._run(
+            [self._one_row_grid()], grew=1, line_count_after_add=1,
+            _rate2_row_indices=lambda p, *, employee, base_reg: (None, None),
+        )
+        self.assertEqual(out["applied"], [])
+        self.assertIn("add_row_landed_elsewhere", out["failed"][0])
+        self.assertEqual([c for c in calls if c[0] == "fill"], [])
+
+    def test_no_row_anywhere_is_still_reported_as_no_new_row(self):
+        out, calls = self._run(
+            [self._one_row_grid()], grew=0, line_count_after_add=1,
+            _rate2_row_indices=lambda p, *, employee, base_reg: (None, None),
+        )
+        self.assertIn("no_new_row", out["failed"][0])
+        self.assertEqual([c for c in calls if c[0] == "fill"], [])
 
     def test_an_already_split_employee_is_skipped_not_split_again(self):
         # Rerunning against the same draft must not pay the uplift twice.
@@ -721,6 +770,7 @@ class TestApplySoloRate2(unittest.TestCase):
             after_rows=[
                 {"employee": self.NAME, "row_index": "4", "reg": 30.0, "ot": 0.0}
             ],
+            line_count_after_add=2,
         )
         self.assertEqual(out["applied"], [])
         self.assertIn("expected_2_line_items", out["failed"][0])
@@ -759,7 +809,7 @@ class TestApplySoloRate2(unittest.TestCase):
     def test_a_missing_add_row_item_fails_without_touching_hours(self):
         out, calls = self._run(
             [self._one_row_grid(), self._one_row_grid()],
-            _click_menu_item=lambda p, label, *, test_id="": False,
+            _click_menu_item=lambda p, label, *, test_id="", row_index="": False,
         )
         self.assertEqual(out["applied"], [])
         self.assertIn("no_add_row", out["failed"][0])
@@ -769,15 +819,15 @@ class TestApplySoloRate2(unittest.TestCase):
         # Text-only matching would also hit whatever other sdf-menu is open.
         seen: list[tuple] = []
 
-        def _item(_page, label, *, test_id=""):
-            seen.append((label, test_id))
+        def _item(_page, label, *, test_id="", row_index=""):
+            seen.append((label, test_id, row_index))
             return True
 
         self._run(
             [self._one_row_grid(), self._one_row_grid()],
             _click_menu_item=_item,
         )
-        self.assertEqual(seen, [("Add row", "optionsAddRowButton")])
+        self.assertEqual(seen, [("Add row", "optionsAddRowButton", "4")])
 
     def test_nobody_eligible_is_a_no_op(self):
         with patch(f"{self.MOD}._merge_solo_hours", side_effect=lambda r, _p: r):
@@ -787,6 +837,49 @@ class TestApplySoloRate2(unittest.TestCase):
 
             out = _apply_solo_rate2(self._Page(), [], premium_rate=16.25)
         self.assertEqual(out, {"applied": [], "failed": [], "premium_hours": 0.0})
+
+
+class TestRowMenuClicksAreVisibilityGated(unittest.TestCase):
+    """Every row has a menu in the DOM, so "matches" never means "is open".
+
+    Live 2026-09-21: `document.querySelector('[data-test-id=...]')` returned the
+    first row's Add-row item regardless of which menu was open, so the split was
+    applied to whichever employee sat at index 0 of the page.
+    """
+
+    def _src(self, fn_name: str) -> str:
+        import inspect
+
+        from skills.adp_run_automation import payroll_draft_backend as mod
+
+        return inspect.getsource(getattr(mod, fn_name))
+
+    def test_menu_item_click_requires_a_rendered_element(self):
+        src = self._src("_click_menu_item")
+        self.assertIn("visible(", src)
+        self.assertIn("rowIndex", src)
+
+    def test_menu_item_click_has_no_bare_document_lookup_by_test_id(self):
+        """The unscoped, unguarded test-id lookup is the exact bug; keep it gone.
+
+        Looking the *row* up on `document` is fine and necessary — it is the
+        menu-item lookup that must be rooted at a node and visibility-checked.
+        """
+        src = self._src("_click_menu_item")
+        self.assertNotIn("document.querySelector('[data-test-id=", src)
+        self.assertNotIn('document.querySelectorAll(\'[data-test-id=', src)
+
+    def test_rate_picker_also_ignores_unrendered_options(self):
+        """Each collapsed selector holds its rates, so an open-menu test is needed."""
+        src = self._src("_select_available_rate")
+        self.assertIn("if (!visible(el)) continue;", src)
+
+    def test_the_visibility_helper_rejects_a_zero_box_element(self):
+        """Client rects, not CSS guesses: a closed menu's items have none."""
+        from skills.adp_run_automation import payroll_draft_backend as mod
+
+        self.assertIn("getClientRects", mod._JS_VISIBLE)
+        self.assertIn("aria-hidden", mod._JS_VISIBLE)
 
 
 class TestSoloGapIsWiredIntoThePreview(unittest.TestCase):

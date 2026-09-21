@@ -256,13 +256,15 @@ export default async function PayrollPage({
   const periodColumns: ColumnDef<PayrollRowWithSolo>[] = [
     { accessorKey: "employee", header: "Employee" },
     { accessorKey: "wage_rate_dollars", header: "Rate", meta: { format: { kind: "dollars" } } },
-    { accessorKey: "hours_worked", header: "Hours", meta: { format: { kind: "number", digits: 2, minDigits: 2 } } },
-    { accessorKey: "ot_hours", header: "OT", meta: { format: { kind: "number", digits: 2, minDigits: 2 } } },
+    // OT and solo are slices of Total hours, not additions to it. Labelled
+    // "of which" because the bare headers read as separate buckets to add up.
+    { accessorKey: "hours_worked", header: "Total hours", meta: { format: { kind: "number", digits: 2, minDigits: 2 } } },
+    { accessorKey: "ot_hours", header: "of which OT", meta: { format: { kind: "number", digits: 2, minDigits: 2 } } },
     ...(showSolo
       ? [
           {
             accessorKey: "solo_hours",
-            header: "Solo hrs",
+            header: "of which solo",
             meta: { format: { kind: "number" as const, digits: 2, minDigits: 2 } },
           } satisfies ColumnDef<PayrollRowWithSolo>,
           {
@@ -444,7 +446,7 @@ export default async function PayrollPage({
               }
             >
               <HeadlineStat
-                label="Hours"
+                label="Total hours"
                 display={`${formatHours(totalHours)}h`}
                 hint={showPreviewHints ? hoursVsPreview?.label : undefined}
                 hintWarn={Boolean(
@@ -509,10 +511,10 @@ export default async function PayrollPage({
             </div>
             <p className="text-xs text-muted-foreground">
               {showPreviewHints
-                ? "Against last ADP Preview: Hours → Total hours, Total pay → Gross (wages + tips + bonus + perks). Preview URLs are not shown — they are session hashes. People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."
+                ? "Against last ADP Preview: Hours → Total hours, Total pay → Gross (wages + tips + bonus + perks). Total hours includes OT and solo hours — the OT and solo columns are slices of it, not extras to add. ADP's Enter-payroll Regular Hours column excludes OT, so it reads lower than Total hours by the OT figure. Preview URLs are not shown — they are session hashes. People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."
                 : awaitingEarnings
                   ? "Submitted in ADP. Earnings & Hours is not in BigQuery yet, so there is nothing to compare — Hours / Wages / Total pay are our estimate only. Wage vs ADP appears once that scrape lands."
-                  : "People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."}
+                  : "People and hours are 1:1 with Enter payroll. Total hours includes OT and solo hours — the OT and solo columns are slices of it, not extras to add. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."}
             </p>
           </div>
 
@@ -554,6 +556,17 @@ export default async function PayrollPage({
                 , so the premium above is understated. Re-run{" "}
                 <code className="font-mono">materialize_model_bq</code> before
                 keying rate-2 into ADP.
+              </p>
+            ) : null}
+            {showSolo ? (
+              <p className="text-xs text-amber-600 dark:text-amber-500">
+                Opening the ADP draft re-imports timecards, which restores every
+                base row to its full total and leaves the solo rate-2 lines in
+                place — overstating the draft by the solo hours above. Choose{" "}
+                <span className="font-medium">Skip</span>, not “Import latest
+                timecards”, and review the numbers here instead. If it has
+                already happened, re-run the payroll draft to repair it rather
+                than editing cells by hand.
               </p>
             ) : null}
           </div>

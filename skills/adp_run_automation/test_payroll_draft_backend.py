@@ -543,6 +543,8 @@ class TestApplySoloRate2(unittest.TestCase):
     class _Page:
         """Enough of a Playwright page for the orchestrator: no next page."""
 
+        keyboard = type("_Keyboard", (), {"press": lambda self, key: None})()
+
         def wait_for_timeout(self, _ms):
             return None
 
@@ -573,7 +575,7 @@ class TestApplySoloRate2(unittest.TestCase):
             return packet_from_view_rows(rows)
 
     def _run(self, grid_states, after_rows=None, grew=1,
-             line_count_after_add=2, **over):
+             line_count_after_add=2, fill_results=None, **over):
         """Run the orchestrator against a scripted sequence of grid reads.
 
         ``after_rows`` is what the post-split verification read returns; it
@@ -584,13 +586,14 @@ class TestApplySoloRate2(unittest.TestCase):
         """
         calls: list[tuple] = []
         states = list(grid_states)
+        fill_results = list(fill_results or [])
 
         def _grid(_page):
             return states.pop(0) if len(states) > 1 else states[0]
 
         def _fill(page, *, employee, col_id, amount, row_index=None):
             calls.append(("fill", row_index, amount))
-            return True
+            return fill_results.pop(0) if fill_results else True
 
         if after_rows is None:
             after_rows = [
@@ -643,20 +646,50 @@ class TestApplySoloRate2(unittest.TestCase):
             "rows": [{"row_index": "4", "reg": reg, "ot": 0.0}],
         }}
 
-    def test_premium_row_is_filled_before_the_base_row_is_reduced(self):
-        # Order matters on a crash: hours too high trips the guardrail, whereas
-        # reducing first would leave a short paycheck that looks self-consistent.
-        out, calls = self._run([self._one_row_grid(), self._one_row_grid()])
-        fills = [c for c in calls if c[0] == "fill"]
-        self.assertEqual(fills, [("fill", "5", 4.75), ("fill", "4", 30.0)])
-        self.assertEqual(out["applied"], [self.NAME])
-        self.assertEqual(out["failed"], [])
-
     def test_adds_the_row_then_picks_the_premium_rate_on_it(self):
         _out, calls = self._run([self._one_row_grid(), self._one_row_grid()])
         self.assertEqual(calls[0], ("menu", "4"))
         self.assertEqual(calls[1], ("item", "Add row", "4"))
         self.assertEqual(calls[2], ("rate", "5", 16.25))
+
+    def test_the_base_row_is_reduced_before_the_premium_is_added(self):
+        """Order is a safety property: a stall must not leave hours inflated.
+
+        Live 2026-09-21 the premium went in first, the base-row dblclick timed
+        out behind the open rate dropdown, and Garcia was left at 53.13 + 11.48
+        = 64.61 in a draft that was otherwise approvable.
+        """
+        _out, calls = self._run([self._one_row_grid(), self._one_row_grid()])
+        fills = [c for c in calls if c[0] == "fill"]
+        self.assertEqual(fills, [("fill", "4", 30.0), ("fill", "5", 4.75)])
+
+    def test_a_failed_premium_fill_restores_the_base_row(self):
+        """Never leave the base reduced *and* no premium: that underpays."""
+        out, calls = self._run(
+            [self._one_row_grid()],
+            # base ok, then 3 premium attempts fail, then the restore.
+            fill_results=[True, False, False, False, True],
+        )
+        self.assertEqual(out["applied"], [])
+        self.assertIn("premium_fill_failed", out["failed"][0])
+        self.assertIn("base_restored=True", out["failed"][0])
+        self.assertEqual(calls[-1], ("fill", "4", 34.75))
+
+    def test_a_failed_base_fill_never_writes_the_premium(self):
+        """If the base cannot be reduced, adding the premium would inflate."""
+        out, calls = self._run(
+            [self._one_row_grid()], fill_results=[False, False, False]
+        )
+        self.assertIn("base_fill_failed", out["failed"][0])
+        self.assertEqual([c for c in calls if c[0] == "fill" and c[1] == "5"], [])
+
+    def test_a_transient_fill_miss_is_retried_not_failed(self):
+        out, _calls = self._run(
+            [self._one_row_grid(), self._one_row_grid()],
+            fill_results=[False, True, True],
+        )
+        self.assertEqual(out["failed"], [])
+        self.assertEqual(out["applied"], [self.NAME])
 
     def test_add_row_is_scoped_to_the_row_whose_menu_was_opened(self):
         """ADP renders a menu per row; an unscoped click hits the first one.
@@ -794,7 +827,7 @@ class TestApplySoloRate2(unittest.TestCase):
             ],
         )
         fills = [c for c in calls if c[0] == "fill"]
-        self.assertEqual(fills, [("fill", "8", 4.75), ("fill", "7", 30.0)])
+        self.assertEqual(fills, [("fill", "7", 30.0), ("fill", "8", 4.75)])
         self.assertEqual(out["failed"], [])
         # The rate is picked on the re-resolved new row too, not the stale one.
         self.assertIn(("rate", "8", 16.25), calls)
@@ -815,7 +848,7 @@ class TestApplySoloRate2(unittest.TestCase):
         self.assertEqual([c for c in calls if c[0] in {"menu", "item"}], [])
         self.assertEqual(
             [c for c in calls if c[0] == "fill"],
-            [("fill", "5", 4.75), ("fill", "4", 30.0)],
+            [("fill", "4", 30.0), ("fill", "5", 4.75)],
         )
         self.assertIn(("rate", "5", 16.25), calls)
 

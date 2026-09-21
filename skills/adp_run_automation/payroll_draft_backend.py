@@ -1325,6 +1325,34 @@ def unrepairable_hours_fails(
     return remaining
 
 
+def _fill_checked(
+    page, *, employee: str, amount: float, row_index: str, attempts: int = 3
+) -> bool:
+    """Write one Regular-hours cell and confirm it took, retrying transient misses.
+
+    ``_fill_grid_amount`` already reads the cell back, but its caller used to
+    discard the answer. A single dblclick timeout behind an open dropdown was
+    therefore enough to leave a premium row added and its base row unreduced.
+    """
+    for attempt in range(attempts):
+        if _fill_grid_amount(
+            page, employee=employee, col_id="REGH",
+            amount=amount, row_index=row_index,
+        ):
+            return True
+        print(
+            f"[adp_payroll_draft] fill_retry {employee!r} row={row_index} "
+            f"want={amount} attempt={attempt + 1}/{attempts}"
+        )
+        _dismiss_adp_error_dialog(page)
+        try:
+            page.keyboard.press("Escape")
+        except Exception:  # noqa: BLE001
+            pass
+        page.wait_for_timeout(900)
+    return False
+
+
 class Rate2Plan(NamedTuple):
     """What to do about one employee's existing grid rows.
 
@@ -1563,18 +1591,32 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
                     page, row_index=new_now, rate_dollars=premium_rate
                 ):
                     raise RuntimeError("no_rate_pick")
+                # Close the rate dropdown before typing. Left open it overlays the
+                # grid, and the base-row dblclick times out behind it — which is
+                # exactly how Garcia ended up with 53.13 + 11.48 = 64.61 live on
+                # 2026-09-21.
+                page.keyboard.press("Escape")
                 page.wait_for_timeout(600)
-                # Premium first, base reduced second: a crash between the two
-                # leaves total hours too high, which the guardrail catches, rather
-                # than too low, which looks like a self-consistent short paycheck.
-                _fill_grid_amount(
-                    page, employee=name, col_id="REGH",
-                    amount=premium, row_index=new_now,
-                )
-                _fill_grid_amount(
-                    page, employee=name, col_id="REGH",
-                    amount=keep, row_index=base_now,
-                )
+
+                # Reduce the base row FIRST, then add the premium. Both fills are
+                # checked and the base is restored if the second fails, so an
+                # aborted split can never leave the draft paying *more* than the
+                # console. An overstated draft is the dangerous one: it is
+                # self-consistent enough for a human to approve.
+                if not _fill_checked(
+                    page, employee=name, amount=keep, row_index=base_now
+                ):
+                    raise RuntimeError(f"base_fill_failed want={keep}")
+                if not _fill_checked(
+                    page, employee=name, amount=premium, row_index=new_now
+                ):
+                    restored = _fill_checked(
+                        page, employee=name, amount=base_reg, row_index=base_now
+                    )
+                    raise RuntimeError(
+                        f"premium_fill_failed want={premium} "
+                        f"base_restored={restored}"
+                    )
                 page.wait_for_timeout(600)
                 # Count only rows that carry hours. Leftover empty rate lines are
                 # debris, and counting them failed Perales at exactly the moment

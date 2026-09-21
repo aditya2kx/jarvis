@@ -227,24 +227,35 @@ The flag is **off** by default because this is the only path that rewrites *hour
 (every other fill is a money column), so a selector drift pays the wrong number rather than erroring.
 Approve/Submit/Save remain forbidden either way — the operator still submits.
 
-**Opening the draft in ADP undoes the split — choose `Skip`, not `Import latest timecards`.** The
-import restores every base row to its full total and leaves the rate-2 lines untouched, so the draft
-then overstates hours by exactly the premium hours. Live 2026-09-21: a verification pass through the
-ADP UI turned a reconciled draft (368.42h regular) into 384.57h, because all six premium lines were
-being paid on top of unreduced base rows — about $246. It is silent: each row looks plausible on its
-own and only the Totals line moves.
+**Opening the draft in ADP undoes the split, and `Skip import` does not prevent it.** The re-import
+restores every base row to its full total and leaves the rate-2 lines untouched, so the draft then
+overstates hours by exactly the premium hours. It is silent — each row looks plausible alone and only
+the Totals cell moves.
 
-Consequences for how you work:
+Measured live 2026-09-21, in this order:
 
-- **Review in `/payroll`, not in the ADP grid.** The console matched the Preview exactly before the
+1. A run finished reconciled at 16:24; ADP's own Preview read `371.30h / $7,554.64`.
+2. The operator opened the draft and chose **`Skip import`** (both controls exist and are distinct:
+   `Skip import [Payroll]` and `Import latest timecards [Update]`).
+3. The grid nonetheless read `384.57h` = `368.42 + 16.15` — every base row back at full with all six
+   premium lines still attached, about $246 of overpay.
+
+So ADP syncs timecards on entry regardless of that button. **Do not rely on `Skip`.** This invalidates
+the "automation keys the premium, operator reviews then approves" flow outright: whoever opens the
+draft last must be the one who approves it, and opening is what breaks it. Tracked in Issue #331.
+
+Consequences until that is resolved:
+
+- **Review in `/payroll`, never in the ADP grid.** The console matched the Preview exactly before the
   re-import, and reading it costs nothing.
-- **The split must be the last write before Approve.** Anything that re-imports after it strands it.
-- **If it has already happened, re-run the draft — do not hand-edit cells** (user-preferences B5). The
-  repair path detects the half-applied shape (`BREADCRUMB solo_rate2_repairing … base_not_reduced`) and
-  restores all of it; `applied=6 failed=0` with `post_rate2_guardrail n=0` is the proof.
+- **After opening, the six base rows must be reduced by each employee's solo hours** before Approve, or
+  the premium is paid on top of unreduced base rows. B5 says prefer the system, but there is currently
+  no path that survives an operator visit — re-running only moves the breakage to the next open.
 - **ADP's `Regular Hours` column excludes OT**, so it reads lower than the console's `Total hours` by
   the OT figure. On 2026-09-21 that was 2.88h — a real difference, not a fault. Compare against the
   Preview gross, not the grid's Totals cell.
+- **The Preview screen has no Delete control** (only `Previous` / `Finish later` / `Approve`), so
+  `--delete-after` reports `delete_not_found` there rather than removing anything.
 
 **The sync check is the same in both cases.** Console `Est. total` includes the premium, so if the
 rate-2 lines never landed in ADP, `Total pay` will read short of the ADP Preview gross by exactly the

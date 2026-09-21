@@ -560,13 +560,13 @@ export default async function PayrollPage({
             ) : null}
             {showSolo ? (
               <p className="text-xs text-amber-600 dark:text-amber-500">
-                Opening the ADP draft re-imports timecards, which restores every
-                base row to its full total and leaves the solo rate-2 lines in
-                place — overstating the draft by the solo hours above. Choose{" "}
-                <span className="font-medium">Skip</span>, not “Import latest
-                timecards”, and review the numbers here instead. If it has
-                already happened, re-run the payroll draft to repair it rather
-                than editing cells by hand.
+                Opening the ADP draft re-imports timecards — <span className="font-medium">
+                even if you choose “Skip import”</span> — which restores every base
+                row to its full total while leaving the solo rate-2 lines in place,
+                overstating the draft by the solo hours above. Review the numbers
+                here, then in ADP reduce each eligible base row by that person’s
+                solo hours before Approve. Compare against the Preview gross, not
+                the grid’s Totals cell: that column excludes OT.
               </p>
             ) : null}
           </div>

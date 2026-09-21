@@ -110,3 +110,56 @@ class TestHasWaiverParsing(unittest.TestCase):
             "scripts.check_evidence_confidence.subprocess.run", return_value=failed
         ):
             self.assertFalse(_has_waiver())
+
+
+class TestPrintWaiver(unittest.TestCase):
+    """--print-waiver is how claude-review.yml reads the waiver state without
+    keeping a second copy of the detection rules."""
+
+    def _print(self, waived: bool) -> str:
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with patch("scripts.check_evidence_confidence._has_waiver", return_value=waived), \
+                redirect_stdout(buf):
+            rc = main(["--print-waiver"])
+        self.assertEqual(rc, 0)
+        return buf.getvalue().strip()
+
+    def test_prints_true_when_waived(self):
+        self.assertEqual(self._print(True), "true")
+
+    def test_prints_false_when_not_waived(self):
+        self.assertEqual(self._print(False), "false")
+
+    def test_print_waiver_needs_no_score_on_stdin(self):
+        """It must not block reading stdin — the workflow calls it with no input."""
+        with patch("scripts.check_evidence_confidence._has_waiver", return_value=True), \
+                patch("scripts.check_evidence_confidence.sys.stdin") as stdin:
+            self.assertEqual(main(["--print-waiver"]), 0)
+        stdin.read.assert_not_called()
+
+
+class TestReviewWorkflowHonoursWaiver(unittest.TestCase):
+    """A waived PR was unmergeable by construction: the numeric gate accepted 82%
+    while the prompt told the reviewer <95% is blocking (#316/#317)."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        with open(os.path.join(root, ".github/workflows/claude-review.yml"), encoding="utf-8") as fh:
+            cls.wf = fh.read()
+
+    def test_waiver_state_is_resolved_from_the_script(self):
+        self.assertIn("id: waiver", self.wf)
+        self.assertIn("check_evidence_confidence.py --print-waiver", self.wf)
+
+    def test_prompt_receives_the_waiver_state(self):
+        self.assertIn("EVIDENCE WAIVER ACTIVE FOR THIS PR: ${{ steps.waiver.outputs.active }}", self.wf)
+        self.assertIn("Do NOT return REQUEST CHANGES when a score >= 80%", self.wf)
+
+    def test_waiver_does_not_excuse_real_findings(self):
+        """The whole point: evidence depth is waivable, defects are not."""
+        self.assertIn("it never excuses a defect", self.wf)
+        self.assertIn("Gate on Claude verdict (fail if REQUEST CHANGES)", self.wf)

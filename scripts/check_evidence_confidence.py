@@ -81,7 +81,20 @@ def main(argv: list[str] | None = None) -> int:
     src.add_argument("--text")
     src.add_argument("--file")
     ap.add_argument("--min", type=int, default=95)
+    ap.add_argument(
+        "--print-waiver",
+        action="store_true",
+        help=(
+            "Print 'true'/'false' for the current PR's waiver state and exit 0. "
+            "Lets claude-review.yml tell the reviewer a waiver is active without "
+            "a second copy of the detection rules."
+        ),
+    )
     args = ap.parse_args(argv)
+
+    if args.print_waiver:
+        print("true" if _has_waiver() else "false")
+        return 0
 
     if args.text is not None:
         body = args.text

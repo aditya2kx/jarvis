@@ -11,6 +11,7 @@ from skills.adp_run_automation.payroll_draft_backend import (
     _paginate_timecard_hours,
     abort_if_forbidden_label,
     classify_rate2_state,
+    extra_rate_line_hours,
     combine_preview_totals,
     header_index,
     hours_guardrail_failures,
@@ -614,7 +615,10 @@ class TestApplySoloRate2(unittest.TestCase):
             return True
 
         patches = {
-            "_ag_enter_page_hours": _grid,
+            # The orchestrator reads every grid page, not the displayed one: an
+            # employee's two rate lines can straddle a page boundary.
+            "_paginate_timecard_detail": _grid,
+            "_grid_goto_page": lambda p, n: True,
             "_ag_grid_rows": _all_rows,
             "_dismiss_adp_error_dialog": lambda _p: False,
             "_open_row_action_menu": lambda p, *, row_index: calls.append(
@@ -623,6 +627,7 @@ class TestApplySoloRate2(unittest.TestCase):
             "_click_menu_item": _item,
             "_rate2_row_indices": lambda p, *, employee, base_reg: ("4", "5"),
             "_employee_rows": lambda p, employee: list(after_rows),
+            "_employee_rows_all_pages": lambda p, employee: list(after_rows),
             "_employee_line_count": lambda p, employee: line_count_after_add,
             "_select_available_rate": lambda p, *, row_index, rate_dollars: calls.append(
                 ("rate", row_index, rate_dollars)
@@ -1005,6 +1010,214 @@ class TestClassifyRate2State(unittest.TestCase):
         self.assertEqual(plan.verdict, "suspect")
 
 
+class TestAPunchEditStrandsTheRate2Line(unittest.TestCase):
+    """An operator punch fix changes the premium owed, not the keyed line.
+
+    Live 2026-09-21: the operator corrected missing punches mid-cycle. Garcia's
+    solo time fell from 11.48h to 5.25h, but his rate-2 line still carried 11.48h
+    at $16.25 with the base row never reduced. Both halves of the system called
+    this unfixable — the classifier could not recognise a premium line whose hours
+    matched nothing, and the guardrail would not clear a mismatch that no longer
+    equalled the premium owed — so the draft stayed overstated by 11.48h.
+    """
+
+    NAME = "Garcia, Jacob"
+    WANT_TOTAL = 53.13
+    OWED = 5.25
+    ON_LINE = 11.48
+
+    def _lines(self):
+        return [
+            grid_row(self.NAME, row_index="8", rate=15.25, reg=self.WANT_TOTAL),
+            grid_row(self.NAME, row_index="9", rate=16.25, reg=self.ON_LINE),
+        ]
+
+    def test_the_stale_premium_line_is_identified_by_its_rate(self):
+        plan = classify_rate2_state(
+            self._lines(), solo_hours=self.OWED,
+            want_total=self.WANT_TOTAL, premium_rate=16.25,
+        )
+        self.assertEqual(plan.verdict, "repair")
+        self.assertEqual(plan.reuse_index, "9")
+        self.assertEqual(plan.base_index, "8")
+        self.assertEqual(plan.base_hours, self.WANT_TOTAL)
+
+    def test_the_repair_reprices_only_the_hours_now_owed(self):
+        plan = classify_rate2_state(
+            self._lines(), solo_hours=self.OWED,
+            want_total=self.WANT_TOTAL, premium_rate=16.25,
+        )
+        keep, premium = rate2_split(
+            adp_regular_hours=plan.base_hours, solo_hours=self.OWED
+        )
+        self.assertEqual(premium, self.OWED)
+        self.assertEqual(round(keep + premium, 2), self.WANT_TOTAL)
+
+    def test_without_the_rate_hint_it_is_still_refused(self):
+        """Guards the fix: hours-only matching cannot see this row."""
+        plan = classify_rate2_state(
+            self._lines(), solo_hours=self.OWED, want_total=self.WANT_TOTAL,
+        )
+        self.assertEqual(plan.verdict, "suspect")
+
+    def test_the_guardrail_clears_it_from_the_grids_own_line_hours(self):
+        ours = {self.NAME: self.WANT_TOTAL}
+        adp = {self.NAME: round(self.WANT_TOTAL + self.ON_LINE, 2)}
+        self.assertEqual(
+            unrepairable_hours_fails(
+                ours, adp, {self.NAME: self.OWED},
+                on_rate2_line={self.NAME: self.ON_LINE},
+            ),
+            [],
+        )
+
+    def test_the_premium_owed_alone_does_not_clear_it(self):
+        """Why `on_rate2_line` exists: the owed figure no longer matches."""
+        ours = {self.NAME: self.WANT_TOTAL}
+        adp = {self.NAME: round(self.WANT_TOTAL + self.ON_LINE, 2)}
+        self.assertEqual(
+            len(unrepairable_hours_fails(ours, adp, {self.NAME: self.OWED})), 1
+        )
+
+    def test_a_right_total_on_a_wrong_premium_line_is_repaired_not_accepted(self):
+        lines = [
+            grid_row(self.NAME, row_index="8", rate=15.25, reg=41.65),
+            grid_row(self.NAME, row_index="9", rate=16.25, reg=self.ON_LINE),
+        ]
+        plan = classify_rate2_state(
+            lines, solo_hours=self.OWED,
+            want_total=self.WANT_TOTAL, premium_rate=16.25,
+        )
+        self.assertEqual(plan.verdict, "repair")
+
+    def test_a_correct_split_is_still_left_alone(self):
+        lines = [
+            grid_row(self.NAME, row_index="8", rate=15.25, reg=47.88),
+            grid_row(self.NAME, row_index="9", rate=16.25, reg=self.OWED),
+        ]
+        plan = classify_rate2_state(
+            lines, solo_hours=self.OWED,
+            want_total=self.WANT_TOTAL, premium_rate=16.25,
+        )
+        self.assertEqual(plan.verdict, "already_split")
+
+
+class TestRate2RowsCanStraddleAGridPage(unittest.TestCase):
+    """A row index is only clickable while its own page is displayed.
+
+    Live 2026-09-21: Huynh's base row (42.68h) sat on one grid page and her
+    0.97h premium row on the next. The page-local read saw only the fragment on
+    screen, so she measured 0.97h against an expected 42.68h and was refused as
+    "unexpected_existing_split" — the one row that actually needed repairing.
+    """
+
+    MOD = "skills.adp_run_automation.payroll_draft_backend"
+
+    def test_the_orchestrator_reads_every_page_not_the_displayed_one(self):
+        import inspect
+        from skills.adp_run_automation.payroll_draft_backend import (
+            _apply_solo_rate2,
+        )
+        src = inspect.getsource(_apply_solo_rate2)
+        self.assertIn("_paginate_timecard_detail(page)", src)
+        self.assertNotIn("_ag_enter_page_hours(page)", src)
+
+    def test_a_row_is_shown_before_it_is_filled(self):
+        import inspect
+        from skills.adp_run_automation.payroll_draft_backend import (
+            _apply_solo_rate2,
+        )
+        src = inspect.getsource(_apply_solo_rate2)
+        self.assertIn("_grid_goto_page(page, row_page.get(str(idx), base_page))", src)
+        # Never page 0 as the fallback: a freshly added row is absent from
+        # `row_page` and lands beside the base row, not on the first page.
+        self.assertNotIn("row_page.get(str(idx), 0)", src)
+
+    def test_verification_spans_pages_too(self):
+        import inspect
+        from skills.adp_run_automation.payroll_draft_backend import (
+            _apply_solo_rate2,
+        )
+        src = inspect.getsource(_apply_solo_rate2)
+        self.assertIn("_employee_rows_all_pages(page, name)", src)
+
+    def test_each_row_carries_the_page_it_was_read_from(self):
+        import inspect
+        from skills.adp_run_automation.payroll_draft_backend import (
+            _paginate_timecard_detail,
+        )
+        self.assertIn(
+            'row["page_no"] = page_no', inspect.getsource(_paginate_timecard_detail)
+        )
+
+    def test_the_straddled_shape_classifies_as_a_repair(self):
+        """Given both rows, Huynh's live shape is repairable, not suspect."""
+        lines = [
+            grid_row("Huynh, Hillary", row_index="9", rate=15.25, reg=42.68),
+            grid_row("Huynh, Hillary", row_index="0", rate=16.25, reg=0.97),
+        ]
+        plan = classify_rate2_state(
+            lines, solo_hours=4.13, want_total=42.68, premium_rate=16.25,
+        )
+        self.assertEqual(plan.verdict, "repair")
+        self.assertEqual(plan.reuse_index, "0")
+        keep, premium = rate2_split(
+            adp_regular_hours=plan.base_hours, solo_hours=4.13
+        )
+        self.assertEqual((keep, premium), (38.55, 4.13))
+
+    def test_the_fragment_alone_is_refused(self):
+        """What the page-local read saw, and why it failed her."""
+        lines = [grid_row("Huynh, Hillary", row_index="0", rate=16.25, reg=0.97)]
+        plan = classify_rate2_state(
+            lines, solo_hours=4.13, want_total=42.68, premium_rate=16.25,
+        )
+        self.assertEqual(plan.verdict, "suspect")
+
+
+class TestExtraRateLineHours(unittest.TestCase):
+    """Hours parked on premium-rated lines, read off the grid."""
+
+    def test_it_reports_the_premium_line_not_the_base(self):
+        detail = {
+            "Garcia, Jacob": {"hours": 64.61, "rows": [
+                grid_row("Garcia, Jacob", row_index="8", rate=15.25, reg=53.13),
+                grid_row("Garcia, Jacob", row_index="9", rate=16.25, reg=11.48),
+            ]},
+        }
+        self.assertEqual(
+            extra_rate_line_hours(detail, premium_rate=16.25),
+            {"Garcia, Jacob": 11.48},
+        )
+
+    def test_a_single_line_employee_is_absent(self):
+        detail = {
+            "Krause, Lindsay": {"hours": 79.75, "rows": [
+                grid_row("Krause, Lindsay", row_index="4", rate=25.0,
+                         reg=76.87, ot=2.88),
+            ]},
+        }
+        self.assertEqual(extra_rate_line_hours(detail, premium_rate=16.25), {})
+
+    def test_an_employee_already_at_the_premium_base_rate_is_not_counted(self):
+        """Johnson/Ortiz sit at $16.25 as their base — one line, no split."""
+        detail = {
+            "Johnson, Dolce J": {"hours": 54.73, "rows": [
+                grid_row("Johnson, Dolce J", row_index="6", rate=16.25, reg=54.73),
+            ]},
+        }
+        self.assertEqual(extra_rate_line_hours(detail, premium_rate=16.25), {})
+
+    def test_empty_premium_lines_contribute_nothing(self):
+        detail = {
+            "Perales, Elizabeth": {"hours": 25.2, "rows": [
+                grid_row("Perales, Elizabeth", row_index="1", rate=15.25, reg=25.2),
+                grid_row("Perales, Elizabeth", row_index="3", rate=16.25, reg=0.0),
+            ]},
+        }
+        self.assertEqual(extra_rate_line_hours(detail, premium_rate=16.25), {})
+
+
 class TestUnrepairableHoursFails(unittest.TestCase):
     """Which guardrail failures must keep blocking the split.
 
@@ -1250,7 +1463,11 @@ class TestSoloRate2IsGatedOnTheHoursGuardrail(unittest.TestCase):
     def test_blocking_is_the_guardrail_minus_only_repairable_half_splits(self):
         """`blocking` must come from the vetted helper, not a looser test."""
         src = self._src()
-        self.assertIn("unrepairable_hours_fails(ours, adp_hours, solo_by_name)", src)
+        self.assertIn("unrepairable_hours_fails(", src)
+        self.assertIn("ours, adp_hours, solo_by_name,", src)
+        # The grid's own rate-2 line hours, not the premium owed: an operator
+        # punch edit moves the latter and leaves the former stale.
+        self.assertIn("on_rate2_line=on_rate2_line,", src)
         self.assertIn("else guardrail_fails", src)
 
     def test_hours_are_re_checked_after_the_split(self):

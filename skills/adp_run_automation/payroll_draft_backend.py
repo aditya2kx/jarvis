@@ -999,7 +999,22 @@ def _grid_rewind(page) -> None:
             return
 
 
-def _paginate_timecard_hours(page) -> dict[str, float]:
+def _grid_goto_page(page, page_no: int) -> bool:
+    """Display grid page ``page_no`` (0-based), so its row indices are clickable."""
+    _grid_rewind(page)
+    for _ in range(int(page_no)):
+        nxt = page.locator("[data-test-id='pagination-chevron-right']").first
+        try:
+            if not (nxt.is_visible() and nxt.is_enabled()):
+                return False
+            nxt.click()
+            page.wait_for_timeout(1_000)
+        except Exception:  # noqa: BLE001
+            return False
+    return True
+
+
+def _paginate_timecard_detail(page) -> dict[str, dict]:
     # Collect by (page ordinal, row-index). AG Grid restarts `row-index` at 0 on
     # every page, so row-index alone is NOT a stable key across pages: page 2's
     # rows silently overwrite page 1's first N. Caught 2026-09-21 on a 15-person
@@ -1036,6 +1051,9 @@ def _paginate_timecard_hours(page) -> dict[str, float]:
             break
         last_sig = sig
         for row in rows:
+            # Stamp the page: a row-index alone cannot be clicked, because it is
+            # only addressable while its own page is displayed.
+            row["page_no"] = page_no
             seen[(page_no, str(row.get("row_index")))] = row
         nxt = page.locator("[data-test-id='pagination-chevron-right']").first
         try:
@@ -1049,7 +1067,38 @@ def _paginate_timecard_hours(page) -> dict[str, float]:
     _grid_rewind(page)
     detail = _aggregate_grid_rows(list(seen.values()))
     print(f"[adp_payroll_draft] ag_enter_hours {detail}")
+    return detail
+
+
+def _paginate_timecard_hours(page) -> dict[str, float]:
+    """Total paid hours per employee, summed across their rate lines."""
+    detail = _paginate_timecard_detail(page)
     return {name: float(rec.get("hours") or 0) for name, rec in detail.items()}
+
+
+def extra_rate_line_hours(
+    detail: dict[str, dict], *, premium_rate: float
+) -> dict[str, float]:
+    """Hours parked on each employee's premium-rated line(s).
+
+    This is what a mis-keyed split contributes to their total, and it is not the
+    same as the premium they are *owed*: an operator punch edit can change what
+    they are owed while leaving the old number on the line (live 2026-09-21,
+    Garcia owed 5.25h with 11.48h still on the rate-2 row).
+    """
+    out: dict[str, float] = {}
+    for name, rec in detail.items():
+        rows = rec.get("rows") or []
+        if len(rows) < 2:
+            continue
+        extra = sum(
+            float(r.get("reg") or 0)
+            for r in rows
+            if abs(float(r.get("rate") or 0) - premium_rate) < 0.005
+        )
+        if extra > 0:
+            out[name] = round(extra, 2)
+    return out
 
 
 def _open_row_action_menu(page, *, row_index: str) -> bool:
@@ -1287,6 +1336,7 @@ def unrepairable_hours_fails(
     adp: dict[str, float],
     solo: dict[str, float],
     *,
+    on_rate2_line: dict[str, float] | None = None,
     tolerance: float = HOURS_TOLERANCE_HOURS,
 ) -> list[str]:
     """Guardrail failures that a rate-2 repair would *not* explain.
@@ -1295,14 +1345,17 @@ def unrepairable_hours_fails(
     hours guardrail — so a failed earlier run leaves a state that can never be
     fixed by rerunning. That deadlock is why this exists.
 
-    A half-applied split has one signature: ADP shows exactly ``solo_hours`` more
-    than the console for an employee who is owed a premium of ``solo_hours``,
-    because the premium row was added without reducing the base row. Anything
-    else is a real disagreement and must keep blocking.
+    A half-applied split shows up as ADP exceeding the console by exactly the
+    hours parked on that employee's premium-rated line, because the line was
+    added without reducing the base row. Pass ``on_rate2_line`` to compare
+    against the grid; without it we fall back to the premium *owed*, which is
+    only the same number until an operator edits punches. Anything else is a real
+    disagreement and must keep blocking.
 
     Returns the failures that remain unexplained; empty means the repair is safe
     to run, and the hours are re-checked afterwards regardless.
     """
+    on_line_k = {name_key(k): v for k, v in (on_rate2_line or {}).items()}
     solo_k = {name_key(k): v for k, v in solo.items()}
     ours_k = {name_key(k): v for k, v in ours.items()}
     remaining: list[str] = []
@@ -1312,7 +1365,7 @@ def unrepairable_hours_fails(
             continue
         label = fail.split("hours_mismatch ", 1)[1].split(" our=")[0]
         key = name_key(label)
-        premium = float(solo_k.get(key) or 0)
+        premium = float(on_line_k.get(key) or solo_k.get(key) or 0)
         oh = float(ours_k.get(key) or 0)
         ah = next(
             (v for k, v in adp.items() if name_key(k) == key), None
@@ -1375,7 +1428,11 @@ def _row_is_empty(row: dict) -> bool:
 
 
 def classify_rate2_state(
-    lines: list[dict], *, solo_hours: float, want_total: float | None
+    lines: list[dict],
+    *,
+    solo_hours: float,
+    want_total: float | None,
+    premium_rate: float = 0.0,
 ) -> Rate2Plan:
     """Decide whether an employee still needs the premium split, from their rows.
 
@@ -1403,9 +1460,23 @@ def classify_rate2_state(
         return Rate2Plan("suspect", why=f"no_expected_total lines={len(lines)}")
 
     if len(funded) == 2:
-        solo_row = next(
-            (r for r in funded if abs(reg(r) - solo_hours) < 0.011), None
-        )
+        # Identify the premium line by its *rate*, not its hours. Hours go stale
+        # whenever punches are edited — live 2026-09-21 an operator punch fix cut
+        # Garcia's solo time from 11.48h to 5.25h, leaving a correctly-rated line
+        # carrying the old number. Matching on hours called that unrecognisable
+        # and refused to touch it, which is precisely the row that needs fixing.
+        solo_row = None
+        if premium_rate > 0:
+            rated = [
+                r for r in funded
+                if abs(float(r.get("rate") or 0) - premium_rate) < 0.005
+            ]
+            if len(rated) == 1:
+                solo_row = rated[0]
+        if solo_row is None:
+            solo_row = next(
+                (r for r in funded if abs(reg(r) - solo_hours) < 0.011), None
+            )
         if solo_row is None:
             return Rate2Plan(
                 "suspect",
@@ -1413,8 +1484,19 @@ def classify_rate2_state(
                     f"total={total} want_total={want_total}",
             )
         base_row = next(r for r in funded if r is not solo_row)
-        if abs(total - want_total) < 0.011:
+        premium_ok = abs(reg(solo_row) - solo_hours) < 0.011
+        if abs(total - want_total) < 0.011 and premium_ok:
             return Rate2Plan("already_split")
+        if abs(total - want_total) < 0.011:
+            # Total is right but the premium line holds the wrong hours, so the
+            # split is priced against a number nobody owes. Rewrite both rows.
+            return Rate2Plan(
+                "repair",
+                base_index=str(base_row.get("row_index")),
+                base_hours=want_total,
+                reuse_index=str(solo_row.get("row_index")),
+                why=f"stale_premium_line on_line={reg(solo_row)} owed={solo_hours}",
+            )
         if abs(reg(base_row) - want_total) < 0.011:
             # Half-applied: the premium row was added but the base row was never
             # reduced, so the employee gained `solo_hours` instead of having them
@@ -1495,7 +1577,13 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
         # Re-reading before every mutation is the only index that stays true.
         while True:
             _dismiss_adp_error_dialog(page)
-            page_map = _ag_enter_page_hours(page)
+            # Read every page, not just the displayed one. An employee's two rate
+            # lines can straddle a page boundary, and a page-local read then sees
+            # only the fragment on screen: live 2026-09-21 Huynh's base row sat on
+            # one page and her 0.97h premium row on the next, so she read as a
+            # 0.97h employee against an expected 42.68h and was refused as
+            # "unexpected_existing_split" — the one row that needed repairing.
+            page_map = _paginate_timecard_detail(page)
             todo = [
                 (n, r)
                 for n, r in page_map.items()
@@ -1511,7 +1599,10 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
             lines = rec.get("rows") or []
             want_total = expected_total.get(key)
             plan = classify_rate2_state(
-                lines, solo_hours=solo, want_total=want_total
+                lines,
+                solo_hours=solo,
+                want_total=want_total,
+                premium_rate=premium_rate,
             )
             if plan.verdict == "already_split":
                 print(
@@ -1541,7 +1632,23 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
             )
             if premium <= 0:
                 continue
+            # A row index is only clickable while its own page is displayed, and
+            # the two rows of a straddling employee live on different pages.
+            row_page = {
+                str(r.get("row_index")): int(r.get("page_no") or 0) for r in lines
+            }
+            base_page = row_page.get(str(base_idx), 0)
+
+            def _show(idx: str | None) -> None:
+                # Fall back to the base row's page, never page 0: a row added by
+                # "Add row" is not in `row_page` yet, and it lands next to the base
+                # row. Defaulting to 0 would drive the fill at whichever unrelated
+                # row happens to hold that index on the first page.
+                if idx is not None:
+                    _grid_goto_page(page, row_page.get(str(idx), base_page))
+
             try:
+                _show(base_idx)
                 if plan.reuse_index is not None:
                     # An earlier failed run can leave empty rate lines behind.
                     # Reuse one instead of adding another: deleting rows is a
@@ -1587,6 +1694,7 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
                         raise RuntimeError(
                             f"no_new_row lines={_employee_line_count(page, name)}"
                         )
+                _show(new_now)
                 if not _select_available_rate(
                     page, row_index=new_now, rate_dollars=premium_rate
                 ):
@@ -1603,13 +1711,16 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
                 # aborted split can never leave the draft paying *more* than the
                 # console. An overstated draft is the dangerous one: it is
                 # self-consistent enough for a human to approve.
+                _show(base_now)
                 if not _fill_checked(
                     page, employee=name, amount=keep, row_index=base_now
                 ):
                     raise RuntimeError(f"base_fill_failed want={keep}")
+                _show(new_now)
                 if not _fill_checked(
                     page, employee=name, amount=premium, row_index=new_now
                 ):
+                    _show(base_now)
                     restored = _fill_checked(
                         page, employee=name, amount=base_reg, row_index=base_now
                     )
@@ -1631,7 +1742,8 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
                 after_total = 0.0
                 for attempt in range(3):
                     after_rows = [
-                        r for r in _employee_rows(page, name) if not _row_is_empty(r)
+                        r for r in _employee_rows_all_pages(page, name)
+                        if not _row_is_empty(r)
                     ]
                     after_total = round(
                         sum(float(r.get("reg") or 0) for r in after_rows), 2
@@ -1686,6 +1798,19 @@ def _employee_rows(page, employee: str) -> list[dict]:
         r for r in _ag_grid_rows(page)
         if name_key(r.get("employee") or "") == want
     ]
+
+
+def _employee_rows_all_pages(page, employee: str) -> list[dict]:
+    """Every line item for one employee, across all grid pages.
+
+    Verifying a split from the displayed page alone under-reads a straddling
+    employee, and the split then looks like it lost hours it never lost.
+    """
+    want = name_key(employee)
+    for name, rec in _paginate_timecard_detail(page).items():
+        if name_key(name) == want:
+            return list(rec.get("rows") or [])
+    return []
 
 
 def _employee_line_count(page, employee: str) -> int:
@@ -2465,7 +2590,10 @@ def run_live_preview(
             }
             nzero = _zero_hours_not_on_console(page, ours)
             print(f"[adp_payroll_draft] zeroed_stale_hour_rows={nzero}")
-            adp_hours = _paginate_timecard_hours(page)
+            adp_detail = _paginate_timecard_detail(page)
+            adp_hours = {
+                n: float(r.get("hours") or 0) for n, r in adp_detail.items()
+            }
             print(f"[adp_payroll_draft] adp_enter_hours {adp_hours}")
             if not adp_hours:
                 guardrail_fails = ["timecard_parse_empty"]
@@ -2488,8 +2616,18 @@ def run_live_preview(
             solo_by_name = {
                 r.employee: float(r.solo_premium_hours or 0) for r in packet
             }
+            on_rate2_line = extra_rate_line_hours(
+                adp_detail, premium_rate=_solo_premium_rate(store)
+            )
+            if on_rate2_line:
+                print(
+                    f"[adp_payroll_draft] existing_rate2_lines {on_rate2_line}"
+                )
             blocking = (
-                unrepairable_hours_fails(ours, adp_hours, solo_by_name)
+                unrepairable_hours_fails(
+                    ours, adp_hours, solo_by_name,
+                    on_rate2_line=on_rate2_line,
+                )
                 if guardrail_fails and adp_hours
                 else guardrail_fails
             )

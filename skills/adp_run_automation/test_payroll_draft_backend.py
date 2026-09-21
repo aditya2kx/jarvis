@@ -1381,6 +1381,48 @@ class TestUnrepairableHoursFails(unittest.TestCase):
         self.assertEqual(remaining, [])
 
 
+class TestRatePickIsScopedToTheDropdown(unittest.TestCase):
+    """A rate rendered in the grid is another row's cell, not an option.
+
+    Live 2026-09-21: Alvarez's pick scanned the whole document, matched
+    `$16.2500 / hr` in Garcia's already-keyed row on the same grid page, clicked
+    it, and returned it as success. Alvarez stayed at $15.25 — 1.37 premium hours
+    priced at base, reported as applied.
+    """
+
+    def _src(self, fn_name: str) -> str:
+        import inspect
+
+        from skills.adp_run_automation import payroll_draft_backend as mod
+
+        return inspect.getsource(getattr(mod, fn_name))
+
+    def test_options_are_looked_for_in_an_overlay_first(self):
+        src = self._src("_select_available_rate")
+        self.assertIn("role=\"listbox\"", src)
+        self.assertIn("panels", src)
+        # The overlay scan must come before any document-wide fallback.
+        self.assertLess(
+            src.index("for (const p of panels)"),
+            src.index("return scan(document, true)"),
+            "an overlay must be preferred over scanning the document",
+        )
+
+    def test_grid_rows_can_never_satisfy_a_rate_pick(self):
+        """The guard is what makes a wrong click impossible, not just unlikely."""
+        src = self._src("_select_available_rate")
+        self.assertIn("closest('[role=\"row\"]')", src)
+        self.assertIn(".ag-cell", src)
+        # Document-wide fallback must pass the guard flag.
+        self.assertIn("scan(document, true)", src)
+        self.assertIn("if (guard && inGrid(el)) continue;", src)
+
+    def test_the_miss_diagnostic_says_where_each_rate_came_from(self):
+        """"offered" listing grid cells as options is what hid this for a day."""
+        src = self._src("_select_available_rate")
+        self.assertIn("in_grid", src)
+
+
 class TestRowMenuClicksAreVisibilityGated(unittest.TestCase):
     """Every row has a menu in the DOM, so "matches" never means "is open".
 
@@ -1546,10 +1588,27 @@ class TestSoloRate2IsGatedOnTheHoursGuardrail(unittest.TestCase):
 
     def test_condition_requires_no_unexplained_guardrail_failures(self):
         self.assertIn(
-            "if fill_ok and not blocking and not solo_gap "
+            "if fill_ok and not unattributable and not solo_gap "
             "and solo_rate2_enabled():",
             self._src(),
             "the solo hours split must be gated on the guardrail AND fresh solo data",
+        )
+
+    def test_an_employee_level_disagreement_skips_only_that_employee(self):
+        """Gating everyone together deadlocked the cycle (2026-09-21).
+
+        Six employees were half-applied and none were repaired, because one had a
+        0.75h punch-edit difference and another's failed rate pick made his own
+        inflation look unexplained. The blocked employees must be named and
+        skipped, not used as a reason to abandon the rest.
+        """
+        src = self._src()
+        self.assertIn("blocked_names", src)
+        self.assertIn("skip=blocked_names,", src)
+        # Only failures that cannot be pinned to an employee stop the whole run.
+        self.assertIn(
+            "unattributable = [", src,
+            "a non-hours failure is not attributable and must still stop everything",
         )
 
     def test_the_gate_is_never_fill_ok_alone(self):
@@ -1691,3 +1750,108 @@ class TestHeadlessPreviewUrl(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _packet_row(*, employee: str, regular_hours: float, solo_premium_hours: float):
+    """One PayrollPacketRow, built through the real view-row path."""
+    rows = [{
+        "employee": employee, "labor_type": "Part-time",
+        "hours_worked": regular_hours, "ot_hours": 0,
+        "wage_rate_dollars": 15.25, "tips_allocated": 0.0, "review_bonus": 0.0,
+        "recognition_bonus": 0, "perks": 0.0,
+        "solo_hours": solo_premium_hours, "solo_eligible": solo_premium_hours > 0,
+        "est_gross_pay": 0.0,
+    }]
+    with patch(
+        "skills.adp_run_automation.payroll_draft_backend._merge_solo_hours",
+        side_effect=lambda r, _p: r,
+    ):
+        return packet_from_view_rows(rows)[0]
+
+
+class TestOneBadEmployeeDoesNotBlockTheRest(unittest.TestCase):
+    """Live 2026-09-21: 6 half-applied splits, 0 repaired, draft 15.4h over.
+
+    Re-importing timecards resets every base row to its full total but leaves the
+    premium rows in place, so every run recreated the half-applied state. Two
+    employees were then judged unrepairable — Alvarez because his failed rate pick
+    left 1.37h on a line at $15.25 (invisible to a premium-rate filter) and Huynh
+    because of a real 0.75h punch-edit difference — and the all-or-nothing gate
+    turned that into "repair nobody".
+    """
+
+    def test_hours_on_a_second_line_count_even_at_the_wrong_rate(self):
+        """A failed rate pick still inflates the total; that is the repairable bit."""
+        detail = {
+            "Alvarez, Sebastian": {
+                "rows": [
+                    {"rate": 15.25, "reg": 9.2},
+                    {"rate": 15.25, "reg": 1.37},  # premium line, rate never took
+                ]
+            }
+        }
+        self.assertEqual(
+            extra_rate_line_hours(detail, premium_rate=16.25),
+            {"Alvarez, Sebastian": 1.37},
+        )
+
+    def test_empty_continuation_rows_are_not_counted(self):
+        detail = {
+            "Krause, Lindsay": {
+                "rows": [
+                    {"rate": 25.0, "reg": 76.87},
+                    {"rate": 25.0, "reg": 0.0},
+                    {"rate": 25.0, "reg": 0.0},
+                ]
+            }
+        }
+        self.assertEqual(extra_rate_line_hours(detail, premium_rate=16.25), {})
+
+    def test_alvarez_shape_is_repairable_once_his_line_is_seen(self):
+        ours = {"Alvarez, Sebastian": 9.2}
+        adp = {"Alvarez, Sebastian": 10.57}
+        remaining = unrepairable_hours_fails(
+            ours, adp, {"Alvarez, Sebastian": 1.37},
+            on_rate2_line={"Alvarez, Sebastian": 1.37},
+        )
+        self.assertEqual(remaining, [])
+
+    def test_a_real_data_difference_still_blocks_that_employee(self):
+        """Huynh: 47.56 in ADP, 42.68 ours, only 4.13 on her rate-2 line."""
+        remaining = unrepairable_hours_fails(
+            {"Huynh, Hillary": 42.68},
+            {"Huynh, Hillary": 47.56},
+            {"Huynh, Hillary": 4.13},
+            on_rate2_line={"Huynh, Hillary": 4.13},
+        )
+        self.assertEqual(len(remaining), 1)
+        self.assertIn("Huynh", remaining[0])
+
+    def test_a_skipped_employee_is_never_keyed_but_is_reported(self):
+        from skills.adp_run_automation.payroll_draft_backend import _apply_solo_rate2
+
+        row = _packet_row(
+            employee="Huynh, Hillary", regular_hours=42.68, solo_premium_hours=4.13
+        )
+        out = _apply_solo_rate2(
+            object(), [row], premium_rate=16.25, skip={"Huynh, Hillary"}
+        )
+
+        self.assertEqual(out["applied"], [])
+        self.assertEqual(out["premium_hours"], 0.0)
+        self.assertEqual(len(out["failed"]), 1)
+        self.assertIn("Huynh", out["failed"][0])
+
+    def test_the_skip_is_matched_on_the_name_key_not_the_raw_string(self):
+        """Grid and console spell names differently; a miss here would key a blocked row."""
+        from skills.adp_run_automation.payroll_draft_backend import _apply_solo_rate2
+
+        row = _packet_row(
+            employee="Huynh, Hillary", regular_hours=42.68, solo_premium_hours=4.13
+        )
+        out = _apply_solo_rate2(
+            object(), [row], premium_rate=16.25, skip={"huynh,  hillary"}
+        )
+
+        self.assertEqual(out["applied"], [])
+        self.assertEqual(len(out["failed"]), 1)

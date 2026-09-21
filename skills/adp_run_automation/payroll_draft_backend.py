@@ -1129,17 +1129,20 @@ def extra_rate_line_hours(
     same as the premium they are *owed*: an operator punch edit can change what
     they are owed while leaving the old number on the line (live 2026-09-21,
     Garcia owed 5.25h with 11.48h still on the rate-2 row).
+
+    Hours count wherever they sit past the employee's first line, at the premium
+    rate or not. Filtering on the rate hid Alvarez live 2026-09-21: his split was
+    half-applied *and* his rate pick had failed, so 1.37h sat on a second line at
+    $15.25. Unrecognised, his inflation looked like a real data disagreement, and
+    because the gate was all-or-nothing that verdict also blocked the four
+    employees whose splits were cleanly repairable.
     """
     out: dict[str, float] = {}
     for name, rec in detail.items():
         rows = rec.get("rows") or []
         if len(rows) < 2:
             continue
-        extra = sum(
-            float(r.get("reg") or 0)
-            for r in rows
-            if abs(float(r.get("rate") or 0) - premium_rate) < 0.005
-        )
+        extra = sum(float(r.get("reg") or 0) for r in rows[1:])
         if extra > 0:
             out[name] = round(extra, 2)
     return out
@@ -1326,20 +1329,41 @@ def _select_available_rate(page, *, row_index: str, rate_dollars: float) -> bool
     picked = page.evaluate(
         """({ want }) => {
           %s
-          const nodes = [...document.querySelectorAll(
-            'sdf-menu-item, [role="menuitem"], [role="option"], li, button, div'
-          )];
-          for (const el of nodes.reverse()) {
-            const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-            if (!/\\/\\s*hr/i.test(t)) continue;
-            if (!visible(el)) continue;
-            if (t.split('/')[0].trim().startsWith(want)) {
-              el.scrollIntoView({ block: 'center' });
-              el.click();
-              return t;
+          // Options live in an overlay, never inside a grid row. Scanning the
+          // document and trusting visible() clicked *another employee's rate
+          // cell*: live 2026-09-21 Alvarez's pick returned '$16.2500 / hr' from
+          // Garcia's already-keyed row on the same page, reported success, and
+          // left Alvarez at $15.25 — his premium hours priced at base.
+          const inGrid = (el) =>
+            el.closest('[role="row"]') !== null || el.closest('.ag-cell') !== null;
+          const panels = [...document.querySelectorAll(
+            'sdf-menu, [role="listbox"], [role="menu"], .ag-popup, .sdf-overlay'
+          )].filter((p) => visible(p) && !inGrid(p));
+
+          const scan = (root, guard) => {
+            const nodes = [...root.querySelectorAll(
+              'sdf-menu-item, [role="menuitem"], [role="option"], li, button, div'
+            )];
+            for (const el of nodes.reverse()) {
+              const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+              if (!/\\/\\s*hr/i.test(t)) continue;
+              if (!visible(el)) continue;
+              if (guard && inGrid(el)) continue;
+              if (t.split('/')[0].trim().startsWith(want)) {
+                el.scrollIntoView({ block: 'center' });
+                el.click();
+                return t;
+              }
             }
+            return '';
+          };
+
+          for (const p of panels) {
+            const hit = scan(p, false);
+            if (hit) return hit;
           }
-          return '';
+          // No recognisable overlay: still refuse anything sitting in the grid.
+          return scan(document, true);
         }""" % _JS_VISIBLE,
         {"want": want},
     )
@@ -1350,6 +1374,8 @@ def _select_available_rate(page, *, row_index: str, rate_dollars: float) -> bool
         offered = page.evaluate(
             """() => {
               %s
+              const inGrid = (el) =>
+                el.closest('[role="row"]') !== null || el.closest('.ag-cell') !== null;
               const out = [];
               for (const el of document.querySelectorAll(
                 'sdf-menu-item, [role="menuitem"], [role="option"], li, button, div'
@@ -1357,10 +1383,12 @@ def _select_available_rate(page, *, row_index: str, rate_dollars: float) -> bool
                 const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
                 if (!/\\/\\s*hr/i.test(t)) continue;
                 if (t.length > 40) continue;
+                // Tag provenance: a rate found in the grid is another row's cell,
+                // not something this employee can be paid at.
                 out.push({ text: t, rects: el.getClientRects().length,
-                           shown: visible(el) });
+                           shown: visible(el), in_grid: inGrid(el) });
               }
-              return out.slice(0, 10);
+              return out.slice(0, 12);
             }""" % _JS_VISIBLE
         )
         print(
@@ -1623,7 +1651,13 @@ def classify_rate2_state(
     )
 
 
-def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: float) -> dict:
+def _apply_solo_rate2(
+    page,
+    packet: list[PayrollPacketRow],
+    *,
+    premium_rate: float,
+    skip: set[str] | None = None,
+) -> dict:
     """Key each eligible employee's premium hours onto a second rate line.
 
     Sequence per employee, from the live grid probe: the row's overflow menu ->
@@ -1639,16 +1673,35 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
     Every employee is verified by re-reading the grid, and any mismatch is
     reported rather than retried — a retry on a half-applied split would double
     the premium line.
+
+    ``skip`` names employees whose grid hours disagree with the console for a
+    reason a split does not explain — a punch edited after our last refresh, say.
+    They are left untouched and reported, while everyone else is still keyed:
+    gating all of them together deadlocked the whole cycle live 2026-09-21, when
+    one employee's 0.75h data difference stranded five correct splits.
     """
     applied: list[str] = []
     failed: list[str] = []
+    skip_k = {name_key(s) for s in (skip or set())}
     wanted = {
         name_key(r.employee): round(float(r.solo_premium_hours or 0), 2)
         for r in packet
         if float(r.solo_premium_hours or 0) > 0
+        and name_key(r.employee) not in skip_k
     }
+    for r in packet:
+        if (
+            float(r.solo_premium_hours or 0) > 0
+            and name_key(r.employee) in skip_k
+        ):
+            failed.append(f"{r.employee}:hours_disagree_not_a_split")
+            print(
+                f"[adp_payroll_draft] BREADCRUMB solo_rate2_employee_skipped "
+                f"{r.employee!r} premium={r.solo_premium_hours} "
+                f"reason=hours_disagree_not_a_split"
+            )
     if not wanted:
-        return {"applied": [], "failed": [], "premium_hours": 0.0}
+        return {"applied": [], "failed": failed, "premium_hours": 0.0}
 
     # Regular hours we expect each employee's rate lines to add back up to, used
     # to audit a split that already exists rather than assuming it is ours.
@@ -2735,7 +2788,25 @@ def run_live_preview(
                     f"n={len(guardrail_fails)} every mismatch is a half-applied "
                     "rate-2 split; running the repair and re-checking hours"
                 )
-            if fill_ok and not blocking and not solo_gap and solo_rate2_enabled():
+            # Employees the repair must not touch, by name, derived from the
+            # failures a split does not explain.
+            blocked_names = {
+                f.split("hours_mismatch ", 1)[1].split(" our=")[0]
+                for f in blocking
+                if f.startswith("hours_mismatch ")
+            }
+            # A non-hours failure is not attributable to one employee, so it still
+            # stops everything.
+            unattributable = [
+                f for f in blocking if not f.startswith("hours_mismatch ")
+            ]
+            if blocked_names:
+                print(
+                    "[adp_payroll_draft] BREADCRUMB solo_rate2_partial "
+                    f"skipping={sorted(blocked_names)} — their grid hours differ "
+                    "from the console by something a split does not explain"
+                )
+            if fill_ok and not unattributable and not solo_gap and solo_rate2_enabled():
                 # `fill_ok` stays True through a guardrail failure on purpose —
                 # money columns are still safe to fill. The hours split is not, so
                 # it needs its own gate: rewriting the Regular cell on a grid we
@@ -2747,7 +2818,10 @@ def run_live_preview(
                 # blocking on it deadlocks, since the broken state can then only
                 # ever be fixed by hand. Hours are re-read below either way.
                 rate2 = _apply_solo_rate2(
-                    page, packet, premium_rate=_solo_premium_rate(store)
+                    page,
+                    packet,
+                    premium_rate=_solo_premium_rate(store),
+                    skip=blocked_names,
                 )
                 print(
                     f"[adp_payroll_draft] BREADCRUMB solo_rate2 "
@@ -2770,7 +2844,7 @@ def run_live_preview(
                 shots.append(screenshot_preview(page, "after-solo-rate2"))
             elif any(float(r.solo_premium_hours or 0) > 0 for r in packet):
                 why = (
-                    "hours_guardrail" if guardrail_fails
+                    "hours_disagree_not_a_split" if unattributable
                     else "solo_hours_stale" if solo_gap
                     else "flag_off" if not solo_rate2_enabled()
                     else "fill_not_ok"

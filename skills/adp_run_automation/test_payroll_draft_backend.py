@@ -392,7 +392,9 @@ class TestApplySoloRate2(unittest.TestCase):
             "_open_row_action_menu": lambda p, *, row_index: calls.append(
                 ("menu", row_index)
             ) is None,
-            "_click_menu_item": lambda p, label: calls.append(("item", label)) is None,
+            "_click_menu_item": lambda p, label, *, test_id="": calls.append(
+                ("item", label)
+            ) is None,
             "_new_row_index_for": lambda p, *, employee, exclude: "5",
             "_select_available_rate": lambda p, *, row_index, rate_dollars: calls.append(
                 ("rate", row_index, rate_dollars)
@@ -459,11 +461,25 @@ class TestApplySoloRate2(unittest.TestCase):
     def test_a_missing_add_row_item_fails_without_touching_hours(self):
         out, calls = self._run(
             [self._one_row_grid(), self._one_row_grid()],
-            _click_menu_item=lambda p, label: False,
+            _click_menu_item=lambda p, label, *, test_id="": False,
         )
         self.assertEqual(out["applied"], [])
         self.assertIn("no_add_row", out["failed"][0])
         self.assertEqual([c for c in calls if c[0] == "fill"], [])
+
+    def test_add_row_is_clicked_by_adps_stable_test_id(self):
+        # Text-only matching would also hit whatever other sdf-menu is open.
+        seen: list[tuple] = []
+
+        def _item(_page, label, *, test_id=""):
+            seen.append((label, test_id))
+            return True
+
+        self._run(
+            [self._one_row_grid(), self._one_row_grid()],
+            _click_menu_item=_item,
+        )
+        self.assertEqual(seen, [("Add row", "optionsAddRowButton")])
 
     def test_nobody_eligible_is_a_no_op(self):
         with patch(f"{self.MOD}._merge_solo_hours", side_effect=lambda r, _p: r):
@@ -473,6 +489,28 @@ class TestApplySoloRate2(unittest.TestCase):
 
             out = _apply_solo_rate2(self._Page(), [], premium_rate=16.25)
         self.assertEqual(out, {"applied": [], "failed": [], "premium_hours": 0.0})
+
+
+class TestSoloRate2IsGatedOnTheHoursGuardrail(unittest.TestCase):
+    """The hours split must not run on a grid that disagrees with the console.
+
+    Pins the source line rather than driving a browser: the first live proof
+    (2026-09-16) applied the split with 7 guardrail failures outstanding because
+    the condition read `fill_ok`, which stays True through a guardrail failure so
+    that money columns can still be filled.
+    """
+
+    def test_condition_requires_no_guardrail_failures(self):
+        import inspect
+
+        from skills.adp_run_automation import payroll_draft_backend as mod
+
+        src = inspect.getsource(mod)
+        self.assertIn(
+            "if fill_ok and not guardrail_fails and solo_rate2_enabled():",
+            src,
+            "the solo hours split must be gated on an empty guardrail_fails",
+        )
 
 
 class TestTwoRateGridRows(unittest.TestCase):

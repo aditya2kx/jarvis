@@ -904,28 +904,27 @@ def _paginate_timecard_hours(page) -> dict[str, float]:
 
 
 def _open_row_action_menu(page, *, row_index: str) -> bool:
-    """Open the Enter-payroll row's "One-time overrides" overflow menu."""
+    """Open one Enter-payroll row's "Employee Options" overflow menu.
+
+    The trigger is an ``sdf-action-menu`` custom element, not a ``button`` or
+    ``sdf-button`` — querying those found nothing and the first live proof failed
+    ``no_row_menu`` on all six employees (2026-09-16). It lives in the pinned-left
+    Name cell alongside the employee-warning icon.
+    """
     return bool(
         page.evaluate(
             """(idx) => {
               const row = document.querySelector(
                 '.ag-pinned-left-cols-container [role="row"][row-index="' + idx + '"]'
-              ) || document.querySelector(
-                '.ag-center-cols-container [role="row"][row-index="' + idx + '"]'
               );
               if (!row) return false;
-              // The overflow trigger is the action-menu-open button that is NOT the
-              // rate selector; the rate cell owns its own button with the same icon.
-              const btns = [...row.querySelectorAll('sdf-button, button')].filter(
-                (b) => !/available rates/i.test(
-                  (b.getAttribute('aria-label') || '') +
-                  (b.getAttribute('button-title') || '')
-                )
+              const menu = row.querySelector(
+                'sdf-action-menu[aria-label="Employee Options"], '
+                + 'sdf-action-menu.ee-menu-wrapper, sdf-action-menu'
               );
-              const btn = btns[btns.length - 1];
-              if (!btn) return false;
-              btn.scrollIntoView({ block: 'center' });
-              btn.click();
+              if (!menu) return false;
+              menu.scrollIntoView({ block: 'center' });
+              menu.click();
               return true;
             }""",
             row_index,
@@ -933,12 +932,28 @@ def _open_row_action_menu(page, *, row_index: str) -> bool:
     )
 
 
-def _click_menu_item(page, label: str) -> bool:
-    """Click an item by visible text in whichever sdf-menu is currently open."""
+def _click_menu_item(page, label: str, *, test_id: str = "") -> bool:
+    """Click a row-menu item, preferring ADP's stable ``data-test-id``.
+
+    Text is the fallback only: the items carry ids like ``optionsAddRowButton``
+    that survive copy changes, and matching "Add row" by text would also match a
+    different menu that happens to be open.
+    """
     abort_if_forbidden_label(label)
     return bool(
         page.evaluate(
-            """(label) => {
+            """({ label, testId }) => {
+              const clickIt = (el) => {
+                el.scrollIntoView({ block: 'center' });
+                el.click();
+                return true;
+              };
+              if (testId) {
+                const byId = document.querySelector(
+                  '[data-test-id="' + testId + '"]'
+                );
+                if (byId) return clickIt(byId);
+              }
               const want = label.toLowerCase();
               const menus = [...document.querySelectorAll('sdf-menu, [role="menu"]')];
               for (const menu of menus.reverse()) {
@@ -946,16 +961,12 @@ def _click_menu_item(page, label: str) -> bool:
                   'sdf-menu-item, [role="menuitem"], li, button'
                 )) {
                   const t = (item.innerText || '').replace(/\\s+/g, ' ').trim();
-                  if (t.toLowerCase() === want) {
-                    item.scrollIntoView({ block: 'center' });
-                    item.click();
-                    return true;
-                  }
+                  if (t.toLowerCase() === want) return clickIt(item);
                 }
               }
               return false;
             }""",
-            label,
+            {"label": label, "testId": test_id},
         )
     )
 
@@ -1068,7 +1079,9 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
                 if not _open_row_action_menu(page, row_index=base_idx):
                     raise RuntimeError("no_row_menu")
                 page.wait_for_timeout(600)
-                if not _click_menu_item(page, "Add row"):
+                if not _click_menu_item(
+                    page, "Add row", test_id="optionsAddRowButton"
+                ):
                     raise RuntimeError("no_add_row")
                 page.wait_for_timeout(1_500)
 
@@ -1893,10 +1906,13 @@ def run_live_preview(
                 )
             for lab in _visible_action_labels(page):
                 print(f"[adp_payroll_draft] after_import control {lab!r}")
-            if fill_ok and solo_rate2_enabled():
-                # Only after the hours guardrail passed: the split rewrites the
-                # Regular cell, and doing that on a grid we already know disagrees
-                # with the console would compound one wrong number with another.
+            if fill_ok and not guardrail_fails and solo_rate2_enabled():
+                # `fill_ok` stays True through a guardrail failure on purpose —
+                # money columns are still safe to fill. The hours split is not, so
+                # it needs its own gate: rewriting the Regular cell on a grid we
+                # already know disagrees with the console compounds one wrong
+                # number with another. The first live proof ran with 7 guardrail
+                # failures outstanding because this read `fill_ok` alone.
                 rate2 = _apply_solo_rate2(
                     page, packet, premium_rate=_solo_premium_rate(store)
                 )
@@ -1910,12 +1926,14 @@ def run_live_preview(
                         f"solo_rate2:{f}" for f in rate2["failed"]
                     ]
                 shots.append(screenshot_preview(page, "after-solo-rate2"))
-            elif fill_ok and any(
-                float(r.solo_premium_hours or 0) > 0 for r in packet
-            ):
+            elif any(float(r.solo_premium_hours or 0) > 0 for r in packet):
+                why = (
+                    "hours_guardrail" if guardrail_fails
+                    else "flag_off" if not solo_rate2_enabled()
+                    else "fill_not_ok"
+                )
                 print(
-                    "[adp_payroll_draft] BREADCRUMB solo_rate2_off "
-                    "set BHAGA_ADP_SOLO_RATE2=1 to key it automatically; "
+                    f"[adp_payroll_draft] BREADCRUMB solo_rate2_skipped why={why} "
                     "the rate-1/rate-2 lines are printed above for manual keying"
                 )
             if fill_ok:

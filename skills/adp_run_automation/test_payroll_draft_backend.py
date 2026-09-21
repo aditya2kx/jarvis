@@ -16,6 +16,7 @@ from skills.adp_run_automation.payroll_draft_backend import (
     hours_guardrail_failures,
     packet_from_view_rows,
     rate2_split,
+    unrepairable_hours_fails,
     run_draft,
     solo_premium_keying_lines,
     solo_rate2_enabled,
@@ -926,11 +927,115 @@ class TestClassifyRate2State(unittest.TestCase):
         )
         self.assertEqual(plan.verdict, "suspect")
 
+    def test_a_half_applied_split_is_repaired_not_reported(self):
+        """The live Huynh shape: premium row added, base row never reduced.
+
+        She read 29.52 + 0.97 = 30.49 against an expected 29.52, so she gained
+        0.97h at the premium rate instead of having them repriced. The base row
+        is what needs rewriting; the premium row is already correct.
+        """
+        plan = classify_rate2_state(
+            [self.row("0", reg=29.52), self.row("1", reg=0.97)],
+            solo_hours=0.97, want_total=29.52,
+        )
+        self.assertEqual(plan.verdict, "repair")
+        self.assertEqual(plan.base_index, "0")
+        self.assertEqual(plan.reuse_index, "1")
+        # base_hours is the *target* total, so rate2_split yields 28.55 / 0.97.
+        self.assertEqual(plan.base_hours, 29.52)
+        keep, premium = rate2_split(
+            adp_regular_hours=plan.base_hours, solo_hours=0.97
+        )
+        self.assertEqual((keep, premium), (28.55, 0.97))
+
+    def test_the_live_perales_shape_repairs_too(self):
+        """Same, with a leftover empty row alongside."""
+        plan = classify_rate2_state(
+            [self.row("0", reg=25.2), self.row("1", reg=1.98), self.row("2")],
+            solo_hours=1.98, want_total=25.2,
+        )
+        self.assertEqual(plan.verdict, "repair")
+        self.assertEqual((plan.base_index, plan.reuse_index), ("0", "1"))
+
+    def test_an_overshooting_total_that_is_not_the_premium_stays_suspect(self):
+        """Only the exact half-split signature is repairable; guesses are not."""
+        plan = classify_rate2_state(
+            [self.row("0", reg=29.52), self.row("1", reg=5.0)],
+            solo_hours=0.97, want_total=29.52,
+        )
+        self.assertEqual(plan.verdict, "suspect")
+
     def test_an_unknown_expected_total_is_never_split_blind(self):
         plan = classify_rate2_state(
             [self.row("0", reg=9.2)], solo_hours=1.37, want_total=None
         )
         self.assertEqual(plan.verdict, "suspect")
+
+
+class TestUnrepairableHoursFails(unittest.TestCase):
+    """Which guardrail failures must keep blocking the split.
+
+    The deadlock this breaks: the hours guardrail blocks the split, and a
+    half-applied split breaks the hours guardrail, so a failed run leaves a state
+    no rerun can fix. Live 2026-09-21 that stranded Huynh and Perales.
+    """
+
+    def test_a_half_applied_split_does_not_block(self):
+        remaining = unrepairable_hours_fails(
+            {"Huynh, Hillary": 29.52, "Perales, Elizabeth": 25.2},
+            {"Huynh, Hillary": 30.49, "Perales, Elizabeth": 27.18},
+            {"Huynh, Hillary": 0.97, "Perales, Elizabeth": 1.98},
+        )
+        self.assertEqual(remaining, [])
+
+    def test_a_real_disagreement_still_blocks(self):
+        """Extra hours unrelated to the premium are a genuine mismatch."""
+        remaining = unrepairable_hours_fails(
+            {"Garcia, Jacob": 53.13},
+            {"Garcia, Jacob": 60.0},
+            {"Garcia, Jacob": 11.48},
+        )
+        self.assertEqual(len(remaining), 1)
+        self.assertIn("Garcia", remaining[0])
+
+    def test_an_employee_owed_no_premium_still_blocks(self):
+        remaining = unrepairable_hours_fails(
+            {"Krause, Lindsay": 71.17}, {"Krause, Lindsay": 72.17}, {}
+        )
+        self.assertEqual(len(remaining), 1)
+
+    def test_hours_short_on_adp_still_blocks(self):
+        """A half-split only ever *inflates*; a shortfall is something else."""
+        remaining = unrepairable_hours_fails(
+            {"Huynh, Hillary": 29.52},
+            {"Huynh, Hillary": 28.55},
+            {"Huynh, Hillary": 0.97},
+        )
+        self.assertEqual(len(remaining), 1)
+
+    def test_a_missing_employee_still_blocks(self):
+        remaining = unrepairable_hours_fails(
+            {"Huynh, Hillary": 29.52}, {}, {"Huynh, Hillary": 0.97}
+        )
+        self.assertEqual(len(remaining), 1)
+        self.assertIn("hours_missing_on_adp", remaining[0])
+
+    def test_one_repairable_and_one_real_failure_still_blocks(self):
+        remaining = unrepairable_hours_fails(
+            {"Huynh, Hillary": 29.52, "Garcia, Jacob": 53.13},
+            {"Huynh, Hillary": 30.49, "Garcia, Jacob": 60.0},
+            {"Huynh, Hillary": 0.97, "Garcia, Jacob": 11.48},
+        )
+        self.assertEqual(len(remaining), 1)
+        self.assertIn("Garcia", remaining[0])
+
+    def test_clean_hours_yield_nothing_to_block_on(self):
+        remaining = unrepairable_hours_fails(
+            {"Huynh, Hillary": 29.52},
+            {"Huynh, Hillary": 29.52},
+            {"Huynh, Hillary": 0.97},
+        )
+        self.assertEqual(remaining, [])
 
 
 class TestRowMenuClicksAreVisibilityGated(unittest.TestCase):
@@ -1071,17 +1176,38 @@ class TestSoloRate2IsGatedOnTheHoursGuardrail(unittest.TestCase):
     that money columns can still be filled.
     """
 
-    def test_condition_requires_no_guardrail_failures(self):
+    def _src(self):
         import inspect
 
         from skills.adp_run_automation import payroll_draft_backend as mod
 
-        src = inspect.getsource(mod)
+        return inspect.getsource(mod)
+
+    def test_condition_requires_no_unexplained_guardrail_failures(self):
         self.assertIn(
-            "if fill_ok and not guardrail_fails and not solo_gap "
+            "if fill_ok and not blocking and not solo_gap "
             "and solo_rate2_enabled():",
-            src,
+            self._src(),
             "the solo hours split must be gated on the guardrail AND fresh solo data",
+        )
+
+    def test_the_gate_is_never_fill_ok_alone(self):
+        src = self._src()
+        self.assertNotIn("if fill_ok and not solo_gap", src)
+        self.assertNotIn("if fill_ok and solo_rate2_enabled()", src)
+
+    def test_blocking_is_the_guardrail_minus_only_repairable_half_splits(self):
+        """`blocking` must come from the vetted helper, not a looser test."""
+        src = self._src()
+        self.assertIn("unrepairable_hours_fails(ours, adp_hours, solo_by_name)", src)
+        self.assertIn("else guardrail_fails", src)
+
+    def test_hours_are_re_checked_after_the_split(self):
+        """A correct split leaves totals unchanged, so the guardrail proves it."""
+        src = self._src()
+        self.assertIn("post_rate2_guardrail", src)
+        self.assertIn(
+            "guardrail_fails = hours_guardrail_failures(ours, adp_hours)", src
         )
 
 

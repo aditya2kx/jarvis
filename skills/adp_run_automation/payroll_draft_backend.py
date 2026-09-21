@@ -1208,11 +1208,54 @@ def _select_available_rate(page, *, row_index: str, rate_dollars: float) -> bool
     return bool(picked)
 
 
+def unrepairable_hours_fails(
+    ours: dict[str, float],
+    adp: dict[str, float],
+    solo: dict[str, float],
+    *,
+    tolerance: float = HOURS_TOLERANCE_HOURS,
+) -> list[str]:
+    """Guardrail failures that a rate-2 repair would *not* explain.
+
+    The hours guardrail blocks the split, and a half-applied split breaks the
+    hours guardrail — so a failed earlier run leaves a state that can never be
+    fixed by rerunning. That deadlock is why this exists.
+
+    A half-applied split has one signature: ADP shows exactly ``solo_hours`` more
+    than the console for an employee who is owed a premium of ``solo_hours``,
+    because the premium row was added without reducing the base row. Anything
+    else is a real disagreement and must keep blocking.
+
+    Returns the failures that remain unexplained; empty means the repair is safe
+    to run, and the hours are re-checked afterwards regardless.
+    """
+    solo_k = {name_key(k): v for k, v in solo.items()}
+    ours_k = {name_key(k): v for k, v in ours.items()}
+    remaining: list[str] = []
+    for fail in hours_guardrail_failures(ours, adp):
+        if not fail.startswith("hours_mismatch "):
+            remaining.append(fail)
+            continue
+        label = fail.split("hours_mismatch ", 1)[1].split(" our=")[0]
+        key = name_key(label)
+        premium = float(solo_k.get(key) or 0)
+        oh = float(ours_k.get(key) or 0)
+        ah = next(
+            (v for k, v in adp.items() if name_key(k) == key), None
+        )
+        if premium <= 0 or ah is None:
+            remaining.append(fail)
+            continue
+        if abs((ah - oh) - premium) > tolerance:
+            remaining.append(fail)
+    return remaining
+
+
 class Rate2Plan(NamedTuple):
     """What to do about one employee's existing grid rows.
 
-    ``verdict`` is one of ``split`` (go ahead), ``already_split`` (leave it),
-    ``suspect`` (report, touch nothing).
+    ``verdict`` is one of ``split`` (go ahead), ``repair`` (a half-applied split
+    to finish), ``already_split`` (leave it), ``suspect`` (report, touch nothing).
     """
 
     verdict: str
@@ -1251,19 +1294,47 @@ def classify_rate2_state(
     empty = [r for r in lines if _row_is_empty(r)]
     total = round(sum(float(r.get("reg") or 0) for r in funded), 2)
 
+    def reg(row) -> float:
+        return float(row.get("reg") or 0)
+
     if want_total is None:
         return Rate2Plan("suspect", why=f"no_expected_total lines={len(lines)}")
-    if abs(total - want_total) >= 0.011:
+
+    if len(funded) == 2:
+        solo_row = next(
+            (r for r in funded if abs(reg(r) - solo_hours) < 0.011), None
+        )
+        if solo_row is None:
+            return Rate2Plan(
+                "suspect",
+                why=f"two_funded_rows_without_solo_line solo={solo_hours} "
+                    f"total={total} want_total={want_total}",
+            )
+        base_row = next(r for r in funded if r is not solo_row)
+        if abs(total - want_total) < 0.011:
+            return Rate2Plan("already_split")
+        if abs(reg(base_row) - want_total) < 0.011:
+            # Half-applied: the premium row was added but the base row was never
+            # reduced, so the employee gained `solo_hours` instead of having them
+            # repriced. Live 2026-09-21 this inflated Huynh by 0.97h and Perales
+            # by 1.98h. Repairable by writing both rows: the premium row already
+            # holds the right hours at the right rate, the base one does not.
+            return Rate2Plan(
+                "repair",
+                base_index=str(base_row.get("row_index")),
+                base_hours=want_total,
+                reuse_index=str(solo_row.get("row_index")),
+                why=f"base_not_reduced base={reg(base_row)} total={total}",
+            )
         return Rate2Plan(
             "suspect",
             why=f"total={total} want_total={want_total} lines={len(lines)}",
         )
-    if len(funded) == 2:
-        if any(abs(float(r.get("reg") or 0) - solo_hours) < 0.011 for r in funded):
-            return Rate2Plan("already_split")
+
+    if abs(total - want_total) >= 0.011:
         return Rate2Plan(
             "suspect",
-            why=f"two_funded_rows_without_solo_line solo={solo_hours} total={total}",
+            why=f"total={total} want_total={want_total} lines={len(lines)}",
         )
     if len(funded) != 1:
         return Rate2Plan(
@@ -1273,7 +1344,7 @@ def classify_rate2_state(
     return Rate2Plan(
         "split",
         base_index=str(base.get("row_index")),
-        base_hours=float(base.get("reg") or 0),
+        base_hours=reg(base),
         reuse_index=str(empty[0].get("row_index")) if empty else None,
     )
 
@@ -1347,6 +1418,11 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
                 )
                 applied.append(name)
                 continue
+            if plan.verdict == "repair":
+                print(
+                    f"[adp_payroll_draft] BREADCRUMB solo_rate2_repairing "
+                    f"{name!r} {plan.why}"
+                )
             if plan.verdict == "suspect":
                 failed.append(f"{name}: unexpected_existing_split {plan.why}")
                 print(
@@ -2272,13 +2348,31 @@ def run_live_preview(
                 )
             for lab in _visible_action_labels(page):
                 print(f"[adp_payroll_draft] after_import control {lab!r}")
-            if fill_ok and not guardrail_fails and not solo_gap and solo_rate2_enabled():
+            solo_by_name = {
+                r.employee: float(r.solo_premium_hours or 0) for r in packet
+            }
+            blocking = (
+                unrepairable_hours_fails(ours, adp_hours, solo_by_name)
+                if guardrail_fails and adp_hours
+                else guardrail_fails
+            )
+            if guardrail_fails and not blocking:
+                print(
+                    "[adp_payroll_draft] BREADCRUMB hours_guardrail_repairable "
+                    f"n={len(guardrail_fails)} every mismatch is a half-applied "
+                    "rate-2 split; running the repair and re-checking hours"
+                )
+            if fill_ok and not blocking and not solo_gap and solo_rate2_enabled():
                 # `fill_ok` stays True through a guardrail failure on purpose —
                 # money columns are still safe to fill. The hours split is not, so
                 # it needs its own gate: rewriting the Regular cell on a grid we
                 # already know disagrees with the console compounds one wrong
                 # number with another. The first live proof ran with 7 guardrail
                 # failures outstanding because this read `fill_ok` alone.
+                #
+                # The one exception is a mismatch that *is* a half-applied split:
+                # blocking on it deadlocks, since the broken state can then only
+                # ever be fixed by hand. Hours are re-read below either way.
                 rate2 = _apply_solo_rate2(
                     page, packet, premium_rate=_solo_premium_rate(store)
                 )
@@ -2286,6 +2380,15 @@ def run_live_preview(
                     f"[adp_payroll_draft] BREADCRUMB solo_rate2 "
                     f"applied={len(rate2['applied'])} failed={len(rate2['failed'])} "
                     f"hours={rate2['premium_hours']}"
+                )
+                # Re-read the hours: a correct split never changes an employee's
+                # total, so the guardrail is the check that the split landed
+                # right — and the one that clears a repaired mismatch.
+                adp_hours = _paginate_timecard_hours(page) or adp_hours
+                guardrail_fails = hours_guardrail_failures(ours, adp_hours)
+                print(
+                    "[adp_payroll_draft] BREADCRUMB post_rate2_guardrail "
+                    f"n={len(guardrail_fails)} hours={adp_hours}"
                 )
                 if rate2["failed"]:
                     guardrail_fails = guardrail_fails + [

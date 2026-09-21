@@ -175,3 +175,33 @@ class TestEveryAdpEntryPointIsWired(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOtpWaitNeverOutlivesThePasscodePage(unittest.TestCase):
+    """ADP's passcode page dies before our old 30-minute wait did.
+
+    Live 2026-09-21: the operator replied at ~15 minutes, we accepted the code and
+    submitted it into a page that had already replaced itself with "Your session
+    has timed out due to inactivity". The code was spent, the run was lost, and
+    the DM had promised 30 minutes. Waiting longer than the portal allows cannot
+    succeed, so it must not be offered.
+    """
+
+    def _src(self) -> str:
+        import inspect
+
+        from skills.adp_run_automation import runner
+
+        return inspect.getsource(runner._handle_adp_2fa_challenge) if hasattr(
+            runner, "_handle_adp_2fa_challenge"
+        ) else inspect.getsource(runner)
+
+    def test_the_wait_is_capped_under_the_ten_minute_validity(self):
+        src = self._src()
+        self.assertIn("ADP_PASSCODE_TTL_S = 600", src)
+        self.assertIn("ADP_PASSCODE_TTL_S - 60", src)
+
+    def test_the_env_override_can_only_shorten_the_wait(self):
+        """A stale BHAGA_OTP_WAIT_S=1800 in a job must not reinstate the bug."""
+        src = self._src()
+        self.assertIn("wait_s = min(", src)

@@ -675,10 +675,20 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
     from skills.slack.adapter import request_otp  # local import: optional dep
     from agents.bhaga.scripts.otp_gate import OtpWaitTimeout  # local import
 
+    # Never wait longer than ADP keeps the passcode page alive. The page states
+    # "This code is valid for 10 minutes" and then replaces itself with "Your
+    # session has timed out due to inactivity" — so a 1800 s wait guaranteed
+    # failure for any reply slower than ten minutes, and spent the operator's
+    # code submitting it into a dead page (live 2026-09-21: replied at ~15 min,
+    # code accepted by us, sign-in never navigated, run lost).
+    #
     # In inline-autostart mode the gate already returned PROCEED and set
-    # BHAGA_OTP_WAIT_S=900. Standalone/supervised callers with no env set keep
-    # the generous 1800 s default.
-    wait_s = int(os.environ.get("BHAGA_OTP_WAIT_S", "1800"))
+    # BHAGA_OTP_WAIT_S.
+    ADP_PASSCODE_TTL_S = 600
+    wait_s = min(
+        int(os.environ.get("BHAGA_OTP_WAIT_S", "1800")),
+        ADP_PASSCODE_TTL_S - 60,  # leave room to type it in and navigate
+    )
     print(f"[adp 2fa] requesting OTP via Slack for store={store!r} (wait={wait_s}s); SMS expected at +1-XXX-XXX-0038")
     code = request_otp(
         user_id="U0APJRE5DC4",       # operator (primary_user_id from config.yaml)

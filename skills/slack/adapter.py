@@ -240,7 +240,8 @@ def request_otp(user_id, portal_name, timeout_seconds=300, poll_interval=10, pho
         dm_channel,
         f":key: *OTP Required — {portal_name}*\n\n"
         f"{agent_display} is logging into {portal_name} and needs your verification code.{phone_line}\n"
-        f"Please reply here with the code within {timeout_seconds // 60} minutes.",
+        f"Please reply here with the code within {timeout_seconds // 60} minutes — "
+        f"after that the portal expires the code and the run has to ask for a new one.",
         agent=effective_agent,
     )
     sent_ts = msg["ts"]

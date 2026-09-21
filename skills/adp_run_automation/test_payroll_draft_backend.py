@@ -599,9 +599,13 @@ class TestApplySoloRate2(unittest.TestCase):
             return fill_results.pop(0) if fill_results else True
 
         if after_rows is None:
+            # A correct split is two rows AND the second one on the premium rate.
+            # Hours alone are not the property being verified.
             after_rows = [
-                {"employee": self.NAME, "row_index": "4", "reg": 30.0, "ot": 0.0},
-                {"employee": self.NAME, "row_index": "5", "reg": 4.75, "ot": 0.0},
+                {"employee": self.NAME, "row_index": "4", "reg": 30.0, "ot": 0.0,
+                 "rate": 15.25},
+                {"employee": self.NAME, "row_index": "5", "reg": 4.75, "ot": 0.0,
+                 "rate": 16.25},
             ]
 
         # Whole-grid row count: one row before the insert, plus `grew` after.
@@ -631,9 +635,11 @@ class TestApplySoloRate2(unittest.TestCase):
             "_employee_rows": lambda p, employee: list(after_rows),
             "_employee_rows_all_pages": lambda p, employee: list(after_rows),
             "_employee_line_count": lambda p, employee: line_count_after_add,
-            "_select_available_rate": lambda p, *, row_index, rate_dollars: calls.append(
-                ("rate", row_index, rate_dollars)
-            ) is None,
+            # The orchestrator uses the *verified* picker: a pick that reports
+            # success without the row landing on the premium pays base.
+            "_select_rate_checked": lambda p, *, employee, row_index, rate_dollars: (
+                calls.append(("rate", row_index, rate_dollars)) is None
+            ),
             "_fill_grid_amount": _fill,
             **over,
         }
@@ -737,8 +743,8 @@ class TestApplySoloRate2(unittest.TestCase):
         already = {self.NAME: {
             "reg": 34.75, "hours": 34.75, "ot": 0.0, "rate": 15.25,
             "rows": [
-                {"row_index": "4", "reg": 30.0, "ot": 0.0},
-                {"row_index": "5", "reg": 4.75, "ot": 0.0},
+                {"row_index": "4", "reg": 30.0, "ot": 0.0, "rate": 15.25},
+                {"row_index": "5", "reg": 4.75, "ot": 0.0, "rate": 16.25},
             ],
         }}
         out, calls = self._run([already])
@@ -829,8 +835,10 @@ class TestApplySoloRate2(unittest.TestCase):
             [self._one_row_grid()],
             _rate2_row_indices=lambda p, *, employee, base_reg: ("7", "8"),
             after_rows=[
-                {"employee": self.NAME, "row_index": "7", "reg": 30.0, "ot": 0.0},
-                {"employee": self.NAME, "row_index": "8", "reg": 4.75, "ot": 0.0},
+                {"employee": self.NAME, "row_index": "7", "reg": 30.0, "ot": 0.0,
+                 "rate": 15.25},
+                {"employee": self.NAME, "row_index": "8", "reg": 4.75, "ot": 0.0,
+                 "rate": 16.25},
             ],
         )
         fills = [c for c in calls if c[0] == "fill"]

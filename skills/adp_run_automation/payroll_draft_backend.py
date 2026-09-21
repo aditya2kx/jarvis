@@ -1422,6 +1422,42 @@ def unrepairable_hours_fails(
     return remaining
 
 
+def _select_rate_checked(
+    page, *, employee: str, row_index: str, rate_dollars: float, attempts: int = 3
+) -> bool:
+    """Pick a row's rate and confirm the grid took it, retrying if it did not.
+
+    The picker reports what it clicked, not what the row ended up on, and those
+    came apart live 2026-09-21: Alvarez's pick logged ``got='$16.2500 / hr'`` while
+    the row stayed at $15.25. Since the hours are moved onto that row either way,
+    an unverified pick pays the premium hours at base.
+    """
+    for attempt in range(attempts):
+        if not _select_available_rate(
+            page, row_index=row_index, rate_dollars=rate_dollars
+        ):
+            return False
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(600)
+        got = next(
+            (
+                float(r.get("rate") or 0)
+                for r in _employee_rows(page, employee)
+                if str(r.get("row_index")) == str(row_index)
+            ),
+            None,
+        )
+        if got is not None and abs(got - rate_dollars) < 0.005:
+            return True
+        print(
+            f"[adp_payroll_draft] BREADCRUMB rate_pick_did_not_stick "
+            f"{employee!r} row={row_index} want={rate_dollars} got={got} "
+            f"attempt={attempt + 1}/{attempts}"
+        )
+        page.wait_for_timeout(900)
+    return False
+
+
 def _fill_checked(
     page, *, employee: str, amount: float, row_index: str, attempts: int = 3
 ) -> bool:
@@ -1529,17 +1565,27 @@ def classify_rate2_state(
             )
         base_row = next(r for r in funded if r is not solo_row)
         premium_ok = abs(reg(solo_row) - solo_hours) < 0.011
-        if abs(total - want_total) < 0.011 and premium_ok:
+        # A split is only done if the premium line is actually *at* the premium.
+        # Live 2026-09-21 Alvarez's rate pick silently failed, leaving 1.37h on
+        # its own line at $15.25 — hours in the right shape, paid at base. Judging
+        # "already split" on hours alone would mark him done forever.
+        rate_ok = premium_rate <= 0 or (
+            abs(float(solo_row.get("rate") or 0) - premium_rate) < 0.005
+        )
+        if abs(total - want_total) < 0.011 and premium_ok and rate_ok:
             return Rate2Plan("already_split")
         if abs(total - want_total) < 0.011:
-            # Total is right but the premium line holds the wrong hours, so the
-            # split is priced against a number nobody owes. Rewrite both rows.
+            # Total is right but the premium line is wrong — either the hours on
+            # it are stale or its rate never took. Re-pick the rate and rewrite.
             return Rate2Plan(
                 "repair",
                 base_index=str(base_row.get("row_index")),
                 base_hours=want_total,
                 reuse_index=str(solo_row.get("row_index")),
-                why=f"stale_premium_line on_line={reg(solo_row)} owed={solo_hours}",
+                why=(
+                    f"premium_line_wrong on_line={reg(solo_row)} owed={solo_hours} "
+                    f"rate={solo_row.get('rate')} want_rate={premium_rate}"
+                ),
             )
         if abs(reg(base_row) - want_total) < 0.011:
             # Half-applied: the premium row was added but the base row was never
@@ -1739,16 +1785,19 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
                             f"no_new_row lines={_employee_line_count(page, name)}"
                         )
                 _show(new_now)
-                if not _select_available_rate(
-                    page, row_index=new_now, rate_dollars=premium_rate
+                # Verified pick: the row must end up on the premium, not merely
+                # have the premium clicked at it. `_select_rate_checked` presses
+                # Escape after each try, which also closes the dropdown before we
+                # type — left open it overlays the grid and the base-row dblclick
+                # times out behind it, which is how Garcia ended up at
+                # 53.13 + 11.48 = 64.61 live on 2026-09-21.
+                if not _select_rate_checked(
+                    page,
+                    employee=name,
+                    row_index=new_now,
+                    rate_dollars=premium_rate,
                 ):
                     raise RuntimeError("no_rate_pick")
-                # Close the rate dropdown before typing. Left open it overlays the
-                # grid, and the base-row dblclick times out behind it — which is
-                # exactly how Garcia ended up with 53.13 + 11.48 = 64.61 live on
-                # 2026-09-21.
-                page.keyboard.press("Escape")
-                page.wait_for_timeout(600)
 
                 # Reduce the base row FIRST, then add the premium. Both fills are
                 # checked and the base is restored if the second fails, so an
@@ -1804,6 +1853,19 @@ def _apply_solo_rate2(page, packet: list[PayrollPacketRow], *, premium_rate: flo
                 if abs(after_total - base_reg) >= 0.011:
                     raise RuntimeError(
                         f"total_changed before={base_reg} after={after_total}"
+                    )
+                # Hours in the right places prove nothing about the *rate* they
+                # are paid at, and the rate is the entire point. Live 2026-09-21
+                # Alvarez's pick reported success ("got='$16.2500 / hr'") while the
+                # row stayed at $15.25, so his 1.37h were split off and then paid
+                # at base — a silent $1.37 shortfall the hours check waved through.
+                if not any(
+                    abs(float(r.get("rate") or 0) - premium_rate) < 0.005
+                    for r in after_rows
+                ):
+                    raise RuntimeError(
+                        f"premium_rate_not_set want={premium_rate} "
+                        f"rates={[r.get('rate') for r in after_rows]}"
                     )
                 applied.append(name)
                 print(

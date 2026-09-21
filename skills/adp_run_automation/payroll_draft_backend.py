@@ -2750,12 +2750,13 @@ def run_live_preview(
                 guardrail_fails = ["timecard_parse_empty"]
             else:
                 guardrail_fails = hours_guardrail_failures(ours, adp_hours)
-            if guardrail_fails:
-                _slack_guardrail(
-                    f"{period_start}..{period_end}",
-                    guardrail_fails,
-                    strict=strict,
-                )
+            # No Slack yet. Re-importing timecards resets every base row while
+            # leaving the premium lines in place, so with the split enabled this
+            # check is mismatched *by construction* on any cycle already keyed —
+            # and the repair below clears it seconds later. Alerting here paged
+            # the operator about six mismatches that the same run then fixed
+            # (live 2026-09-21), with no follow-up to say so. The alert is sent
+            # once, after the final state is known.
             fill_ok = True
             if guardrail_fails:
                 print(
@@ -2852,6 +2853,13 @@ def run_live_preview(
                 print(
                     f"[adp_payroll_draft] BREADCRUMB solo_rate2_skipped why={why} "
                     "the rate-1/rate-2 lines are printed above for manual keying"
+                )
+            # One alert, describing the state the run is actually leaving behind.
+            if guardrail_fails:
+                _slack_guardrail(
+                    f"{period_start}..{period_end}",
+                    guardrail_fails,
+                    strict=strict,
                 )
             if fill_ok:
                 nfill = _fill_money_lines(page, packet)

@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from skills.adp_run_automation.payroll_draft_backend import (
+    _slack_guardrail,
     _aggregate_grid_rows,
     _attribute_grid_rows,
     _paginate_timecard_hours,
@@ -1855,3 +1856,55 @@ class TestOneBadEmployeeDoesNotBlockTheRest(unittest.TestCase):
 
         self.assertEqual(out["applied"], [])
         self.assertEqual(len(out["failed"]), 1)
+
+
+class TestTheGuardrailAlertDescribesTheFinalState(unittest.TestCase):
+    """Don't page the operator about a state the same run is about to repair.
+
+    Live 2026-09-21: re-importing timecards reset six base rows, the pre-repair
+    check alerted "hours_mismatch" on all six, the repair cleared every one
+    seconds later (post_rate2_guardrail n=0, 12/12 reconciled) and no follow-up
+    was ever sent. The operator was left holding a false alarm.
+    """
+
+    def _src(self):
+        import inspect
+
+        from skills.adp_run_automation import payroll_draft_backend as mod
+
+        return inspect.getsource(mod)
+
+    def test_the_alert_is_sent_once(self):
+        self.assertEqual(self._src().count("_slack_guardrail(\n"), 1)
+
+    def test_the_alert_comes_after_the_repair_not_before(self):
+        src = self._src()
+        repair = src.index("BREADCRUMB solo_rate2 ")
+        alert = src.index("_slack_guardrail(\n")
+        self.assertGreater(
+            alert, repair,
+            "alerting before the split runs reports a state that is mismatched "
+            "by construction on any already-keyed cycle",
+        )
+
+    def test_a_clean_run_sends_nothing(self):
+        """Empty failures must not produce a message at all."""
+        sent = []
+        with patch(
+            "agents.bhaga.notify.info_ping", side_effect=lambda b: sent.append(b)
+        ):
+            _slack_guardrail("2026-09-07..2026-09-20", [], strict=True)
+        self.assertEqual(sent, [])
+
+    def test_remaining_failures_still_alert(self):
+        sent = []
+        with patch(
+            "agents.bhaga.notify.info_ping", side_effect=lambda b: sent.append(b)
+        ):
+            _slack_guardrail(
+                "2026-09-07..2026-09-20",
+                ["hours_mismatch Huynh, Hillary our=42.68 adp=47.56"],
+                strict=True,
+            )
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Huynh", sent[0])

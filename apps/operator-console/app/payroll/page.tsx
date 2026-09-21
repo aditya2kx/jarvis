@@ -9,6 +9,7 @@ import {
   listPayPeriodsWithPaidStatus,
   payrollDraftRun,
   payrollSoloPremium,
+  soloCoverageGap,
   soloPremiumDeltaDollars,
 } from "@/lib/bq/queries";
 import { formatCents, formatDate, formatDollars, formatHours } from "@/lib/format";
@@ -124,6 +125,7 @@ export default async function PayrollPage({
   let draftRun: Awaited<ReturnType<typeof payrollDraftRun>> = null;
   let soloRows: PayrollSoloPremiumRow[] = [];
   let soloDelta: number | null = null;
+  let soloGap: string[] = [];
   let hoursScrapedAt: string | null = null;
   let error: string | undefined;
   try {
@@ -148,7 +150,7 @@ export default async function PayrollPage({
 
   if (!error && selectedPeriodStart && periodEnd) {
     try {
-      const [periodRowsAll, run, solo, delta] = await Promise.all([
+      const [periodRowsAll, run, solo, delta, gap] = await Promise.all([
         payrollPeriod(6),
         FEATURES.adpPayrollDraft
           ? payrollDraftRun(DEFAULT_STORE, selectedPeriodStart, periodEnd)
@@ -157,11 +159,15 @@ export default async function PayrollPage({
         // and wages are correct without it (same contract as the draft backend).
         payrollSoloPremium(selectedPeriodStart).catch(() => []),
         soloPremiumDeltaDollars(DEFAULT_STORE).catch(() => null),
+        // An unreadable coverage check counts as stale, not as clean: the point is
+        // to refuse to vouch for a premium we cannot verify.
+        soloCoverageGap(selectedPeriodStart, periodEnd).catch(() => ["unknown"]),
       ]);
       periods = periodRowsAll;
       draftRun = run;
       soloRows = solo;
       soloDelta = delta;
+      soloGap = gap;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -440,12 +446,20 @@ export default async function PayrollPage({
                   label="Solo premium"
                   display={formatCents(solo.premiumCents)}
                   hint={
-                    solo.people
-                      ? `${formatHours(solo.soloHours)}h solo · ${solo.people} ${
-                          solo.people === 1 ? "person" : "people"
-                        }`
-                      : "no eligible solo hours this period"
+                    soloGap.length
+                      ? `stale — missing ${soloGap.length} ${
+                          soloGap.length === 1 ? "day" : "days"
+                        } of solo hours`
+                      : solo.people
+                        ? `${formatHours(solo.soloHours)}h solo · ${solo.people} ${
+                            solo.people === 1 ? "person" : "people"
+                          }`
+                        : "no eligible solo hours this period"
                   }
+                  // A stale premium is understated, not absent, so it has to warn
+                  // rather than just read low — a low number looks like a quiet
+                  // fortnight (2026-09-20: 12.24h shown vs 20.16h actual).
+                  hintWarn={soloGap.length > 0}
                 />
               ) : null}
               <HeadlineStat label="Tips" display={formatDollars(totalTips)} />
@@ -500,6 +514,17 @@ export default async function PayrollPage({
                 effective date. Solo premium is included in Est. total but not in
                 Est. wages, which stays hours × base rate. It is keyed into ADP as a
                 second rate line per employee — see RUNBOOK § Solo-shift premium.
+              </p>
+            ) : null}
+            {soloGap.length ? (
+              <p className="text-xs text-amber-600 dark:text-amber-500">
+                Solo hours are behind the punch data for{" "}
+                {soloGap.includes("unknown")
+                  ? "an unknown number of days"
+                  : `${soloGap.join(", ")}`}
+                , so the premium above is understated. Re-run{" "}
+                <code className="font-mono">materialize_model_bq</code> before
+                keying rate-2 into ADP.
               </p>
             ) : null}
           </div>

@@ -370,6 +370,18 @@ def run_draft(
             f"perk={row['misc_reimbursement_dollars']}"
             + (f" solo_premium_hours={solo}" if solo > 0 else "")
         )
+    solo_gap = (
+        solo_coverage_gap(period_start, period_end)
+        if any(float(p.solo_premium_hours or 0) > 0 for p in packet)
+        else []
+    )
+    result["solo_coverage_gap"] = solo_gap
+    if solo_gap:
+        print(
+            "[adp_payroll_draft] BREADCRUMB solo_hours_stale "
+            f"missing={','.join(solo_gap)} — premium understated; re-run "
+            "materialize_model_bq before keying rate-2"
+        )
     _print_solo_premium_keying(packet)
     if dry_run:
         print(
@@ -550,6 +562,62 @@ def _merge_solo_hours(
         row["solo_hours"] = match.get("solo_hours")
         row["solo_eligible"] = match.get("eligible")
     return rows
+
+
+def solo_coverage_gap(period_start: str, period_end: str) -> list[str]:
+    """Period dates whose solo hours do not reflect the current punches (#309).
+
+    Solo hours are a separate materialization from the punches they derive from,
+    so the two drift whenever that step is skipped, a nightly fails after ingest,
+    or punches are edited afterwards. A drifted premium does not look like an
+    error — it simply comes out smaller, which is indistinguishable from a quiet
+    fortnight.
+
+    Two ways to drift, and both matter:
+
+    - **Missing** — the date has punches and no solo row at all. Caught live
+      2026-09-20, understating the closing cycle as 12.24h/$12.24 against an
+      actual 20.16h, one employee ~$8 short.
+    - **Disagreeing** — the date's solo rows account for a different number of
+      worked minutes than its punches do. This is the operator-edit case: fixing
+      a forgotten punch-out in ADP and pressing **Sync clocked hours** rewrites
+      `adp_punches` but never runs the materialize, and a restored coworker punch
+      is exactly what flips minutes from solo to team.
+
+    Compared on minutes rather than on timestamps: ``scraped_at_utc`` is only
+    stamped by the Sync-clocked-hours path, so it is NULL for everything the
+    nightly ingested and a ``built_at < scraped_at`` test silently passes on the
+    majority of dates. Minutes are exact — every date in the 09-07..09-20 cycle
+    reconciles to 0 — because invariant 11 makes ``solo + team`` the same quantity
+    the punches describe.
+
+    In-scope only for BQ: this proves solo hours match the punches *in BQ*. It
+    cannot know whether BQ matches ADP — that is what the Timecard scrape is for.
+    """
+    from core.datastore import fq, read_query
+
+    try:
+        rows = read_query(
+            "WITH p AS ("
+            "  SELECT date, ROUND(SUM(total_hours) * 60) AS punch_min"
+            f"  FROM {fq('adp_punches')}"
+            f"  WHERE date BETWEEN DATE '{period_start}' AND DATE '{period_end}'"
+            "   GROUP BY date"
+            "), s AS ("
+            "  SELECT date, SUM(total_minutes) AS solo_min"
+            f"  FROM {fq('model_solo_hours_daily')} GROUP BY date"
+            ") "
+            "SELECT FORMAT_DATE('%Y-%m-%d', p.date) AS d "
+            "FROM p LEFT JOIN s USING (date) "
+            "WHERE s.date IS NULL OR ABS(s.solo_min - p.punch_min) > 1 "
+            "ORDER BY 1"
+        )
+    except Exception as exc:  # noqa: BLE001
+        # An unreadable check must not be silently treated as "no gap": the whole
+        # point is to refuse to key money we cannot vouch for.
+        print(f"[adp_payroll_draft] BREADCRUMB solo_coverage_unknown {exc}")
+        return ["unknown"]
+    return [str(r.get("d")) for r in rows or []]
 
 
 def _iso(s: str) -> bool:
@@ -1906,7 +1974,7 @@ def run_live_preview(
                 )
             for lab in _visible_action_labels(page):
                 print(f"[adp_payroll_draft] after_import control {lab!r}")
-            if fill_ok and not guardrail_fails and solo_rate2_enabled():
+            if fill_ok and not guardrail_fails and not solo_gap and solo_rate2_enabled():
                 # `fill_ok` stays True through a guardrail failure on purpose —
                 # money columns are still safe to fill. The hours split is not, so
                 # it needs its own gate: rewriting the Regular cell on a grid we
@@ -1929,6 +1997,7 @@ def run_live_preview(
             elif any(float(r.solo_premium_hours or 0) > 0 for r in packet):
                 why = (
                     "hours_guardrail" if guardrail_fails
+                    else "solo_hours_stale" if solo_gap
                     else "flag_off" if not solo_rate2_enabled()
                     else "fill_not_ok"
                 )

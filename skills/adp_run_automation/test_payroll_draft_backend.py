@@ -491,6 +491,56 @@ class TestApplySoloRate2(unittest.TestCase):
         self.assertEqual(out, {"applied": [], "failed": [], "premium_hours": 0.0})
 
 
+class TestSoloCoverageGap(unittest.TestCase):
+    """#309: solo hours drifting behind punches understates the premium."""
+
+    def test_compares_minutes_not_the_null_prone_scrape_timestamp(self):
+        # adp_punches.scraped_at_utc is only stamped by the Sync-clocked-hours
+        # path, so it was NULL for every date in the 09-07..09-20 cycle; a
+        # built_at < scraped_at test would have passed on all of them.
+        import inspect
+
+        from skills.adp_run_automation import payroll_draft_backend as mod
+
+        src = inspect.getsource(mod.solo_coverage_gap)
+        self.assertIn("SUM(total_minutes)", src)
+        self.assertIn("ABS(s.solo_min - p.punch_min)", src)
+
+    def test_reports_punch_dates_with_no_solo_row(self):
+        with patch(
+            "core.datastore.read_query",
+            return_value=[{"d": "2026-09-19"}, {"d": "2026-09-20"}],
+        ):
+            from skills.adp_run_automation.payroll_draft_backend import (
+                solo_coverage_gap,
+            )
+
+            self.assertEqual(
+                solo_coverage_gap("2026-09-07", "2026-09-20"),
+                ["2026-09-19", "2026-09-20"],
+            )
+
+    def test_full_coverage_is_an_empty_gap(self):
+        with patch("core.datastore.read_query", return_value=[]):
+            from skills.adp_run_automation.payroll_draft_backend import (
+                solo_coverage_gap,
+            )
+
+            self.assertEqual(solo_coverage_gap("2026-09-07", "2026-09-20"), [])
+
+    def test_an_unreadable_check_is_stale_not_clean(self):
+        # Treating an error as "no gap" would let the draft key money it cannot
+        # vouch for — the opposite of why the check exists.
+        with patch("core.datastore.read_query", side_effect=RuntimeError("boom")):
+            from skills.adp_run_automation.payroll_draft_backend import (
+                solo_coverage_gap,
+            )
+
+            self.assertEqual(
+                solo_coverage_gap("2026-09-07", "2026-09-20"), ["unknown"]
+            )
+
+
 class TestSoloRate2IsGatedOnTheHoursGuardrail(unittest.TestCase):
     """The hours split must not run on a grid that disagrees with the console.
 
@@ -507,9 +557,10 @@ class TestSoloRate2IsGatedOnTheHoursGuardrail(unittest.TestCase):
 
         src = inspect.getsource(mod)
         self.assertIn(
-            "if fill_ok and not guardrail_fails and solo_rate2_enabled():",
+            "if fill_ok and not guardrail_fails and not solo_gap "
+            "and solo_rate2_enabled():",
             src,
-            "the solo hours split must be gated on an empty guardrail_fails",
+            "the solo hours split must be gated on the guardrail AND fresh solo data",
         )
 
 

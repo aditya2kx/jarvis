@@ -229,6 +229,39 @@ Approve/Submit/Save remain forbidden either way — the operator still submits.
 rate-2 lines never landed in ADP, `Total pay` will read short of the ADP Preview gross by exactly the
 premium and `/payroll` flags it under the headline. A green match means ADP has the premium.
 
+**After fixing punches in ADP, one sync is not enough.** **Sync clocked hours** runs the Timecard
+scrape and upserts `adp_shifts` / `adp_punches`, then returns — it does **not** run
+`materialize_model_bq`. So corrected punches land in raw tables while `model_solo_hours_daily` still
+describes the old ones, and the premium on `/payroll` is computed from the stale copy. Always follow a
+punch fix with the materialize command below. (A restored *coworker* punch moves minutes from solo to
+team, so this can overpay as well as underpay.)
+
+**Staleness guard.** Solo hours are materialized separately from the punches they derive from, so they
+drift whenever that step is skipped, a nightly fails after ingest, or punches are edited afterwards —
+and a drifted premium is *understated*, not absent, which reads exactly like a quiet fortnight. Both
+surfaces compare, per date, the worked minutes in `model_solo_hours_daily` against those in
+`adp_punches`:
+
+- `/payroll` marks the **Solo premium** card stale and names the affected dates.
+- The draft prints `BREADCRUMB solo_hours_stale` and refuses to key rate-2 (`solo_rate2_skipped
+  why=solo_hours_stale`), even with the flag on.
+
+Minutes, not timestamps: `scraped_at_utc` is stamped only by the sync-button path, so it is NULL for
+everything the nightly ingested and a "built before last scrape" test would pass on most dates.
+Minutes reconcile exactly, because `solo + team` is the same quantity the punches describe
+(invariant 11). The check proves solo hours match the punches **in BQ** — whether BQ matches ADP is
+what the Timecard scrape is for.
+
+Fix by re-running `materialize_model_bq`, then reload `/payroll`:
+
+```bash
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.materialize_model_bq --store palmetto
+```
+
+Until this ships and the Cloud Run image is redeployed, **prod's nightly does not build solo hours at
+all**, so the gap reappears daily and the command above is the only thing that closes it. Caught on
+2026-09-20: the closing cycle read 12.24h/$12.24 against an actual 20.16h, one employee ~$8 short.
+
 The four tunables live in `bhaga.store_config` — change them with `/bhaga-cloud config set`, never a
 code deploy (user-preferences #29):
 

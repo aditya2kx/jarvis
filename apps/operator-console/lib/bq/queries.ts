@@ -1692,6 +1692,53 @@ export function payrollSoloPremium(
 }
 
 /**
+ * Period dates whose solo hours do not reflect the current punches (#309).
+ *
+ * Solo hours are materialized separately from the punches they derive from, so a
+ * drift leaves the premium understated rather than errored — a smaller number is
+ * indistinguishable from a quiet fortnight. Two ways to drift: the date has no
+ * solo row at all (2026-09-20: screen read 12.24h against an actual 20.16h, ~$8
+ * short for one employee), or its solo rows account for a different number of
+ * worked minutes than its punches do.
+ *
+ * The second case is the operator-edit path: fixing a forgotten punch-out and
+ * pressing **Sync clocked hours** rewrites `adp_punches` but never runs the
+ * materialize, so date presence alone would report all-clear on numbers that just
+ * changed. A restored coworker punch is what flips minutes from solo to team.
+ *
+ * Compared on minutes, not timestamps: `scraped_at_utc` is only stamped by the
+ * sync-button path, so it is NULL for everything the nightly ingested and a
+ * timestamp test would silently pass on most dates. Minutes reconcile exactly,
+ * since `solo + team` is the same quantity the punches describe.
+ *
+ * This proves solo hours match the punches *in BQ*; whether BQ matches ADP is the
+ * Timecard scrape's job.
+ */
+export async function soloCoverageGap(
+  periodStart: string,
+  periodEnd: string,
+): Promise<string[]> {
+  const rows = await q<{ d: string }>(
+    `WITH p AS (
+       SELECT date, ROUND(SUM(total_hours) * 60) AS punch_min
+       FROM ${fq("adp_punches")}
+       WHERE date BETWEEN @periodStart AND @periodEnd
+       GROUP BY date
+     ), s AS (
+       SELECT date, SUM(total_minutes) AS solo_min
+       FROM ${fq("model_solo_hours_daily")}
+       GROUP BY date
+     )
+     SELECT FORMAT_DATE('%Y-%m-%d', p.date) AS d
+     FROM p LEFT JOIN s USING (date)
+     WHERE s.date IS NULL OR ABS(s.solo_min - p.punch_min) > 1
+     ORDER BY 1`,
+    { periodStart: dateParam(periodStart), periodEnd: dateParam(periodEnd) },
+  );
+  return rows.map((r) => r.d);
+}
+
+/**
  * Solo premium uplift in dollars per hour, from `store_config` (#309).
  *
  * Read live rather than hardcoded because the rates are operator tunables

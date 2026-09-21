@@ -161,7 +161,9 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | `BHAGA_HEADLESS` | `1` |
 | `SLACK_BOT_TOKEN` | secret → `slack-bot-token` |
 | `CLICKUP_PAT` | secret → `jarvis-clickup-palmetto-pat` |
-| `BHAGA_SESSION_PERSIST` | `1` — persist/restore the ADP browser `storage_state` to/from `gs://bhaga-scrape-cache/_session/`. (Square no longer uses a browser — it uses the REST API via `square_palmetto_oauth`. ADP still scrapes via Chromium.) |
+| `BHAGA_SESSION_PERSIST` | Defaults to `1` — persist/restore the ADP browser `storage_state` to/from `gs://bhaga-scrape-cache/_session/`. Set `0` only to force a cold login. (Square no longer uses a browser — it uses the REST API via `square_palmetto_oauth`. ADP still scrapes via Chromium.) |
+| `BHAGA_BROWSER_PROFILE` | Defaults to on off-cloud — keep a stable Chromium profile per portal so ADP's risk engine sees the same device. `0` forces the ephemeral profile. Ignored on Cloud Run. |
+| `BHAGA_BROWSER_PROFILE_DIR` | Override the profile root (default `~/.bhaga/browser-profiles`). |
 | `BHAGA_DATASTORE` | `bigquery` — enables BQ reads/writes in the **parent** orchestrator process (pipeline run recorder, `reconcile_model` gate, `update_model_sheet --data-source bigquery`). Child subprocesses also set this per-step; codified in `deploy.yml` since 2026-06-13. |
 | `BHAGA_BROWSER_LAUNCH_RETRIES` | _(optional, default `3`)_ headless browser launch attempts on transient crash — see §13 Browser-launch resilience |
 | `BHAGA_BROWSER_LAUNCH_BACKOFF_MS` | _(optional, default `1000`)_ base backoff between launch retries (exponential) |
@@ -490,14 +492,24 @@ succeeds, including after a login that just satisfied a 2FA challenge. Gated on
 `BHAGA_SESSION_PERSIST=1` (already set on the job); durable copy lives at
 `gs://bhaga-scrape-cache/_session/adp-palmetto.json`.
 
-**What this does and does not buy.** It is session *reuse*: ADP's only auth cookie (`SMSESSION`) is a
-session cookie, so the jar helps only within ADP's server-side idle window. A burst of runs costs one
-OTP instead of one per entry point; a run the next morning is challenged again. That is expected, not
-a regression — do not debug it as one. Verified against the live flow 2026-09-15: the admin step-up
-screen offers exactly one factor ("Send me a text message ····0038"), has no remember-this-device
-checkbox, offers no authenticator/TOTP option, and shows no enrollment prompt after a correct code.
-ADP documents admin step-up as a risk engine scoring each login against previous logins, and the
-browser context is deliberately ephemeral, so the device looks new on every run.
+**What this does and does not buy.** The cookie jar alone is session *reuse*: ADP's only auth cookie
+(`SMSESSION`) is a session cookie, so it helps only within ADP's server-side idle window. Verified
+against the live flow 2026-09-15: the admin step-up screen offers exactly one factor ("Send me a text
+message ····0038"), has no remember-this-device checkbox, offers no authenticator/TOTP option, and
+shows no enrollment prompt after a correct code. ADP documents admin step-up as a risk engine scoring
+each login against previous logins.
+
+On its own that was not merely limited, it was ineffective: **7 ad-hoc runs on 2026-09-21 produced 7
+SMS codes**, each one after a logged `restoring trusted-device session`. The jar was being replayed
+into a fresh Chromium profile every run, which scores like a stolen-cookie replay. Since then the
+laptop keeps a **stable browser profile** per portal at `~/.bhaga/browser-profiles/<portal>`
+(`_portal_profile_dir`), so the device stops looking new; budget **one** code to establish the profile
+and none after, until ADP ages it out. `BHAGA_BROWSER_PROFILE=0` opts out.
+
+**Cloud Run deliberately stays ephemeral** (detected via `K_SERVICE`): its filesystem does not outlive
+an execution, so a profile there would be written and lost, and the cookie jar remains the only lever.
+A burst of job executions still costs one OTP rather than one per entry point; the next morning's run
+is challenged again. That is expected on the job — do not debug it as a regression.
 
 Confirm it is working:
 

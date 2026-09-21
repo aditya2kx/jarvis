@@ -180,10 +180,20 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
   against the live flow 2026-09-15: the admin step-up screen offers exactly one factor ("Send me a
   text message"), carries **no** remember-this-device checkbox, offers **no** authenticator/TOTP
   option, and shows no enrollment prompt after a correct code. ADP documents admin step-up as a
-  risk engine scoring each login against previous ones, and `launch_persistent` is deliberately
-  ephemeral (fresh Chromium profile per run), so the device looks new every time. Removing the
-  operator from the loop needs a different lever (readable email channel, or persisting the whole
-  browser profile), not more cookie persistence.
+  risk engine scoring each login against previous ones.
+- **The browser profile persists on the laptop, so cookie restore has a device to land on.**
+  Cookie-only reuse was measured at **0 for 7** on 2026-09-21 — seven ad-hoc runs in one morning,
+  seven SMS codes, every one of them logging `restoring trusted-device session` first. Replaying a
+  jar into a brand-new Chromium profile is what a stolen-cookie replay looks like to a risk engine,
+  which is the case step-up exists to catch. `_portal_profile_dir()` now gives each portal a stable
+  profile under `~/.bhaga/browser-profiles/<portal>`, and `launch_persistent` uses
+  `launch_persistent_context` when it is available; the saved jar only seeds cookies the profile does
+  not already carry. Expect **one** code to establish a profile, then none until ADP ages it out.
+  Opt out with `BHAGA_BROWSER_PROFILE=0`. Cloud Run stays ephemeral on purpose (`K_SERVICE` check) —
+  its filesystem does not outlive an execution, so there the cookie jar remains the only lever.
+- **`BHAGA_SESSION_PERSIST` defaults to on.** It was opt-in and set only in the deploy workflow, so
+  every command run by hand silently started from a fresh jar and interrupted the operator for a code.
+  A flag whose only failure mode is an SMS to a human must not need remembering.
 - **Square scrape/OTP login is serialized across Cloud Run executions, not just within a container.**
   `_acquire_scrape_lock` uses a TTL-based Firestore distributed lock (`runs/_lock_scrape-square-<store>`,
   default 1 h TTL). A second execution that tries to scrape while a first is in flight receives

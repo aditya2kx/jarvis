@@ -2003,7 +2003,15 @@ def download_payroll_liability(
 
 
 def _session_persist_enabled() -> bool:
-    return os.environ.get("BHAGA_SESSION_PERSIST", "").strip() in ("1", "true", "yes")
+    """Save/restore the portal session unless explicitly disabled.
+
+    Was opt-in, which meant every ad-hoc command paid its own SMS because the
+    flag lived only in the deploy workflow. Defaulting it on removes a footgun
+    whose only symptom is an operator interruption.
+    """
+    return os.environ.get("BHAGA_SESSION_PERSIST", "1").strip() not in (
+        "0", "false", "no", ""
+    )
 
 
 def _restore_adp_session(*, store: str) -> Optional[str]:

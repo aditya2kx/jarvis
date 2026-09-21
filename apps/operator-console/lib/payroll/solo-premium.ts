@@ -8,6 +8,21 @@ export interface PayrollRowWithSolo extends PayrollPeriodRow {
   solo_hours: number;
   /** Premium dollars for those hours. Derived from integer cents. */
   solo_premium: number;
+  /**
+   * Wages for hours paid at the solo rate — the whole rate-2 line, not the
+   * uplift. `solo_hours x premium_rate`, which is the amount ADP shows for that
+   * line rather than the difference from base.
+   */
+  solo_wages: number;
+  /**
+   * Wages for everything not on the solo rate: non-solo regular hours at base,
+   * plus overtime. OT lives here so `primary + solo` reconciles exactly to total
+   * wages; mixed-rate OT is FLSA work deferred to #315 and no eligible employee
+   * has hit overtime yet.
+   */
+  primary_wages: number;
+  /** Primary + solo. The blended-rate figure, and what ADP will gross to. */
+  total_wages: number;
 }
 
 export interface SoloPremiumMerge {
@@ -16,6 +31,17 @@ export interface SoloPremiumMerge {
   premiumCents: number;
   soloHours: number;
   people: number;
+  /** Wage totals, summed from the displayed per-row values. */
+  soloWages: number;
+  primaryWages: number;
+  totalWages: number;
+  /**
+   * Total wages / total hours, or null with no hours. Reported rather than
+   * assumed: with only some hours at the premium the effective rate is neither
+   * posted rate, and it is the number that explains why total wages exceed
+   * hours x base.
+   */
+  blendedRate: number | null;
 }
 
 /**
@@ -76,11 +102,26 @@ export function mergeSoloPremium(
   let premiumCents = 0;
   let soloHours = 0;
   let people = 0;
+  let soloWages = 0;
+  let primaryWages = 0;
+  let totalHours = 0;
 
   const merged = rows.map((row) => {
+    const gross = Number(row.est_gross_pay) || 0;
+    totalHours += Number(row.hours_worked) || 0;
     const match = byName.get(nameKey(String(row.employee ?? "")));
     if (!match || !match.eligible) {
-      return { ...row, solo_hours: 0, solo_premium: 0 };
+      // No solo rate in play: every wage dollar is primary, so the breakdown
+      // still adds up for employees who are not eligible at all.
+      primaryWages += gross;
+      return {
+        ...row,
+        solo_hours: 0,
+        solo_premium: 0,
+        solo_wages: 0,
+        primary_wages: gross,
+        total_wages: gross,
+      };
     }
 
     // Aggregate in whole minutes and round once. Summing the view's per-day
@@ -105,6 +146,25 @@ export function mergeSoloPremium(
 
     const hours = Math.round((keyed / 60) * 100) / 100;
 
+    // The rate-2 line is the whole amount for those hours, so it needs the rate
+    // itself, not the uplift. Derive it from the row's own base rate plus the
+    // configured delta; falling back to splitting `gross` by hours would use a
+    // blended figure that already contains OT at 1.5x and overstate the line.
+    const baseRate = Number(row.wage_rate_dollars) || 0;
+    const soloRate =
+      premiumDeltaDollars != null && baseRate > 0
+        ? baseRate + premiumDeltaDollars
+        : baseRate;
+    const soloWage = Math.round(hours * soloRate * 100) / 100;
+    // Primary is the remainder rather than a second product: total wages are
+    // fixed by `gross + premium`, and subtracting keeps the two parts summing to
+    // it exactly instead of drifting a cent on rounding.
+    const totalWage = Math.round((gross + cents / 100) * 100) / 100;
+    const primaryWage = Math.round((totalWage - soloWage) * 100) / 100;
+
+    soloWages += soloWage;
+    primaryWages += primaryWage;
+
     if (keyed > 0) {
       // Totals accumulate the per-row displayed values, not the underlying
       // minutes, so the summary is what an operator gets by adding the visible
@@ -119,14 +179,24 @@ export function mergeSoloPremium(
       ...row,
       solo_hours: hours,
       solo_premium: cents / 100,
+      solo_wages: soloWage,
+      primary_wages: primaryWage,
+      total_wages: totalWage,
       est_total_pay: (Number(row.est_total_pay) || 0) + cents / 100,
     };
   });
+
+  const totalWages = Math.round((primaryWages + soloWages) * 100) / 100;
 
   return {
     rows: merged,
     premiumCents,
     soloHours: Math.round(soloHours * 100) / 100,
     people,
+    soloWages: Math.round(soloWages * 100) / 100,
+    primaryWages: Math.round(primaryWages * 100) / 100,
+    totalWages,
+    blendedRate:
+      totalHours > 0 ? Math.round((totalWages / totalHours) * 100) / 100 : null,
   };
 }

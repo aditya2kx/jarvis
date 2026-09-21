@@ -266,13 +266,24 @@ export default async function PayrollPage({
             meta: { format: { kind: "number" as const, digits: 2, minDigits: 2 } },
           } satisfies ColumnDef<PayrollRowWithSolo>,
           {
-            accessorKey: "solo_premium",
-            header: "Solo premium",
+            accessorKey: "primary_wages",
+            header: "Primary wages",
+            meta: { format: { kind: "dollars" as const } },
+          } satisfies ColumnDef<PayrollRowWithSolo>,
+          {
+            accessorKey: "solo_wages",
+            header: "Solo wages",
             meta: { format: { kind: "dollars" as const } },
           } satisfies ColumnDef<PayrollRowWithSolo>,
         ]
       : []),
-    { accessorKey: "est_gross_pay", header: "Est. wages", meta: { format: { kind: "dollars" } } },
+    {
+      // Blended once a solo rate is in play: the two rate lines ADP will carry,
+      // added up. Without solo data this is the view's hours x base figure.
+      accessorKey: showSolo ? "total_wages" : "est_gross_pay",
+      header: "Est. wages",
+      meta: { format: { kind: "dollars" } },
+    },
     { accessorKey: "tips_allocated", header: "Tips", meta: { format: { kind: "dollars" } } },
     { accessorKey: "review_bonus", header: "Review bonus", meta: { format: { kind: "dollars" } } },
     {
@@ -428,7 +439,7 @@ export default async function PayrollPage({
             <div
               className={
                 showSolo
-                  ? "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8"
+                  ? "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-9"
                   : "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7"
               }
             >
@@ -440,27 +451,42 @@ export default async function PayrollPage({
                   showPreviewHints && hoursVsPreview && !hoursVsPreview.match,
                 )}
               />
-              <HeadlineStat label="Wages" display={formatDollars(totalWages)} />
+              <HeadlineStat
+                label="Wages"
+                display={formatDollars(showSolo ? solo.totalWages : totalWages)}
+                hint={
+                  showSolo && solo.blendedRate != null
+                    ? `${formatDollars(solo.blendedRate)}/h blended`
+                    : undefined
+                }
+              />
               {showSolo ? (
-                <HeadlineStat
-                  label="Solo premium"
-                  display={formatCents(solo.premiumCents)}
-                  hint={
-                    soloGap.length
-                      ? `stale — missing ${soloGap.length} ${
-                          soloGap.length === 1 ? "day" : "days"
-                        } of solo hours`
-                      : solo.people
-                        ? `${formatHours(solo.soloHours)}h solo · ${solo.people} ${
-                            solo.people === 1 ? "person" : "people"
-                          }`
-                        : "no eligible solo hours this period"
-                  }
-                  // A stale premium is understated, not absent, so it has to warn
-                  // rather than just read low — a low number looks like a quiet
-                  // fortnight (2026-09-20: 12.24h shown vs 20.16h actual).
-                  hintWarn={soloGap.length > 0}
-                />
+                <>
+                  <HeadlineStat
+                    label="Primary wages"
+                    display={formatDollars(solo.primaryWages)}
+                    hint="base rate + OT"
+                  />
+                  <HeadlineStat
+                    label="Solo wages"
+                    display={formatDollars(solo.soloWages)}
+                    hint={
+                      soloGap.length
+                        ? `stale — ${soloGap.length} ${
+                            soloGap.length === 1 ? "day" : "days"
+                          } of solo hours behind punches`
+                        : solo.people
+                          ? `${formatHours(solo.soloHours)}h · ${formatCents(
+                              solo.premiumCents,
+                            )} over base`
+                          : "no eligible solo hours this period"
+                    }
+                    // Stale solo hours understate this, they do not blank it, so
+                    // it has to warn rather than just read low — a low number
+                    // looks like a quiet fortnight (2026-09-20: 12.24h vs 20.16h).
+                    hintWarn={soloGap.length > 0}
+                  />
+                </>
               ) : null}
               <HeadlineStat label="Tips" display={formatDollars(totalTips)} />
               <HeadlineStat
@@ -483,10 +509,10 @@ export default async function PayrollPage({
             </div>
             <p className="text-xs text-muted-foreground">
               {showPreviewHints
-                ? "Against last ADP Preview: Hours → Total hours, Total pay → Gross (wages + tips + bonus + perks). Preview URLs are not shown — they are session hashes. People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only. Taxes, Net pay, and Cash required are ADP-only."
+                ? "Against last ADP Preview: Hours → Total hours, Total pay → Gross (wages + tips + bonus + perks). Preview URLs are not shown — they are session hashes. People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."
                 : awaitingEarnings
                   ? "Submitted in ADP. Earnings & Hours is not in BigQuery yet, so there is nothing to compare — Hours / Wages / Total pay are our estimate only. Wage vs ADP appears once that scrape lands."
-                  : "People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only. Taxes, Net pay, and Cash required are ADP-only."}
+                  : "People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."}
             </p>
           </div>
 
@@ -511,9 +537,12 @@ export default async function PayrollPage({
                 Solo hrs are hours worked as the only person clocked in (a manager
                 on the clock counts, and runs under the minimum block do not), shown
                 only for employees at the eligible base rate on or after the
-                effective date. Solo premium is included in Est. total but not in
-                Est. wages, which stays hours × base rate. It is keyed into ADP as a
-                second rate line per employee — see RUNBOOK § Solo-shift premium.
+                effective date. Solo wages are those hours at the solo rate — the
+                whole rate-2 line, not the uplift — and Primary wages are everything
+                else at base rate, including overtime. The two add up to Est. wages,
+                so Est. wages is a blended-rate figure whenever solo hours exist.
+                Each is keyed into ADP as its own rate line per employee — see
+                RUNBOOK § Solo-shift premium.
               </p>
             ) : null}
             {soloGap.length ? (

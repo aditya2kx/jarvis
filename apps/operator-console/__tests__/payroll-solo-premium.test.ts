@@ -211,3 +211,64 @@ describe("mergeSoloPremium", () => {
     expect(m.premiumCents).toBe(1224);
   });
 });
+
+describe("wage split by rate", () => {
+  it("prices solo hours at the full solo rate, not the uplift", () => {
+    const m = mergeSoloPremium([payrollRow()], [soloRow()], 1.0);
+    const row = m.rows[0];
+    // 4.8 h at $16.25 is the whole rate-2 line, not 4.8 x $1.00.
+    expect(row.solo_wages).toBe(78);
+    expect(row.primary_wages).toBe(536.8);
+    expect(row.total_wages).toBe(614.8);
+  });
+
+  it("keeps primary + solo exactly equal to total wages", () => {
+    const m = mergeSoloPremium(
+      [
+        payrollRow({ employee: "Brooke Willingham" }),
+        payrollRow({
+          employee: "Jacob Garcia",
+          hours_worked: 39.98,
+          est_gross_pay: 609.7,
+        }),
+      ],
+      [soloRow(), soloRow({ employee: "Jacob Garcia", solo_hours: 7.32, premium_cents: 732 })],
+      1.0,
+    );
+    for (const row of m.rows) {
+      expect(row.primary_wages + row.solo_wages).toBeCloseTo(row.total_wages, 2);
+    }
+    expect(m.primaryWages + m.soloWages).toBeCloseTo(m.totalWages, 2);
+  });
+
+  it("counts an ineligible employee's whole wage as primary", () => {
+    const m = mergeSoloPremium(
+      [payrollRow({ employee: "Dolce J Johnson", est_gross_pay: 650 })],
+      [soloRow({ employee: "Dolce J Johnson", eligible: false })],
+      1.0,
+    );
+    expect(m.rows[0].primary_wages).toBe(650);
+    expect(m.rows[0].solo_wages).toBe(0);
+    expect(m.primaryWages).toBe(650);
+  });
+
+  it("charges overtime to primary so the blended rate stays above base", () => {
+    // OT is 1.5x and is not split by rate (#315), so it belongs in primary —
+    // otherwise primary + solo would not reconcile to the view's gross.
+    const m = mergeSoloPremium(
+      [payrollRow({ hours_worked: 44, ot_hours: 4, est_gross_pay: 701.52 })],
+      [soloRow()],
+      1.0,
+    );
+    expect(m.rows[0].solo_wages).toBe(78);
+    expect(m.rows[0].primary_wages).toBe(628.32);
+    // $706.32 over 44 h — above base because of both the OT premium and solo.
+    expect(m.blendedRate).toBe(16.05);
+  });
+
+  it("reports no blended rate when there are no hours", () => {
+    const m = mergeSoloPremium([], [], 1.0);
+    expect(m.blendedRate).toBeNull();
+    expect(m.totalWages).toBe(0);
+  });
+});

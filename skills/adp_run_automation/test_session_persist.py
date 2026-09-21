@@ -205,3 +205,43 @@ class TestOtpWaitNeverOutlivesThePasscodePage(unittest.TestCase):
         """A stale BHAGA_OTP_WAIT_S=1800 in a job must not reinstate the bug."""
         src = self._src()
         self.assertIn("wait_s = min(", src)
+
+
+class TestTimecardCanBeForcedAfterAMidDayPunchEdit(unittest.TestCase):
+    """Same-day caching assumes punches only change overnight. They don't.
+
+    Live 2026-09-21: the operator fixed a missing punch around midday, a
+    "refresh" reused the 09:33 file, and BigQuery stayed at 42.68h while the
+    payroll grid read 43.43h. The download must be forceable.
+    """
+
+    def _src(self) -> str:
+        import inspect
+
+        from skills.adp_run_automation import runner
+
+        return inspect.getsource(runner.download_timecard)
+
+    def test_download_timecard_takes_force(self):
+        import inspect
+
+        from skills.adp_run_automation import runner
+
+        sig = inspect.signature(runner.download_timecard)
+        self.assertIn("force", sig.parameters)
+        self.assertIs(sig.parameters["force"].default, False)
+
+    def test_force_removes_the_cached_file_before_the_freshness_check(self):
+        src = self._src()
+        cut = src.index("_xlsx_fresh_for_target")
+        self.assertIn("if force and expected.exists():", src[:cut])
+        self.assertIn("expected.unlink()", src[:cut])
+
+    def test_the_cli_threads_force_to_timecard(self):
+        import inspect
+
+        from skills.adp_run_automation import runner
+
+        src = inspect.getsource(runner)
+        block = src[src.index('if args.scrape == "timecard":'):]
+        self.assertIn("force=args.force,", block[: block.index("elif")])

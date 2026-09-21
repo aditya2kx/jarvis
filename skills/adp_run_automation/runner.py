@@ -1031,6 +1031,7 @@ def download_timecard(
     headed: bool = True,
     slow_mo_ms: int = 50,
     keep_open_on_error: bool = False,
+    force: bool = False,
 ) -> pathlib.Path:
     """Open Reports > Time reports > Timecard, select pay periods, apply
     changes, click Export to Excel, save .xlsx.
@@ -1044,8 +1045,17 @@ def download_timecard(
     Idempotency: if today's Timecard XLSX is already on disk (CT-today mtime),
     skip the browser entirely and return the cached path. Eliminates
     duplicate ADP 2FA SMS on cron retries.
+
+    ``force=True`` re-downloads anyway. Same-day caching assumes punches only
+    change overnight, but an operator editing a missing punch at noon leaves the
+    morning's file — and therefore BigQuery — wrong until tomorrow. That is how
+    Huynh's hours stayed at 42.68 through a "refresh" on 2026-09-21 while the
+    payroll grid read 43.43.
     """
     expected = DOWNLOADS_DIR / f"Timecard-{datetime.date.today().isoformat()}.xlsx"
+    if force and expected.exists():
+        expected.unlink()
+        print(f"[adp_timecard] force=True — removed cached {expected.name}")
     if _xlsx_fresh_for_target(expected, target_date=target_date, min_bytes=10_000):
         print(f"[adp_timecard] SKIP browser — fresh Timecard XLSX already on disk: {expected}")
         return expected
@@ -2494,7 +2504,8 @@ def main() -> int:
     cli.add_argument("--keep-open", action="store_true",
                      help="On error, leave browser open for manual inspection.")
     cli.add_argument("--force", action="store_true",
-                     help="(schedule) Re-scrape even if today's Schedule JSON is fresh.")
+                     help="(timecard/schedule) Re-scrape even if today's file is fresh. "
+                          "Needed after an operator edits punches mid-day.")
     cli.add_argument("--start", default=None,
                      help="(earnings only) Check-date From YYYY-MM-DD. "
                           "Pay-period dates are padded so the later check is included.")
@@ -2507,6 +2518,7 @@ def main() -> int:
             store=args.store,
             headed=not args.headless,
             keep_open_on_error=args.keep_open,
+            force=args.force,
         )
     elif args.scrape == "schedule":
         path = download_schedule(

@@ -341,6 +341,9 @@ export default async function LaborPage({
     hours: Number(p.hours.toFixed(1)),
   }));
 
+  // Summarised before the columns are built: the Remote column is only rendered
+  // when the window actually contains remote shifts.
+  const soloSummary = summarizeSoloHours(soloRows);
   // Solo hours are a pay input, so the table shows the split every employee is
   // paid on rather than a single derived number: solo + team always equals total.
   const soloColumns: ColumnDef<LaborSoloHoursRow>[] = [
@@ -355,6 +358,15 @@ export default async function LaborPage({
       header: "Team hours",
       meta: { format: { kind: "number", digits: 2, minDigits: 2 } },
     },
+    ...(soloSummary.remoteHours > 0
+      ? [
+          {
+            accessorKey: "remote_hours",
+            header: "Remote hours",
+            meta: { format: { kind: "number" as const, digits: 2, minDigits: 2 } },
+          } satisfies ColumnDef<LaborSoloHoursRow>,
+        ]
+      : []),
     {
       accessorKey: "total_hours",
       header: "Total hours",
@@ -376,7 +388,6 @@ export default async function LaborPage({
       meta: { format: { kind: "cents" } },
     },
   ];
-  const soloSummary = summarizeSoloHours(soloRows);
 
   const statPrefix = showStat && stat === "avg" ? "Average " : showStat ? "Total " : "";
   const statSubtitle =
@@ -622,7 +633,7 @@ export default async function LaborPage({
                 />
                 <p className="text-xs text-muted-foreground">
                   <span className="font-medium text-foreground">Solo</span> hours are
-                  minutes an employee was the only person punched in, in contiguous
+                  minutes an employee was the only person in the shop, in contiguous
                   blocks of at least the configured minimum — solo + team always equals
                   total. Solo hours accrue for everyone, but{" "}
                   <span className="font-medium text-foreground">Premium</span> is only
@@ -636,6 +647,18 @@ export default async function LaborPage({
                   which is scoped to pay-period boundaries rather than this Period
                   filter.
                 </p>
+                {soloSummary.remoteHours > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">Remote</span> hours
+                    are shifts worked away from the shop. They count as team hours and
+                    are paid normally, but they are not floor coverage: a remote
+                    colleague does not stop someone from being solo, and remote time
+                    never earns the premium itself. Rows with remote hours and no solo
+                    hours are listed for that context. Remote shifts are annotated in{" "}
+                    <code className="font-mono">solo_shift_remote_days</code>; an
+                    unannotated shift counts as on the floor.
+                  </p>
+                ) : null}
               </>
             ) : (
               <p className="text-sm text-muted-foreground">

@@ -16,6 +16,7 @@ from skills.bhaga_labor.solo_shift import (
     merge_intervals,
     parse_hhmm,
     punch_interval,
+    remote_day_key,
     solo_blocks,
 )
 
@@ -236,6 +237,124 @@ class TestSoloAttribution(unittest.TestCase):
         self.assertEqual(strict["A, One"].solo_minutes, 0)
 
 
+class TestRemoteShiftsDoNotOccupyTheFloor(unittest.TestCase):
+    """A punched-in employee working away from the shop is not floor coverage.
+
+    Reproduces the live 2026-09-07 miss: the manager worked remote, so Tina was
+    alone for 4.62h but was credited zero solo minutes and paid base.
+    """
+
+    def _rows(self, intervals, remote=(), date=DATE, rates=None):
+        config = CONFIG._replace(
+            remote_days=frozenset(remote_day_key(d, e) for d, e in remote)
+        )
+        rows = attribute_day(date, intervals, rates or {}, config)
+        return {r.employee: r for r in rows}
+
+    def test_a_remote_coworker_does_not_mask_a_solo_block(self):
+        intervals = {
+            "Solo, Sam": [(hm("09:00"), hm("17:00"))],
+            "Remote, Rita": [(hm("09:00"), hm("17:00"))],
+        }
+        on_floor = self._rows(intervals, rates={"Solo, Sam": ELIGIBLE})
+        self.assertEqual(on_floor["Solo, Sam"].solo_minutes, 0)
+
+        rows = self._rows(
+            intervals, remote=[(DATE, "Remote, Rita")], rates={"Solo, Sam": ELIGIBLE}
+        )
+        self.assertEqual(rows["Solo, Sam"].solo_minutes, 480)
+        self.assertEqual(rows["Solo, Sam"].premium_cents, 800)  # 8h x $1.00
+
+    def test_a_remote_employee_earns_no_solo_of_their_own(self):
+        # Rita is the only person punched in, but she is not in the shop.
+        rows = self._rows(
+            {"Remote, Rita": [(hm("09:00"), hm("17:00"))]},
+            remote=[(DATE, "Remote, Rita")],
+            rates={"Remote, Rita": ELIGIBLE},
+        )
+        self.assertEqual(rows["Remote, Rita"].solo_minutes, 0)
+        self.assertEqual(rows["Remote, Rita"].premium_cents, 0)
+
+    def test_remote_hours_still_count_in_full_as_team(self):
+        rows = self._rows(
+            {"Remote, Rita": [(hm("09:00"), hm("17:00"))]},
+            remote=[(DATE, "Remote, Rita")],
+        )
+        row = rows["Remote, Rita"]
+        self.assertEqual(row.total_minutes, 480)
+        self.assertEqual(row.team_minutes, 480)
+        self.assertEqual(row.remote_minutes, 480)
+
+    def test_an_unannotated_shift_is_treated_as_on_the_floor(self):
+        rows = self._rows(
+            {
+                "Solo, Sam": [(hm("09:00"), hm("17:00"))],
+                "Remote, Rita": [(hm("09:00"), hm("17:00"))],
+            },
+            rates={"Solo, Sam": ELIGIBLE},
+        )
+        self.assertEqual(rows["Solo, Sam"].solo_minutes, 0)
+        self.assertEqual(rows["Remote, Rita"].remote_minutes, 0)
+
+    def test_the_annotation_is_scoped_to_its_date(self):
+        # Rita is remote on a different day; today she is in the shop.
+        rows = self._rows(
+            {
+                "Solo, Sam": [(hm("09:00"), hm("17:00"))],
+                "Remote, Rita": [(hm("09:00"), hm("17:00"))],
+            },
+            remote=[("2026-09-23", "Remote, Rita")],
+            rates={"Solo, Sam": ELIGIBLE},
+        )
+        self.assertEqual(rows["Solo, Sam"].solo_minutes, 0)
+
+    def test_a_hand_edited_name_still_matches(self):
+        # The config is hand-maintained; casing and stray spaces must not silently
+        # fail to match a punch row and under-pay the coworker.
+        rows = self._rows(
+            {
+                "Solo, Sam": [(hm("09:00"), hm("17:00"))],
+                "Remote, Rita": [(hm("09:00"), hm("17:00"))],
+            },
+            remote=[(DATE, "  remote, RITA  ")],
+            rates={"Solo, Sam": ELIGIBLE},
+        )
+        self.assertEqual(rows["Solo, Sam"].solo_minutes, 480)
+
+    def test_an_empty_shop_produces_no_solo_for_anyone(self):
+        rows = self._rows(
+            {
+                "Remote, Rita": [(hm("09:00"), hm("17:00"))],
+                "Remote, Ravi": [(hm("09:00"), hm("17:00"))],
+            },
+            remote=[(DATE, "Remote, Rita"), (DATE, "Remote, Ravi")],
+        )
+        self.assertEqual([r.solo_minutes for r in rows.values()], [0, 0])
+
+    def test_partial_overlap_with_a_remote_manager_matches_the_live_case(self):
+        # 2026-09-07, simplified: manager remote 07:42-15:30 (split punch), Tina
+        # 08:55-13:38, Dolce in at 13:32. Tina is alone until Dolce arrives.
+        rows = self._rows(
+            {
+                "Krause, Lindsay": [
+                    (hm("07:42"), hm("12:08")),
+                    (hm("12:17"), hm("15:30")),
+                ],
+                "Majdinasab, Tina": [(hm("08:55"), hm("13:38"))],
+                "Johnson, Dolce": [(hm("13:32"), hm("16:40"))],
+            },
+            remote=[(DATE, "Krause, Lindsay")],
+            rates={"Majdinasab, Tina": ELIGIBLE, "Johnson, Dolce": ALREADY_PREMIUM},
+        )
+        tina = rows["Majdinasab, Tina"]
+        self.assertEqual(tina.solo_minutes, hm("13:32") - hm("08:55"))  # 277 = 4.62h
+        self.assertEqual(tina.team_minutes, 6)  # the last 6 min with Dolce
+        self.assertEqual(tina.premium_cents, 462)
+        # Dolce gains solo time too, but is already at the premium rate.
+        self.assertGreater(rows["Johnson, Dolce"].solo_minutes, 0)
+        self.assertEqual(rows["Johnson, Dolce"].premium_cents, 0)
+
+
 class TestReconciliationInvariant(unittest.TestCase):
     """solo + team == total, exact at integer minutes (bhaga.mdc invariant 2)."""
 
@@ -249,7 +368,16 @@ class TestReconciliationInvariant(unittest.TestCase):
                     start = rng.randint(0, 1300)
                     punches.append((start, start + rng.randint(1, 120)))
                 intervals[f"E{i}"] = punches
-            rows = attribute_day(DATE, intervals, {}, CONFIG)
+            # Remote shifts are a subset of team minutes, so the invariant has to
+            # hold with any mix of them annotated.
+            config = CONFIG._replace(
+                remote_days=frozenset(
+                    remote_day_key(DATE, emp)
+                    for emp in intervals
+                    if rng.random() < 0.3
+                )
+            )
+            rows = attribute_day(DATE, intervals, {}, config)
             for row in rows:
                 self.assertEqual(
                     row.solo_minutes + row.team_minutes,
@@ -258,6 +386,7 @@ class TestReconciliationInvariant(unittest.TestCase):
                 )
                 self.assertGreaterEqual(row.solo_minutes, 0)
                 self.assertGreaterEqual(row.team_minutes, 0)
+                self.assertLessEqual(row.remote_minutes, row.team_minutes)
 
     def test_solo_minutes_never_exceed_total(self):
         rows = attribute_day(

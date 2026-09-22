@@ -46,6 +46,8 @@ function soloRow(
     base_rate_dollars: 15.25,
     eligible: true,
     premium_cents: 480,
+    remote_hours: 0,
+    on_floor_hours: 40,
     ...over,
   };
   // Minutes are the authoritative grain; default them from hours unless the
@@ -270,5 +272,70 @@ describe("wage split by rate", () => {
     const m = mergeSoloPremium([], [], 1.0);
     expect(m.blendedRate).toBeNull();
     expect(m.totalWages).toBe(0);
+  });
+
+  describe("remote hours (migration 072)", () => {
+    it("splits total hours into remote and on-floor without changing pay", () => {
+      const m = mergeSoloPremium(
+        [payrollRow({ hours_worked: 40, est_gross_pay: 610 })],
+        [soloRow({ solo_hours: 0, premium_cents: 0, remote_hours: 8 })],
+        1.0,
+      );
+      const row = m.rows[0];
+      expect(row.remote_hours).toBe(8);
+      expect(row.on_floor_hours).toBe(32);
+      // Remote is a slice of hours worked, so wages are untouched.
+      expect(row.hours_worked).toBe(40);
+      expect(row.total_wages).toBe(610);
+      expect(m.remoteHours).toBe(8);
+    });
+
+    it("reports remote hours for an ineligible employee too", () => {
+      // Remote is about where the shift was worked, not the pay rate. Reading it
+      // after the eligibility branch would blank the column for anyone at $16.25.
+      const m = mergeSoloPremium(
+        [payrollRow({ wage_rate_dollars: 16.25 })],
+        [
+          soloRow({
+            base_rate_dollars: 16.25,
+            eligible: false,
+            solo_hours: 0,
+            premium_cents: 0,
+            remote_hours: 6.5,
+          }),
+        ],
+        1.0,
+      );
+      expect(m.rows[0].remote_hours).toBe(6.5);
+      expect(m.rows[0].solo_premium).toBe(0);
+      expect(m.remoteHours).toBe(6.5);
+    });
+
+    it("clamps remote to hours worked so a punch edit cannot exceed the total", () => {
+      const m = mergeSoloPremium(
+        [payrollRow({ hours_worked: 5, est_gross_pay: 76.25 })],
+        [soloRow({ solo_hours: 0, premium_cents: 0, remote_hours: 8 })],
+        1.0,
+      );
+      expect(m.rows[0].remote_hours).toBe(5);
+      expect(m.rows[0].on_floor_hours).toBe(0);
+    });
+
+    it("defaults to zero remote when the solo view predates the migration", () => {
+      const m = mergeSoloPremium(
+        [payrollRow()],
+        [soloRow({ remote_hours: undefined as unknown as number })],
+        1.0,
+      );
+      expect(m.rows[0].remote_hours).toBe(0);
+      expect(m.rows[0].on_floor_hours).toBe(40);
+      expect(m.remoteHours).toBe(0);
+    });
+
+    it("zeroes remote for an employee with no solo row at all", () => {
+      const m = mergeSoloPremium([payrollRow()], [], 1.0);
+      expect(m.rows[0].remote_hours).toBe(0);
+      expect(m.rows[0].on_floor_hours).toBe(40);
+    });
   });
 });

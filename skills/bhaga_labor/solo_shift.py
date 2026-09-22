@@ -7,11 +7,18 @@ Pure module — no network, no IO, no clock — same contract as
 skills/tip_pool_allocation (bhaga.mdc invariant 1). People get paid from this
 output, so every threshold arrives as config rather than a literal.
 
-Two rules that are easy to get backwards:
+Three rules that are easy to get backwards:
 
-  * Occupancy counts EVERY punched employee, including the manager. Being
-    labor-excluded from the tip pool has nothing to do with whether a colleague
-    is physically in the shop. Eligibility is applied afterwards, separately.
+  * Occupancy counts every punched employee who is IN THE SHOP, including the
+    manager. Being labor-excluded from the tip pool has nothing to do with
+    whether a colleague is physically present. Eligibility is applied
+    afterwards, separately.
+  * A remote employee is punched in but not in the shop, so they neither occupy
+    the floor for anyone else nor earn solo minutes themselves. Their hours
+    still count in full — remote time lands in team_minutes. Treating a remote
+    shift as floor coverage silently suppressed a premium the coworker had
+    earned (live 2026-09-07: Tina worked 4.62h alone while the manager was
+    remote, and was paid base for all of it).
   * Sub-threshold solo runs are folded into team minutes, never dropped. That is
     what keeps solo + team == total (bhaga.mdc invariant 2).
 """
@@ -31,11 +38,28 @@ class SoloConfig(NamedTuple):
     eligible_base_rate_cents: int
     premium_rate_cents: int
     effective_date: str  # ISO; punches before this earn no premium
+    # (date, employee) shifts worked away from the shop. Default empty: an
+    # unannotated shift is treated as on the floor, which is the safe reading of
+    # silence for occupancy but does under-pay when an annotation is missed.
+    remote_days: frozenset[tuple[str, str]] = frozenset()
 
     @property
     def premium_delta_cents(self) -> int:
         """Per-hour uplift in cents (e.g. $16.25 - $15.25 = 100)."""
         return self.premium_rate_cents - self.eligible_base_rate_cents
+
+    def is_remote(self, date: str, employee: str) -> bool:
+        """Was ``employee`` working away from the shop on ``date``?
+
+        Compared case- and whitespace-insensitively: the config is hand-edited,
+        and "krause, lindsay" must not quietly fail to match a punch row.
+        """
+        return (date.strip(), employee.strip().casefold()) in self.remote_days
+
+
+def remote_day_key(date: str, employee: str) -> tuple[str, str]:
+    """Normalise one remote-shift annotation for :attr:`SoloConfig.remote_days`."""
+    return (date.strip(), employee.strip().casefold())
 
 
 class SoloDay(NamedTuple):
@@ -48,6 +72,9 @@ class SoloDay(NamedTuple):
     total_minutes: int
     eligible: bool
     premium_cents: int
+    # Subset of team_minutes worked away from the shop. Reported so the console
+    # can show why an employee with hours has no solo time.
+    remote_minutes: int = 0
 
 
 def parse_hhmm(value: str | None) -> int | None:
@@ -156,13 +183,20 @@ def attribute_day(
 
     ``day_intervals`` is canonical-name -> punch intervals; callers must have
     already resolved aliases (bhaga.mdc invariant 10).
+
+    Employees listed in ``config.remote_days`` for ``date`` still get a row with
+    their full hours; those hours are all team, and all flagged remote.
     """
     merged = {emp: merge_intervals(ivs) for emp, ivs in day_intervals.items()}
     merged = {emp: ivs for emp, ivs in merged.items() if ivs}
     if not merged:
         return []
 
-    runs = solo_blocks(merged)
+    # Occupancy is computed over the people actually in the shop. Remote staff
+    # are excluded here and never appear in `runs`, so they cannot mask a
+    # coworker's solo block nor collect one of their own.
+    remote = {emp for emp in merged if config.is_remote(date, emp)}
+    runs = solo_blocks({emp: ivs for emp, ivs in merged.items() if emp not in remote})
     in_effect = date >= config.effective_date
 
     out: list[SoloDay] = []
@@ -189,6 +223,7 @@ def attribute_day(
                 total_minutes=total,
                 eligible=eligible,
                 premium_cents=premium,
+                remote_minutes=total if employee in remote else 0,
             )
         )
     return out

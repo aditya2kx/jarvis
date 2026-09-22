@@ -8,6 +8,7 @@ function row(over: Partial<LaborSoloHoursRow> = {}): LaborSoloHoursRow {
     solo_hours: 0,
     team_hours: 0,
     total_hours: 0,
+    remote_hours: 0,
     base_rate_dollars: 15.25,
     eligible: true,
     premium_cents: 0,
@@ -23,6 +24,36 @@ describe("summarizeSoloHours (Issue #309)", () => {
     ]);
     expect(summary.rows.map((r) => r.employee)).toEqual(["Alone, Amy"]);
     expect(summary.people).toBe(1);
+  });
+
+  it("keeps a remote colleague as the explanation for someone else's solo", () => {
+    // Without this row the panel contradicts itself: Amy alone for 8h while a
+    // colleague was clocked in for the same 8h.
+    const summary = summarizeSoloHours([
+      row({ employee: "Alone, Amy", solo_hours: 8, total_hours: 8 }),
+      row({
+        employee: "Krause, Lindsay",
+        solo_hours: 0,
+        team_hours: 8,
+        total_hours: 8,
+        remote_hours: 8,
+      }),
+    ]);
+    expect(summary.rows.map((r) => r.employee)).toEqual([
+      "Alone, Amy",
+      "Krause, Lindsay",
+    ]);
+    expect(summary.remoteHours).toBe(8);
+    // The remote row is context, not a premium recipient.
+    expect(summary.people).toBe(1);
+  });
+
+  it("still drops someone who was neither solo nor remote", () => {
+    const summary = summarizeSoloHours([
+      row({ employee: "Never, Nick", team_hours: 8, total_hours: 8 }),
+    ]);
+    expect(summary.rows).toEqual([]);
+    expect(summary.remoteHours).toBe(0);
   });
 
   it("sums solo hours without float drift", () => {
@@ -57,6 +88,7 @@ describe("summarizeSoloHours (Issue #309)", () => {
       soloHours: 0,
       premiumCents: 0,
       people: 0,
+      remoteHours: 0,
     });
   });
 

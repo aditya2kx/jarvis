@@ -186,6 +186,9 @@ export default async function PayrollPage({
   const solo = mergeSoloPremium(periodRows, soloRows, soloDelta);
   const displayRows: PayrollRowWithSolo[] = solo.rows;
   const showSolo = soloRows.length > 0;
+  // Remote is annotated per shift in store_config, so most periods have none and
+  // the column would be a wall of 0.00. Show it only when it carries information.
+  const showRemote = solo.remoteHours > 0;
 
   const hasAdpEarnings = periodRows.some(
     (p) => p.adp_wages_paid != null || p.adp_total_paid != null,
@@ -260,6 +263,15 @@ export default async function PayrollPage({
     // "of which" because the bare headers read as separate buckets to add up.
     { accessorKey: "hours_worked", header: "Total hours", meta: { format: { kind: "number", digits: 2, minDigits: 2 } } },
     { accessorKey: "ot_hours", header: "of which OT", meta: { format: { kind: "number", digits: 2, minDigits: 2 } } },
+    ...(showRemote
+      ? [
+          {
+            accessorKey: "remote_hours",
+            header: "of which remote",
+            meta: { format: { kind: "number" as const, digits: 2, minDigits: 2 } },
+          } satisfies ColumnDef<PayrollRowWithSolo>,
+        ]
+      : []),
     ...(showSolo
       ? [
           {
@@ -536,15 +548,26 @@ export default async function PayrollPage({
             </p>
             {showSolo ? (
               <p className="text-xs text-muted-foreground">
-                Solo hrs are hours worked as the only person clocked in (a manager
-                on the clock counts, and runs under the minimum block do not), shown
-                only for employees at the eligible base rate on or after the
-                effective date. Solo wages are those hours at the solo rate — the
+                Solo hrs are hours worked as the only person <em>in the shop</em> (a
+                manager on the clock counts, but a shift worked remote does not, and
+                runs under the minimum block do not), shown only for employees at
+                the eligible base rate on or after the effective date. Solo wages are those hours at the solo rate — the
                 whole rate-2 line, not the uplift — and Primary wages are everything
                 else at base rate, including overtime. The two add up to Est. wages,
                 so Est. wages is a blended-rate figure whenever solo hours exist.
                 Each is keyed into ADP as its own rate line per employee — see
                 RUNBOOK § Solo-shift premium.
+              </p>
+            ) : null}
+            {showRemote ? (
+              <p className="text-xs text-muted-foreground">
+                Remote hrs are shifts worked away from the shop
+                ({formatHours(solo.remoteHours)}h this period). They are a slice of
+                Total hours and paid normally — they simply are not floor coverage,
+                so they never earn solo and they do not stop a coworker from being
+                solo. A shift is remote only if annotated in{" "}
+                <code className="font-mono">solo_shift_remote_days</code>; anything
+                unannotated counts as on the floor.
               </p>
             ) : null}
             {soloGap.length ? (

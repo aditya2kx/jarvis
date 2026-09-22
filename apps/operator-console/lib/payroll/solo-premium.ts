@@ -23,6 +23,15 @@ export interface PayrollRowWithSolo extends PayrollPeriodRow {
   primary_wages: number;
   /** Primary + solo. The blended-rate figure, and what ADP will gross to. */
   total_wages: number;
+  /**
+   * Hours worked away from the shop (migration 072). A slice of `hours_worked`,
+   * not an addition to it, and never premium-bearing — remote time is not floor
+   * coverage. Shown so an operator can see why someone has hours but no solo
+   * time, instead of reading it as a missing premium.
+   */
+  remote_hours: number;
+  /** `hours_worked - remote_hours`. Time actually in the shop. */
+  on_floor_hours: number;
 }
 
 export interface SoloPremiumMerge {
@@ -35,6 +44,8 @@ export interface SoloPremiumMerge {
   soloWages: number;
   primaryWages: number;
   totalWages: number;
+  /** Period total of hours worked away from the shop. */
+  remoteHours: number;
   /**
    * Total wages / total hours, or null with no hours. Reported rather than
    * assumed: with only some hours at the premium the effective rate is neither
@@ -105,11 +116,24 @@ export function mergeSoloPremium(
   let soloWages = 0;
   let primaryWages = 0;
   let totalHours = 0;
+  let remoteHours = 0;
 
   const merged = rows.map((row) => {
     const gross = Number(row.est_gross_pay) || 0;
-    totalHours += Number(row.hours_worked) || 0;
+    const worked = Number(row.hours_worked) || 0;
+    totalHours += worked;
     const match = byName.get(nameKey(String(row.employee ?? "")));
+
+    // Remote is a property of where the shift was worked, not of pay rate, so it
+    // is read before the eligibility branch: an employee at $16.25 can work
+    // remote too, and the column would otherwise be blank for them.
+    const remote = Math.min(Number(match?.remote_hours) || 0, worked);
+    remoteHours += remote;
+    const location = {
+      remote_hours: remote,
+      on_floor_hours: Math.round((worked - remote) * 100) / 100,
+    };
+
     if (!match || !match.eligible) {
       // No solo rate in play: every wage dollar is primary, so the breakdown
       // still adds up for employees who are not eligible at all.
@@ -121,6 +145,7 @@ export function mergeSoloPremium(
         solo_wages: 0,
         primary_wages: gross,
         total_wages: gross,
+        ...location,
       };
     }
 
@@ -183,6 +208,7 @@ export function mergeSoloPremium(
       primary_wages: primaryWage,
       total_wages: totalWage,
       est_total_pay: (Number(row.est_total_pay) || 0) + cents / 100,
+      ...location,
     };
   });
 
@@ -196,6 +222,7 @@ export function mergeSoloPremium(
     soloWages: Math.round(soloWages * 100) / 100,
     primaryWages: Math.round(primaryWages * 100) / 100,
     totalWages,
+    remoteHours: Math.round(remoteHours * 100) / 100,
     blendedRate:
       totalHours > 0 ? Math.round((totalWages / totalHours) * 100) / 100 : null,
   };

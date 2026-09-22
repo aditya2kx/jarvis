@@ -114,11 +114,18 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 11. **`solo_hours + team_hours == total_hours`, exactly, at integer minutes** (Issue #309).
     `skills/bhaga_labor/solo_shift.py` is pure like invariant 1. A solo run shorter than
     `solo_shift_min_block_minutes` is folded into `team_minutes`, never dropped — dropping it is the
-    obvious-looking change that silently breaks the identity. Occupancy counts **every** punched
-    employee including the salaried manager; premium **eligibility** is a separate, later filter, so
-    never conflate "excluded from labor % / tip pool" with "not present in the shop". Punch names go
+    obvious-looking change that silently breaks the identity. Occupancy counts every punched
+    employee **who is in the shop**, including the salaried manager; premium **eligibility** is a
+    separate, later filter, so never conflate "excluded from labor % / tip pool" with "not present in
+    the shop". Punch names go
     through the alias map before any grouping (invariant 10 applies to this read path too:
     `adp_scheduled_shifts` says `"Johnson, Dolce J"` where `adp_punches` says `"Johnson, Dolce"`).
+    **A remote shift is not floor coverage.** Shifts listed in `solo_shift_remote_days` are excluded
+    from occupancy and earn no solo minutes, while keeping their hours in full (they land in
+    `team_minutes`, and `remote_minutes` reports the slice). Being clocked in is not the same as being
+    present: on 2026-09-07 the manager worked remote, so Tina was alone 4.62 h and was paid base for
+    all of it. An **unannotated** shift counts as on the floor, which under-pays silently when an
+    annotation is missed — the reason a per-shift location source is tracked in #332.
 12. **A premium may never raise the base rate that decides who earns it.** Solo-shift eligibility
     compares an employee's base rate to `solo_shift_eligible_base_rate_dollars`, and the premium is
     paid as a second `Regular` earnings line on the *same check*. `infer_wage_rates` therefore takes

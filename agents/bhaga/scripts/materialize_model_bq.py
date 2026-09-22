@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import pathlib
 import sys
@@ -58,6 +59,7 @@ from skills.bhaga_labor.solo_shift import (
     SoloConfig,
     attribute_day,
     intervals_from_punches,
+    remote_day_key,
 )
 from skills.store_profile import load_aliases, load_exclusions
 
@@ -298,7 +300,40 @@ _SOLO_CONFIG_DEFAULTS: dict[str, str] = {
     "solo_shift_eligible_base_rate_dollars": "15.25",
     "solo_shift_premium_rate_dollars": "16.25",
     "solo_shift_effective_date": "2026-09-07",
+    "solo_shift_remote_days": "[]",
 }
+
+
+def parse_remote_days(raw: str | None) -> frozenset[tuple[str, str]]:
+    """``'[{"date": "2026-09-07", "employee": "Krause, Lindsay"}]'`` -> key set.
+
+    Malformed JSON yields an empty set rather than an exception: a typo in a
+    hand-edited config must not take the nightly materialize down. It does
+    under-pay the affected shift, so the caller warns loudly.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return frozenset()
+    try:
+        entries = json.loads(text)
+    except (ValueError, TypeError):
+        print(
+            "[materialize] BREADCRUMB solo_remote_days_unparseable "
+            f"len={len(text)} — treating every shift as on-floor"
+        )
+        return frozenset()
+    if not isinstance(entries, list):
+        print("[materialize] BREADCRUMB solo_remote_days_not_a_list — ignoring")
+        return frozenset()
+    keys: set[tuple[str, str]] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        date = str(entry.get("date") or "").strip()
+        employee = str(entry.get("employee") or "").strip()
+        if date and employee:
+            keys.add(remote_day_key(date, employee))
+    return frozenset(keys)
 
 
 def load_solo_config(store: str) -> SoloConfig:
@@ -312,6 +347,10 @@ def load_solo_config(store: str) -> SoloConfig:
     def _val(key: str) -> str:
         return get_config(store, key) or _SOLO_CONFIG_DEFAULTS[key]
 
+    remote_days = parse_remote_days(_val("solo_shift_remote_days"))
+    if remote_days:
+        print(f"[materialize] solo remote shifts annotated: {len(remote_days)}")
+
     return SoloConfig(
         min_block_minutes=int(float(_val("solo_shift_min_block_minutes"))),
         eligible_base_rate_cents=round(
@@ -321,6 +360,7 @@ def load_solo_config(store: str) -> SoloConfig:
             float(_val("solo_shift_premium_rate_dollars")) * 100
         ),
         effective_date=_val("solo_shift_effective_date"),
+        remote_days=remote_days,
     )
 
 
@@ -341,6 +381,7 @@ def build_solo_hours_rows(
         "solo_minutes", "team_minutes", "total_minutes",
         "solo_hours", "team_hours", "total_hours",
         "base_rate_dollars", "eligible", "premium_cents",
+        "remote_minutes", "remote_hours",
     ]
 
     base_rate_cents: dict[str, int] = {}
@@ -366,6 +407,8 @@ def build_solo_hours_rows(
                 round(r.total_minutes / 60.0, 4),
                 base_rate_dollars.get(r.employee, ""),
                 r.eligible, r.premium_cents,
+                r.remote_minutes,
+                round(r.remote_minutes / 60.0, 4),
             ])
     return rows
 

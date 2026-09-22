@@ -294,7 +294,7 @@ Until this ships and the Cloud Run image is redeployed, **prod's nightly does no
 all**, so the gap reappears daily and the command above is the only thing that closes it. Caught on
 2026-09-20: the closing cycle read 12.24h/$12.24 against an actual 20.16h, one employee ~$8 short.
 
-The four tunables live in `bhaga.store_config` — change them with `/bhaga-cloud config set`, never a
+The tunables live in `bhaga.store_config` — change them with `/bhaga-cloud config set`, never a
 code deploy (user-preferences #29):
 
 | Key | Meaning |
@@ -303,6 +303,37 @@ code deploy (user-preferences #29):
 | `solo_shift_eligible_base_rate_dollars` | Base rate that qualifies for the premium |
 | `solo_shift_premium_rate_dollars` | Rate paid for solo hours |
 | `solo_shift_effective_date` | First date the premium applies |
+| `solo_shift_remote_days` | JSON list of shifts worked away from the shop |
+
+#### Remote shifts are not floor coverage
+
+Someone clocked in from home does not stop a colleague from being solo, and does not earn solo
+themselves — their hours are still paid in full, they just are not coverage. Annotate those shifts:
+
+```bash
+# Read what is currently annotated
+python3 -c "from core.store_config import get_config; \
+  print(get_config('palmetto', 'solo_shift_remote_days'))"
+
+# Replace the list (it is a whole-value write, so include the entries you are keeping)
+python3 -c "
+import json
+from core.store_config import set_config
+set_config('palmetto', 'solo_shift_remote_days', json.dumps([
+    {'date': '2026-09-07', 'employee': 'Krause, Lindsay'},
+    {'date': '2026-09-23', 'employee': 'Krause, Lindsay'},
+]), updated_by='operator:<name>')
+"
+# then re-materialize, or the annotation changes nothing:
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.materialize_model_bq --store palmetto
+```
+
+Employee names are canonical (alias-resolved) and matched case-insensitively. The granularity is
+whole-day per employee; a half-remote day is not expressible yet (#332). **An unannotated shift counts
+as on the floor**, so a missed annotation under-pays silently rather than erring — check `/payroll`
+for an "of which remote" column before approving a cycle where someone worked from home. Caught live
+2026-09-07: the manager was remote, Tina was alone 4.62h, and the premium read $0 for her until the
+shift was annotated.
 
 Get the numbers to key (this is read-only and safe to run any time):
 
@@ -1653,7 +1684,7 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 - **ADP payroll draft (Issue #251):** After the biweek **Sunday** is in BQ (from `bhaga-nightly` 21:30 CT), **Monday 07:00 CT** `bhaga-payroll-draft` runs **headless** Start→Preview and **leaves the draft**. Never Approve/Save. `/payroll`: hide ADP chrome on the **open** biweek; closed unpaid is **Run ADP Preview** XOR **Preview done** (hours + total pay vs last Preview Gross — **no Preview URL**, those hashes 404); paid history is **Open ADP payroll** (`#xfm-Payroll Detail`). Operator logs in as themselves. `bhaga-nightly` does **not** Start payroll. Cloud Run Job **default env has no `BHAGA_ADP_PAYROLL_DRAFT`** (verified 2026-08-24 `gcloud run jobs describe bhaga-daily-refresh`); only the Monday scheduler override sets it. Visible Chromium only with `BHAGA_ADP_HEADED=1`. Next auto: **Mon Sep 7 07:00 CT**. Manual: `python3 -m skills.adp_run_automation.payroll_draft_backend --store palmetto --period-start YYYY-MM-DD --period-end YYYY-MM-DD --no-dry-run --allow-prod-draft --allow-start`.
 - **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
 - **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`, `model_solo_hours_daily`
-- **Solo-shift premium (Issue #309):** `model_solo_hours_daily` (employee × date solo/team split from `adp_punches` occupancy) + `vw_solo_hours_daily` / `vw_solo_hours_period`. Tunables in `store_config`; keying steps above. `solo_hours + team_hours = total_hours` always.
+- **Solo-shift premium (Issue #309):** `model_solo_hours_daily` (employee × date solo/team split from `adp_punches` occupancy) + `vw_solo_hours_daily` / `vw_solo_hours_period`. Tunables in `store_config`; keying steps above. `solo_hours + team_hours = total_hours` always. `remote_hours` (migration 072) is a slice of `team_hours` for shifts worked away from the shop — excluded from occupancy, never premium-bearing, annotated in `solo_shift_remote_days`.
 - **Pipeline run log:** `pipeline_runs` (migration 016) — one appended row per terminal outcome; queried via `vw_pipeline_runs`
 - **Source pull log:** `source_pulls` (migration 017) — one appended row per per-source pull attempt; queried via `vw_source_pulls`
 - **Model views (Operator Console / BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`, `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions`, `vw_pipeline_runs`, `vw_source_pulls`

@@ -138,6 +138,10 @@ BQ_TARGETS: list[Target] = [
     # projections of the table above, read only by the console Labor page — no
     # Grafana panel and no independent freshness signal, so no GRAFANA_VIEWS
     # entry (same class as vw_inventory_base_runway / 035-036).
+    # migration 072 adds remote_minutes/remote_hours to that same table and
+    # republishes those same two views — no new target: the freshness signal is
+    # still the table's `date`, and remote hours are only ever written by the
+    # same nightly walk. Registering the views would double-count one signal.
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —
     # intentionally NOT a BQ_TARGETS entry (same class as store_config /

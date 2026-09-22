@@ -270,6 +270,16 @@ BigQuery is the **source of truth**. Operator Console reads BQ views. BHAGA Graf
 > `solo_hours + team_hours = total_hours` is asserted in unit tests. Additive only — no existing
 > labor-cost or tip-allocation column changes.
 >
+> **Remote shifts (migration 072, Issue #309 follow-up):** `remote_minutes` / `remote_hours` on the
+> same table, plus `remote_hours` / `on_floor_hours` on both views. A shift worked away from the shop
+> is excluded from the occupancy walk in `attribute_day`, so it neither masks a coworker's solo block
+> nor earns solo minutes itself, while its hours still count — remote is a **subset of
+> `team_minutes`**, never a fourth bucket, which is what keeps the reconciliation identity exact.
+> Annotations come from `store_config.solo_shift_remote_days` (JSON `[{date, employee}]`) via
+> `parse_remote_days`, which degrades to "nobody remote" on malformed JSON with a breadcrumb rather
+> than failing the nightly run. Whole-day grain per employee; per-punch location is #332. No new
+> `BQ_TARGETS` entry — same table, same nightly freshness signal.
+>
 > **ADP Preview runs (migration 065–066, Issue #251):** `payroll_draft_runs` stores last Start→Preview `status` + `preview_hours` / `preview_gross` per biweek. Console `/payroll` shows **Run ADP Preview** or **Preview done** (hours + total pay vs last Preview). No Preview URL — ADP session hashes 404. Paid periods still use **Open ADP payroll**. Not model_* / Grafana — no new `BQ_TARGETS`/`GRAFANA_VIEWS`.
 
 Three supported ways to add information. Recipes A & B keep the raw → model contract intact (read raw

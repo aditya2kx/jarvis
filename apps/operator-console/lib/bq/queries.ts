@@ -308,6 +308,8 @@ export interface LaborSoloHoursRow {
   solo_hours: number;
   team_hours: number;
   total_hours: number;
+  /** Away from the shop (migration 072): a slice of team_hours, never solo. */
+  remote_hours: number;
   base_rate_dollars: number | null;
   eligible: boolean;
   premium_cents: number;
@@ -323,6 +325,7 @@ export function laborSoloHoursPerPerson(
        ROUND(SUM(solo_minutes) / 60.0, 2)  AS solo_hours,
        ROUND(SUM(team_minutes) / 60.0, 2)  AS team_hours,
        ROUND(SUM(total_minutes) / 60.0, 2) AS total_hours,
+       ROUND(SUM(COALESCE(remote_minutes, 0)) / 60.0, 2) AS remote_hours,
        ANY_VALUE(base_rate_dollars)        AS base_rate_dollars,
        LOGICAL_OR(eligible)                AS eligible,
        SUM(premium_cents)                  AS premium_cents
@@ -1662,6 +1665,13 @@ export interface PayrollSoloPremiumRow {
   solo_hours: number;
   team_hours: number;
   total_hours: number;
+  /**
+   * Hours worked away from the shop (migration 072). A subset of `team_hours`,
+   * never an addition to `total_hours` — remote time can never be solo, so it
+   * explains why someone with hours has no solo time.
+   */
+  remote_hours: number;
+  on_floor_hours: number;
   base_rate_dollars: number | null;
   eligible: boolean;
   premium_cents: number;
@@ -1683,6 +1693,7 @@ export function payrollSoloPremium(
   return q<PayrollSoloPremiumRow>(
     `SELECT
        employee, solo_minutes, solo_hours, team_hours, total_hours,
+       remote_hours, on_floor_hours,
        base_rate_dollars, eligible, premium_cents
      FROM ${fq("vw_solo_hours_period")}
      WHERE period_start = @periodStart

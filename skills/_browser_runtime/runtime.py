@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import json
 import os
 import pathlib
 import re
@@ -313,6 +314,112 @@ def launch_persistent(
         pw.stop()
 
 
+def _portal_profile_dir(portal: str) -> "pathlib.Path | None":
+    """Stable Chromium profile for ``portal``, or None to stay ephemeral.
+
+    Opt out with ``BHAGA_BROWSER_PROFILE=0``. Off by default on Cloud Run, whose
+    filesystem does not survive an execution: a profile that cannot outlive the
+    process buys nothing and a half-written one is worse than none.
+    """
+    if os.environ.get("BHAGA_BROWSER_PROFILE", "").strip() in ("0", "false", "no"):
+        return None
+    if os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"):
+        return None
+    try:
+        root = pathlib.Path(
+            os.environ.get("BHAGA_BROWSER_PROFILE_DIR")
+            or (pathlib.Path.home() / ".bhaga" / "browser-profiles")
+        )
+        d = root / portal
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[runtime] WARN: no persistent profile for {portal} "
+            f"({type(exc).__name__}: {exc}); continuing ephemeral",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _clear_stale_singleton(profile_dir: "pathlib.Path", *, portal: str) -> None:
+    """Drop Chromium's singleton lock when the process that held it is gone.
+
+    A run that is killed rather than closed (timeout, Ctrl-C, OOM) leaves
+    ``SingletonLock`` behind, and the next launch aborts outright with "Failed to
+    create a ProcessSingleton for your profile directory" — a dead lock file
+    blocking every subsequent run. Only removed when its PID is not alive, so a
+    genuinely concurrent run is still allowed to win.
+    """
+    lock = profile_dir / "SingletonLock"
+    try:
+        if not lock.is_symlink() and not lock.exists():
+            return
+        holder = os.readlink(lock) if lock.is_symlink() else ""
+        pid = int(holder.rsplit("-", 1)[-1]) if "-" in holder else -1
+    except Exception:  # noqa: BLE001
+        pid = -1
+
+    if pid > 0:
+        try:
+            os.kill(pid, 0)  # signal 0 only tests for existence
+        except ProcessLookupError:
+            pass  # holder is dead → safe to clear
+        except PermissionError:
+            return  # alive and owned by someone else
+        else:
+            print(
+                f"[runtime] {portal}: profile is locked by live pid {pid}; "
+                f"launching ephemeral instead",
+                file=sys.stderr,
+            )
+            raise _ProfileUnavailable(f"profile busy (pid {pid})")
+
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        try:
+            (profile_dir / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    print(
+        f"[runtime] {portal}: cleared a stale singleton lock (pid={pid}) "
+        f"left by a killed run",
+        file=sys.stderr,
+    )
+
+
+class _ProfileUnavailable(RuntimeError):
+    """The persistent profile cannot be used; fall back to ephemeral."""
+
+
+def _seed_cookies(context, storage_state: str, *, portal: str) -> None:
+    """Add cookies from a persisted jar to a profile that lacks them.
+
+    Never raises: a seeding failure costs one login, and must not fail a run.
+    """
+    try:
+        with open(storage_state, "r", encoding="utf-8") as fh:
+            cookies = (json.load(fh) or {}).get("cookies") or []
+        if not cookies:
+            return
+        have = {(c.get("name"), c.get("domain")) for c in context.cookies()}
+        fresh = [
+            c for c in cookies if (c.get("name"), c.get("domain")) not in have
+        ]
+        if fresh:
+            context.add_cookies(fresh)
+        print(
+            f"[runtime] {portal}: seeded {len(fresh)} cookie(s) into the profile "
+            f"({len(cookies) - len(fresh)} already present)",
+            file=sys.stderr,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[runtime] WARN: cookie seed failed for {portal} "
+            f"({type(exc).__name__}: {exc})",
+            file=sys.stderr,
+        )
+
+
 def _start_browser_session(
     portal: str,
     *,
@@ -338,20 +445,12 @@ def _start_browser_session(
     backoff_ms = _launch_backoff_ms()
     channel = _resolve_browser_channel()
 
+    profile_dir = _portal_profile_dir(portal)
+
     for attempt in range(1, retries + 1):
         pw = sync_playwright().start()
         browser = None
         try:
-            # Ephemeral: launch a Chromium-family browser, then create an
-            # isolated context. No --user-data-dir → no persistent storage.
-            # In Docker/CI where only patchright-bundled Chromium is available,
-            # channel=None causes patchright to use its own binary.
-            browser = pw.chromium.launch(
-                channel=channel,
-                headless=not headed,
-                slow_mo=slow_mo_ms,
-                args=_launch_args(headed),
-            )
             ctx_kwargs = dict(
                 viewport=DEFAULT_VIEWPORT,
                 user_agent=REAL_UA,
@@ -362,14 +461,68 @@ def _start_browser_session(
                 timezone_id="America/Chicago",
                 locale="en-US",
             )
-            # Trusted-device reuse: seed cookies/localStorage from a previously
-            # persisted session so Square recognizes us and skips 2FA. Absent/
-            # invalid file → fresh jar (full login). See gcs_cache.*_session.
-            if storage_state and os.path.exists(storage_state):
-                ctx_kwargs["storage_state"] = storage_state
-                print(f"[runtime] {portal}: restoring trusted-device session", file=sys.stderr)
-            context = browser.new_context(**ctx_kwargs)
-            page = context.new_page()
+            if profile_dir is not None:
+                try:
+                    _clear_stale_singleton(profile_dir, portal=portal)
+                except _ProfileUnavailable:
+                    profile_dir = None
+
+            if profile_dir is not None:
+                # A real profile on disk, so the *device* persists and not merely
+                # the cookies. Restoring a cookie jar into a brand-new profile is
+                # what a stolen-cookie replay looks like to a risk engine, and
+                # ADP's step-up treated it as exactly that: 7 runs on 2026-09-21,
+                # 7 SMS codes, every one of them after a successful restore.
+                # Cookies alone were 0-for-7.
+                try:
+                    context = pw.chromium.launch_persistent_context(
+                        str(profile_dir),
+                        channel=channel,
+                        headless=not headed,
+                        slow_mo=slow_mo_ms,
+                        args=_launch_args(headed),
+                        **ctx_kwargs,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # A corrupt or locked profile costs one OTP; it must never
+                    # cost the run. Retrying the same profile would just fail the
+                    # same way, so drop it for the remaining attempts.
+                    print(
+                        f"[runtime] WARN: {portal} persistent profile unusable "
+                        f"({type(exc).__name__}: {str(exc)[:120]}); "
+                        f"falling back to an ephemeral profile",
+                        file=sys.stderr,
+                    )
+                    profile_dir = None
+                    raise _ProfileUnavailable(str(exc)[:200]) from exc
+                print(
+                    f"[runtime] {portal}: persistent browser profile {profile_dir}",
+                    file=sys.stderr,
+                )
+                if storage_state and os.path.exists(storage_state):
+                    # Seed only what the profile does not already carry; the
+                    # profile is authoritative once it has been through a login.
+                    _seed_cookies(context, storage_state, portal=portal)
+                page = context.pages[0] if context.pages else context.new_page()
+            else:
+                # Ephemeral: launch a Chromium-family browser, then create an
+                # isolated context. No --user-data-dir → no persistent storage.
+                # In Docker/CI where only patchright-bundled Chromium is available,
+                # channel=None causes patchright to use its own binary.
+                browser = pw.chromium.launch(
+                    channel=channel,
+                    headless=not headed,
+                    slow_mo=slow_mo_ms,
+                    args=_launch_args(headed),
+                )
+                # Trusted-device reuse: seed cookies/localStorage from a previously
+                # persisted session so Square recognizes us and skips 2FA. Absent/
+                # invalid file → fresh jar (full login). See gcs_cache.*_session.
+                if storage_state and os.path.exists(storage_state):
+                    ctx_kwargs["storage_state"] = storage_state
+                    print(f"[runtime] {portal}: restoring trusted-device session", file=sys.stderr)
+                context = browser.new_context(**ctx_kwargs)
+                page = context.new_page()
             if attempt > 1:
                 print(
                     f"[runtime] {portal} chromium launch recovered on attempt "
@@ -389,7 +542,17 @@ def _start_browser_session(
             except Exception:  # noqa: BLE001
                 pass
 
-            retryable = _is_retryable_launch_error(exc)
+            # A dropped profile is always worth one more attempt: `profile_dir`
+            # is already None, so the retry takes the ephemeral path and the run
+            # survives at the price of a login.
+            retryable = isinstance(exc, _ProfileUnavailable) or _is_retryable_launch_error(exc)
+            if isinstance(exc, _ProfileUnavailable) and attempt == retries:
+                print(
+                    f"[runtime] {portal}: profile fallback had no attempt left "
+                    f"(attempt {attempt}/{retries}); raise BHAGA_BROWSER_LAUNCH_RETRIES "
+                    f"or clear {_portal_profile_dir(portal)}",
+                    file=sys.stderr,
+                )
             if not retryable or attempt == retries:
                 print(
                     f"[runtime] {portal} chromium launch failed "

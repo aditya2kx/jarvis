@@ -11,8 +11,12 @@ def _wire(monkeypatch, reply_text):
     sent = {}
     monkeypatch.setattr(adapter, "send_message",
                         lambda ch, msg, agent=None: sent.setdefault("ts", {"ts": "1"}) or {"ts": "1"})
-    monkeypatch.setattr(adapter, "read_replies",
-                        lambda ch, oldest=None, limit=5: [{"ts": "2", "user": "U1", "text": reply_text}])
+    monkeypatch.setattr(
+        adapter, "read_replies",
+        lambda ch, oldest=None, limit=5, agent=None: [
+            {"ts": "2", "user": "U1", "text": reply_text}
+        ],
+    )
     monkeypatch.setattr(adapter.time, "sleep", lambda s: None)
 
 

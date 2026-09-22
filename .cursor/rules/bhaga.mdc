@@ -111,6 +111,29 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
     This helper resolves aliases and raises `ValueError` loudly on unknown names. The read side in
     `materialize()` also normalizes `training_shifts` and `training_through` through the alias map.
     The only permitted exception is `_handle_alias_set` (which defines the mapping itself).
+11. **`solo_hours + team_hours == total_hours`, exactly, at integer minutes** (Issue #309).
+    `skills/bhaga_labor/solo_shift.py` is pure like invariant 1. A solo run shorter than
+    `solo_shift_min_block_minutes` is folded into `team_minutes`, never dropped — dropping it is the
+    obvious-looking change that silently breaks the identity. Occupancy counts every punched
+    employee **who is in the shop**, including the salaried manager; premium **eligibility** is a
+    separate, later filter, so never conflate "excluded from labor % / tip pool" with "not present in
+    the shop". Punch names go
+    through the alias map before any grouping (invariant 10 applies to this read path too:
+    `adp_scheduled_shifts` says `"Johnson, Dolce J"` where `adp_punches` says `"Johnson, Dolce"`).
+    **A remote shift is not floor coverage.** Shifts listed in `solo_shift_remote_days` are excluded
+    from occupancy and earn no solo minutes, while keeping their hours in full (they land in
+    `team_minutes`, and `remote_minutes` reports the slice). Being clocked in is not the same as being
+    present: on 2026-09-07 the manager worked remote, so Tina was alone 4.62 h and was paid base for
+    all of it. An **unannotated** shift counts as on the floor, which under-pays silently when an
+    annotation is missed — the reason a per-shift location source is tracked in #332.
+12. **A premium may never raise the base rate that decides who earns it.** Solo-shift eligibility
+    compares an employee's base rate to `solo_shift_eligible_base_rate_dollars`, and the premium is
+    paid as a second `Regular` earnings line on the *same check*. `infer_wage_rates` therefore takes
+    the **lowest** rate on the newest `check_date`
+    (`compensation_backend._base_rate_from_history`), not the first row: taking the newest row was
+    both ambiguous between rows sharing a `check_date` and self-defeating, since the first premium
+    payroll would have lifted the base rate and silently ended eligibility for everyone it just paid.
+    Any future rate-derived eligibility rule must be checked for this same feedback loop.
 
 ## Edge cases
 
@@ -150,13 +173,34 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
 - **OTP via Slack, never the IDE.** ADP 2FA codes are requested inline via the Firestore+webhook
   round-trip (only when ADP actually challenges). The operator is not at a laptop. Announce any
   action that fires an SMS/email before triggering it.
-- **The ADP trusted-device session must stay wired.** `download_adp_bundle` restores
-  `_session/adp-palmetto.json` from GCS into the browser context and re-uploads it right after a
-  successful login (`BHAGA_SESSION_PERSIST=1`). Without that round-trip every ADP login presents a
-  fresh cookie jar and is exposed whenever ADP's risk engine challenges — which is the state Issue
-  #305 found: `upload_session`/`download_session` existed with **zero callers** and no ADP session
-  object had ever been written. `storage_state` being accepted by `launch_persistent` is not
+- **Every ADP browser launch goes through `runner.adp_session()`.** It restores
+  `_session/adp-palmetto.json` from GCS, logs in, then re-uploads the jar immediately (not at block
+  exit — a partial run should still leave the next one a recognised session). Gated on
+  `BHAGA_SESSION_PERSIST=1`. Issue #305 wired this into `download_adp_bundle` only, so the payroll
+  draft, pay-info scrape and payroll-home dump each still started from a fresh jar and paid their own
+  2FA SMS; `test_session_persist.py::TestEveryAdpEntryPointIsWired` now fails the build on any direct
+  `launch_persistent(portal="adp")`. `storage_state` being accepted by `launch_persistent` is not
   evidence it is used; grep for a caller.
+- **This is session reuse, not device trust — do not promise "no more OTP".** ADP's only auth cookie
+  (`SMSESSION`) is a *session* cookie, so a restored jar helps solely inside ADP's server-side idle
+  window: a burst of runs costs one code, a run the next morning is challenged again. Verified
+  against the live flow 2026-09-15: the admin step-up screen offers exactly one factor ("Send me a
+  text message"), carries **no** remember-this-device checkbox, offers **no** authenticator/TOTP
+  option, and shows no enrollment prompt after a correct code. ADP documents admin step-up as a
+  risk engine scoring each login against previous ones.
+- **The browser profile persists on the laptop, so cookie restore has a device to land on.**
+  Cookie-only reuse was measured at **0 for 7** on 2026-09-21 — seven ad-hoc runs in one morning,
+  seven SMS codes, every one of them logging `restoring trusted-device session` first. Replaying a
+  jar into a brand-new Chromium profile is what a stolen-cookie replay looks like to a risk engine,
+  which is the case step-up exists to catch. `_portal_profile_dir()` now gives each portal a stable
+  profile under `~/.bhaga/browser-profiles/<portal>`, and `launch_persistent` uses
+  `launch_persistent_context` when it is available; the saved jar only seeds cookies the profile does
+  not already carry. Expect **one** code to establish a profile, then none until ADP ages it out.
+  Opt out with `BHAGA_BROWSER_PROFILE=0`. Cloud Run stays ephemeral on purpose (`K_SERVICE` check) —
+  its filesystem does not outlive an execution, so there the cookie jar remains the only lever.
+- **`BHAGA_SESSION_PERSIST` defaults to on.** It was opt-in and set only in the deploy workflow, so
+  every command run by hand silently started from a fresh jar and interrupted the operator for a code.
+  A flag whose only failure mode is an SMS to a human must not need remembering.
 - **Square scrape/OTP login is serialized across Cloud Run executions, not just within a container.**
   `_acquire_scrape_lock` uses a TTL-based Firestore distributed lock (`runs/_lock_scrape-square-<store>`,
   default 1 h TTL). A second execution that tries to scrape while a first is in flight receives

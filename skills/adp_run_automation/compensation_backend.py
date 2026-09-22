@@ -258,6 +258,23 @@ def parse_xlsx(
 # ── Wage-rate inference ───────────────────────────────────────────
 
 
+def _base_rate_from_history(rate_history: list[dict]) -> float:
+    """Base hourly rate from Regular earnings, newest check_date first.
+
+    A single check can carry several Regular rates. Solo-shift pay (#309) puts
+    team hours at $15.25 and solo hours at $16.25 on the same check, and a
+    mid-period raise splits a check the same way. Taking ``rate_history[0]`` was
+    ambiguous between rows sharing a check_date, and it let the premium lift the
+    base rate that decides who earns the premium — so the first premium payroll
+    would silently end eligibility for everyone it paid.
+
+    The floor of the newest check is the base: a premium is only ever an uplift,
+    and a raise is recognised one check late rather than lost.
+    """
+    newest = rate_history[0]["check_date"]
+    return min(r["rate"] for r in rate_history if r["check_date"] == newest)
+
+
 def infer_wage_rates(
     earnings: list[dict],
     *,
@@ -268,7 +285,9 @@ def infer_wage_rates(
     Inference rules (see selectors/compensation.json#wage_rate_inference_rules):
         1. Filter to Description in {'Regular'} with hours>0 and rate>0.
         2. Group by employee.
-        3. Most recent rate (by check_date desc) wins as wage_rate_dollars.
+        3. Most recent check_date wins; its lowest rate is wage_rate_dollars
+           (see _base_rate_from_history — the solo premium shares a check with
+           the base rate it must not raise).
         4. If multiple distinct rates, set multi_rate=True + include rate_history.
         5. If an employee has earnings but ZERO qualifying Regular rows,
            mark is_salaried=True with wage_rate_dollars=None.
@@ -333,7 +352,7 @@ def infer_wage_rates(
         rh = sorted(bucket["rate_history"], key=lambda x: x["check_date"], reverse=True)
         oh = sorted(bucket["ot_rate_history"], key=lambda x: x["check_date"], reverse=True)
         if rh:
-            bucket["wage_rate_dollars"] = rh[0]["rate"]
+            bucket["wage_rate_dollars"] = _base_rate_from_history(rh)
             distinct = {x["rate"] for x in rh}
             bucket["multi_rate"] = len(distinct) > 1
         else:

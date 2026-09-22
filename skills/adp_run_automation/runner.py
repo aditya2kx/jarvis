@@ -31,6 +31,7 @@ ADP quirks accounted for:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import json
 import math
@@ -674,10 +675,20 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
     from skills.slack.adapter import request_otp  # local import: optional dep
     from agents.bhaga.scripts.otp_gate import OtpWaitTimeout  # local import
 
+    # Never wait longer than ADP keeps the passcode page alive. The page states
+    # "This code is valid for 10 minutes" and then replaces itself with "Your
+    # session has timed out due to inactivity" — so a 1800 s wait guaranteed
+    # failure for any reply slower than ten minutes, and spent the operator's
+    # code submitting it into a dead page (live 2026-09-21: replied at ~15 min,
+    # code accepted by us, sign-in never navigated, run lost).
+    #
     # In inline-autostart mode the gate already returned PROCEED and set
-    # BHAGA_OTP_WAIT_S=900. Standalone/supervised callers with no env set keep
-    # the generous 1800 s default.
-    wait_s = int(os.environ.get("BHAGA_OTP_WAIT_S", "1800"))
+    # BHAGA_OTP_WAIT_S.
+    ADP_PASSCODE_TTL_S = 600
+    wait_s = min(
+        int(os.environ.get("BHAGA_OTP_WAIT_S", "1800")),
+        ADP_PASSCODE_TTL_S - 60,  # leave room to type it in and navigate
+    )
     print(f"[adp 2fa] requesting OTP via Slack for store={store!r} (wait={wait_s}s); SMS expected at +1-XXX-XXX-0038")
     code = request_otp(
         user_id="U0APJRE5DC4",       # operator (primary_user_id from config.yaml)
@@ -1020,6 +1031,7 @@ def download_timecard(
     headed: bool = True,
     slow_mo_ms: int = 50,
     keep_open_on_error: bool = False,
+    force: bool = False,
 ) -> pathlib.Path:
     """Open Reports > Time reports > Timecard, select pay periods, apply
     changes, click Export to Excel, save .xlsx.
@@ -1033,19 +1045,27 @@ def download_timecard(
     Idempotency: if today's Timecard XLSX is already on disk (CT-today mtime),
     skip the browser entirely and return the cached path. Eliminates
     duplicate ADP 2FA SMS on cron retries.
+
+    ``force=True`` re-downloads anyway. Same-day caching assumes punches only
+    change overnight, but an operator editing a missing punch at noon leaves the
+    morning's file — and therefore BigQuery — wrong until tomorrow. That is how
+    Huynh's hours stayed at 42.68 through a "refresh" on 2026-09-21 while the
+    payroll grid read 43.43.
     """
     expected = DOWNLOADS_DIR / f"Timecard-{datetime.date.today().isoformat()}.xlsx"
+    if force and expected.exists():
+        expected.unlink()
+        print(f"[adp_timecard] force=True — removed cached {expected.name}")
     if _xlsx_fresh_for_target(expected, target_date=target_date, min_bytes=10_000):
         print(f"[adp_timecard] SKIP browser — fresh Timecard XLSX already on disk: {expected}")
         return expected
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        _ensure_logged_in(page, store=store)
         path = _timecard_within_session(page, target_date=target_date, store=store)
         _write_target_meta(path, target_date)
         return path
@@ -1212,13 +1232,12 @@ def download_earnings(
     profile = _load_store_profile(store)
     report_name = profile["adp_run"].get("wage_rate_report_name", "Earnings and Hours V1")
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        _ensure_logged_in(page, store=store)
         path = _earnings_within_session(
             page, store=store, start=start, end=end, use_custom_range=True,
         )
@@ -1930,13 +1949,12 @@ def download_schedule(
         print(f"[adp_schedule] SKIP browser — fresh Schedule JSON already on disk: {expected}")
         return expected
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        _ensure_logged_in(page, store=store)
         payloads = _schedule_within_session(page, weeks=weeks)
         return _write_schedule_json(payloads, store=store)
 
@@ -1957,13 +1975,12 @@ def download_payroll_liability(
         print(f"[adp_liability] SKIP browser — fresh file: {out}")
         return out
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        _ensure_logged_in(page, store=store)
         page.wait_for_timeout(2000)
         page.evaluate(
             """() => {
@@ -2006,7 +2023,15 @@ def download_payroll_liability(
 
 
 def _session_persist_enabled() -> bool:
-    return os.environ.get("BHAGA_SESSION_PERSIST", "").strip() in ("1", "true", "yes")
+    """Save/restore the portal session unless explicitly disabled.
+
+    Was opt-in, which meant every ad-hoc command paid its own SMS because the
+    flag lived only in the deploy workflow. Defaulting it on removes a footgun
+    whose only symptom is an operator interruption.
+    """
+    return os.environ.get("BHAGA_SESSION_PERSIST", "1").strip() not in (
+        "0", "false", "no", ""
+    )
 
 
 def _restore_adp_session(*, store: str) -> Optional[str]:
@@ -2039,6 +2064,45 @@ def _persist_adp_session(ctx, *, store: str) -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"[adp_bundle] WARN: session persist failed (non-fatal): "
               f"{type(exc).__name__}: {exc}")
+
+
+@contextlib.contextmanager
+def adp_session(
+    *,
+    store: str,
+    headed: bool = True,
+    slow_mo_ms: int = 0,
+    keep_open_on_error: bool = False,
+):
+    """A logged-in ADP page that restores and re-saves the trusted-device jar.
+
+    Every ADP entry point must go through here. Restore/persist used to be wired
+    only into ``download_adp_bundle``, so the payroll draft, the pay-info scrape
+    and the payroll-home dump each started from a fresh cookie jar and paid their
+    own 2FA SMS — one operator interruption per entry point instead of per burst.
+    Folding the sequence into one context manager makes that impossible to forget
+    rather than merely documented.
+
+    Persist happens immediately after login, not at block exit: the caller's body
+    may fail partway, and a partial run should still leave the next one a
+    recognised device.
+
+    This buys session *reuse*, not durable device trust. ADP's only auth cookie
+    (``SMSESSION``) is a session cookie, and ADP's admin step-up is a risk engine
+    with no remember-device option and no authenticator factor (verified against
+    the live flow 2026-09-15). So a burst of runs costs one code instead of N, but
+    a run after ADP's idle window will still be challenged.
+    """
+    with launch_persistent(
+        portal="adp",
+        headed=headed,
+        slow_mo_ms=slow_mo_ms,
+        keep_open_on_error=keep_open_on_error,
+        storage_state=_restore_adp_session(store=store),
+    ) as (ctx, page):
+        _ensure_logged_in(page, store=store)
+        _persist_adp_session(ctx, store=store)
+        yield ctx, page
 
 
 def download_adp_bundle(
@@ -2173,18 +2237,12 @@ def download_adp_bundle(
     print(f"[adp_bundle] needs_timecard={needs_timecard} needs_earnings={needs_earnings} "
           f"needs_schedule={needs_schedule}; opening single browser session (one login, one OTP cost).")
 
-    with launch_persistent(
-        portal="adp",
+    with adp_session(
+        store=store,
         headed=headed,
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
-        storage_state=_restore_adp_session(store=store),
     ) as (ctx, page):
-        _ensure_logged_in(page, store=store)
-        # Save here rather than at block exit: a later component (timecard,
-        # schedule, liability) can fail, and a partial run should still leave
-        # the next one a trusted device.
-        _persist_adp_session(ctx, store=store)
         dashboard_url = page.url
         print(f"[adp_bundle] dashboard_url={dashboard_url}")
 
@@ -2446,7 +2504,8 @@ def main() -> int:
     cli.add_argument("--keep-open", action="store_true",
                      help="On error, leave browser open for manual inspection.")
     cli.add_argument("--force", action="store_true",
-                     help="(schedule) Re-scrape even if today's Schedule JSON is fresh.")
+                     help="(timecard/schedule) Re-scrape even if today's file is fresh. "
+                          "Needed after an operator edits punches mid-day.")
     cli.add_argument("--start", default=None,
                      help="(earnings only) Check-date From YYYY-MM-DD. "
                           "Pay-period dates are padded so the later check is included.")
@@ -2459,6 +2518,7 @@ def main() -> int:
             store=args.store,
             headed=not args.headless,
             keep_open_on_error=args.keep_open,
+            force=args.force,
         )
     elif args.scrape == "schedule":
         path = download_schedule(

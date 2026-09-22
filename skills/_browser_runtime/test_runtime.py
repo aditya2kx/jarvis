@@ -7,6 +7,9 @@ isolation. Run from the repo root: `python3 -m pytest skills/_browser_runtime/`.
 
 from __future__ import annotations
 
+import json
+import os
+
 import pytest
 
 from skills._browser_runtime import runtime
@@ -30,9 +33,19 @@ class FakePage:
 class FakeContext:
     def __init__(self) -> None:
         self.closed = False
+        self.pages: list[FakePage] = []
+        self.added_cookies: list[dict] = []
+        self._cookies: list[dict] = []
 
     def new_page(self) -> FakePage:
         return FakePage()
+
+    def cookies(self) -> list[dict]:
+        return list(self._cookies)
+
+    def add_cookies(self, cookies: list[dict]) -> None:
+        self.added_cookies.extend(cookies)
+        self._cookies.extend(cookies)
 
     def close(self) -> None:
         self.closed = True
@@ -55,6 +68,7 @@ class FakeChromium:
     def __init__(self, *, fail_times: int = 0, exc_factory=None) -> None:
         self.calls = 0
         self.launch_kwargs: list[dict] = []
+        self.profile_dirs: list[str] = []
         self.fail_times = fail_times
         self.exc_factory = exc_factory or TargetClosedError
 
@@ -64,6 +78,15 @@ class FakeChromium:
         if self.calls <= self.fail_times:
             raise self.exc_factory()
         return FakeBrowser()
+
+    def launch_persistent_context(self, user_data_dir, **kwargs):
+        """The persistent-profile path: one call yields a context directly."""
+        self.calls += 1
+        self.profile_dirs.append(str(user_data_dir))
+        self.launch_kwargs.append(kwargs)
+        if self.calls <= self.fail_times:
+            raise self.exc_factory()
+        return FakeContext()
 
 
 class FakeDriver:
@@ -96,6 +119,10 @@ def _fast_and_headed(monkeypatch):
     monkeypatch.setenv("BHAGA_BROWSER_LAUNCH_BACKOFF_MS", "0")
     monkeypatch.setenv("BHAGA_BROWSER_LAUNCH_RETRIES", "3")
     monkeypatch.setattr(runtime, "_force_headless", lambda: False)
+    # Pin the launch mode: these tests cover retry/classification/args, and the
+    # persistent path has its own tests below. Without this they would pass or
+    # fail on whether the machine running them has a writable home directory.
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE", "0")
 
 
 # --- retry / classification ------------------------------------------------
@@ -353,3 +380,197 @@ def test_trace_step_never_raises_on_screenshot_error(monkeypatch, tmp_path):
 
     # a tracing hiccup must never break the scrape
     assert runtime.trace_step(_BoomPage(), "boom") is None
+
+
+# --- persistent browser profile (2026-09-21 OTP storm) ---------------------
+#
+# ADP asked for an SMS code on 7 of 7 runs in one morning, every one of them
+# immediately after successfully restoring the saved cookie jar. Cookies were
+# 0-for-7 because they were being replayed into a brand-new Chromium profile
+# each run, which is indistinguishable from a stolen-cookie replay to a risk
+# engine. The profile itself has to persist, not just its cookies.
+
+
+def test_a_portal_gets_a_stable_profile_directory(monkeypatch, tmp_path):
+    monkeypatch.delenv("BHAGA_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", str(tmp_path))
+
+    first = runtime._portal_profile_dir("adp")
+    second = runtime._portal_profile_dir("adp")
+
+    assert first == second, "the same portal must reuse one profile"
+    assert first is not None and first.is_dir()
+
+
+def test_portals_do_not_share_a_profile(monkeypatch, tmp_path):
+    monkeypatch.delenv("BHAGA_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", str(tmp_path))
+
+    assert runtime._portal_profile_dir("adp") != runtime._portal_profile_dir("square")
+
+
+def test_cloud_run_stays_ephemeral(monkeypatch, tmp_path):
+    """A profile that cannot outlive the container buys nothing."""
+    monkeypatch.delenv("BHAGA_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", str(tmp_path))
+    monkeypatch.setenv("K_SERVICE", "bhaga")
+
+    assert runtime._portal_profile_dir("adp") is None
+
+
+def test_the_profile_can_be_opted_out_of(monkeypatch, tmp_path):
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", str(tmp_path))
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE", "0")
+
+    assert runtime._portal_profile_dir("adp") is None
+
+
+def test_an_unwritable_profile_root_degrades_to_ephemeral(monkeypatch):
+    """Never fail a scrape over a profile; it is an optimisation."""
+    monkeypatch.delenv("BHAGA_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", "/proc/nonexistent/nope")
+
+    assert runtime._portal_profile_dir("adp") is None
+
+
+def test_the_persistent_path_is_used_and_not_a_fresh_context(monkeypatch, tmp_path):
+    monkeypatch.delenv("BHAGA_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", str(tmp_path))
+    chromium = FakeChromium()
+    _install_fake(monkeypatch, chromium)
+
+    with runtime.launch_persistent("adp") as (ctx, page):
+        assert ctx is not None and page is not None
+
+    assert chromium.profile_dirs == [str(tmp_path / "adp")]
+    assert chromium.launch_kwargs, "launch kwargs should still be recorded"
+
+
+def test_launch_retries_still_apply_to_the_persistent_path(monkeypatch, tmp_path):
+    """Resilience must not be lost by changing how the browser is started."""
+    monkeypatch.delenv("BHAGA_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", str(tmp_path))
+    chromium = FakeChromium(fail_times=1, exc_factory=TargetClosedError)
+    _install_fake(monkeypatch, chromium)
+
+    with runtime.launch_persistent("adp") as (ctx, _page):
+        assert ctx is not None
+
+    assert chromium.calls == 2
+
+
+def test_saved_cookies_seed_a_profile_that_lacks_them(monkeypatch, tmp_path):
+    jar = tmp_path / "adp.json"
+    jar.write_text(
+        json.dumps({"cookies": [
+            {"name": "SMSESSION", "domain": ".adp.com", "value": "v"},
+        ]}),
+        encoding="utf-8",
+    )
+    ctx = FakeContext()
+
+    runtime._seed_cookies(ctx, str(jar), portal="adp")
+
+    assert [c["name"] for c in ctx.added_cookies] == ["SMSESSION"]
+
+
+def test_cookies_already_in_the_profile_are_not_re_added(monkeypatch, tmp_path):
+    """The profile is authoritative once it has been through a login."""
+    jar = tmp_path / "adp.json"
+    jar.write_text(
+        json.dumps({"cookies": [
+            {"name": "SMSESSION", "domain": ".adp.com", "value": "old"},
+        ]}),
+        encoding="utf-8",
+    )
+    ctx = FakeContext()
+    ctx.add_cookies([{"name": "SMSESSION", "domain": ".adp.com", "value": "live"}])
+    ctx.added_cookies.clear()
+
+    runtime._seed_cookies(ctx, str(jar), portal="adp")
+
+    assert ctx.added_cookies == []
+
+
+def test_a_corrupt_cookie_jar_never_fails_the_run(monkeypatch, tmp_path):
+    jar = tmp_path / "adp.json"
+    jar.write_text("{not json", encoding="utf-8")
+
+    assert runtime._seed_cookies(FakeContext(), str(jar), portal="adp") is None
+
+
+# --- profile must never be able to fail a run ------------------------------
+#
+# A killed run leaves Chromium's SingletonLock behind and the next launch aborts
+# with "Failed to create a ProcessSingleton for your profile directory". Hit live
+# 2026-09-21 mid-payroll: a dead lock file blocked every subsequent run.
+
+
+def test_a_stale_lock_from_a_killed_run_is_cleared(monkeypatch, tmp_path, capsys):
+    prof = tmp_path / "adp"
+    prof.mkdir()
+    # A dead PID: os.kill(pid, 0) raises ProcessLookupError.
+    (prof / "SingletonLock").symlink_to("somehost-999999")
+    (prof / "SingletonSocket").write_text("", encoding="utf-8")
+
+    runtime._clear_stale_singleton(prof, portal="adp")
+
+    assert not (prof / "SingletonLock").is_symlink()
+    assert not (prof / "SingletonSocket").exists()
+    assert "cleared a stale singleton lock" in capsys.readouterr().err
+
+
+def test_a_lock_held_by_a_live_process_is_respected(tmp_path):
+    """Never steal the profile from a concurrent run — that corrupts it."""
+    prof = tmp_path / "adp"
+    prof.mkdir()
+    (prof / "SingletonLock").symlink_to(f"somehost-{os.getpid()}")
+
+    with pytest.raises(runtime._ProfileUnavailable):
+        runtime._clear_stale_singleton(prof, portal="adp")
+
+    assert (prof / "SingletonLock").is_symlink(), "the live holder's lock survives"
+
+
+def test_no_lock_present_is_not_an_error(tmp_path):
+    prof = tmp_path / "adp"
+    prof.mkdir()
+
+    assert runtime._clear_stale_singleton(prof, portal="adp") is None
+
+
+def test_an_unusable_profile_falls_back_to_ephemeral(monkeypatch, tmp_path, capsys):
+    """One OTP is an acceptable price; a failed payroll run is not."""
+    monkeypatch.delenv("BHAGA_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", str(tmp_path))
+
+    class _ProfileRefuses(FakeChromium):
+        def launch_persistent_context(self, user_data_dir, **kwargs):
+            self.profile_dirs.append(str(user_data_dir))
+            raise RuntimeError("Failed to create a ProcessSingleton")
+
+    chromium = _ProfileRefuses()
+    _install_fake(monkeypatch, chromium)
+
+    with runtime.launch_persistent("adp") as (ctx, page):
+        assert ctx is not None and page is not None
+
+    err = capsys.readouterr().err
+    assert "persistent profile unusable" in err
+    assert "falling back to an ephemeral profile" in err
+    assert chromium.launch_kwargs, "the ephemeral launch must have happened"
+
+
+def test_a_busy_profile_still_yields_a_working_session(monkeypatch, tmp_path):
+    """Two overlapping runs: the second one runs ephemeral rather than dying."""
+    monkeypatch.delenv("BHAGA_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("BHAGA_BROWSER_PROFILE_DIR", str(tmp_path))
+    (tmp_path / "adp").mkdir()
+    (tmp_path / "adp" / "SingletonLock").symlink_to(f"somehost-{os.getpid()}")
+    chromium = FakeChromium()
+    _install_fake(monkeypatch, chromium)
+
+    with runtime.launch_persistent("adp") as (ctx, page):
+        assert ctx is not None and page is not None
+
+    assert chromium.profile_dirs == [], "must not have touched the busy profile"

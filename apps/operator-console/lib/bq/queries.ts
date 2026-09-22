@@ -289,6 +289,56 @@ export function laborHoursPerPerson(win: DateWindow): Promise<LaborHoursPerPerso
 }
 
 /**
+ * Solo vs team hours per person over the console Period (Issue #309).
+ *
+ * "Solo" is time an employee was the only person punched in, computed from punch
+ * occupancy by the nightly materializer — never recomputed here, so the number
+ * on this page is the same number payroll pays from.
+ *
+ * Windowed by date over the day-grain table rather than reading
+ * `vw_solo_hours_period`, so this panel follows the page's Period filter like
+ * every other labor query. `vw_solo_hours_period` stays the pay-period source
+ * for the ADP hand-off, where pay-period boundaries are what matter.
+ *
+ * `premium_cents` is integer cents (DOMAIN.md money convention) — format with
+ * `formatCents`, never `formatDollars`.
+ */
+export interface LaborSoloHoursRow {
+  employee: string;
+  solo_hours: number;
+  team_hours: number;
+  total_hours: number;
+  /** Away from the shop (migration 072): a slice of team_hours, never solo. */
+  remote_hours: number;
+  base_rate_dollars: number | null;
+  eligible: boolean;
+  premium_cents: number;
+  [key: string]: unknown;
+}
+
+export function laborSoloHoursPerPerson(
+  win: DateWindow,
+): Promise<LaborSoloHoursRow[]> {
+  return q<LaborSoloHoursRow>(
+    `SELECT
+       employee,
+       ROUND(SUM(solo_minutes) / 60.0, 2)  AS solo_hours,
+       ROUND(SUM(team_minutes) / 60.0, 2)  AS team_hours,
+       ROUND(SUM(total_minutes) / 60.0, 2) AS total_hours,
+       ROUND(SUM(COALESCE(remote_minutes, 0)) / 60.0, 2) AS remote_hours,
+       ANY_VALUE(base_rate_dollars)        AS base_rate_dollars,
+       LOGICAL_OR(eligible)                AS eligible,
+       SUM(premium_cents)                  AS premium_cents
+     FROM ${fq("model_solo_hours_daily")}
+     WHERE date BETWEEN @start AND @end
+     GROUP BY employee
+     HAVING total_hours > 0
+     ORDER BY solo_hours DESC, employee`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/**
  * Average concurrent staff on each day (Issue #213).
  *
  * Per bucket (PT / FT): Σ hours ÷ (first in → last out) **within that bucket**
@@ -1605,6 +1655,125 @@ export interface PayrollPeriodRow {
   tip_diff: number;
   bonus_diff: number;
   [key: string]: unknown;
+}
+
+/** Per-employee solo-shift premium for one pay period (migration 071, #309). */
+export interface PayrollSoloPremiumRow {
+  employee: string;
+  /** Authoritative grain (bhaga.mdc invariant 11); hours are derived from it. */
+  solo_minutes: number;
+  solo_hours: number;
+  team_hours: number;
+  total_hours: number;
+  /**
+   * Hours worked away from the shop (migration 072). A subset of `team_hours`,
+   * never an addition to `total_hours` — remote time can never be solo, so it
+   * explains why someone with hours has no solo time.
+   */
+  remote_hours: number;
+  on_floor_hours: number;
+  base_rate_dollars: number | null;
+  eligible: boolean;
+  premium_cents: number;
+  [key: string]: unknown;
+}
+
+/**
+ * Solo hours + premium owed for a pay period, at the grain payroll is keyed at.
+ *
+ * Reads `vw_solo_hours_period` rather than re-rolling the daily table so the
+ * console and the RUNBOOK keying command cannot disagree: the view assigns each
+ * day to the latest `pay_period_start` at or before it and deliberately ignores
+ * `pay_period_end`, which on an open period is truncated to the model's data
+ * window and would drop the most recently worked solo hours.
+ */
+export function payrollSoloPremium(
+  periodStart: string,
+): Promise<PayrollSoloPremiumRow[]> {
+  return q<PayrollSoloPremiumRow>(
+    `SELECT
+       employee, solo_minutes, solo_hours, team_hours, total_hours,
+       remote_hours, on_floor_hours,
+       base_rate_dollars, eligible, premium_cents
+     FROM ${fq("vw_solo_hours_period")}
+     WHERE period_start = @periodStart
+     ORDER BY solo_hours DESC, employee`,
+    { periodStart: dateParam(periodStart) },
+  );
+}
+
+/**
+ * Period dates whose solo hours do not reflect the current punches (#309).
+ *
+ * Solo hours are materialized separately from the punches they derive from, so a
+ * drift leaves the premium understated rather than errored — a smaller number is
+ * indistinguishable from a quiet fortnight. Two ways to drift: the date has no
+ * solo row at all (2026-09-20: screen read 12.24h against an actual 20.16h, ~$8
+ * short for one employee), or its solo rows account for a different number of
+ * worked minutes than its punches do.
+ *
+ * The second case is the operator-edit path: fixing a forgotten punch-out and
+ * pressing **Sync clocked hours** rewrites `adp_punches` but never runs the
+ * materialize, so date presence alone would report all-clear on numbers that just
+ * changed. A restored coworker punch is what flips minutes from solo to team.
+ *
+ * Compared on minutes, not timestamps: `scraped_at_utc` is only stamped by the
+ * sync-button path, so it is NULL for everything the nightly ingested and a
+ * timestamp test would silently pass on most dates. Minutes reconcile exactly,
+ * since `solo + team` is the same quantity the punches describe.
+ *
+ * This proves solo hours match the punches *in BQ*; whether BQ matches ADP is the
+ * Timecard scrape's job.
+ */
+export async function soloCoverageGap(
+  periodStart: string,
+  periodEnd: string,
+): Promise<string[]> {
+  const rows = await q<{ d: string }>(
+    `WITH p AS (
+       SELECT date, ROUND(SUM(total_hours) * 60) AS punch_min
+       FROM ${fq("adp_punches")}
+       WHERE date BETWEEN @periodStart AND @periodEnd
+       GROUP BY date
+     ), s AS (
+       SELECT date, SUM(total_minutes) AS solo_min
+       FROM ${fq("model_solo_hours_daily")}
+       GROUP BY date
+     )
+     SELECT FORMAT_DATE('%Y-%m-%d', p.date) AS d
+     FROM p LEFT JOIN s USING (date)
+     WHERE s.date IS NULL OR ABS(s.solo_min - p.punch_min) > 1
+     ORDER BY 1`,
+    { periodStart: dateParam(periodStart), periodEnd: dateParam(periodEnd) },
+  );
+  return rows.map((r) => r.d);
+}
+
+/**
+ * Solo premium uplift in dollars per hour, from `store_config` (#309).
+ *
+ * Read live rather than hardcoded because the rates are operator tunables
+ * (user-preferences #29) — a policy change must not need a console deploy.
+ * Returns null when either key is unset, which makes the caller fall back to
+ * the stored per-day cents instead of inventing a rate.
+ */
+export async function soloPremiumDeltaDollars(
+  store: string,
+): Promise<number | null> {
+  const rows = await q<{ key: string; value: number | null }>(
+    `SELECT key, SAFE_CAST(value AS FLOAT64) AS value
+     FROM ${fq("store_config")}
+     WHERE store = @store
+       AND key IN ('solo_shift_premium_rate_dollars',
+                   'solo_shift_eligible_base_rate_dollars')`,
+    { store },
+  );
+  const get = (k: string) => rows.find((r) => r.key === k)?.value ?? null;
+  const premium = get("solo_shift_premium_rate_dollars");
+  const base = get("solo_shift_eligible_base_rate_dollars");
+  if (premium == null || base == null) return null;
+  const delta = premium - base;
+  return delta > 0 ? delta : null;
 }
 
 export function payrollPeriod(periods = 2): Promise<PayrollPeriodRow[]> {

@@ -128,6 +128,20 @@ BQ_TARGETS: list[Target] = [
     # answer to "did ADP actually land for this date?" — a missing row means the
     # next run re-scrapes, regardless of what the Firestore marker claims.
     Target("source_load_receipts", "refresh_date"),
+    # migration 071 (Issue #309): per-employee solo vs team minutes, materialized
+    # nightly from adp_punches. Registered as a freshness target because a stale
+    # table underpays the solo premium silently — the Labor page and the payroll
+    # keying breadcrumb both read it, and neither can tell "no solo shifts that
+    # day" apart from "the occupancy walk never ran".
+    Target("model_solo_hours_daily", "date"),
+    # vw_solo_hours_daily / vw_solo_hours_period (same migration) are thin
+    # projections of the table above, read only by the console Labor page — no
+    # Grafana panel and no independent freshness signal, so no GRAFANA_VIEWS
+    # entry (same class as vw_inventory_base_runway / 035-036).
+    # migration 072 adds remote_minutes/remote_hours to that same table and
+    # republishes those same two views — no new target: the freshness signal is
+    # still the table's `date`, and remote hours are only ever written by the
+    # same nightly walk. Registering the views would double-count one signal.
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —
     # intentionally NOT a BQ_TARGETS entry (same class as store_config /

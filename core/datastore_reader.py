@@ -108,6 +108,50 @@ def read_shifts_bq() -> list[dict]:
     return out
 
 
+def read_punches_bq() -> list[dict]:
+    """Read bhaga.adp_punches and return in Sheets-reader format.
+
+    Punch grain (one row per in/out pair) rather than the per-day rollup in
+    ``adp_shifts`` — solo attribution needs the individual intervals so a
+    mid-shift break shows up as a coverage gap.
+
+    BQ columns → Sheets keys:
+        date (DATE) → date (str)
+        employee_id → employee_id
+        canonical_name → employee_name
+        raw_employee_name → raw_employee_name
+        punch_index → punch_index (int)
+        in_time → in_time
+        out_time → out_time
+        regular_hours → regular_hours (float)
+        ot_hours → ot_hours (float)
+        doubletime_hours → doubletime_hours (float)
+        total_hours → total_hours (float)
+        scraped_at_utc → scraped_at_utc (str)
+    """
+    rows = read_table("adp_punches")
+    if not rows:
+        return []
+
+    out: list[dict] = []
+    for r in rows:
+        out.append({
+            "date": _date_to_str(r.get("date")),
+            "employee_id": _str_or_empty(r.get("employee_id")),
+            "employee_name": _str_or_empty(r.get("canonical_name")),
+            "raw_employee_name": _str_or_empty(r.get("raw_employee_name")),
+            "punch_index": _int_or_zero(r.get("punch_index")),
+            "in_time": _str_or_empty(r.get("in_time")),
+            "out_time": _str_or_empty(r.get("out_time")),
+            "regular_hours": _float_or_zero(r.get("regular_hours")),
+            "ot_hours": _float_or_zero(r.get("ot_hours")),
+            "doubletime_hours": _float_or_zero(r.get("doubletime_hours")),
+            "total_hours": _float_or_zero(r.get("total_hours")),
+            "scraped_at_utc": _ts_to_str(r.get("scraped_at_utc")),
+        })
+    return out
+
+
 def read_wage_rates_bq() -> list[dict]:
     """Read bhaga.adp_wage_rates and return in Sheets-reader format.
 

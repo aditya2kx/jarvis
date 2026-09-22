@@ -913,13 +913,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("[pay_info] no names to scrape")
         return 0
 
-    from skills.adp_run_automation.runner import (  # noqa: PLC0415
-        _ensure_logged_in,
-        launch_persistent,
-    )
+    from skills.adp_run_automation.runner import adp_session  # noqa: PLC0415
 
-    with launch_persistent(portal="adp", headed=args.headed, slow_mo_ms=50) as (_ctx, page):
-        _ensure_logged_in(page, store=args.store)
+    with adp_session(store=args.store, headed=args.headed, slow_mo_ms=50) as (_ctx, page):
         dashboard_url = page.url
         rates, errors = scrape_pay_info_rates(page, names, dashboard_url=dashboard_url)
         write_pay_info_json(rates, store=args.store, errors=errors, attempted=names)

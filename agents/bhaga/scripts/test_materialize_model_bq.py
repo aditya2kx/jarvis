@@ -590,5 +590,282 @@ class TestScopedConservation(unittest.TestCase):
             m._assert_conservation(periods)
 
 
+class TestBuildSoloHoursRows(unittest.TestCase):
+    """Solo-shift premium row builder (Issue #309)."""
+
+    CONFIG_KWARGS = dict(
+        min_block_minutes=15,
+        eligible_base_rate_cents=1525,
+        premium_rate_cents=1625,
+        effective_date="2026-09-07",
+    )
+
+    def _build(self, punches, wage_rates, aliases=None, remote=()):
+        m = _load_module()
+        from skills.bhaga_labor.solo_shift import SoloConfig, remote_day_key
+
+        rows = m.build_solo_hours_rows(
+            punches=punches,
+            wage_rates=wage_rates,
+            aliases=aliases or {},
+            config=SoloConfig(
+                **self.CONFIG_KWARGS,
+                remote_days=frozenset(remote_day_key(d, e) for d, e in remote),
+            ),
+        )
+        header, data = rows[0], rows[1:]
+        return header, [dict(zip(header, r)) for r in data]
+
+    def test_header_matches_migration_071_columns(self):
+        header, _ = self._build([], [])
+        self.assertEqual(header, [
+            "date", "employee",
+            "solo_minutes", "team_minutes", "total_minutes",
+            "solo_hours", "team_hours", "total_hours",
+            "base_rate_dollars", "eligible", "premium_cents",
+            # Added by migration 072 (remote shifts are not floor coverage)
+            "remote_minutes", "remote_hours",
+        ])
+
+    def test_a_remote_shift_frees_the_coworker_to_be_solo(self):
+        punches = [
+            {"date": "2026-09-10", "employee_name": "Solo, Sam",
+             "in_time": "09:00", "out_time": "17:00"},
+            {"date": "2026-09-10", "employee_name": "Remote, Rita",
+             "in_time": "09:00", "out_time": "17:00"},
+        ]
+        rates = [{"employee_name": "Solo, Sam", "wage_rate_dollars": 15.25}]
+
+        _, on_floor = self._build(punches, rates)
+        self.assertEqual({r["employee"]: r["premium_cents"] for r in on_floor},
+                         {"Solo, Sam": 0, "Remote, Rita": 0})
+
+        _, rows = self._build(
+            punches, rates, remote=[("2026-09-10", "Remote, Rita")]
+        )
+        by_name = {r["employee"]: r for r in rows}
+        self.assertEqual(by_name["Solo, Sam"]["premium_cents"], 800)
+        self.assertEqual(by_name["Solo, Sam"]["remote_minutes"], 0)
+        # Rita keeps every minute; it is just not floor time.
+        rita = by_name["Remote, Rita"]
+        self.assertEqual(rita["total_minutes"], 480)
+        self.assertEqual(rita["remote_minutes"], 480)
+        self.assertEqual(rita["remote_hours"], 8.0)
+        self.assertEqual(rita["solo_minutes"], 0)
+
+    def test_empty_punches_yields_header_only(self):
+        rows = self._build([], [])[1]
+        self.assertEqual(rows, [])
+
+    def test_eligible_employee_alone_earns_premium(self):
+        _, rows = self._build(
+            [{"date": "2026-09-10", "employee_name": "Solo, Sam",
+              "in_time": "09:00", "out_time": "17:00"}],
+            [{"employee_name": "Solo, Sam", "wage_rate_dollars": 15.25}],
+        )
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["solo_minutes"], 480)
+        self.assertEqual(row["team_minutes"], 0)
+        self.assertEqual(row["solo_hours"], 8.0)
+        self.assertTrue(row["eligible"])
+        self.assertEqual(row["premium_cents"], 800)
+        self.assertEqual(row["base_rate_dollars"], 15.25)
+
+    def test_float_rate_compares_exactly_via_cents(self):
+        """15.25 arriving as a string or a lossy float must still be eligible."""
+        _, rows = self._build(
+            [{"date": "2026-09-10", "employee_name": "Solo, Sam",
+              "in_time": "09:00", "out_time": "17:00"}],
+            [{"employee_name": "Solo, Sam", "wage_rate_dollars": "15.25"}],
+        )
+        self.assertTrue(rows[0]["eligible"])
+
+    def test_manager_present_means_no_premium_for_either(self):
+        _, rows = self._build(
+            [
+                {"date": "2026-09-10", "employee_name": "Hourly, Hank",
+                 "in_time": "09:00", "out_time": "17:00"},
+                {"date": "2026-09-10", "employee_name": "Krause, Lindsay",
+                 "in_time": "09:00", "out_time": "17:00"},
+            ],
+            [
+                {"employee_name": "Hourly, Hank", "wage_rate_dollars": 15.25},
+                {"employee_name": "Krause, Lindsay", "wage_rate_dollars": 25.0},
+            ],
+        )
+        self.assertEqual({r["premium_cents"] for r in rows}, {0})
+        self.assertEqual({r["solo_minutes"] for r in rows}, {0})
+
+    def test_missing_rate_leaves_base_rate_blank_and_no_premium(self):
+        _, rows = self._build(
+            [{"date": "2026-09-10", "employee_name": "New, Hire",
+              "in_time": "09:00", "out_time": "17:00"}],
+            [],
+        )
+        self.assertEqual(rows[0]["base_rate_dollars"], "")
+        self.assertFalse(rows[0]["eligible"])
+        self.assertEqual(rows[0]["premium_cents"], 0)
+
+    def test_null_rate_row_is_skipped_not_treated_as_zero(self):
+        _, rows = self._build(
+            [{"date": "2026-09-10", "employee_name": "Salary, Sal",
+              "in_time": "09:00", "out_time": "17:00"}],
+            [{"employee_name": "Salary, Sal", "wage_rate_dollars": None}],
+        )
+        self.assertFalse(rows[0]["eligible"])
+
+    def test_alias_spellings_collapse_to_one_row(self):
+        aliases = {
+            "Johnson, Dolce J": "Johnson, Dolce",
+            "Johnson, Dolce": "Johnson, Dolce",
+        }
+        _, rows = self._build(
+            [
+                {"date": "2026-09-10", "employee_name": "Johnson, Dolce J",
+                 "in_time": "09:00", "out_time": "12:00"},
+                {"date": "2026-09-10", "employee_name": "Johnson, Dolce",
+                 "in_time": "13:00", "out_time": "17:00"},
+            ],
+            [{"employee_name": "Johnson, Dolce J", "wage_rate_dollars": 15.25}],
+            aliases=aliases,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["employee"], "Johnson, Dolce")
+        self.assertEqual(rows[0]["total_minutes"], 420)
+        # The rate row spelled the long way must still resolve to this employee.
+        self.assertTrue(rows[0]["eligible"])
+
+    def test_reconciliation_invariant_holds_per_row(self):
+        _, rows = self._build(
+            [
+                {"date": "2026-09-10", "employee_name": "A, One",
+                 "in_time": "09:00", "out_time": "17:00"},
+                {"date": "2026-09-10", "employee_name": "B, Two",
+                 "in_time": "12:00", "out_time": "14:00"},
+            ],
+            [{"employee_name": "A, One", "wage_rate_dollars": 15.25}],
+        )
+        for row in rows:
+            self.assertEqual(
+                row["solo_minutes"] + row["team_minutes"], row["total_minutes"]
+            )
+
+    def test_rows_sorted_by_date(self):
+        _, rows = self._build(
+            [
+                {"date": "2026-09-11", "employee_name": "A, One",
+                 "in_time": "09:00", "out_time": "17:00"},
+                {"date": "2026-09-10", "employee_name": "A, One",
+                 "in_time": "09:00", "out_time": "17:00"},
+            ],
+            [],
+        )
+        self.assertEqual([r["date"] for r in rows], ["2026-09-10", "2026-09-11"])
+
+
+class TestLoadSoloConfig(unittest.TestCase):
+    """Tunables come from store_config, never from literals in code."""
+
+    def test_store_config_values_win(self):
+        m = _load_module()
+        values = {
+            "solo_shift_min_block_minutes": "30",
+            "solo_shift_eligible_base_rate_dollars": "16.00",
+            "solo_shift_premium_rate_dollars": "17.50",
+            "solo_shift_effective_date": "2026-10-01",
+        }
+        with mock.patch(
+            "core.store_config.get_config", side_effect=lambda s, k: values.get(k)
+        ):
+            config = m.load_solo_config("palmetto")
+        self.assertEqual(config.min_block_minutes, 30)
+        self.assertEqual(config.eligible_base_rate_cents, 1600)
+        self.assertEqual(config.premium_rate_cents, 1750)
+        self.assertEqual(config.effective_date, "2026-10-01")
+        self.assertEqual(config.premium_delta_cents, 150)
+
+    def test_missing_keys_fall_back_to_announced_policy(self):
+        m = _load_module()
+        with mock.patch("core.store_config.get_config", return_value=None):
+            config = m.load_solo_config("palmetto")
+        self.assertEqual(config.min_block_minutes, 15)
+        self.assertEqual(config.eligible_base_rate_cents, 1525)
+        self.assertEqual(config.premium_rate_cents, 1625)
+        self.assertEqual(config.effective_date, "2026-09-07")
+        self.assertEqual(config.premium_delta_cents, 100)
+
+    def test_defaults_cover_every_key_the_loader_reads(self):
+        m = _load_module()
+        self.assertEqual(
+            set(m._SOLO_CONFIG_DEFAULTS),
+            {
+                "solo_shift_min_block_minutes",
+                "solo_shift_eligible_base_rate_dollars",
+                "solo_shift_premium_rate_dollars",
+                "solo_shift_effective_date",
+                "solo_shift_remote_days",
+            },
+        )
+
+    def test_remote_days_reach_the_config(self):
+        m = _load_module()
+        values = {
+            "solo_shift_remote_days":
+                '[{"date": "2026-09-07", "employee": "Krause, Lindsay"}]',
+        }
+        with mock.patch(
+            "core.store_config.get_config", side_effect=lambda s, k: values.get(k)
+        ):
+            config = m.load_solo_config("palmetto")
+        self.assertTrue(config.is_remote("2026-09-07", "Krause, Lindsay"))
+        self.assertFalse(config.is_remote("2026-09-08", "Krause, Lindsay"))
+
+
+class TestParseRemoteDays(unittest.TestCase):
+    """Remote-shift annotations are hand-edited config, so parsing is forgiving.
+
+    A typo must never take the nightly materialize down — it degrades to
+    "everyone was on the floor", which is the pre-migration-072 behaviour.
+    """
+
+    def _parse(self, raw):
+        return _load_module().parse_remote_days(raw)
+
+    def test_a_well_formed_list_parses(self):
+        from skills.bhaga_labor.solo_shift import remote_day_key
+
+        keys = self._parse(
+            '[{"date": "2026-09-07", "employee": "Krause, Lindsay"},'
+            ' {"date": "2026-09-23", "employee": "Krause, Lindsay"}]'
+        )
+        self.assertEqual(keys, frozenset({
+            remote_day_key("2026-09-07", "Krause, Lindsay"),
+            remote_day_key("2026-09-23", "Krause, Lindsay"),
+        }))
+
+    def test_absent_or_empty_means_nobody_is_remote(self):
+        for raw in (None, "", "   ", "[]"):
+            self.assertEqual(self._parse(raw), frozenset(), repr(raw))
+
+    def test_malformed_json_degrades_instead_of_raising(self):
+        self.assertEqual(self._parse('[{"date": "2026-09-07",'), frozenset())
+        self.assertEqual(self._parse("not json at all"), frozenset())
+
+    def test_a_non_list_payload_is_ignored(self):
+        self.assertEqual(
+            self._parse('{"date": "2026-09-07", "employee": "A, B"}'), frozenset()
+        )
+
+    def test_incomplete_entries_are_dropped_not_guessed(self):
+        keys = self._parse(
+            '[{"date": "2026-09-07"},'
+            ' {"employee": "A, B"},'
+            ' "a bare string",'
+            ' {"date": "2026-09-07", "employee": "Good, One"}]'
+        )
+        self.assertEqual(len(keys), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

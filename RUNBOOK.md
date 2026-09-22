@@ -161,7 +161,9 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | `BHAGA_HEADLESS` | `1` |
 | `SLACK_BOT_TOKEN` | secret → `slack-bot-token` |
 | `CLICKUP_PAT` | secret → `jarvis-clickup-palmetto-pat` |
-| `BHAGA_SESSION_PERSIST` | `1` — persist/restore the ADP browser `storage_state` to/from `gs://bhaga-scrape-cache/_session/`. (Square no longer uses a browser — it uses the REST API via `square_palmetto_oauth`. ADP still scrapes via Chromium.) |
+| `BHAGA_SESSION_PERSIST` | Defaults to `1` — persist/restore the ADP browser `storage_state` to/from `gs://bhaga-scrape-cache/_session/`. Set `0` only to force a cold login. (Square no longer uses a browser — it uses the REST API via `square_palmetto_oauth`. ADP still scrapes via Chromium.) |
+| `BHAGA_BROWSER_PROFILE` | Defaults to on off-cloud — keep a stable Chromium profile per portal so ADP's risk engine sees the same device. `0` forces the ephemeral profile. Ignored on Cloud Run. |
+| `BHAGA_BROWSER_PROFILE_DIR` | Override the profile root (default `~/.bhaga/browser-profiles`). |
 | `BHAGA_DATASTORE` | `bigquery` — enables BQ reads/writes in the **parent** orchestrator process (pipeline run recorder, `reconcile_model` gate, `update_model_sheet --data-source bigquery`). Child subprocesses also set this per-step; codified in `deploy.yml` since 2026-06-13. |
 | `BHAGA_BROWSER_LAUNCH_RETRIES` | _(optional, default `3`)_ headless browser launch attempts on transient crash — see §13 Browser-launch resilience |
 | `BHAGA_BROWSER_LAUNCH_BACKOFF_MS` | _(optional, default `1000`)_ base backoff between launch retries (exponential) |
@@ -209,6 +211,173 @@ gcloud scheduler jobs pause   bhaga-nightly --location=us-central1
 gcloud scheduler jobs resume  bhaga-nightly --location=us-central1
 gcloud scheduler jobs describe bhaga-payroll-draft --location=us-central1
 ```
+
+### Solo-shift premium — keying the second rate into ADP (Issue #309)
+
+Employees on the eligible base rate earn a higher rate for hours they worked **alone**. BHAGA computes
+those hours. There are two ways they reach ADP:
+
+| | `BHAGA_ADP_SOLO_RATE2=1` | default (flag off) |
+|---|---|---|
+| Who keys the rate-2 line | the payroll draft | the operator |
+| When | after the hours guardrail passes, before Preview | during the normal payroll review |
+| Failure mode | reported per employee (`BREADCRUMB solo_rate2_failed`), never retried | none — nothing is typed |
+
+The flag is **off** by default because this is the only path that rewrites *hours* on a live draft
+(every other fill is a money column), so a selector drift pays the wrong number rather than erroring.
+Approve/Submit/Save remain forbidden either way — the operator still submits.
+
+**Opening the draft in ADP undoes the split, and `Skip import` does not prevent it.** The re-import
+restores every base row to its full total and leaves the rate-2 lines untouched, so the draft then
+overstates hours by exactly the premium hours. It is silent — each row looks plausible alone and only
+the Totals cell moves.
+
+Measured live 2026-09-21, in this order:
+
+1. A run finished reconciled at 16:24; ADP's own Preview read `371.30h / $7,554.64`.
+2. The operator opened the draft and chose **`Skip import`** (both controls exist and are distinct:
+   `Skip import [Payroll]` and `Import latest timecards [Update]`).
+3. The grid nonetheless read `384.57h` = `368.42 + 16.15` — every base row back at full with all six
+   premium lines still attached, about $246 of overpay.
+
+So ADP syncs timecards on entry regardless of that button. **Do not rely on `Skip`.** This invalidates
+the "automation keys the premium, operator reviews then approves" flow outright: whoever opens the
+draft last must be the one who approves it, and opening is what breaks it. Tracked in Issue #331.
+
+Consequences until that is resolved:
+
+- **Review in `/payroll`, never in the ADP grid.** The console matched the Preview exactly before the
+  re-import, and reading it costs nothing.
+- **After opening, the six base rows must be reduced by each employee's solo hours** before Approve, or
+  the premium is paid on top of unreduced base rows. B5 says prefer the system, but there is currently
+  no path that survives an operator visit — re-running only moves the breakage to the next open.
+- **ADP's `Regular Hours` column excludes OT**, so it reads lower than the console's `Total hours` by
+  the OT figure. On 2026-09-21 that was 2.88h — a real difference, not a fault. Compare against the
+  Preview gross, not the grid's Totals cell.
+- **The Preview screen has no Delete control** (only `Previous` / `Finish later` / `Approve`), so
+  `--delete-after` reports `delete_not_found` there rather than removing anything.
+
+**The sync check is the same in both cases.** Console `Est. total` includes the premium, so if the
+rate-2 lines never landed in ADP, `Total pay` will read short of the ADP Preview gross by exactly the
+premium and `/payroll` flags it under the headline. A green match means ADP has the premium.
+
+**After fixing punches in ADP, one sync is not enough.** **Sync clocked hours** runs the Timecard
+scrape and upserts `adp_shifts` / `adp_punches`, then returns — it does **not** run
+`materialize_model_bq`. So corrected punches land in raw tables while `model_solo_hours_daily` still
+describes the old ones, and the premium on `/payroll` is computed from the stale copy. Always follow a
+punch fix with the materialize command below. (A restored *coworker* punch moves minutes from solo to
+team, so this can overpay as well as underpay.)
+
+**Staleness guard.** Solo hours are materialized separately from the punches they derive from, so they
+drift whenever that step is skipped, a nightly fails after ingest, or punches are edited afterwards —
+and a drifted premium is *understated*, not absent, which reads exactly like a quiet fortnight. Both
+surfaces compare, per date, the worked minutes in `model_solo_hours_daily` against those in
+`adp_punches`:
+
+- `/payroll` marks the **Solo wages** card stale and names the affected dates.
+- The draft prints `BREADCRUMB solo_hours_stale` and refuses to key rate-2 (`solo_rate2_skipped
+  why=solo_hours_stale`), even with the flag on.
+
+Minutes, not timestamps: `scraped_at_utc` is stamped only by the sync-button path, so it is NULL for
+everything the nightly ingested and a "built before last scrape" test would pass on most dates.
+Minutes reconcile exactly, because `solo + team` is the same quantity the punches describe
+(invariant 11). The check proves solo hours match the punches **in BQ** — whether BQ matches ADP is
+what the Timecard scrape is for.
+
+Fix by re-running `materialize_model_bq`, then reload `/payroll`:
+
+```bash
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.materialize_model_bq --store palmetto
+```
+
+Until this ships and the Cloud Run image is redeployed, **prod's nightly does not build solo hours at
+all**, so the gap reappears daily and the command above is the only thing that closes it. Caught on
+2026-09-20: the closing cycle read 12.24h/$12.24 against an actual 20.16h, one employee ~$8 short.
+
+The tunables live in `bhaga.store_config` — change them with `/bhaga-cloud config set`, never a
+code deploy (user-preferences #29):
+
+| Key | Meaning |
+|---|---|
+| `solo_shift_min_block_minutes` | Shortest contiguous solo run that counts |
+| `solo_shift_eligible_base_rate_dollars` | Base rate that qualifies for the premium |
+| `solo_shift_premium_rate_dollars` | Rate paid for solo hours |
+| `solo_shift_effective_date` | First date the premium applies |
+| `solo_shift_remote_days` | JSON list of shifts worked away from the shop |
+
+#### Remote shifts are not floor coverage
+
+Someone clocked in from home does not stop a colleague from being solo, and does not earn solo
+themselves — their hours are still paid in full, they just are not coverage. Annotate those shifts:
+
+```bash
+# Read what is currently annotated
+python3 -c "from core.store_config import get_config; \
+  print(get_config('palmetto', 'solo_shift_remote_days'))"
+
+# Replace the list (it is a whole-value write, so include the entries you are keeping)
+python3 -c "
+import json
+from core.store_config import set_config
+set_config('palmetto', 'solo_shift_remote_days', json.dumps([
+    {'date': '2026-09-07', 'employee': 'Krause, Lindsay'},
+    {'date': '2026-09-23', 'employee': 'Krause, Lindsay'},
+]), updated_by='operator:<name>')
+"
+# then re-materialize, or the annotation changes nothing:
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.materialize_model_bq --store palmetto
+```
+
+Employee names are canonical (alias-resolved) and matched case-insensitively. The granularity is
+whole-day per employee; a half-remote day is not expressible yet (#332). **An unannotated shift counts
+as on the floor**, so a missed annotation under-pays silently rather than erring — check `/payroll`
+for an "of which remote" column before approving a cycle where someone worked from home. Caught live
+2026-09-07: the manager was remote, Tina was alone 4.62h, and the premium read $0 for her until the
+shift was annotated.
+
+Get the numbers to key (this is read-only and safe to run any time):
+
+```bash
+python3 -m skills.adp_run_automation.payroll_draft_backend \
+  --store palmetto --period-start YYYY-MM-DD --period-end YYYY-MM-DD
+# grep the breadcrumb: solo_premium_keying n=<people> hours=<total>
+#   <Employee>: rate-1 <base hours>h, rate-2 <solo hours>h
+```
+
+The console shows the same numbers, both from `vw_solo_hours_period`: **Payroll & People** headlines
+`Wages` (blended, with the effective $/h) split into `Primary wages` and `Solo wages`, plus
+per-employee `Solo hrs` / `Primary wages` / `Solo wages` columns for the selected period — that is the
+screen to key from — and the **Labor** page has the day-grain "Solo vs team hours" split. `Solo hrs`
+there is already clamped to regular (non-OT) hours, so it is the rate-2 number verbatim.
+
+**`Solo wages` is the rate-2 line amount** (solo hours × premium rate), which is what ADP shows for
+that line — not the $1.00/h uplift. The uplift is the `over base` hint on the same card, and at a
+$1.00/h premium it equals the hours, so the two are easy to confuse: 18.47 solo hours read as
+**$300.13** of solo wages and **$18.47** over base. `Est. wages` is the two lines added together, so it
+is a blended-rate figure whenever solo hours exist; overtime sits in `Primary wages` until #315.
+
+To key it manually (or to check what the automation did), in ADP **Enter payroll**, for each listed
+employee:
+
+1. Confirm the premium rate exists on their profile: People → Payroll info → **Add Pay Rate**. This
+   is a one-time setup per employee; ADP shows it in the grid as **Available Rates**.
+2. In the employee's grid row, open the row's overflow menu → **Add row**. This creates a second line
+   item for the same employee.
+3. On the new row, use the **Select Available Rates** dropdown to pick the premium rate, and enter the
+   rate-2 hours there.
+4. Reduce the original row's Regular hours by exactly the rate-2 hours, so total paid hours still
+   equal the imported timecard. The breadcrumb above prints both numbers so this is a transcription,
+   not a calculation.
+
+Verified against the live grid 2026-09-15/16: an employee with two rates shows a `Select Available
+Rates` control listing both, and `Add row` produces the second line item. Note the collapsed cell shows
+only the **primary** rate even when a second is saved on the profile — Willingham's cell read
+`$15.2500 / hr` twice while the opened selector listed both `$15.2500` and `$16.2500`. So confirm the
+rate through the selector, never by reading the cell.
+
+> Two-rate weeks that cross 40h need FLSA weighted-average overtime, which BHAGA's *estimate* does not
+> yet compute — tracked in issue #315. ADP itself computes the real paycheck, so this affects the
+> estimate/guardrail comparison, not what people are paid.
 
 ### Team pulse (Issue #216)
 
@@ -377,11 +546,31 @@ recognises the device and no OTP challenge fires.
 
 ### ADP trusted-device session (`_session/adp-palmetto.json`)
 
-`download_adp_bundle` restores the previous run's cookie jar into the browser context before login
-and re-uploads it immediately after `_ensure_logged_in` succeeds — including after a login that just
-satisfied a 2FA challenge, since that is the jar carrying ADP's device-trust cookie. Gated on
+`runner.adp_session()` — the single entry point for every ADP browser launch (timecard, earnings,
+schedule, liability, bundle, payroll draft, pay-info scrape, payroll-home dump) — restores the
+previous run's cookie jar before login and re-uploads it immediately after `_ensure_logged_in`
+succeeds, including after a login that just satisfied a 2FA challenge. Gated on
 `BHAGA_SESSION_PERSIST=1` (already set on the job); durable copy lives at
 `gs://bhaga-scrape-cache/_session/adp-palmetto.json`.
+
+**What this does and does not buy.** The cookie jar alone is session *reuse*: ADP's only auth cookie
+(`SMSESSION`) is a session cookie, so it helps only within ADP's server-side idle window. Verified
+against the live flow 2026-09-15: the admin step-up screen offers exactly one factor ("Send me a text
+message ····0038"), has no remember-this-device checkbox, offers no authenticator/TOTP option, and
+shows no enrollment prompt after a correct code. ADP documents admin step-up as a risk engine scoring
+each login against previous logins.
+
+On its own that was not merely limited, it was ineffective: **7 ad-hoc runs on 2026-09-21 produced 7
+SMS codes**, each one after a logged `restoring trusted-device session`. The jar was being replayed
+into a fresh Chromium profile every run, which scores like a stolen-cookie replay. Since then the
+laptop keeps a **stable browser profile** per portal at `~/.bhaga/browser-profiles/<portal>`
+(`_portal_profile_dir`), so the device stops looking new; budget **one** code to establish the profile
+and none after, until ADP ages it out. `BHAGA_BROWSER_PROFILE=0` opts out.
+
+**Cloud Run deliberately stays ephemeral** (detected via `K_SERVICE`): its filesystem does not outlive
+an execution, so a profile there would be written and lost, and the cookie jar remains the only lever.
+A burst of job executions still costs one OTP rather than one per entry point; the next morning's run
+is challenged again. That is expected on the job — do not debug it as a regression.
 
 Confirm it is working:
 
@@ -1494,7 +1683,8 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 - **Wage rates (Issue #213 / #251 / #267):** Earnings Regular (`rate_source=earnings`) plus nightly People → Payroll info refresh for **all recent punchers** (`rate_source=pay_info`; updates raises; preserves OT). **Refuse** MERGE when the new hourly is `< 0.5 ×` the existing rate (`BREADCRUMB refused_rate_drop` — ADP token hourlies on salaried/excluded people). Also grep `wage_rate_gap` / `wage_rate_change` / `wage_rate_flow_issue`. Failures Slack a `:warning:` (tips still run). Manual: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-punchers --write-bq`.
 - **ADP payroll draft (Issue #251):** After the biweek **Sunday** is in BQ (from `bhaga-nightly` 21:30 CT), **Monday 07:00 CT** `bhaga-payroll-draft` runs **headless** Start→Preview and **leaves the draft**. Never Approve/Save. `/payroll`: hide ADP chrome on the **open** biweek; closed unpaid is **Run ADP Preview** XOR **Preview done** (hours + total pay vs last Preview Gross — **no Preview URL**, those hashes 404); paid history is **Open ADP payroll** (`#xfm-Payroll Detail`). Operator logs in as themselves. `bhaga-nightly` does **not** Start payroll. Cloud Run Job **default env has no `BHAGA_ADP_PAYROLL_DRAFT`** (verified 2026-08-24 `gcloud run jobs describe bhaga-daily-refresh`); only the Monday scheduler override sets it. Visible Chromium only with `BHAGA_ADP_HEADED=1`. Next auto: **Mon Sep 7 07:00 CT**. Manual: `python3 -m skills.adp_run_automation.payroll_draft_backend --store palmetto --period-start YYYY-MM-DD --period-end YYYY-MM-DD --no-dry-run --allow-prod-draft --allow-start`.
 - **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
-- **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`
+- **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`, `model_solo_hours_daily`
+- **Solo-shift premium (Issue #309):** `model_solo_hours_daily` (employee × date solo/team split from `adp_punches` occupancy) + `vw_solo_hours_daily` / `vw_solo_hours_period`. Tunables in `store_config`; keying steps above. `solo_hours + team_hours = total_hours` always. `remote_hours` (migration 072) is a slice of `team_hours` for shifts worked away from the shop — excluded from occupancy, never premium-bearing, annotated in `solo_shift_remote_days`.
 - **Pipeline run log:** `pipeline_runs` (migration 016) — one appended row per terminal outcome; queried via `vw_pipeline_runs`
 - **Source pull log:** `source_pulls` (migration 017) — one appended row per per-source pull attempt; queried via `vw_source_pulls`
 - **Model views (Operator Console / BI contract):** `vw_model_labor_daily`, `vw_model_period_summary`, `vw_model_forecast`, `vw_forecast_accuracy`, `vw_forecast_exclusions`, `vw_pipeline_runs`, `vw_source_pulls`

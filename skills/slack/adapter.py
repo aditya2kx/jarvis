@@ -137,7 +137,7 @@ def send_message(channel, text, thread_ts=None, agent=None):
     return result
 
 
-def read_replies(channel, thread_ts=None, limit=10, oldest=None):
+def read_replies(channel, thread_ts=None, limit=10, oldest=None, agent=None):
     """Read recent messages from a channel or thread.
 
     Args:
@@ -145,6 +145,12 @@ def read_replies(channel, thread_ts=None, limit=10, oldest=None):
         thread_ts: If provided, reads thread replies; otherwise reads channel history
         limit: Max messages to return
         oldest: Only return messages after this timestamp
+        agent: Agent name whose bot token to use. Required whenever the DM was
+            opened as a specific agent: only that agent's app is in the
+            conversation, and the default token's Keychain entry (service
+            ``jarvis``) does not exist on every machine. Omitting it is why
+            :func:`request_otp` could send the prompt and then fail to read the
+            answer.
 
     Returns:
         List of message dicts with 'text', 'user', 'ts'
@@ -153,12 +159,12 @@ def read_replies(channel, thread_ts=None, limit=10, oldest=None):
         params = {"channel": channel, "ts": thread_ts, "limit": limit}
         if oldest:
             params["oldest"] = oldest
-        result = _api_call("conversations.replies", params=params)
+        result = _api_call("conversations.replies", params=params, agent=agent)
     else:
         params = {"channel": channel, "limit": limit}
         if oldest:
             params["oldest"] = oldest
-        result = _api_call("conversations.history", params=params)
+        result = _api_call("conversations.history", params=params, agent=agent)
 
     if not result.get("ok"):
         raise RuntimeError(f"read_replies failed: {result.get('error', 'unknown')}")
@@ -234,7 +240,8 @@ def request_otp(user_id, portal_name, timeout_seconds=300, poll_interval=10, pho
         dm_channel,
         f":key: *OTP Required — {portal_name}*\n\n"
         f"{agent_display} is logging into {portal_name} and needs your verification code.{phone_line}\n"
-        f"Please reply here with the code within {timeout_seconds // 60} minutes.",
+        f"Please reply here with the code within {timeout_seconds // 60} minutes — "
+        f"after that the portal expires the code and the run has to ask for a new one.",
         agent=effective_agent,
     )
     sent_ts = msg["ts"]
@@ -255,7 +262,9 @@ def request_otp(user_id, portal_name, timeout_seconds=300, poll_interval=10, pho
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         time.sleep(poll_interval)
-        replies = read_replies(dm_channel, oldest=sent_ts, limit=5)
+        replies = read_replies(
+            dm_channel, oldest=sent_ts, limit=5, agent=effective_agent
+        )
         for reply in replies:
             if reply["ts"] != sent_ts and reply.get("user") == user_id:
                 otp = reply["text"].strip()
@@ -309,7 +318,9 @@ def request_reply(user_id, prompt, timeout_seconds=900, poll_interval=10, agent=
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         time.sleep(poll_interval)
-        for reply in read_replies(dm_channel, oldest=sent_ts, limit=5):
+        for reply in read_replies(
+            dm_channel, oldest=sent_ts, limit=5, agent=effective_agent
+        ):
             if reply["ts"] != sent_ts and reply.get("user") == user_id:
                 text = _clean_slack_reply(reply.get("text"))
                 send_message(dm_channel, ":white_check_mark: Got it — continuing.", agent=effective_agent)
@@ -340,7 +351,9 @@ def check_for_user_messages(since_ts=None, dm_channel=None, user_id=None, agent=
     if not channel:
         return []
 
-    messages = read_replies(channel, limit=10, oldest=since_ts)
+    messages = read_replies(
+        channel, limit=10, oldest=since_ts, agent=effective_agent
+    )
     user_msgs = [
         m for m in messages
         if m.get("user") == uid and not m.get("bot_id")
@@ -399,7 +412,9 @@ def ask_user(question, dm_channel=None, poll_interval=20, agent=None):
 
     while True:
         time.sleep(poll_interval)
-        replies = read_replies(channel, oldest=sent_ts, limit=5)
+        replies = read_replies(
+            channel, oldest=sent_ts, limit=5, agent=effective_agent
+        )
         for reply in replies:
             if reply["ts"] != sent_ts and reply.get("user") == uid:
                 return reply["text"].strip()

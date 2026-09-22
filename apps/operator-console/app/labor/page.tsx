@@ -6,7 +6,7 @@ import {
   laborActualsThrough,
   laborByGrain,
   laborConcurrentByGrain,
-  laborHoursPerPerson,
+  laborHoursPerPersonDaily,
   laborScheduledHoursByGrain,
   laborScheduledShiftDays,
   laborSoloHoursPerPerson,
@@ -74,6 +74,12 @@ import {
   showCoverageSchedule,
 } from "@/lib/labor/schedule-fetch-gates";
 import { summarizeSoloHours } from "@/lib/labor/solo-hours";
+import {
+  mergeHoursPerPerson,
+  personChartSupportsGrain,
+  personHoursByGrain,
+  type PersonDayHours,
+} from "@/lib/labor/hours-per-person";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/tables/DataTable";
 import type {
@@ -109,6 +115,7 @@ export default async function LaborPage({
     day?: string;
     unit?: string;
     stat?: string;
+    person?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -135,6 +142,7 @@ export default async function LaborPage({
   const dayExtra: Record<string, string> = sp.day
     ? { day: sp.day.slice(0, 10) }
     : {};
+  const personExtra: Record<string, string> = sp.person ? { person: sp.person } : {};
 
   const includesToday = periodIncludesToday(win);
   let chartWin = win;
@@ -149,7 +157,8 @@ export default async function LaborPage({
     total_concurrent: number | null;
   }[] = [];
   let goalLaborHoursWeek: number | undefined;
-  let hoursPerPerson: { employee: string; hours: number }[] = [];
+  let personActualDays: PersonDayHours[] = [];
+  let personScheduledDays: PersonDayHours[] = [];
   let scheduleScrapedAt: string | null = null;
   let hoursScrapedAt: string | null = null;
   let coverageActuals: LaborActualShiftDayRow[] = [];
@@ -188,7 +197,7 @@ export default async function LaborPage({
     const [
       labor,
       config,
-      perPerson,
+      perPersonDays,
       concurrent,
       schedHours,
       schedDays,
@@ -200,7 +209,7 @@ export default async function LaborPage({
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
-      laborHoursPerPerson(win).catch(() => []),
+      punchWin ? laborHoursPerPersonDaily(punchWin).catch(() => []) : Promise.resolve([]),
       punchWin
         ? laborConcurrentByGrain(punchWin, grain, stat).catch(() => [])
         : Promise.resolve([]),
@@ -208,10 +217,16 @@ export default async function LaborPage({
         ? laborScheduledHoursByGrain(schedWin, grain, { excludePto }).catch(() => [])
         : Promise.resolve([]),
       (chartSchedule || coverageSchedule) && schedWin
-        ? laborScheduledShiftDays(schedWin, { excludePto }).catch(() => [])
+        ? laborScheduledShiftDays(schedWin, { store: DEFAULT_STORE, excludePto }).catch(
+            () => [],
+          )
         : Promise.resolve([]),
       coverageSchedule
-        ? laborScheduledShiftDays(chartWin, { excludePto, allowPast: true }).catch(
+        ? laborScheduledShiftDays(chartWin, {
+            store: DEFAULT_STORE,
+            excludePto,
+            allowPast: true,
+          }).catch(
             () => [],
           )
         : Promise.resolve([]),
@@ -236,10 +251,13 @@ export default async function LaborPage({
     scheduleScrapedAt = scraped;
     hoursScrapedAt = hoursScraped;
     goalLaborHoursWeek = goalFromConfig(config, "goal_labor_hours_week");
-    hoursPerPerson = perPerson
-      .map((p) => ({ employee: p.employee, hours: Number(p.hours) || 0 }))
-      .filter((p) => p.hours > 0)
-      .sort((a, b) => b.hours - a.hours);
+    personActualDays = perPersonDays;
+    personScheduledDays = schedDays.map((r) => ({
+      date: r.date,
+      employee: r.employee,
+      labor_bucket: r.labor_bucket,
+      hours: r.scheduled_hours,
+    }));
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -336,10 +354,32 @@ export default async function LaborPage({
     };
   });
 
-  const personChartData = hoursPerPerson.map((p) => ({
-    employee: p.employee,
-    hours: Number(p.hours.toFixed(1)),
+  const perPersonChart = mergeHoursPerPerson(
+    personActualDays,
+    personScheduledDays,
+    laborTypes,
+    win.end,
+  );
+  const perPersonHasSchedule = perPersonChart.series.some((s) => s.key.endsWith("_sched"));
+  // Picker lists whoever has hours under the current filters; a stale or
+  // missing `person` falls back to the top of the per-person chart.
+  const personOptions = perPersonChart.rows.map((r) => ({
+    value: r.employee,
+    label: r.employee,
   }));
+  const selectedPerson =
+    personOptions.find((o) => o.value === sp.person)?.value ?? personOptions[0]?.value;
+  const personChartData =
+    selectedPerson && personChartSupportsGrain(grain)
+      ? personHoursByGrain({
+          actual: personActualDays,
+          scheduled: personScheduledDays,
+          employee: selectedPerson,
+          grain,
+          stat,
+          win: chartWin,
+        })
+      : [];
 
   // Summarised before the columns are built: the Remote column is only rendered
   // when the window actually contains remote shifts.
@@ -420,6 +460,7 @@ export default async function LaborPage({
                 ...ptoExtra,
                 ...dateParams,
                 ...dayExtra,
+                ...personExtra,
               }}
             />
             <AggregationSelect
@@ -434,6 +475,7 @@ export default async function LaborPage({
                 ...unitExtra,
                 ...dateParams,
                 ...dayExtra,
+                ...personExtra,
               }}
             />
             {showStat ? (
@@ -451,6 +493,7 @@ export default async function LaborPage({
                   ...unitExtra,
                   ...dateParams,
                   ...dayExtra,
+                  ...personExtra,
                 }}
               />
             ) : null}
@@ -467,6 +510,7 @@ export default async function LaborPage({
                 ...ptoExtra,
                 ...unitExtra,
                 ...dayExtra,
+                ...personExtra,
               }}
             />
             {showCustomPicker ? (
@@ -482,6 +526,7 @@ export default async function LaborPage({
                   ...ptoExtra,
                   ...unitExtra,
                   ...dayExtra,
+                  ...personExtra,
                 }}
               />
             ) : null}
@@ -499,6 +544,7 @@ export default async function LaborPage({
                 ...ptoExtra,
                 ...unitExtra,
                 ...dayExtra,
+                ...personExtra,
               }}
             />
             <FilterSelect
@@ -515,6 +561,7 @@ export default async function LaborPage({
                 ...laborTypeExtra,
                 ...unitExtra,
                 ...dayExtra,
+                ...personExtra,
               }}
             />
             <LaborWeeklyHoursGoal current={goalLaborHoursWeek} />
@@ -575,7 +622,11 @@ export default async function LaborPage({
           each button shows starting / syncing / done / error without blocking the rest
           of the page. Hover a sync button when idle for last-synced time. Paid PTO is included in
           scheduled hours by default (matches ADP); use the PTO filter to exclude it.
-          Per-person hours below sum clocked ADP hours over the Period.
+          Per-person hours stack clocked hours with scheduled hours (slate) for the
+          days not yet ingested, through Period end. Pick a{" "}
+          <span className="font-medium text-foreground">Person</span> below it to see
+          their hours by the page&apos;s Aggregation, on the same axis and handoff as
+          the Hours chart.
         </p>
       </div>
 
@@ -608,16 +659,66 @@ export default async function LaborPage({
             laborTypes={laborTypes}
           />
 
-          <BarChartCard
-            title={`Hours per person — ${win.start} → ${win.end}`}
-            data={personChartData}
-            xKey="employee"
-            series={[{ key: "hours", label: "Hours" }]}
-            valueFormat="number"
-            height={Math.min(420, Math.max(220, personChartData.length * 28))}
-          />
-          {!personChartData.length ? (
-            <p className="text-sm text-muted-foreground">No ADP shift hours in this Period.</p>
+          <div data-testid="labor-hours-per-person" className="flex flex-col gap-2">
+            <BarChartCard
+              title={`Hours per person — ${win.start} → ${win.end}`}
+              subtitle={
+                perPersonHasSchedule
+                  ? "Clocked hours + ADP scheduled for days not yet ingested"
+                  : undefined
+              }
+              data={perPersonChart.rows}
+              xKey="employee"
+              series={perPersonChart.series}
+              stacked
+              valueFormat="number"
+              height={Math.min(420, Math.max(220, perPersonChart.rows.length * 28))}
+            />
+            {!perPersonChart.rows.length ? (
+              <p className="text-sm text-muted-foreground">
+                No clocked or scheduled hours in this Period.
+              </p>
+            ) : null}
+          </div>
+
+          {selectedPerson ? (
+            <div data-testid="labor-hours-one-person" className="flex flex-col gap-2">
+              {personChartSupportsGrain(grain) ? (
+                <LaborHoursChart
+                  data={personChartData}
+                  laborTypes={laborTypes}
+                  grain={grain}
+                  titlePrefix={statPrefix}
+                  subtitle={statSubtitle}
+                  person={selectedPerson}
+                  headerRight={
+                    <FilterSelect
+                      label="Person"
+                      param="person"
+                      value={selectedPerson}
+                      options={personOptions}
+                      basePath="/labor"
+                      extraParams={{
+                        range: win.preset,
+                        grain,
+                        ...statExtra,
+                        ...laborTypeExtra,
+                        ...ptoExtra,
+                        ...unitExtra,
+                        ...dateParams,
+                        ...dayExtra,
+                      }}
+                    />
+                  }
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Hours for one person are shown by day, week, month, weekday or Entire
+                  period — pick one of those in Aggregation (Hour of day is store-wide
+                  only).
+                </p>
+              )}
+            </div>
           ) : null}
 
           <div className="flex flex-col gap-2">

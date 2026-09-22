@@ -267,23 +267,39 @@ export function laborByGrain(
   );
 }
 
-/** Hours worked per person over the console Period (ADP shifts; Issue #213 L3). */
-export interface LaborHoursPerPersonRow {
+/**
+ * Clocked hours per person per day (ADP shifts; Issue #213 L3, #335).
+ *
+ * Day-level so the page can total it for the Period and bucket it by
+ * Aggregation for the single-person chart. Unlike `laborActualShiftDays` this
+ * keeps today, which is part of the actual window once the evening ingest lands.
+ */
+export interface LaborPersonDayRow {
+  date: string;
   employee: string;
+  labor_bucket: string;
   hours: number;
   [key: string]: unknown;
 }
 
-export function laborHoursPerPerson(win: DateWindow): Promise<LaborHoursPerPersonRow[]> {
-  return q<LaborHoursPerPersonRow>(
+export function laborHoursPerPersonDaily(win: DateWindow): Promise<LaborPersonDayRow[]> {
+  return q<LaborPersonDayRow>(
     `SELECT
-       COALESCE(NULLIF(TRIM(canonical_name), ''), employee_id) AS employee,
-       SUM(total_hours) AS hours
-     FROM ${fq("adp_shifts")}
-     WHERE date BETWEEN @start AND @end
-     GROUP BY employee
+       CAST(s.date AS STRING) AS date,
+       COALESCE(NULLIF(TRIM(s.canonical_name), ''), s.employee_id) AS employee,
+       IF(
+         IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+         'fulltime',
+         'parttime'
+       ) AS labor_bucket,
+       SUM(s.total_hours) AS hours
+     FROM ${fq("adp_shifts")} s
+     LEFT JOIN ${fq("adp_wage_rates")} w
+       ON w.employee_id = s.employee_id
+     WHERE s.date BETWEEN @start AND @end
+     GROUP BY date, employee, labor_bucket
      HAVING hours > 0
-     ORDER BY hours DESC`,
+     ORDER BY date, employee`,
     { start: dateParam(win.start), end: dateParam(win.end) },
   );
 }
@@ -673,18 +689,22 @@ export interface LaborScheduledShiftDayRow {
 
 export function laborScheduledShiftDays(
   win: DateWindow,
-  opts?: { excludePto?: boolean; allowPast?: boolean },
+  opts: { store: string; excludePto?: boolean; allowPast?: boolean },
 ): Promise<LaborScheduledShiftDayRow[]> {
-  const ptoClause = opts?.excludePto
+  const ptoClause = opts.excludePto
     ? `AND IFNULL(s.hour_kind, 'shift') != 'pto'`
     : "";
-  const todayClause = opts?.allowPast
+  const todayClause = opts.allowPast
     ? ""
     : "AND s.date >= CURRENT_DATE('America/Chicago')";
+  // The schedule carries ADP's display name ("Johnson, Dolce J") while clocked
+  // shifts carry the canonical one ("Johnson, Dolce"); resolve through
+  // employee_aliases (1:1 on store + raw_name) so one person is one swimlane
+  // and one bar.
   return q<LaborScheduledShiftDayRow>(
     `SELECT
        CAST(s.date AS STRING) AS date,
-       COALESCE(NULLIF(TRIM(s.employee_name), ''), s.employee_id) AS employee,
+       COALESCE(al.canonical_name, NULLIF(TRIM(s.employee_name), ''), s.employee_id) AS employee,
        IF(
          IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
          'fulltime',
@@ -695,12 +715,14 @@ export function laborScheduledShiftDays(
      FROM ${fq("adp_scheduled_shifts")} s
      LEFT JOIN ${fq("adp_wage_rates")} w
        ON w.employee_id = s.employee_id
+     LEFT JOIN ${fq("employee_aliases")} al
+       ON al.store = @store AND al.raw_name = TRIM(s.employee_name)
      WHERE s.date BETWEEN @start AND @end
        ${todayClause}
        AND IFNULL(s.scheduled_hours, 0) > 0
        ${ptoClause}
      ORDER BY date, employee`,
-    { start: dateParam(win.start), end: dateParam(win.end) },
+    { start: dateParam(win.start), end: dateParam(win.end), store: opts.store },
   );
 }
 

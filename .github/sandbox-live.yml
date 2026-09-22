@@ -8,6 +8,4 @@
 #
 # Empty this back to `scenarios: []` before merge — a leftover armed date re-runs a
 # live ADP scrape on every push.
-scenarios:
-  - name: full-live
-    date: "2026-09-08"
+scenarios: []

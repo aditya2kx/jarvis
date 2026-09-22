@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
 import type { Grain } from "@/lib/filters/range";
@@ -188,6 +188,7 @@ export function laborTooltipContent(
   goalLaborHoursWeek: number | null | undefined,
   grain: Grain,
   laborTypes: string[] | null,
+  opts?: { salesHints?: boolean },
 ): { entries: LaborTooltipEntry[]; lines: string[] } {
   const ptOn = showsPartTime(laborTypes);
   const ftOn = showsFullTime(laborTypes);
@@ -260,7 +261,7 @@ export function laborTooltipContent(
   }
 
   const lines: string[] = [];
-  if (hasSched && !hasActual) {
+  if (hasSched && !hasActual && opts?.salesHints !== false) {
     lines.push("Scheduled — no labor % (no Square sales yet)");
   }
   if (
@@ -305,6 +306,8 @@ export function LaborHoursChart({
   unit = "hours",
   titlePrefix = "",
   subtitle,
+  person,
+  headerRight,
 }: {
   data: LaborHoursChartRow[];
   laborTypes: string[] | null;
@@ -313,6 +316,9 @@ export function LaborHoursChart({
   unit?: LaborChartUnit;
   titlePrefix?: string;
   subtitle?: string;
+  /** Single-person view: titled by name, no store-level sales hints (pass no goal). */
+  person?: string;
+  headerRight?: ReactNode;
 }) {
   const { chartData, series, title, stacked, goal, goalLabel, valueFormat } = useMemo(() => {
     const pt = showsPartTime(laborTypes);
@@ -386,7 +392,9 @@ export function LaborHoursChart({
           tooltipLines: tip.lines,
         };
       }
-      const tip = laborTooltipContent(r, goalLaborHoursWeek, grain, laborTypes);
+      const tip = laborTooltipContent(r, goalLaborHoursWeek, grain, laborTypes, {
+        salesHints: person == null,
+      });
       return {
         date: r.date,
         parttime: pt ? r.parttime_hours : null,
@@ -398,9 +406,18 @@ export function LaborHoursChart({
       };
     });
 
-    const title = pctMode
-      ? `${titlePrefix}Labor % of net sales by ${grainNoun}`
-      : `${titlePrefix}Labor hours by ${grainNoun}`;
+    // One person is one bucket: drop the other bucket's (empty) legend entries.
+    const shownSeries = person
+      ? series.filter((s) =>
+          chartData.some((r) => (r[s.key as keyof typeof r] as number | null) != null),
+        )
+      : series;
+
+    const title = person
+      ? `${titlePrefix}Hours by ${grainNoun} — ${person}`
+      : pctMode
+        ? `${titlePrefix}Labor % of net sales by ${grainNoun}`
+        : `${titlePrefix}Labor hours by ${grainNoun}`;
 
     const showGoal =
       !pctMode &&
@@ -411,14 +428,14 @@ export function LaborHoursChart({
 
     return {
       chartData,
-      series,
+      series: shownSeries,
       title,
-      stacked: series.length > 1,
+      stacked: shownSeries.length > 1,
       goal: showGoal ? Number(goalLaborHoursWeek) : undefined,
       goalLabel: showGoal ? `Goal ${Number(goalLaborHoursWeek)} hrs` : undefined,
       valueFormat: pctMode ? ("percent" as const) : ("number" as const),
     };
-  }, [data, grain, goalLaborHoursWeek, laborTypes, titlePrefix, unit]);
+  }, [data, grain, goalLaborHoursWeek, laborTypes, person, titlePrefix, unit]);
 
   if (series.length === 0) {
     return (
@@ -442,6 +459,7 @@ export function LaborHoursChart({
       goal={goal}
       goalLabel={goalLabel}
       goalStroke={LABOR_CHART_COLORS.goalLine}
+      headerRight={headerRight}
     />
   );
 }

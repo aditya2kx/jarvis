@@ -521,7 +521,22 @@ same contract as Sales).
   (Hour included). Hours/Concurrent keep Hour schedule-hide (#227 / #243).
   Open/refresh selects **today** (America/Chicago) when that day is in the
   Period strip; a chip click still sticks until the next full load.
-- **L3** hours-per-person bar for the same Period (`adp_shifts`).
+- **L3** hours-per-person bar for the same Period, stacked like L1 (Issue #335):
+  clocked hours (`laborHoursPerPersonDaily` over the actual punch window) plus
+  ADP scheduled hours for the days after the handoff (`scheduleTakesOverFrom`;
+  the same `laborScheduledShiftDays` rows the coverage/concurrent views use),
+  **cut at Period end** — no date axis, so the schedule-horizon extension is not
+  counted. PT/FT actual + slate scheduled palette; honours Labor type and PTO.
+  Scheduled names resolve through `employee_aliases` (ADP schedule says
+  "Johnson, Dolce J", clocked says "Johnson, Dolce") — which also fixes the
+  Staffing coverage swimlanes. Totals round half-up on exact minutes (87.35 h
+  shows 87.4, not float-truncated 87.3).
+- **L3b** single-person hours chart (`?person=`, `FilterSelect` in the card
+  header; defaults to the top L3 bar): `LaborHoursChart` with `person` set, on
+  L1's spine and handoff — same Aggregation, Stat, Labor type and PTO. No labor
+  % or weekly Goal (store-level). Hour of day shows a note instead (would need
+  per-shift clock-hour allocation per person). Built in
+  `lib/labor/hours-per-person.ts` from the day-level rows L3 already loads.
 - Forecast nav/page removed from Operator Console; BQ/Grafana forecast pipeline kept.
 - Forward Wage/Paid/Blended lenses and `laborForwardSummary` are no longer
   surfaced on the Labor page (scheduled-shifts UI deferred).

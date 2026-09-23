@@ -5,8 +5,8 @@ Regression for the nightly failures of 2026-09-15, 09-21 and 09-22:
 
     UPDATE/MERGE must match at most one source row for each target row
 
-ADP's Earnings & Hours statement gave Johnson, Dolce two ``Bonus`` lines ($10 and
-$200) on the 2026-09-11 check. ``adp_earnings`` upserted on
+ADP's Earnings & Hours statement gave one employee two ``Bonus`` lines on the
+2026-09-11 check. ``adp_earnings`` upserted on
 (period_start, period_end, employee, description, check_date), so the first load
 inserted both into an empty key and every later load was rejected.
 """
@@ -26,7 +26,7 @@ from core import datastore
 EARNINGS_KEYS = ["period_start", "period_end", "employee", "description", "check_date"]
 
 
-def _line(description, amount, *, check_date="2026-09-11", employee="Johnson, Dolce"):
+def _line(description, amount, *, check_date="2026-09-11", employee="Employee, Test A"):
     return {
         "period_start": "2026-08-24", "period_end": "2026-09-06",
         "check_date": check_date, "employee": employee,
@@ -77,42 +77,42 @@ def _replace(client, rows, scope_col="check_date"):
 class TestReplaceRowsScoped(unittest.TestCase):
     def test_two_bonus_lines_survive_a_rerun(self):
         """E1: the exact prod failure — load, then load the same export again."""
-        export = [_line("Bonus", 10.0), _line("Bonus", 200.0), _line("Regular", 771.88)]
+        export = [_line("Bonus", 25.0), _line("Bonus", 50.0), _line("Regular", 600.0)]
         client = _ScopedTableClient(target=[])
         _replace(client, export)
         _replace(client, export)
         bonuses = sorted(r["amount"] for r in client.target if r["description"] == "Bonus")
-        self.assertEqual(bonuses, [10.0, 200.0])
+        self.assertEqual(bonuses, [25.0, 50.0])
         self.assertEqual(len(client.target), 3)
 
     def test_void_and_reissue_triple_is_kept_verbatim(self):
         """E2: April's -x / +x / +x Regular lines all stay, and the sum holds."""
-        export = [_line("Regular", -809.78, check_date="2026-04-24"),
-                  _line("Regular", 809.78, check_date="2026-04-24"),
-                  _line("Regular", 809.78, check_date="2026-04-24")]
+        export = [_line("Regular", -400.0, check_date="2026-04-24"),
+                  _line("Regular", 400.0, check_date="2026-04-24"),
+                  _line("Regular", 400.0, check_date="2026-04-24")]
         client = _ScopedTableClient(target=list(export))
         _replace(client, export)
         self.assertEqual(len(client.target), 3)
-        self.assertAlmostEqual(sum(r["amount"] for r in client.target), 809.78)
+        self.assertAlmostEqual(sum(r["amount"] for r in client.target), 400.0)
 
     def test_out_of_scope_checks_are_untouched(self):
         older = _line("Regular", 500.0, check_date="2026-08-28")
-        client = _ScopedTableClient(target=[older, _line("Bonus", 10.0)])
-        _replace(client, [_line("Bonus", 10.0), _line("Bonus", 200.0)])
+        client = _ScopedTableClient(target=[older, _line("Bonus", 25.0)])
+        _replace(client, [_line("Bonus", 25.0), _line("Bonus", 50.0)])
         self.assertIn(older, client.target)
         self.assertEqual(len(client.target), 3)
 
     def test_a_line_dropped_by_adp_disappears(self):
         """The export is authoritative for its check: a removed line must not linger."""
-        client = _ScopedTableClient(target=[_line("Bonus", 10.0), _line("Bonus", 200.0)])
-        _replace(client, [_line("Bonus", 200.0)])
-        self.assertEqual([r["amount"] for r in client.target], [200.0])
+        client = _ScopedTableClient(target=[_line("Bonus", 25.0), _line("Bonus", 50.0)])
+        _replace(client, [_line("Bonus", 50.0)])
+        self.assertEqual([r["amount"] for r in client.target], [50.0])
 
     def test_null_scope_is_rejected(self):
         """An unscoped row would be re-inserted on every run."""
         client = _ScopedTableClient(target=[])
         with self.assertRaises(ValueError):
-            _replace(client, [_line("Bonus", 10.0, check_date=None)])
+            _replace(client, [_line("Bonus", 25.0, check_date=None)])
         self.assertEqual(client.sql, [])
 
 
@@ -124,25 +124,25 @@ class TestDuplicateMergeKeyGuard(unittest.TestCase):
             with self.assertRaises(datastore.DuplicateMergeKeyError) as ctx:
                 datastore._merge_rows(
                     client, "`proj.ds.adp_earnings`", list(_line("Bonus", 0).keys()),
-                    [_line("Bonus", 10.0), _line("Bonus", 200.0)], EARNINGS_KEYS,
+                    [_line("Bonus", 25.0), _line("Bonus", 50.0)], EARNINGS_KEYS,
                 )
         self.assertIn("proj.ds.adp_earnings", str(ctx.exception))
-        self.assertIn("Johnson, Dolce", str(ctx.exception))
+        self.assertIn("Employee, Test A", str(ctx.exception))
         client.query.assert_not_called()
 
     def test_exact_duplicates_collapse_to_one(self):
-        rows = [_line("Bonus", 10.0), _line("Bonus", 10.0)]
+        rows = [_line("Bonus", 25.0), _line("Bonus", 25.0)]
         self.assertEqual(datastore._dedupe_merge_rows("`t`", rows, EARNINGS_KEYS), [rows[0]])
 
     def test_collision_across_the_200_row_batch_boundary_is_caught(self):
         """The silent-overwrite case: the pair never shares a MERGE statement."""
         filler = [_line("Regular", float(i), employee=f"E{i}") for i in range(250)]
-        rows = [_line("Bonus", 10.0)] + filler + [_line("Bonus", 200.0)]
+        rows = [_line("Bonus", 25.0)] + filler + [_line("Bonus", 50.0)]
         with self.assertRaises(datastore.DuplicateMergeKeyError):
             datastore._dedupe_merge_rows("`t`", rows, EARNINGS_KEYS)
 
     def test_distinct_keys_pass_through_in_order(self):
-        rows = [_line("Bonus", 10.0), _line("Regular", 771.88)]
+        rows = [_line("Bonus", 25.0), _line("Regular", 600.0)]
         self.assertEqual(datastore._dedupe_merge_rows("`t`", rows, EARNINGS_KEYS), rows)
 
 

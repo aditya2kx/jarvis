@@ -1,12 +1,12 @@
 ## 2026-09-23 — Two bonuses on one paycheck broke three nightlies (Issue #338, PR #339)
 
-**Scope:** 2026-09-15, 09-21 and 09-22 failed at `load_raw_bigquery` with `UPDATE/MERGE must match at most one source row`. Every failure was a Mon/Tue Earnings night. `adp_earnings` upserted on (period, employee, description, check_date), but ADP gave Johnson, Dolce two real `Bonus` lines ($10, $200) on the 09-11 check: the first load inserted both into an empty key and every later one was rejected. Tips and the model were missing for 09-21/22 as a result.
+**Scope:** 2026-09-15, 09-21 and 09-22 failed at `load_raw_bigquery` with `UPDATE/MERGE must match at most one source row`. Every failure was a Mon/Tue Earnings night. `adp_earnings` upserted on (period, employee, description, check_date), but ADP gave one employee two real `Bonus` lines on the 09-11 check: the first load inserted both into an empty key and every later one was rejected. Tips and the model were missing for 09-21/22 as a result.
 
 **Key changes:** `datastore.replace_rows_scoped` (one atomic `MERGE … ON FALSE` per `check_date` / `date_local`) for `adp_earnings` and `square_kds_tickets`; `_merge_rows` raises `DuplicateMergeKeyError` instead of a BigQuery reject or a silent cross-batch overwrite; schedule/liability/rates load in isolation (exit 3) so they can no longer cost a day its tips; the Slack alert and `pipeline_runs.error` carry the child's root-cause line, where before they said only `exit status 1` / NULL.
 
 **Process note:** sandbox evidence could not have caught this — `bhaga_sandbox.adp_earnings` stopped at the 08-28 check, and the raw-vs-model drift check read prod `bhaga` even in sandbox runs (fixed here; it failed the first PR #339 sandbox run for a prod-only reason).
 
-**Evidence:** real-BQ smoke of `replace_rows_scoped` (re-run converges, out-of-scope check untouched, no stage leftovers); sandbox-live `full-live` 09-07..09-22 loaded the 09-11 check as 41 lines / $8,822.18 = prod, both Dolce Bonus lines present.
+**Evidence:** real-BQ smoke of `replace_rows_scoped` (re-run converges, out-of-scope check untouched, no stage leftovers); sandbox-live `full-live` 09-07..09-22 loaded the 09-11 check as 41 lines / $8,822.18 = prod (run 35883440924), then re-loaded it on top of the duplicate-key pair — the exact prod failure — and converged at the same 41 / $8,822.18 with `pipeline_runs` status=success (run 35887820890).
 
 ## 2026-09-22 — A remote shift counted as floor coverage, so the coworker alone in the shop was paid base (Issue #309, follow-up #332)
 

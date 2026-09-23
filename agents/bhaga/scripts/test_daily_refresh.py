@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import ast
 import datetime
+import json
 import os
 import pathlib
 import re
@@ -2057,10 +2058,8 @@ class TestRequireAdpWiring(unittest.TestCase):
             'adp_exports_expected = bool(\n        getattr(results.get("adp"), "success", False)\n    )',
             src,
         )
-        self.assertIn(
-            '+ (["--require-adp"] if adp_exports_expected else [])',
-            src,
-        )
+        self.assertIn("require_adp=adp_exports_expected", src)
+        self.assertIn('+ (["--require-adp"] if require_adp else [])', src)
 
 
 class TestTimecardOnlyEarlyExit(unittest.TestCase):
@@ -2251,6 +2250,96 @@ class TestAdpBundlePayInfoNonfatal(unittest.TestCase):
                 )
         self.assertIn("adp_timecard", str(ctx.exception))
         self.assertNotIn("adp_pay_info", str(ctx.exception))
+
+
+class TestRawLoadBreadcrumb(unittest.TestCase):
+    """Issue #338: the alert and pipeline_runs.error must name the real cause.
+
+    The 2026-09-15/21/22 alerts said only "returned non-zero exit status 1" and
+    pipeline_runs.error was NULL; the cause sat in Cloud Run logs.
+    """
+
+    # Verbatim tail of the 2026-09-22 child output (trimmed traceback).
+    PROD_TAIL = [
+        "Traceback (most recent call last):",
+        '  File "/app/core/datastore.py", line 505, in _merge_rows',
+        "google.api_core.exceptions.BadRequest: 400 GET https://bigquery.googleapis.com/"
+        "bigquery/v2/projects/p/queries/x: UPDATE/MERGE must match at most one source "
+        "row for each target row",
+        "Location: US",
+        "Job ID: 8ab877a8-b0f6-4a2b-a064-5caec7b77121",
+    ]
+
+    def setUp(self):
+        daily_refresh._RUN_SUMMARY.clear()
+
+    def tearDown(self):
+        daily_refresh._RUN_SUMMARY.clear()
+
+    def test_root_cause_skips_bigquery_trailer_lines(self):
+        cause = daily_refresh._root_cause_line(self.PROD_TAIL)
+        self.assertTrue(cause.startswith("google.api_core.exceptions.BadRequest"))
+        self.assertIn("must match at most one source row", cause)
+
+    def test_loader_breadcrumb_beats_traceback(self):
+        lines = self.PROD_TAIL + ["BREADCRUMB raw_load_failed source=adp_rates error=x"]
+        self.assertIn("source=adp_rates", daily_refresh._root_cause_line(lines))
+
+    def test_run_streaming_captures_a_real_child_traceback(self):
+        rc, cause = daily_refresh._run_streaming(
+            [sys.executable, "-c", "raise ValueError('earnings key collision')"],
+            cwd=".", env=dict(os.environ),
+        )
+        self.assertEqual(rc, 1)
+        self.assertEqual(cause, "ValueError: earnings key collision")
+
+    def test_fatal_exit_raises_with_the_cause(self):
+        with mock.patch.object(daily_refresh, "_run_streaming",
+                               return_value=(1, self.PROD_TAIL[2])):
+            with self.assertRaises(daily_refresh.RawLoadError) as ctx:
+                daily_refresh._run_backfill_from_downloads(
+                    store="palmetto", refresh_date=datetime.date(2026, 9, 22),
+                    require_adp=True, env={})
+        self.assertIn("must match at most one source row", str(ctx.exception))
+
+    def test_partial_exit_returns_isolated_failures(self):
+        def _child(cmd, **_kw):
+            path = cmd[cmd.index("--result-json") + 1]
+            pathlib.Path(path).write_text(json.dumps(
+                {"failures": [{"source": "adp_rates", "error": "BadRequest: x"}]}))
+            return daily_refresh._BACKFILL_EXIT_PARTIAL, None
+
+        with mock.patch.object(daily_refresh, "_run_streaming", side_effect=_child):
+            got = daily_refresh._run_backfill_from_downloads(
+                store="palmetto", refresh_date=datetime.date(2026, 9, 22),
+                require_adp=True, env={})
+        self.assertEqual(got, [{"source": "adp_rates", "error": "BadRequest: x"}])
+
+    def test_exit_partial_matches_the_loader(self):
+        from agents.bhaga.scripts import backfill_from_downloads as bfd
+        self.assertEqual(daily_refresh._BACKFILL_EXIT_PARTIAL, bfd.EXIT_PARTIAL)
+
+    def test_record_failure_populates_pipeline_runs_error(self):
+        with mock.patch.object(daily_refresh, "evidence_prefix", return_value=None), \
+             mock.patch.object(daily_refresh, "_adapter_record_step_failure"):
+            daily_refresh._record_failure(
+                datetime.date(2026, 9, 22), "load_raw_bigquery",
+                daily_refresh.RawLoadError("backfill_from_downloads exit 1: BadRequest: x"))
+        self.assertEqual(daily_refresh._RUN_SUMMARY["error"],
+                         "RawLoadError: backfill_from_downloads exit 1: BadRequest: x")
+
+    def test_partial_load_alerts_and_clears_markers_for_reload(self):
+        with mock.patch.object(daily_refresh, "_record_failure", return_value="gs://ev"), \
+             mock.patch.object(daily_refresh, "step_already_done", return_value=True), \
+             mock.patch.object(daily_refresh, "clear_step_done") as clear, \
+             mock.patch.object(daily_refresh, "failure_alert") as alert:
+            exc = daily_refresh._handle_partial_raw_load(
+                datetime.date(2026, 9, 22),
+                [{"source": "adp_rates", "error": "BadRequest: x"}])
+        cleared = {c.args[1] for c in clear.call_args_list}
+        self.assertEqual(cleared, {"load_raw_bigquery", "adp_reports"})
+        self.assertIn("adp_rates: BadRequest: x", str(exc))
+        self.assertIn("adp_rates: BadRequest: x", str(alert.call_args.kwargs["exception"]))
 
 
 if __name__ == "__main__":

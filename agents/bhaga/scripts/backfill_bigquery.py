@@ -431,7 +431,7 @@ def backfill(store: str, *, tables: set[str] | None = None, dry_run: bool = Fals
     """Run the full backfill. Returns {table: {rows_in_sheet, rows_loaded}}."""
     os.environ["BHAGA_DATASTORE"] = "bigquery"
 
-    from core.datastore import load_rows
+    from core.datastore import load_rows, replace_rows_scoped
 
     profile = load_store_profile(store)
     account = profile.get("google_account_key", store)
@@ -572,8 +572,7 @@ def backfill(store: str, *, tables: set[str] | None = None, dry_run: bool = Fals
         bq_rows = [r for r in bq_rows if r["date_local"] is not None]
         print(f"  {len(sheet_rows)} rows in sheet, {len(bq_rows)} valid rows for BQ")
         if not dry_run and bq_rows:
-            loaded = load_rows("square_kds_tickets", bq_rows,
-                               merge_keys=["date_local", "time_created", "ticket_name"])
+            loaded = replace_rows_scoped("square_kds_tickets", bq_rows, scope_col="date_local")
             print(f"  Loaded {loaded} rows into square_kds_tickets")
         else:
             loaded = 0

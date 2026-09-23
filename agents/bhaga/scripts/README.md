@@ -33,7 +33,10 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
 4. **Load ADP → BigQuery (primary)** (`backfill_from_downloads.py --skip square`, requires
    `BHAGA_DATASTORE=bigquery`): maps ADP parse-output dicts through `map_*` functions and calls
    `load_rows` (MERGE upsert). Square data is written directly by step 2 (no download file). BQ is
-   the **single source of truth**. Handles: `adp_shifts`, `adp_punches`, `adp_wage_rates`,
+   the **single source of truth**. `adp_earnings` has no unique key and loads via
+   `core.datastore.replace_rows_scoped(scope_col="check_date")`. Schedule, liability and rates load
+   in isolation: a failure there exits `EXIT_PARTIAL` (3) with `--result-json`, and `daily_refresh`
+   alerts but still runs the model (Issue #338; `RUNBOOK.md` § load_raw_bigquery table isolation). Handles: `adp_shifts`, `adp_punches`, `adp_wage_rates`,
    (dual-source Issue #213/#251: Earnings Regular + nightly People→Payroll-info refresh via
    `skills/adp_run_automation/pay_info_backend.py`),
    `adp_earnings`, `adp_scheduled_daily` (per-day scheduled hours, parsed from `Schedule-*.json`

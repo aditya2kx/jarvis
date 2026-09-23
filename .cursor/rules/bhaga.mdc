@@ -135,6 +135,14 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
     payroll would have lifted the base rate and silently ended eligibility for everyone it just paid.
     Any future rate-derived eligibility rule must be checked for this same feedback loop.
 
+13. **A MERGE key is a uniqueness claim — verify it against the source, not the schema.** ADP
+    Earnings repeats (period, employee, description, check_date) for real lines (two `Bonus` lines on
+    one check, void + re-issue triples), and that broke three nightlies (2026-09-15/21/22, Issue #338).
+    Sources without a unique key load via `datastore.replace_rows_scoped` (atomic replace per scope
+    value); `_merge_rows` raises `DuplicateMergeKeyError` rather than let a collision fail in BigQuery
+    or silently overwrite across batches. Never "fix" a collision by widening the key with amount/rate
+    — two identical lines are still two lines of pay.
+
 ## Edge cases
 
 ## Inventory ingest invariants (Order Assistant, slice A — 2026-06-30)

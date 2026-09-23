@@ -69,14 +69,17 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import collections
 import concurrent.futures
 import csv
 import datetime
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import urllib.parse
@@ -510,6 +513,7 @@ def _record_failure(
     real exception.
     """
     _RUN_SUMMARY.setdefault("failed_step", step_name)
+    _RUN_SUMMARY.setdefault("error", f"{type(exc).__name__}: {exc}"[:1000])
     ev_uri: str | None = None
     try:
         ev_uri = evidence_prefix(refresh_date)
@@ -2176,6 +2180,50 @@ def _execute_pipelines(
     return results
 
 
+class RawLoadError(RuntimeError):
+    """backfill_from_downloads failed; the message carries its root-cause line."""
+
+
+# A traceback's final "pkg.mod.ExcType: message" line, or a bare "*Error: msg".
+# Deliberately excludes undotted "Word: value" lines such as BigQuery's
+# trailing "Location: US" / "Job ID: …", which follow the real error.
+_ROOT_CAUSE_RE = re.compile(r"^(?:[A-Za-z_]\w*\.)+[A-Za-z_]\w*: \S|^\w*(?:Error|Exception)\w*: \S")
+
+
+def _root_cause_line(lines: Sequence[str]) -> str | None:
+    """The most specific error line in a subprocess's output, or None.
+
+    A loader BREADCRUMB wins over a traceback line because it names the source.
+    """
+    crumbs = [ln for ln in lines if ln.startswith("BREADCRUMB")]
+    if crumbs:
+        return crumbs[-1].strip()[:500]
+    for ln in reversed(lines):
+        if _ROOT_CAUSE_RE.match(ln):
+            return ln.strip()[:500]
+    return None
+
+
+def _run_streaming(cmd: list[str], *, cwd: str, env: dict) -> tuple[int, str | None]:
+    """Run ``cmd`` teeing its output to ours; return (returncode, root-cause line).
+
+    ``check=True`` alone reports only "returned non-zero exit status 1", which is
+    all the 2026-09-15/21/22 alerts ever said; the cause was in the child's
+    stderr, visible only in Cloud Run logs.
+    """
+    tail: collections.deque[str] = collections.deque(maxlen=400)
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        tail.append(line.rstrip("\n"))
+    rc = proc.wait()
+    return rc, (_root_cause_line(list(tail)) if rc else None)
+
+
 def run_step(
     step_name: str,
     fn,
@@ -2237,6 +2285,68 @@ def run_step(
         except Exception:  # noqa: BLE001, S110
             pass
         return False, exc
+
+
+_BACKFILL_EXIT_PARTIAL = 3  # backfill_from_downloads.EXIT_PARTIAL
+
+
+def _run_backfill_from_downloads(
+    *, store: str, refresh_date: datetime.date, require_adp: bool, env: dict,
+) -> list[dict]:
+    """Load tonight's exports into BQ; return isolated-table failures ([] = clean).
+
+    Raises RawLoadError, carrying the child's root-cause line, when a
+    tip-critical table fails.
+    """
+    fd, result_path = tempfile.mkstemp(prefix="bhaga-raw-load-", suffix=".json")
+    os.close(fd)
+    try:
+        rc, cause = _run_streaming(
+            [sys.executable, "-m", "agents.bhaga.scripts.backfill_from_downloads",
+             "--store", store, "--skip", "square",
+             "--refresh-date", refresh_date.isoformat(),
+             "--result-json", result_path]
+            + (["--require-adp"] if require_adp else []),
+            cwd=str(PROJECT_ROOT), env=env,
+        )
+        if rc == 0:
+            return []
+        if rc == _BACKFILL_EXIT_PARTIAL:
+            return json.loads(pathlib.Path(result_path).read_text())["failures"]
+        raise RawLoadError(
+            f"backfill_from_downloads exit {rc}: {cause or 'no error line in output'}")
+    finally:
+        pathlib.Path(result_path).unlink(missing_ok=True)
+
+
+def _handle_partial_raw_load(
+    refresh_date: datetime.date, table_failures: list[dict],
+) -> RawLoadError:
+    """Alert on isolated-table failures while letting tip allocation proceed.
+
+    The step marker and adp_reports are cleared because the failed table's
+    export lived only in this container: the next run must re-scrape it.
+    """
+    detail = "; ".join(f"{f['source']}: {f['error']}" for f in table_failures)
+    exc = RawLoadError(f"{len(table_failures)} isolated source(s) failed to load: {detail}")
+    print(f"[load_raw_bigquery] PARTIAL — {exc}", file=sys.stderr)
+    ev_uri = _record_failure(refresh_date, "load_raw_bigquery", exc)
+    for step in ("load_raw_bigquery", "adp_reports"):
+        if step_already_done(refresh_date, step):
+            clear_step_done(refresh_date, step)
+            print(f"  [load_raw_bigquery] cleared {step}.done so the next run re-loads")
+    try:
+        failure_alert(
+            step="load_raw_bigquery",
+            exception=exc,
+            date=refresh_date.isoformat(),
+            evidence_uri=ev_uri,
+            extra=("Tip-critical tables (shifts, punches) loaded, so the model and tip "
+                   "allocation still ran. The failed source(s) re-load on the next run."),
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return exc
 
 
 _RUN_SUMMARY: dict = {}  # populated by _run_refresh(); read by main()'s recorder
@@ -3265,16 +3375,12 @@ def _run_refresh(run_id: str) -> int:
             _assert_master_not_older_than_gap(
                 master_csv=MASTER_TXN_CSV, gap_csv=gap_csv_for_check,
             )
-            return subprocess.run(
-                [sys.executable, "-m", "agents.bhaga.scripts.backfill_from_downloads",
-                 "--store", args.store, "--skip", "square",
-                 "--refresh-date", refresh_date.isoformat()]
-                + (["--require-adp"] if adp_exports_expected else []),
-                cwd=str(PROJECT_ROOT), check=True,
-                env=bq_raw_env,
+            return _run_backfill_from_downloads(
+                store=args.store, refresh_date=refresh_date,
+                require_adp=adp_exports_expected, env=bq_raw_env,
             )
 
-        ok, _ = run_step(
+        ok, step_val = run_step(
             "load_raw_bigquery",
             _load_raw_bigquery_step,
             refresh_date=refresh_date,
@@ -3286,8 +3392,11 @@ def _run_refresh(run_id: str) -> int:
             # periods only; do not leave adp_reports done or the next nightly
             # skips ADP forever (2026-08-24 / Issue #267).
             clear_adp_reports_if_shifts_missing(refresh_date)
+            if step_val:
+                failures.append(("load_raw_bigquery", _handle_partial_raw_load(
+                    refresh_date, step_val)))
         else:
-            failures.append(("load_raw_bigquery", RuntimeError("see step log")))
+            failures.append(("load_raw_bigquery", step_val))
             # Gate: clear the scrape-done markers so the next retry re-scrapes
             # from upstream rather than trying to load absent local files.
             # (Cloud Run containers are ephemeral; local files vanish between runs.)

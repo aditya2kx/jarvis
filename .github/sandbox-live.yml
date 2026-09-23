@@ -1,11 +1,14 @@
-# Sandbox live run config — Issue #309: solo-shift premium ($15.25 → $16.25).
+# Sandbox live run config — Issue #338: adp_earnings multi-line keys.
 #
-# full-live: exercises the full Square + ADP pipeline against the sandbox for a date
-# inside the effective cycle, proving the solo-hours materialization runs end-to-end on
-# real punches rather than only in unit tests. 2026-09-08 carries the cycle's largest
-# eligible premium (4.8 solo hours across 2 people), so a regression in the occupancy
-# walk or the eligibility gate shows up as a changed number rather than a silent zero.
+# full-live over 2026-09-07..09-22: the window forces the Earnings pull, and
+# Earnings' custom range is by CHECK date, so it carries the 2026-09-11 check
+# with Johnson, Dolce's two `Bonus` lines. Run it TWICE: run 1 inserts them into
+# bhaga_sandbox; run 2 is the exact re-load that failed prod on 09-15/21/22.
 #
 # Empty this back to `scenarios: []` before merge — a leftover armed date re-runs a
 # live ADP scrape on every push.
-scenarios: []
+scenarios:
+  - name: full-live
+    date: 2026-09-22
+    window_from: 2026-09-07
+    window_to: 2026-09-22

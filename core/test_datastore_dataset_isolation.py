@@ -99,7 +99,8 @@ class TestLoadRowsReplace(unittest.TestCase):
         self.assertEqual(n, 2)
 
     def test_merge_path_unaffected_when_not_replace(self):
-        queries, n = self._run(merge_keys=["employee"])
+        # The fixture's rows collide on employee alone (DuplicateMergeKeyError).
+        queries, n = self._run(merge_keys=["employee", "amount"])
         self.assertTrue(any("MERGE" in q for q in queries))
         self.assertFalse(any(q.startswith("TRUNCATE") for q in queries))
 

@@ -1900,6 +1900,25 @@ If `load_raw_bigquery` fails (BQ upsert error), `daily_refresh` immediately clea
 and `adp.done` Firestore markers so the next retry re-scrapes from upstream with fresh data (rather
 than failing with no local files in the ephemeral Cloud Run container).
 
+### `load_raw_bigquery` table isolation + breadcrumb (Issue #338)
+
+`backfill_from_downloads` splits its tables into two classes:
+
+| Class | Tables | On failure |
+|---|---|---|
+| Tip-critical (fatal) | `adp_shifts`, `adp_punches` | Exit 1. Step fails, downstream model/tips skip, scrape markers cleared. |
+| Isolated | `adp_schedule` (scheduled daily/shifts), `adp_liability`, `adp_rates` (wage rates + `adp_earnings`) | Exit 3 (`EXIT_PARTIAL`) with `{"failures": [...]}` in `--result-json`. `daily_refresh` alerts, records the run `failed`, clears `load_raw_bigquery` + `adp_reports` so the next run re-scrapes, **and still runs the model + tip allocation**. |
+
+Every failure prints a greppable one-liner — `BREADCRUMB raw_load_failed source=<s> refresh_date=<d> error=<Type: msg>`
+from the loader, and the orchestrator's `RawLoadError` carries the child's root-cause line into the Slack
+alert and `pipeline_runs.error` (previously only "returned non-zero exit status 1" / NULL).
+
+`adp_earnings` and `square_kds_tickets` have no unique natural key (two `Bonus` lines on one check;
+void + re-issue triples; unnamed KDS tickets in the same second), so they load via
+`core.datastore.replace_rows_scoped` — one atomic MERGE that replaces every row for each `check_date`
+/ `date_local` in the export. `_merge_rows` now rejects a batch whose differing rows share a merge key
+(`DuplicateMergeKeyError`) instead of letting BigQuery reject it or a cross-batch pair silently overwrite.
+
 ### Operator tunables — edit via Slack
 
 ```

@@ -162,5 +162,81 @@ class TestReceiptsBypassReplaceTruncation(unittest.TestCase):
         self.assertTrue(load.call_args.kwargs.get("replace"))
 
 
+class TestTableIsolation(unittest.TestCase):
+    """Issue #338: a non-tip table failing must not cost the day its tips.
+
+    Drives the real `main()` with a timecard and a schedule on disk. The
+    schedule parser is made to fail; the timecard must still load and the exit
+    must be EXIT_PARTIAL with the failure written to --result-json.
+    """
+
+    def _run(self, *, schedule_error=None, shifts_error=None):
+        import json
+        import pathlib
+        import tempfile
+
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        (tmp / "Timecard-2026-09-23.xlsx").write_bytes(b"")
+        (tmp / "Schedule-2026-09-23.json").write_text(json.dumps({"weeks": []}))
+        result_json = tmp / "result.json"
+        loaded: list[str] = []
+
+        def _load(table, rows, **_kw):
+            if table == "adp_shifts" and shifts_error:
+                raise shifts_error
+            loaded.append(table)
+            return len(rows)
+
+        argv = ["backfill_from_downloads", "--store", "palmetto", "--skip", "square",
+                "--skip", "adp_liability", "--skip", "adp_rates",
+                "--refresh-date", "2026-09-22", "--require-adp",
+                "--result-json", str(result_json)]
+        punch = {"date": "2026-09-22"}
+        with mock.patch.dict(os.environ, {"BHAGA_DATASTORE": "bigquery"}), \
+             mock.patch.object(sys, "argv", argv), \
+             mock.patch.object(bfd, "DOWNLOADS", tmp), \
+             mock.patch.object(bfd, "load_store_profile", return_value={
+                 "timezone": {"shop_tz": "America/Chicago"}, "google_account_key": "x"}), \
+             mock.patch.object(bfd, "resolve_sheet_id", return_value="sid"), \
+             mock.patch("skills.store_profile.load_aliases", return_value={}), \
+             mock.patch("skills.store_profile.load_exclusions",
+                        return_value={"permanent": []}), \
+             mock.patch.object(bfd.shift_backend, "parse_xlsx", return_value=[punch]), \
+             mock.patch.object(bfd.shift_backend, "aggregate_by_day", return_value=[punch]), \
+             mock.patch.object(bfd, "detect_new_employees", return_value=[]), \
+             mock.patch.object(bfd, "map_adp_shift", side_effect=lambda r: dict(r)), \
+             mock.patch.object(bfd, "map_adp_punch", side_effect=lambda r: dict(r)), \
+             mock.patch.object(bfd.schedule_backend, "build_schedule_records",
+                               side_effect=schedule_error, return_value=[]), \
+             mock.patch.object(bfd.schedule_backend, "build_employee_schedule_records",
+                               return_value=[]), \
+             mock.patch.object(bfd.schedule_backend, "reconcile_employee_vs_footer",
+                               return_value=[]), \
+             mock.patch.object(bfd, "load_rows", side_effect=_load), \
+             mock.patch.object(bfd, "_ds_load_rows"):
+            rc = bfd.main()
+        failures = (json.loads(result_json.read_text())["failures"]
+                    if result_json.exists() else None)
+        return rc, loaded, failures
+
+    def test_clean_load_exits_zero_and_writes_no_result(self):
+        rc, loaded, failures = self._run()
+        self.assertEqual(rc, 0)
+        self.assertIsNone(failures)
+        self.assertIn("adp_shifts", loaded)
+
+    def test_isolated_failure_is_partial_and_keeps_the_timecard(self):
+        rc, loaded, failures = self._run(schedule_error=RuntimeError("schedule boom"))
+        self.assertEqual(rc, bfd.EXIT_PARTIAL)
+        self.assertEqual(loaded, ["adp_shifts", "adp_punches"])
+        self.assertEqual(failures[0]["source"], "adp_schedule")
+        self.assertIn("RuntimeError: schedule boom", failures[0]["error"])
+
+    def test_tip_critical_failure_stays_fatal(self):
+        """Tips are computed from shifts/punches, so they are never isolated."""
+        with self.assertRaises(RuntimeError):
+            self._run(shifts_error=RuntimeError("shifts boom"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -37,6 +37,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from core.config_loader import project_dir, resolve_sheet_id
 from core.datastore import load_rows as _ds_load_rows
+from core.datastore import replace_rows_scoped
+
+# Exit code when every tip-critical table loaded but an isolated one failed.
+# daily_refresh reads the failures from --result-json and continues downstream.
+EXIT_PARTIAL = 3
 
 # Fresh-scrape replace mode (set from --replace / BHAGA_RAW_REPLACE in main()).
 # When True, every load_rows() below TRUNCATEs its target table before loading,
@@ -233,6 +238,10 @@ def main() -> int:
              "ONLY for a full-history backfill — a windowed --replace drops "
              "out-of-window rows. Defaults to on when BHAGA_RAW_REPLACE=1 (set by "
              "the fresh-scrape sandbox path).")
+    cli.add_argument(
+        "--result-json", default=None,
+        help=f"Write {{'failures': [...]}} here when an isolated table fails "
+             f"(exit {EXIT_PARTIAL}).")
     args = cli.parse_args()
 
     # Fresh-scrape replace applies to every load_rows() call in this run (the
@@ -291,6 +300,20 @@ def main() -> int:
             loaded_sources=loaded_sources,
             dry_run=args.dry_run,
         )
+
+    # Tables the tip allocation does not read (schedule, liability, rates and
+    # earnings) load in isolation: one failing must not cost the day its tips.
+    # Shifts and punches stay fatal because the allocation is computed from them.
+    table_failures: list[dict] = []
+
+    def _isolated(source: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            error = " ".join(f"{type(exc).__name__}: {exc}".split())[:500]
+            print(f"BREADCRUMB raw_load_failed source={source} "
+                  f"refresh_date={refresh_date} error={error}", file=sys.stderr)
+            table_failures.append({"source": source, "error": error})
 
     # ── ADP shifts + punches ──────────────────────────────────────
     if "adp_shifts" not in args.skip or "adp_punches" not in args.skip:
@@ -354,7 +377,7 @@ def main() -> int:
                     summaries.append({"table": "adp_punches", "rows": n})
 
     # ── ADP scheduled hours (Team Schedule, forward-looking) ─────
-    if "adp_schedule" not in args.skip:
+    def _load_adp_schedule() -> None:
         schedule_json = _newest("Schedule-*.json")
         if not schedule_json:
             print("WARN: no Schedule-*.json found — skipping ADP scheduled hours")
@@ -444,8 +467,11 @@ def main() -> int:
                 print(f"  adp_scheduled_shifts (BQ): {n} rows upserted")
                 summaries.append({"table": "adp_scheduled_shifts", "rows": n})
 
+    if "adp_schedule" not in args.skip:
+        _isolated("adp_schedule", _load_adp_schedule)
+
     # ── ADP Payroll Liability (employer burden calibration) ───────
-    if "adp_liability" not in args.skip:
+    def _load_adp_liability() -> None:
         liability_json = _newest("PayrollLiability-*.json")
         if not liability_json:
             print("WARN: no PayrollLiability-*.json — skipping employer burden load")
@@ -484,8 +510,11 @@ def main() -> int:
                 print(f"  adp_payroll_liability (BQ): {n} rows upserted")
                 summaries.append({"table": "adp_payroll_liability", "rows": n})
 
+    if "adp_liability" not in args.skip:
+        _isolated("adp_liability", _load_adp_liability)
+
     # ── ADP wage rates + per-line earnings ───────────────────────
-    if "adp_rates" not in args.skip:
+    def _load_adp_rates() -> None:
         earnings_xlsx = _newest("Earnings*.xlsx")
         if not earnings_xlsx:
             print("WARN: no Earnings*.xlsx found — skipping ADP wage rates")
@@ -562,13 +591,18 @@ def main() -> int:
             if args.dry_run:
                 print(f"  DRY: would load {len(bq_earnings_rows)} adp_earnings rows into BQ")
             else:
-                n = load_rows(
+                # ADP repeats (period, employee, description, check_date) for
+                # real lines (two bonuses, void + re-issue), so there is no
+                # MERGE key: the export replaces each check it contains.
+                n = replace_rows_scoped(
                     "adp_earnings", bq_earnings_rows,
-                    merge_keys=["period_start", "period_end", "employee", "description", "check_date"],
-                    column_bq_types=_TS_TYPES,
+                    scope_col="check_date", column_bq_types=_TS_TYPES,
                 )
-                print(f"  adp_earnings (BQ): {n} rows upserted")
+                print(f"  adp_earnings (BQ): {n} rows replaced")
                 summaries.append({"table": "adp_earnings", "rows": n})
+
+    if "adp_rates" not in args.skip:
+        _isolated("adp_rates", _load_adp_rates)
 
     # ── ADP Payroll-info gap-fill rates (Issue #213) ───────────────
     if "adp_rates" not in args.skip:
@@ -710,12 +744,13 @@ def main() -> int:
 
                 bq_tickets = [map_kds_ticket(r) for r in kds_tickets]
                 bq_tickets = [r for r in bq_tickets if r["date_local"] is not None]
-                n = load_rows(
+                # Unnamed tickets created in the same second share every
+                # candidate key column (2026-07-17 ClassPass pair).
+                n = replace_rows_scoped(
                     "square_kds_tickets", bq_tickets,
-                    merge_keys=["date_local", "time_created", "ticket_name"],
-                    column_bq_types=_TS_TYPES,
+                    scope_col="date_local", column_bq_types=_TS_TYPES,
                 )
-                print(f"  square_kds_tickets (BQ): {n} rows upserted")
+                print(f"  square_kds_tickets (BQ): {n} rows replaced")
                 summaries.append({"table": "square_kds_tickets", "rows": n})
 
     print()
@@ -731,6 +766,13 @@ def main() -> int:
             f"{DOWNLOADS}; refusing to report success on an empty load"
         )
         return 1
+    if table_failures:
+        if args.result_json:
+            pathlib.Path(args.result_json).write_text(
+                json.dumps({"failures": table_failures}))
+        print(f"PARTIAL: {len(table_failures)} isolated source(s) failed: "
+              + ", ".join(f["source"] for f in table_failures), file=sys.stderr)
+        return EXIT_PARTIAL
     return 0
 
 

@@ -446,6 +446,39 @@ def _insert_rows(
     return inserted
 
 
+class DuplicateMergeKeyError(ValueError):
+    """Two rows with different values share a merge key."""
+
+
+def _dedupe_merge_rows(fq_table: str, rows: list[dict], merge_keys: list[str]) -> list[dict]:
+    """Drop exact-duplicate rows; raise if *differing* rows share a merge key.
+
+    A MERGE key is a uniqueness claim. When the source breaks it, BigQuery either
+    rejects the statement (the key already exists in the target — the 2026-09-15
+    adp_earnings outage) or, when the pair straddles a 200-row batch, lets the
+    second row silently overwrite the first. Exact duplicates are harmless and
+    collapse to one; anything else is a data-model error the caller must fix,
+    typically by switching to ``replace_rows_scoped``.
+    """
+    seen: dict[tuple, dict] = {}
+    conflicts: list[tuple] = []
+    for row in rows:
+        key = tuple(str(row.get(k)) for k in merge_keys)
+        prior = seen.get(key)
+        if prior is None:
+            seen[key] = row
+        elif prior != row:
+            conflicts.append(key)
+    if conflicts:
+        raise DuplicateMergeKeyError(
+            f"{fq_table.strip('`')}: {len(conflicts)} merge-key collision(s) on "
+            f"({', '.join(merge_keys)}) with differing values, e.g. {conflicts[0]}. "
+            "A MERGE would reject or silently overwrite these rows; use "
+            "replace_rows_scoped for tables with multi-line natural keys."
+        )
+    return list(seen.values())
+
+
 def _merge_rows(
     client,
     fq_table: str,
@@ -464,6 +497,7 @@ def _merge_rows(
     """
     from google.cloud import bigquery
 
+    rows = _dedupe_merge_rows(fq_table, rows, merge_keys)
     non_key_cols = [c for c in columns if c not in merge_keys]
     hints = column_bq_types_hint or {}
     schema_types = table_column_types(client, fq_table)
@@ -542,6 +576,7 @@ def merge_rows_scoped(
     _assert_sandbox_write_isolation()
     fq_table = f"`{_PROJECT_ID}.{_DATASET}.{table_name}`"
     columns = list(rows[0].keys())
+    rows = _dedupe_merge_rows(fq_table, rows, merge_keys)
 
     scope_vals = sorted({r[scope_col] for r in rows if r.get(scope_col) is not None})
     if not scope_vals:
@@ -574,6 +609,62 @@ def merge_rows_scoped(
             f"THEN DELETE"
         )
         client.query(sql).result()
+    finally:
+        client.query(f"DROP TABLE IF EXISTS {fq_stage}").result()
+
+    return len(rows)
+
+
+def replace_rows_scoped(
+    table_name: str,
+    rows: list[dict],
+    *,
+    scope_col: str,
+    column_bq_types: dict[str, str] | None = None,
+) -> int:
+    """Atomically replace every target row whose ``scope_col`` appears in ``rows``.
+
+    For sources whose natural key is not unique — an ADP earnings statement can
+    carry two ``Bonus`` lines for one employee on one check, and a void/re-issue
+    leaves three ``Regular`` lines — no MERGE key exists, so the export is taken
+    as authoritative for each scope value it contains (e.g. each ``check_date``).
+    ``ON FALSE`` means nothing matches: every staged row is inserted and every
+    in-scope target row is deleted, in one statement, so a concurrent reader never
+    sees the scope half-empty. Out-of-scope rows are untouched.
+
+    Returns the number of rows written.
+    """
+    client = get_client()
+    if client is None or not rows:
+        return 0
+
+    _assert_sandbox_write_isolation()
+    if any(r.get(scope_col) is None for r in rows):
+        raise ValueError(
+            f"{table_name}: {scope_col} is NULL on some rows; they cannot be scoped "
+            "and would be re-inserted on every run"
+        )
+    fq_table = f"`{_PROJECT_ID}.{_DATASET}.{table_name}`"
+    columns = list(rows[0].keys())
+    scope_vals = sorted({str(r[scope_col]) for r in rows})
+
+    stage_name = f"_stage_{table_name}_{uuid.uuid4().hex[:10]}"
+    fq_stage = f"`{_PROJECT_ID}.{_DATASET}.{stage_name}`"
+    client.query(
+        f"CREATE TABLE {fq_stage} LIKE {fq_table} "
+        f"OPTIONS(expiration_timestamp = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 6 HOUR))"
+    ).result()
+    try:
+        _insert_rows(client, fq_stage, columns, rows, column_bq_types or {})
+        in_list = ", ".join(f"'{v.replace(chr(39), chr(39) + chr(39))}'" for v in scope_vals)
+        insert_cols = ", ".join(columns)
+        insert_vals = ", ".join(f"S.{c}" for c in columns)
+        client.query(
+            f"MERGE {fq_table} T USING {fq_stage} S ON FALSE "
+            f"WHEN NOT MATCHED BY TARGET THEN INSERT ({insert_cols}) VALUES ({insert_vals}) "
+            f"WHEN NOT MATCHED BY SOURCE AND CAST(T.{scope_col} AS STRING) IN ({in_list}) "
+            f"THEN DELETE"
+        ).result()
     finally:
         client.query(f"DROP TABLE IF EXISTS {fq_stage}").result()
 

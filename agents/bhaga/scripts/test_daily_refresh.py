@@ -911,6 +911,16 @@ class ModelVsRollupDriftTests(unittest.TestCase):
             result = _model_vs_rollup_drift(self.RD)
         self.assertEqual(result, [])
 
+    def test_sandbox_run_checks_its_own_dataset(self):
+        """PR #339 sandbox-live: reading prod `bhaga` failed a healthy sandbox run
+        because prod had not materialized 2026-09-22 yet."""
+        with self._patch_drift([]) as client_cls, \
+             mock.patch.dict(os.environ, {"BHAGA_BQ_DATASET": "bhaga_sandbox"}):
+            _model_vs_rollup_drift(self.RD)
+        sql = client_cls.return_value.query.call_args.args[0]
+        self.assertIn("jarvis-bhaga-prod.bhaga_sandbox.model_daily", sql)
+        self.assertNotIn("jarvis-bhaga-prod.bhaga.", sql)
+
     def test_bq_client_unavailable_returns_empty(self):
         """When BQ Client construction fails and gcloud token also fails → []."""
         from google.cloud import bigquery as _bq  # noqa: PLC0415

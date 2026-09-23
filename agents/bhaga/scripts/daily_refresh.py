@@ -1130,13 +1130,16 @@ def _model_vs_rollup_drift(
 
     window_start = (refresh_date - datetime.timedelta(days=lookback_days)).isoformat()
     window_end = refresh_date.isoformat()
+    # A sandbox run must judge its own model, not prod's: reading `bhaga` here
+    # failed every sandbox run for a date prod had not yet materialized.
+    dataset = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
     query = f"""
         SELECT
             r.date_local AS date,
             SUM(r.gross_sales_cents) AS rollup_gross_cents,
             COALESCE(SUM(m.gross_sales), 0.0)  AS model_gross_sales
-        FROM `jarvis-bhaga-prod.bhaga.square_daily_rollup` r
-        LEFT JOIN `jarvis-bhaga-prod.bhaga.model_daily` m
+        FROM `jarvis-bhaga-prod.{dataset}.square_daily_rollup` r
+        LEFT JOIN `jarvis-bhaga-prod.{dataset}.model_daily` m
           ON m.date = r.date_local
         WHERE r.date_local BETWEEN '{window_start}' AND '{window_end}'
         GROUP BY r.date_local

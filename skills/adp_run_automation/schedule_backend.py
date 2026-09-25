@@ -184,6 +184,56 @@ SCHEDULE_EMPLOYEE_EXTRACT_ONE_JS = r"""
 }
 """
 
+# Open (unassigned) shifts — Issue #342. The first `.calendar-row` is labelled
+# "Open Shifts <N> Shifts, <HH:MM> HRS" and has no `.worker-name`. Each day with
+# open shifts has one `.open-shift-count` cell ("Open Shifts (2) Drafts: 0 ...")
+# that carries NO times; clicking it opens an `sdf-focus-pane` listing each
+# shift. `index` is the cell's position among all `.open-shift-count` nodes so
+# the runner can click `.open-shift-count >> nth=<index>`.
+OPEN_SHIFT_CELLS_JS = r"""
+() => {
+  const norm = e => (e.innerText || '').replace(/\s+/g, ' ').trim();
+  const headers = [...document.querySelectorAll('.day-cell.column-header')]
+    .map(el => { const b = el.getBoundingClientRect(); return { text: norm(el), x: b.x + b.width / 2 }; })
+    .filter(h => h.text && !/Last Name/i.test(h.text));
+  const row = [...document.querySelectorAll('.calendar-row')]
+    .find(r => !r.querySelector('.worker-name') && /Open\s+Shifts/i.test(norm(r)));
+  if (!row) return { row_label: null, cells: [] };
+  const all = [...document.querySelectorAll('.open-shift-count')];
+  const cells = [...row.querySelectorAll('.open-shift-count')].map(c => {
+    const b = c.getBoundingClientRect(); const cx = b.x + b.width / 2;
+    let best = null, bd = 1e9;
+    headers.forEach((h, i) => { const d = Math.abs(h.x - cx); if (d < bd) { bd = d; best = i; } });
+    return { index: all.indexOf(c), header_index: best, summary: norm(c).slice(0, 120) };
+  });
+  const m = norm(row).match(/(\d+)\s+Shifts?,\s*(\d+:\d{2})\s*HRS/i);
+  return { row_label: m ? m[0] : null, cells };
+}
+"""
+
+# Visible open-shift details pane. Several `sdf-focus-pane` nodes live in the
+# frame (e.g. a hidden "Monthly Schedule"), and a closed pane keeps its last
+# heading, so require the heading AND display != none. Each shift is an
+# `sdf-quick-stat`: light-DOM text = "10:00 AM - 4:00 PM", shadow label =
+# "06:00 hours" (ADP paid hours).
+OPEN_SHIFT_PANE_JS = r"""
+() => {
+  const panes = [...document.querySelectorAll('sdf-focus-pane')].filter(p => {
+    const h = p.shadowRoot && p.shadowRoot.querySelector('#modal-headline');
+    return h && /Open Shifts on/i.test(h.textContent || '') && getComputedStyle(p).display !== 'none';
+  });
+  const p = panes[0];
+  if (!p) return { heading: null, shifts: [] };
+  const shifts = [...p.querySelectorAll('sdf-quick-stat')].map(q => ({
+    range: (q.textContent || '').replace(/\s+/g, ' ').trim(),
+    hours_text: q.shadowRoot
+      ? ((q.shadowRoot.querySelector('.quick-stat-label') || {}).textContent || '').trim()
+      : '',
+  })).filter(s => s.range);
+  return { heading: p.shadowRoot.querySelector('#modal-headline').textContent.trim(), shifts };
+}
+"""
+
 # Selector constants the runner uses to navigate (documented here so the flow
 # is codified alongside the parser).
 TEAM_SCHEDULE_ANCHOR_ID = "TEMPUS_WEEKLY_SCHEDULE"  # home-page quick-action <a>
@@ -557,6 +607,139 @@ def reconcile_employee_vs_footer(
                 f"adp_schedule reconcile week_start={ws}: "
                 f"footer={foot} emp_sum={emp} gap={gap} "
                 f"(>{tolerance_hours}h — check PTO/virtualization parse)"
+            )
+    return warnings
+
+
+# ── Open (unassigned) shifts — Issue #342 ─────────────────────────
+
+# "Open Shifts on Saturday, Oct 03" (weekday optional).
+_OPEN_PANE_DATE_RE = re.compile(
+    r"Open Shifts on\s+(?:[A-Za-z]+,\s*)?([A-Za-z]{3,9})\s+(\d{1,2})", re.IGNORECASE
+)
+_OPEN_ROW_LABEL_RE = re.compile(r"(\d+)\s+Shifts?,\s*(\d+:\d{2})\s*HRS", re.IGNORECASE)
+
+
+def parse_open_pane_date(
+    heading: Optional[str], week_start: datetime.date
+) -> Optional[datetime.date]:
+    """Pane heading -> date inside ``week_start``'s week (the heading has no year).
+
+    Tries the week's year and its neighbours so a Dec 29 - Jan 4 week resolves
+    both halves. None when unparseable or outside the week.
+    """
+    if not heading:
+        return None
+    m = _OPEN_PANE_DATE_RE.search(str(heading))
+    if not m:
+        return None
+    mon = _MONTHS.get(m.group(1)[:3].lower())
+    if not mon:
+        return None
+    week_end = week_start + datetime.timedelta(days=6)
+    for year in (week_start.year, week_start.year + 1, week_start.year - 1):
+        try:
+            d = datetime.date(year, mon, int(m.group(2)))
+        except ValueError:
+            continue
+        if week_start <= d <= week_end:
+            return d
+    return None
+
+
+def parse_open_row_label(label: Optional[str]) -> tuple[int, float]:
+    """'7 Shifts, 45:30 HRS' -> (7, 45.5). Missing -> (0, 0.0)."""
+    if not label:
+        return 0, 0.0
+    m = _OPEN_ROW_LABEL_RE.search(str(label))
+    if not m:
+        return 0, 0.0
+    return int(m.group(1)), parse_hhmm_hours(m.group(2))
+
+
+def _open_week_ok(wk: dict) -> bool:
+    return isinstance(wk.get("open_shift_cells"), list) and not wk.get("open_shifts_error")
+
+
+def build_open_shift_records(weeks: list[dict]) -> list[dict]:
+    """Per-(date, slot) open shifts from the runner's ``open_shift_cells``.
+
+    Week payload (runner ``_scrape_open_shifts``)::
+
+        {
+          "week_label": "Week of Sep 28, 2026 - Oct 4, 2026",
+          "open_row_label": "7 Shifts, 45:30 HRS",
+          "open_shift_cells": [
+            {"header_index": 5, "heading": "Open Shifts on Saturday, Oct 03",
+             "shifts": [{"range": "10:00 AM - 4:00 PM", "hours_text": "06:00 hours"}, ...]},
+          ],
+        }
+
+    Date comes from the pane heading (authoritative), falling back to
+    ``week_start + header_index``. Hours are ADP's paid hours from the pane
+    label; the wall-clock range is the fallback. Weeks with
+    ``open_shifts_error`` are skipped (their BQ rows are left untouched).
+    """
+    out: list[dict] = []
+    next_slot: dict[str, int] = {}
+    for wk in weeks:
+        week_start = parse_week_start(wk.get("week_label"))
+        if week_start is None or not _open_week_ok(wk):
+            continue
+        for cell in wk.get("open_shift_cells") or []:
+            d = parse_open_pane_date(cell.get("heading"), week_start)
+            if d is None:
+                idx = cell.get("header_index")
+                if not isinstance(idx, int) or not 0 <= idx <= 6:
+                    continue
+                d = week_start + datetime.timedelta(days=idx)
+            iso = d.isoformat()
+            for shift in cell.get("shifts") or []:
+                rng = (shift.get("range") or "").strip()
+                hours = parse_hhmm_hours(shift.get("hours_text")) or parse_shift_range_hours(rng)
+                if hours <= 0:
+                    continue
+                slot = next_slot.get(iso, 0)
+                next_slot[iso] = slot + 1
+                out.append({
+                    "date": iso,
+                    "slot_index": slot,
+                    "shift_range": rng or None,
+                    "scheduled_hours": round(hours, 2),
+                    "week_start": week_start.isoformat(),
+                })
+    return sorted(out, key=lambda r: (r["date"], r["slot_index"]))
+
+
+def open_shift_weeks(weeks: list[dict]) -> list[str]:
+    """week_start ISO of every week whose open-shift extract succeeded.
+
+    This is the loader's purge scope: a week scraped with zero open shifts must
+    still clear yesterday's rows, while an errored week keeps its old rows.
+    """
+    out: set[str] = set()
+    for wk in weeks:
+        ws = parse_week_start(wk.get("week_label"))
+        if ws is not None and _open_week_ok(wk):
+            out.add(ws.isoformat())
+    return sorted(out)
+
+
+def reconcile_open_shifts(weeks: list[dict], *, tolerance_hours: float = 0.05) -> list[str]:
+    """Warnings when parsed slots disagree with ADP's row label ("7 Shifts, 45:30 HRS")."""
+    recs = build_open_shift_records(weeks)
+    warnings: list[str] = []
+    for wk in weeks:
+        ws = parse_week_start(wk.get("week_label"))
+        if ws is None or not _open_week_ok(wk) or not wk.get("open_row_label"):
+            continue
+        want_n, want_h = parse_open_row_label(wk.get("open_row_label"))
+        mine = [r for r in recs if r["week_start"] == ws.isoformat()]
+        got_h = round(sum(r["scheduled_hours"] for r in mine), 2)
+        if len(mine) != want_n or abs(got_h - want_h) > tolerance_hours:
+            warnings.append(
+                f"adp_open_shifts reconcile week_start={ws.isoformat()}: "
+                f"label={want_n} slots/{want_h}h parsed={len(mine)} slots/{got_h}h"
             )
     return warnings
 

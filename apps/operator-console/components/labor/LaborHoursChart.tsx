@@ -2,6 +2,7 @@
 
 import { useMemo, type ReactNode } from "react";
 import { BarChartCard } from "@/components/charts/BarChartCard";
+import type { Series } from "@/components/charts/LineChartCard";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
 import type { Grain } from "@/lib/filters/range";
 import { showsFullTime, showsPartTime } from "@/lib/filters/labor-type";
@@ -24,6 +25,9 @@ export type LaborHoursChartRow = {
   /** Scheduled hours (dates ≥ today CT) — stacked on hours bars; no labor %. */
   parttime_scheduled_hours?: number | null;
   fulltime_scheduled_hours?: number | null;
+  /** ADP open (unassigned) shift hours — same days as scheduled; no PT/FT split. */
+  open_hours?: number | null;
+  open_slots?: number | null;
 };
 
 export type LaborTooltipEntry = {
@@ -260,8 +264,23 @@ export function laborTooltipContent(
     });
   }
 
+  const openHrs = row.open_hours ?? null;
+  const hasOpen = openHrs != null && openHrs > 0 && (ptOn || ftOn);
+  const totalIfFilled = hasOpen ? sumNullable(combined, openHrs) : null;
+  if (hasOpen) {
+    const slots = Number(row.open_slots ?? 0);
+    entries.push({
+      label: "Open (unassigned)",
+      value: slots > 0
+        ? `${formatHours(openHrs)} · ${slots} ${slots === 1 ? "shift" : "shifts"}`
+        : formatHours(openHrs),
+      color: LABOR_CHART_COLORS.openShiftSwatch,
+    });
+    entries.push({ label: "Total if filled", value: formatHours(totalIfFilled) });
+  }
+
   const lines: string[] = [];
-  if (hasSched && !hasActual && opts?.salesHints !== false) {
+  if ((hasSched || hasOpen) && !hasActual && opts?.salesHints !== false) {
     lines.push("Scheduled — no labor % (no Square sales yet)");
   }
   if (
@@ -270,11 +289,11 @@ export function laborTooltipContent(
     !Number.isNaN(Number(goalLaborHoursWeek))
   ) {
     const goalHrs = Number(goalLaborHoursWeek);
-    const vsGoalHrs = combined ?? actualHrs ?? schedHrs;
+    const vsGoalHrs = totalIfFilled ?? combined ?? actualHrs ?? schedHrs;
     const ofGoal = pctOfHoursGoal(vsGoalHrs, goalHrs);
     // Completed weeks only (no scheduled remainder): also show what 230 hrs
     // would be as % of that week's Square net sales.
-    const completedWeek = hasActual && !hasSched;
+    const completedWeek = hasActual && !hasSched && !hasOpen;
     const scoped = scopedLaborMetrics(row, laborTypes);
     const ofSales = completedWeek
       ? goalHoursAsSalesPct(goalHrs, scoped.hours, scoped.laborPct)
@@ -345,8 +364,10 @@ export function LaborHoursChart({
           (r.parttime_scheduled_hours != null && r.parttime_scheduled_hours > 0) ||
           (r.fulltime_scheduled_hours != null && r.fulltime_scheduled_hours > 0),
       );
+    const hasAnyOpen =
+      !pctMode && !person && data.some((r) => r.open_hours != null && r.open_hours > 0);
 
-    const series: { key: string; label: string; color: string }[] = [];
+    const series: Series[] = [];
     if (!neither) {
       if (pctMode) {
         if (hasAnyPct && pt) {
@@ -376,6 +397,14 @@ export function LaborHoursChart({
             color: FT_S,
           });
         }
+        if (hasAnyOpen) {
+          series.push({
+            key: "open",
+            label: "Open (unassigned)",
+            color: LABOR_CHART_COLORS.openShift,
+            pattern: "hatch",
+          });
+        }
       }
     }
 
@@ -388,6 +417,7 @@ export function LaborHoursChart({
           fulltime: ft ? laborPctToChart(r.fulltime_pct) : null,
           parttime_sched: null,
           fulltime_sched: null,
+          open: null,
           tooltipEntries: tip.entries,
           tooltipLines: tip.lines,
         };
@@ -401,6 +431,7 @@ export function LaborHoursChart({
         fulltime: ft ? r.fulltime_hours : null,
         parttime_sched: pt ? (r.parttime_scheduled_hours ?? null) : null,
         fulltime_sched: ft ? (r.fulltime_scheduled_hours ?? null) : null,
+        open: hasAnyOpen ? (r.open_hours ?? null) : null,
         tooltipEntries: tip.entries,
         tooltipLines: tip.lines,
       };

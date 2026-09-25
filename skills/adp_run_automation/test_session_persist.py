@@ -99,7 +99,8 @@ class TestAdpSession(unittest.TestCase):
             calls.append(f"launch:{kwargs.get('storage_state')}")
             yield ctx, page
 
-        with mock.patch.object(runner, "launch_persistent", fake_launch), \
+        with mock.patch.dict(os.environ, {"BHAGA_ADP_CDP_URL": ""}), \
+             mock.patch.object(runner, "launch_persistent", fake_launch), \
              mock.patch.object(runner, "_restore_adp_session",
                                side_effect=lambda **k: calls.append("restore") or "/tmp/s.json"), \
              mock.patch.object(runner, "_ensure_logged_in",
@@ -128,7 +129,8 @@ class TestAdpSession(unittest.TestCase):
         def fake_launch(**kwargs):
             yield ctx, page
 
-        with mock.patch.object(runner, "launch_persistent", fake_launch), \
+        with mock.patch.dict(os.environ, {"BHAGA_ADP_CDP_URL": ""}), \
+             mock.patch.object(runner, "launch_persistent", fake_launch), \
              mock.patch.object(runner, "_restore_adp_session", return_value=None), \
              mock.patch.object(runner, "_ensure_logged_in"), \
              mock.patch.object(runner, "_persist_adp_session") as persist:
@@ -136,6 +138,100 @@ class TestAdpSession(unittest.TestCase):
                 with runner.adp_session(store="palmetto", headed=False):
                     raise RuntimeError("scrape blew up")
         persist.assert_called_once()
+
+
+class TestAdpSessionCdpAttach(unittest.TestCase):
+    """``BHAGA_ADP_CDP_URL`` attaches to a long-lived local Chrome (one OTP per
+    live ADP session) and is ignored on Cloud Run, where the jar path applies."""
+
+    def _drive(self, env: dict) -> list[str]:
+        calls: list[str] = []
+
+        @contextlib.contextmanager
+        def fake_launch(**kwargs):
+            calls.append("launch")
+            yield mock.Mock(), mock.Mock()
+
+        @contextlib.contextmanager
+        def fake_attached(cdp_url, *, store):
+            calls.append(f"attach:{cdp_url}")
+            yield mock.Mock(), mock.Mock()
+
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(runner, "launch_persistent", fake_launch), \
+             mock.patch.object(runner, "_attached_adp_session", fake_attached), \
+             mock.patch.object(runner, "_restore_adp_session", return_value=None), \
+             mock.patch.object(runner, "_ensure_logged_in"), \
+             mock.patch.object(runner, "_persist_adp_session"):
+            for k in ("K_SERVICE", "CLOUD_RUN_JOB"):
+                if k not in env:
+                    os.environ.pop(k, None)
+            with runner.adp_session(store="palmetto", headed=False):
+                calls.append("body")
+        return calls
+
+    def test_local_attaches_instead_of_launching(self):
+        calls = self._drive({"BHAGA_ADP_CDP_URL": "http://127.0.0.1:9333"})
+        self.assertEqual(calls, ["attach:http://127.0.0.1:9333", "body"])
+
+    def test_cloud_run_ignores_the_cdp_url(self):
+        calls = self._drive({
+            "BHAGA_ADP_CDP_URL": "http://127.0.0.1:9333", "CLOUD_RUN_JOB": "bhaga-nightly",
+        })
+        self.assertEqual(calls, ["launch", "body"])
+
+    def test_unset_launches(self):
+        calls = self._drive({"BHAGA_ADP_CDP_URL": ""})
+        self.assertEqual(calls, ["launch", "body"])
+
+
+class TestAttachedAdpSession(unittest.TestCase):
+    """RUN allows one signed-in tab: the attached run drives the browser's one
+    tab, reuses a live dashboard without logging in, and parks back on it."""
+
+    DASH = "https://runpayrollmain.adp.com/rpm/v2/#/home"
+
+    def _run(self, start_url: str, *, reload_lands_on: str):
+        page = mock.Mock()
+        page.url = start_url
+        gotos: list[str] = []
+
+        def goto(url, **_):
+            gotos.append(url)
+            page.url = reload_lands_on if len(gotos) == 1 else url
+
+        page.goto.side_effect = goto
+        page.wait_for_url.side_effect = lambda *a, **k: None
+
+        def login(p, *, store):
+            p.url = self.DASH
+
+        @contextlib.contextmanager
+        def fake_attach(url):
+            yield mock.Mock(), page
+
+        with mock.patch.object(runner, "attach_cdp", fake_attach), \
+             mock.patch.object(runner, "_ensure_logged_in", side_effect=login) as ensure, \
+             mock.patch.object(runner, "_persist_adp_session"):
+            with runner._attached_adp_session("http://127.0.0.1:9333", store="palmetto"):
+                page.url = "https://runpayrollmain.adp.com/team-schedule"
+        return ensure, gotos
+
+    def test_live_dashboard_is_reused_without_login(self):
+        ensure, gotos = self._run(self.DASH, reload_lands_on=self.DASH)
+        ensure.assert_not_called()
+        self.assertEqual(gotos[-1], self.DASH.split("#")[0])
+
+    def test_bounced_reload_logs_in(self):
+        ensure, _ = self._run(self.DASH, reload_lands_on="https://online.adp.com/signin/v1/")
+        ensure.assert_called_once()
+
+    def test_multitab_guard_page_logs_in(self):
+        ensure, gotos = self._run(
+            "https://ngapps.adp.com/apps/run/multitabmessage", reload_lands_on=self.DASH,
+        )
+        ensure.assert_called_once()
+        self.assertEqual(gotos, [self.DASH.split("#")[0]])
 
 
 class TestEveryAdpEntryPointIsWired(unittest.TestCase):

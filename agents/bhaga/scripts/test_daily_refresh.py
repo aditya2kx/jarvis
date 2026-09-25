@@ -2073,9 +2073,9 @@ class TestRequireAdpWiring(unittest.TestCase):
 
 
 class TestTimecardOnlyEarlyExit(unittest.TestCase):
-    """BHAGA_ADP_TIMECARD_ONLY=1 scrapes Timecard + BQ hours, not pay_info."""
+    """BHAGA_ADP_TIMECARD_ONLY=1: Timecard + Team Schedule in one login, not pay_info."""
 
-    def test_timecard_only_downloads_and_backfills(self):
+    def _run(self, bundle_result):
         import pathlib
         import tempfile
         import agents.bhaga.scripts.daily_refresh as dr
@@ -2083,6 +2083,8 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         argv = ["daily_refresh", "--store", "palmetto", "--date", "2026-08-23", "--no-slack"]
         with tempfile.TemporaryDirectory() as td:
             fake_dl = pathlib.Path(td)
+            result = {k: (fake_dl / v if isinstance(v, str) else v)
+                      for k, v in bundle_result.items()}
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.dict(
                      os.environ,
@@ -2093,8 +2095,8 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
                      "skills.adp_run_automation.runner.DOWNLOADS_DIR", fake_dl,
                  ), \
                  mock.patch(
-                     "skills.adp_run_automation.runner.download_timecard",
-                     return_value=fake_dl / "Timecard.xlsx",
+                     "skills.adp_run_automation.runner.download_adp_bundle",
+                     return_value=result,
                  ) as dl, \
                  mock.patch("agents.bhaga.scripts.daily_refresh.subprocess.run") as run, \
                  mock.patch.object(dr, "_stamp_adp_hours_scraped_at") as stamp, \
@@ -2102,16 +2104,45 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
                      dr, "_load_profile", side_effect=AssertionError("must not load profile"),
                  ):
                 rc = dr.main()
+        return rc, dl, run, stamp
+
+    def test_timecard_only_downloads_and_backfills(self):
+        rc, dl, run, stamp = self._run({
+            "timecard_xlsx": "Timecard.xlsx", "schedule_json": "Schedule.json", "errors": {},
+        })
         self.assertEqual(rc, 0)
         dl.assert_called_once()
-        self.assertEqual(dl.call_args.kwargs.get("target_date"), datetime.date(2026, 8, 23))
+        kw = dl.call_args.kwargs
+        self.assertEqual(kw.get("target_date"), datetime.date(2026, 8, 23))
+        self.assertIs(kw.get("include_earnings"), False)
+        self.assertIs(kw.get("include_schedule"), True)
+        self.assertIs(kw.get("include_extras"), False)
         run.assert_called_once()
         skip = run.call_args.args[0]
         self.assertIn("agents.bhaga.scripts.backfill_from_downloads", skip)
         self.assertIn("adp_rates", skip)
         self.assertNotIn("adp_shifts", skip)
         self.assertNotIn("adp_punches", skip)
+        self.assertNotIn("adp_schedule", skip)
         stamp.assert_called_once_with(datetime.date(2026, 8, 10), datetime.date(2026, 8, 23))
+
+    def test_schedule_failure_still_loads_clocked_hours(self):
+        rc, _dl, run, stamp = self._run({
+            "timecard_xlsx": "Timecard.xlsx", "schedule_json": None,
+            "errors": {"adp_schedule": "TimeoutError: grid"},
+        })
+        self.assertEqual(rc, 0)
+        skip = run.call_args.args[0]
+        self.assertIn("adp_schedule", skip)
+        self.assertNotIn("adp_shifts", skip)
+        stamp.assert_called_once()
+
+    def test_timecard_failure_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._run({
+                "timecard_xlsx": None, "schedule_json": "Schedule.json",
+                "errors": {"adp_timecard": "TimeoutError: export"},
+            })
 
 
 class TestPeriodEndPayrollDraftBounds(unittest.TestCase):

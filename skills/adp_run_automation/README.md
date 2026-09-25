@@ -71,6 +71,23 @@ non-fatal to the nightly run), and lands in BQ `adp_scheduled_daily` via
 Selector/flow knowledge is codified in `schedule_backend.py` (constants +
 `SCHEDULE_EXTRACT_JS`); parser is unit-tested in `test_schedule_backend.py`.
 
+**Open shifts** (Issue #342): the grid's first `.calendar-row` (no `.worker-name`,
+label "Open Shifts N Shifts, HH:MM HRS") shows only a per-day `.open-shift-count`.
+`runner._scrape_open_shifts` clicks each count, reads the visible `sdf-focus-pane`
+(`OPEN_SHIFT_PANE_JS`: heading "Open Shifts on <Weekday>, <Mon> <DD>", one
+`sdf-quick-stat` per slot — light-DOM time range, shadow `.quick-stat-label`
+paid hours), then clicks **Back** (the › chevron will not advance while the pane
+is open). Read-only. Payload keys per week: `open_row_label`, `open_shift_cells`
+or `open_shifts_error` (never raises). Parsed by `build_open_shift_records` /
+`open_shift_weeks` (purge scope) / `reconcile_open_shifts`; fixture
+`testdata/schedule_open_shifts_spike.json` is the live 2026-09-25 grid (8 slots).
+
+**Local attach** (`BHAGA_ADP_CDP_URL`): `adp_session()` connects over CDP to an
+already-running Chrome instead of launching one, so repeated local runs share one
+ADP login in the browser's single tab (RUN's one-tab guard), so a code is needed
+only once ADP idles the session out. Ignored on Cloud Run. Setup in
+`RUNBOOK.md` § ADP local attach.
+
 > The sections below are the original M2 scaffold notes; kept for the timecard
 > calibration history. The implemented behavior is the table above.
 

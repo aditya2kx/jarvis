@@ -238,5 +238,100 @@ class TestTableIsolation(unittest.TestCase):
             self._run(shifts_error=RuntimeError("shifts boom"))
 
 
+class TestOpenShiftsLoad(unittest.TestCase):
+    """Issue #342: open slots purge by scraped week_start, then MERGE."""
+
+    FIXTURE = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
+        "skills", "adp_run_automation", "testdata", "schedule_open_shifts_spike.json",
+    )
+
+    def _run(self, weeks, *, open_error=None):
+        import json
+        import pathlib
+        import tempfile
+
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        (tmp / "Schedule-2026-09-25.json").write_text(
+            json.dumps({"weeks": weeks, "scraped_at_utc": "2026-09-25T15:00:00Z"}))
+        result_json = tmp / "result.json"
+        loads: dict[str, list] = {}
+        queries: list[str] = []
+
+        def _load(table, rows, **kw):
+            if table == "adp_open_shifts" and open_error:
+                raise open_error
+            loads[table] = (rows, kw)
+            return len(rows)
+
+        client = mock.Mock()
+        client.query.side_effect = lambda sql: queries.append(sql) or mock.Mock()
+        argv = ["backfill_from_downloads", "--store", "palmetto",
+                "--skip", "square", "--skip", "adp_shifts", "--skip", "adp_punches",
+                "--skip", "adp_liability", "--skip", "adp_rates",
+                "--refresh-date", "2026-09-24", "--result-json", str(result_json)]
+        with mock.patch.dict(os.environ, {"BHAGA_DATASTORE": "bigquery"}), \
+             mock.patch.object(sys, "argv", argv), \
+             mock.patch.object(bfd, "DOWNLOADS", tmp), \
+             mock.patch.object(bfd, "load_store_profile", return_value={
+                 "timezone": {"shop_tz": "America/Chicago"}, "google_account_key": "x"}), \
+             mock.patch.object(bfd, "resolve_sheet_id", return_value="sid"), \
+             mock.patch("skills.store_profile.load_aliases", return_value={}), \
+             mock.patch("skills.store_profile.load_exclusions",
+                        return_value={"permanent": []}), \
+             mock.patch("core.datastore.get_client", return_value=client), \
+             mock.patch.object(bfd, "load_rows", side_effect=_load), \
+             mock.patch.object(bfd, "_ds_load_rows"):
+            rc = bfd.main()
+        failures = (json.loads(result_json.read_text())["failures"]
+                    if result_json.exists() else None)
+        open_deletes = [q for q in queries if "adp_open_shifts" in q]
+        return rc, loads, open_deletes, failures
+
+    def _weeks(self):
+        import json
+        with open(self.FIXTURE) as fh:
+            return json.load(fh)["weeks"]
+
+    def test_purges_scraped_weeks_then_merges_slots(self):
+        rc, loads, deletes, failures = self._run(self._weeks())
+        self.assertEqual(rc, 0)
+        self.assertIsNone(failures)
+        self.assertEqual(len(deletes), 1)
+        for wk in ("2026-09-21", "2026-09-28", "2026-10-05"):
+            self.assertIn(f"DATE '{wk}'", deletes[0])
+        rows, kw = loads["adp_open_shifts"]
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(kw["merge_keys"], ["date", "slot_index"])
+        self.assertEqual(rows[0]["scraped_at_utc"], "2026-09-25T15:00:00Z")
+        self.assertAlmostEqual(
+            sum(r["scheduled_hours"] for r in rows if r["week_start"] == "2026-09-28"), 45.5)
+
+    def test_all_slots_filled_still_purges(self):
+        weeks = self._weeks()
+        for wk in weeks:
+            wk["open_shift_cells"], wk["open_row_label"] = [], None
+        rc, loads, deletes, _ = self._run(weeks)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(deletes), 1)
+        self.assertNotIn("adp_open_shifts", loads)
+
+    def test_errored_or_legacy_payload_leaves_table_untouched(self):
+        weeks = [{"week_label": "Week of Sep 28, 2026 - Oct 4, 2026",
+                  "open_shifts_error": "TimeoutError"},
+                 {"week_label": "Week of Oct 5, 2026 - Oct 11, 2026"}]
+        rc, loads, deletes, _ = self._run(weeks)
+        self.assertEqual(rc, 0)
+        self.assertEqual(deletes, [])
+        self.assertNotIn("adp_open_shifts", loads)
+
+    def test_load_failure_is_isolated_partial(self):
+        rc, _loads, _deletes, failures = self._run(
+            self._weeks(), open_error=RuntimeError("bq boom"))
+        self.assertEqual(rc, bfd.EXIT_PARTIAL)
+        self.assertEqual(failures[0]["source"], "adp_schedule")
+        self.assertIn("bq boom", failures[0]["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

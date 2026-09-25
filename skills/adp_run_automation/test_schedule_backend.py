@@ -338,3 +338,100 @@ def test_daily_schedule_reads_newest_and_filters(tmp_path):
 def test_daily_schedule_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         sb.daily_schedule(downloads_dir=tmp_path)
+
+
+# ── Open shifts (Issue #342) ──────────────────────────────────────
+
+_OPEN_FIXTURE = (
+    __import__("pathlib").Path(__file__).parent / "testdata" / "schedule_open_shifts_spike.json"
+)
+
+
+def _open_weeks():
+    return json.loads(_OPEN_FIXTURE.read_text())["weeks"]
+
+
+@pytest.mark.parametrize("heading,week_start,expected", [
+    ("Open Shifts on Saturday, Oct 03", datetime.date(2026, 9, 28), datetime.date(2026, 10, 3)),
+    ("Open Shifts on Sunday, Sep 27", datetime.date(2026, 9, 21), datetime.date(2026, 9, 27)),
+    ("Open Shifts on Friday, Jan 01", datetime.date(2026, 12, 28), datetime.date(2027, 1, 1)),
+    ("Open Shifts on Monday, Dec 28", datetime.date(2026, 12, 28), datetime.date(2026, 12, 28)),
+    ("Open Shifts on Saturday, Oct 03", datetime.date(2026, 10, 5), None),
+    ("Monthly Schedule", datetime.date(2026, 9, 28), None),
+    (None, datetime.date(2026, 9, 28), None),
+])
+def test_parse_open_pane_date(heading, week_start, expected):
+    assert sb.parse_open_pane_date(heading, week_start) == expected
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("Open Shifts 7 Shifts, 45:30 HRS", (7, 45.5)),
+    ("Open Shifts 1 Shifts, 6:00 HRS", (1, 6.0)),
+    ("Open Shifts", (0, 0.0)),
+    (None, (0, 0.0)),
+])
+def test_parse_open_row_label(label, expected):
+    assert sb.parse_open_row_label(label) == expected
+
+
+def test_build_open_shift_records_matches_spike():
+    recs = sb.build_open_shift_records(_open_weeks())
+    assert len(recs) == 8
+    wk = [r for r in recs if r["week_start"] == "2026-09-28"]
+    assert len(wk) == 7
+    assert sum(r["scheduled_hours"] for r in wk) == pytest.approx(45.5)
+    assert [r for r in recs if r["date"] == "2026-09-27"] == [{
+        "date": "2026-09-27", "slot_index": 0, "shift_range": "10:00 AM - 4:00 PM",
+        "scheduled_hours": 6.0, "week_start": "2026-09-21",
+    }]
+    oct3 = [(r["slot_index"], r["shift_range"]) for r in recs if r["date"] == "2026-10-03"]
+    assert oct3 == [(0, "10:00 AM - 4:00 PM"), (1, "1:30 PM - 8:30 PM")]
+    fri = next(r for r in recs if r["date"] == "2026-10-02")
+    assert fri["scheduled_hours"] == 5.5
+
+
+def test_build_open_shift_records_header_index_and_range_fallbacks():
+    weeks = [{
+        "week_label": "Week of Sep 28, 2026 - Oct 4, 2026",
+        "open_shift_cells": [
+            {"header_index": 2, "heading": None,
+             "shifts": [{"range": "9:00 AM - 3:00 PM", "hours_text": ""}]},
+            {"header_index": 9, "heading": None,
+             "shifts": [{"range": "9:00 AM - 3:00 PM", "hours_text": "06:00 hours"}]},
+        ],
+    }]
+    recs = sb.build_open_shift_records(weeks)
+    assert recs == [{
+        "date": "2026-09-30", "slot_index": 0, "shift_range": "9:00 AM - 3:00 PM",
+        "scheduled_hours": 6.0, "week_start": "2026-09-28",
+    }]
+
+
+def test_open_shift_weeks_purge_scope_includes_empty_excludes_errored():
+    weeks = _open_weeks() + [
+        {"week_label": "Week of Oct 12, 2026 - Oct 18, 2026", "open_shifts_error": "Timeout"},
+        {"week_label": "Week of Oct 19, 2026 - Oct 25, 2026"},  # legacy payload, no key
+    ]
+    assert sb.open_shift_weeks(weeks) == ["2026-09-21", "2026-09-28", "2026-10-05"]
+    assert all(r["week_start"] != "2026-10-12" for r in sb.build_open_shift_records(weeks))
+
+
+def test_reconcile_open_shifts_clean_and_mismatch():
+    weeks = _open_weeks()
+    assert sb.reconcile_open_shifts(weeks) == []
+    weeks[1]["open_shift_cells"] = weeks[1]["open_shift_cells"][:-1]
+    warns = sb.reconcile_open_shifts(weeks)
+    assert len(warns) == 1 and "week_start=2026-09-28" in warns[0]
+    assert "label=7 slots/45.5h parsed=5 slots/32.5h" in warns[0]
+
+
+def test_build_schedule_records_ignores_open_shift_keys():
+    # Footer totals exclude open shifts; the new payload keys must not leak in.
+    weeks = [{
+        "week_label": "Week of Sep 28, 2026 - Oct 4, 2026",
+        "headers": [], "totals": [],
+        **_open_weeks()[1],
+    }]
+    assert sb.build_schedule_records(weeks) == sb.build_schedule_records(
+        [{"week_label": weeks[0]["week_label"], "headers": [], "totals": []}]
+    )

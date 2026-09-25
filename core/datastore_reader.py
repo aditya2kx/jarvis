@@ -128,6 +128,7 @@ def read_punches_bq() -> list[dict]:
         doubletime_hours → doubletime_hours (float)
         total_hours → total_hours (float)
         scraped_at_utc → scraped_at_utc (str)
+        note → note (str; ADP Timecard "Notes", '' for pre-073 rows)
     """
     rows = read_table("adp_punches")
     if not rows:
@@ -148,6 +149,7 @@ def read_punches_bq() -> list[dict]:
             "doubletime_hours": _float_or_zero(r.get("doubletime_hours")),
             "total_hours": _float_or_zero(r.get("total_hours")),
             "scraped_at_utc": _ts_to_str(r.get("scraped_at_utc")),
+            "note": _str_or_empty(r.get("note")),
         })
     return out
 

@@ -1,11 +1,12 @@
-# Sandbox live run config — Issue #309: solo-shift premium ($15.25 → $16.25).
+# Sandbox live run config — Issue #343: effective-dated rates + admin-punch tips.
 #
-# full-live: exercises the full Square + ADP pipeline against the sandbox for a date
-# inside the effective cycle, proving the solo-hours materialization runs end-to-end on
-# real punches rather than only in unit tests. 2026-09-08 carries the cycle's largest
-# eligible premium (4.8 solo hours across 2 people), so a regression in the occupancy
-# walk or the eligibility gate shows up as a changed number rather than a silent zero.
+# full-live on 2026-09-22: the day Dolce's timecard carries a separate 15:00–15:30 punch
+# noted "Admin Work", inside the first pay period at her $18 rate. One run proves the
+# alias-aware pay_info scrape (history row effective 2026-09-21), Notes ingest into
+# adp_punches, and the admin half-hour leaving the tip denominator with the pool conserved.
 #
 # Empty this back to `scenarios: []` before merge — a leftover armed date re-runs a
 # live ADP scrape on every push.
-scenarios: []
+scenarios:
+  - name: full-live
+    date: 2026-09-22

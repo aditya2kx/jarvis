@@ -800,6 +800,71 @@ def _is_excluded(
     return start is None and end is None
 
 
+def punch_note_matches(note: str | None, keywords: list[str]) -> bool:
+    """True when any keyword appears anywhere in the punch note, any case.
+
+    Whoever edited the punch, ADP prefixes the note with their name
+    ("Bipinchandra Parikh, Aditya   Admin work"), so this is a substring match
+    on the whole note — never a prefix/equality match.
+    """
+    text = (note or "").casefold()
+    return bool(text) and any(k and k.casefold() in text for k in keywords)
+
+
+def tip_exempt_windows_from_punches(
+    punches: list[dict], keywords: list[str],
+) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    """(employee, date) → [(in_time, out_time)] for punches whose note matches.
+
+    These punches are paid (their hours stay in adp_shifts) but earn no tips,
+    exactly like a Tip Exemption window (Issue #343).
+    """
+    out: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    if not keywords:
+        return out
+    for p in punches:
+        if not punch_note_matches(p.get("note"), keywords):
+            continue
+        key = (p.get("employee_name") or "", p.get("date") or "")
+        if not all(key) or not p.get("in_time") or not p.get("out_time"):
+            continue
+        out.setdefault(key, []).append((p["in_time"], p["out_time"]))
+    return out
+
+
+def _union_overlap_hours(
+    in_time: str, out_time: str, windows: list[tuple[str, str]],
+) -> float:
+    """Hours of [in_time, out_time) covered by the UNION of windows.
+
+    A Tip Exemption window and an admin punch can overlap; the union keeps the
+    shared minutes from being subtracted twice. Malformed windows are ignored.
+    """
+    shift_start = _parse_hhmm_to_minutes(in_time)
+    shift_end = _parse_hhmm_to_minutes(out_time)
+    if shift_start is None or shift_end is None or shift_end <= shift_start:
+        return 0.0
+    spans = []
+    for ws, we in windows:
+        a, b = _parse_hhmm_to_minutes(ws), _parse_hhmm_to_minutes(we)
+        if a is None or b is None or b <= a:
+            continue
+        a, b = max(a, shift_start), min(b, shift_end)
+        if b > a:
+            spans.append((a, b))
+    covered, cur_a, cur_b = 0, None, None
+    for a, b in sorted(spans):
+        if cur_b is None or a > cur_b:
+            if cur_b is not None:
+                covered += cur_b - cur_a
+            cur_a, cur_b = a, b
+        else:
+            cur_b = max(cur_b, b)
+    if cur_b is not None:
+        covered += cur_b - cur_a
+    return covered / 60.0
+
+
 def _eligible_tip_hours_for_shift(
     shift: dict,
     *,
@@ -808,8 +873,13 @@ def _eligible_tip_hours_for_shift(
     training_shifts: (
         set[tuple[str, str]] | dict[tuple[str, str], dict] | None
     ) = None,
+    punch_exempt_windows: dict[tuple[str, str], list[tuple[str, str]]] | None = None,
 ) -> float:
-    """Tip-eligible hours for one ADP shift after permanent/through/window marks."""
+    """Tip-eligible hours for one ADP shift after permanent/through/window marks.
+
+    Tip Exemption windows and admin-note punch windows are unioned, then
+    subtracted once.
+    """
     emp = shift["employee_name"]
     date_iso = shift["date"]
     total = float(shift.get("total_hours") or 0.0)
@@ -819,28 +889,30 @@ def _eligible_tip_hours_for_shift(
         training_shifts=None,  # permanent/through only here; overlay below
     ):
         return 0.0
-    if not training_shifts:
-        return total
     key = (emp, date_iso)
-    if isinstance(training_shifts, set):
-        return 0.0 if key in training_shifts else total
-    meta = training_shifts.get(key)
-    if meta is None:
+    windows = list((punch_exempt_windows or {}).get(key, []))
+    if training_shifts:
+        if isinstance(training_shifts, set):
+            if key in training_shifts:
+                return 0.0
+        elif (meta := training_shifts.get(key)) is not None:
+            start = meta.get("exempt_start")
+            end = meta.get("exempt_end")
+            if isinstance(start, str):
+                start = start.strip() or None
+            if isinstance(end, str):
+                end = end.strip() or None
+            if start is None and end is None:
+                return 0.0
+            if start and end:
+                windows.append((start, end))
+    if not windows:
         return total
-    start = meta.get("exempt_start")
-    end = meta.get("exempt_end")
-    if isinstance(start, str):
-        start = start.strip() or None
-    if isinstance(end, str):
-        end = end.strip() or None
-    whole = start is None and end is None
-    return _tip_hours_after_exemption(
-        total,
-        shift.get("in_time") or "",
-        shift.get("out_time") or "",
-        whole_day=whole,
-        exempt_start=start,
-        exempt_end=end,
+    return max(
+        0.0,
+        total - _union_overlap_hours(
+            shift.get("in_time") or "", shift.get("out_time") or "", windows,
+        ),
     )
 
 
@@ -1338,6 +1410,7 @@ def build_daily_rows(
         set[tuple[str, str]] | dict[tuple[str, str], dict] | None
     ) = None,
     now_ct: datetime.datetime | None = None,
+    punch_exempt_windows: dict[tuple[str, str], list[tuple[str, str]]] | None = None,
 ) -> tuple[list[list], dict[str, dict]]:
     training_through = training_through or {}
     sales = transactions_backend.aggregate_daily_sales(txns)
@@ -1351,6 +1424,7 @@ def build_daily_rows(
             permanent=excluded,
             training_through=training_through,
             training_shifts=training_shifts,
+            punch_exempt_windows=punch_exempt_windows,
         )
         if eligible <= 0:
             continue
@@ -1415,55 +1489,6 @@ def _parse_hhmm_to_minutes(raw: str) -> int | None:
         return h * 60 + m
     except (ValueError, AttributeError, TypeError):
         return None
-
-
-def _overlap_hours(
-    in_time: str, out_time: str, exempt_start: str, exempt_end: str,
-) -> float:
-    """Hours of [exempt_start, exempt_end) overlapping [in_time, out_time).
-
-    Malformed / inverted / empty → 0.0. No overnight wrap (same contract as
-    `_spread_shift_minutes_by_hour`). Used for partial tip-exemption windows
-    (Issue #167).
-    """
-    shift_start = _parse_hhmm_to_minutes(in_time)
-    shift_end = _parse_hhmm_to_minutes(out_time)
-    win_start = _parse_hhmm_to_minutes(exempt_start)
-    win_end = _parse_hhmm_to_minutes(exempt_end)
-    if None in (shift_start, shift_end, win_start, win_end):
-        return 0.0
-    if shift_end <= shift_start or win_end <= win_start:
-        return 0.0
-    overlap_start = max(shift_start, win_start)
-    overlap_end = min(shift_end, win_end)
-    if overlap_end <= overlap_start:
-        return 0.0
-    return (overlap_end - overlap_start) / 60.0
-
-
-def _tip_hours_after_exemption(
-    total_hours: float,
-    in_time: str,
-    out_time: str,
-    *,
-    whole_day: bool,
-    exempt_start: str | None,
-    exempt_end: str | None,
-) -> float:
-    """Tip-eligible hours after applying a tip-exemption mark.
-
-    whole_day=True → 0 tip hours (legacy training_shifts row).
-    Window with both times → total_hours minus overlap (floor at 0).
-    Missing window times (and not whole_day) → unchanged total_hours.
-    """
-    if whole_day:
-        return 0.0
-    if not exempt_start or not exempt_end:
-        return float(total_hours)
-    return max(
-        0.0,
-        float(total_hours) - _overlap_hours(in_time, out_time, exempt_start, exempt_end),
-    )
 
 
 def _spread_shift_minutes_by_hour(in_time: str, out_time: str) -> dict[int, float]:
@@ -2510,6 +2535,7 @@ def build_period_results(
     training_shifts: (
         set[tuple[str, str]] | dict[tuple[str, str], dict] | None
     ) = None,
+    punch_exempt_windows: dict[tuple[str, str], list[tuple[str, str]]] | None = None,
 ) -> list[dict]:
     """Run the allocator for each period; return list of period result dicts."""
     training_through = training_through or {}
@@ -2532,6 +2558,7 @@ def build_period_results(
                 permanent=excluded,
                 training_through=training_through,
                 training_shifts=training_shifts,
+                punch_exempt_windows=punch_exempt_windows,
             )
             if eligible <= 0:
                 continue

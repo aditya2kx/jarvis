@@ -244,6 +244,11 @@ GRAFANA_VIEWS: list[Target] = [
     # can recompute weekly/monthly Order Quality percentiles from source rows
     # (a daily percentile can't be re-aggregated). Grafana's dashboard.json does
     # not reference this view — console-only, same as recognition_bonuses above.
+    # migration 073/074 (Issue #343): adp_wage_rate_history / vw_wage_rate_effective
+    # are change-only rate inputs (rows appear only when a rate changes), so they
+    # have no freshness cadence — same class as store_config. 074 republishes
+    # vw_model_payroll_period / vw_labor_*_live, already covered as views.
+    # adp_punches.note is a new column on an existing target.
     # migration 035/036 (Issues #156/#164, operator console): vw_inventory_base_runway
     # is the Base runway table on /inventory (burn-down days left; dual Restock 1/2
     # from Actuals-only dates; Status Risky if restock empty or stockout < restock;

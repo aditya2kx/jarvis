@@ -2452,7 +2452,7 @@ def download_adp_bundle(
                 page.wait_for_timeout(1500)
                 rates, scrape_errors = pib.scrape_pay_info_rates(
                     page, names, dashboard_url=dashboard_url,
-                    excluded=set(excluded),
+                    excluded=set(excluded), aliases=aliases,
                 )
                 path = pib.write_pay_info_json(
                     rates, store=store, errors=scrape_errors, attempted=names,

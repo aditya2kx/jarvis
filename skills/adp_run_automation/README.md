@@ -21,6 +21,24 @@ next check (OT / salaried flags from earnings are preserved). Per-employee
 failures do not fail Timecard/tips.
 CLI: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-punchers --write-bq`.
 
+**Effective-dated history (Issue #343).** Both loaders also append to
+`adp_wage_rate_history` (`wage_rate_history.py`) when a rate differs from the latest
+history row, so a raise prices only shifts on/after its effective date. pay_info
+records ADP's "Added on" date (`added_on`) and dates the change by
+`resolve_effective_date`; earnings dates it at the paid period's start. Operator
+override / inspection:
+`python3 -m skills.adp_run_automation.wage_rate_history set --employee "Last, First" --effective YYYY-MM-DD --rate 18.00 [--dry-run]`
+and `... wage_rate_history show --employee "Last, First"`.
+
+**Directory match is alias-aware (Issue #343).** The Directory may list a
+middle initial the canonical name lacks (`Johnson, Dolce J` for `Johnson, Dolce`).
+`select_directory_match(..., accepted_names=...)` accepts a single row whose name
+is an `employee_aliases` spelling of the same person; ≥2 candidates, or an exact
+plus an alias row, still raise `AmbiguousEmployeeError` (never guess a rate).
+
+**Timecard Notes.** `shift_backend.parse_xlsx` keeps the optional "Notes" cell as
+`note` (→ `adp_punches.note`); materialize uses it for admin-punch tip exemptions.
+
 **Alert on outcome, not mechanism (2026-09).** `report_pay_info_issues` Slacks only
 when `remaining_gaps` (punchers with no rate from *any* source) is non-empty, or when
 a flow error stopped the check running. A scrape failure whose employee already has a

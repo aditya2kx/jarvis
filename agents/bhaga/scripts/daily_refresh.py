@@ -250,6 +250,24 @@ def ingested_dates(
     ]
 
 
+def open_pay_period_start(profile: dict, refresh_date: datetime.date) -> datetime.date | None:
+    """First day of the pay period after the latest closed one (None if unknown).
+
+    The nightly reloads the whole open period's Timecard, so a punch note the
+    operator adds days later (Issue #343 admin punches) changes raw data for a
+    date outside gap_start..refresh_date; the scoped model write must reach it.
+    """
+    adp = profile.get("adp_run", {})
+    anchor = adp.get("pay_periods_anchor_end_date")
+    if not anchor:
+        return None
+    from agents.bhaga.scripts import update_model_sheet  # noqa: PLC0415
+    _, closed_end = update_model_sheet.most_recent_closed_period(
+        anchor_end_date=anchor, pay_frequency=adp.get("pay_frequency", ""), today=refresh_date,
+    )
+    return closed_end + datetime.timedelta(days=1)
+
+
 def compute_gap_window(
     prev_end: datetime.date | None,
     cell_was_empty: bool,
@@ -3437,6 +3455,7 @@ def _run_refresh(run_id: str) -> int:
             extra_windows=(
                 (square_from, square_to),
                 (adp_window_from, adp_window_to),
+                (open_pay_period_start(profile, refresh_date), None),
             ),
         )
         print(f"[materialize_model_bq] scope: {len(model_dates)} date(s) "

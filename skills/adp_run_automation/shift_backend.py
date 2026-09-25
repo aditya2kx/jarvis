@@ -243,10 +243,10 @@ _DETAILS_COLUMNS = [
 # OTHER column (e.g. it added "Show Source" / "In Punch Source" / "Out Punch
 # Source" around 2026-07) without breaking us -- every field below is read by
 # NAME (`row.get(...)` on a name-keyed dict), never by position. "Details" and
-# "Notes" are deliberately excluded: they only feed the optional "skip Schedule
-# rows" heuristic, which is already safe when the column is absent entirely
-# (`row.get("Details")` -> None -> treated as not a schedule row; those rows
-# are still filtered out by the blank-Date check a few lines later).
+# "Notes" are deliberately optional: "Details" only feeds the "skip Schedule
+# rows" heuristic (absent -> not a schedule row; those rows are still dropped
+# by the blank-Date check), and a missing "Notes" column reads as '' — no punch
+# is tip-exempt by note (Issue #343).
 _REQUIRED_DETAILS_COLUMNS = [
     "Employee Name",
     "Pay Period",
@@ -284,6 +284,7 @@ def parse_xlsx(
             "doubletime_hours": float, # decimal
             "punch_idx_in_day": int,   # 0 = first punch of the day, 1 = second, ...
             "raw_total_paid_hours": str,  # e.g. '54:53' (per-employee per-pp total)
+            "note": str,               # Timecard "Notes" cell ('' when absent)
         }
 
     Records sorted by (employee_name, date, in_time). Filters out malformed
@@ -367,6 +368,7 @@ def parse_xlsx(
             "doubletime_hours": parse_hhmm_to_decimal(row.get("Doubletime")),
             "punch_idx_in_day": punch_idx,
             "raw_total_paid_hours": str(row.get("Total Paid Hours") or "").strip(),
+            "note": str(row.get("Notes") or "").strip(),
         })
 
     records.sort(key=lambda r: (r["employee_name"], r["date"], r["in_time"]))

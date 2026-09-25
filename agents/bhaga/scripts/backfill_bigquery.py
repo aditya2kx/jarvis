@@ -225,6 +225,7 @@ def map_adp_punch(rec: dict) -> dict:
         "doubletime_hours": dt,
         "total_hours": round(reg + ot + dt, 4),
         "scraped_at_utc": _parse_timestamp(rec.get("scraped_at_utc")),
+        "note": str(rec.get("note") or ""),
     }
 
 

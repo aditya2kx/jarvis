@@ -203,6 +203,23 @@ class GapWindowMultiDayTest(unittest.TestCase):
             "covers the pay period containing both gap days",
         )
 
+    def test_scope_reaches_back_to_the_open_pay_period_start(self):
+        """A punch note added days later must rewrite its day (Issue #343)."""
+        from agents.bhaga.scripts.daily_refresh import ingested_dates, open_pay_period_start
+
+        profile = {"adp_run": {"pay_periods_anchor_end_date": "2026-05-17",
+                               "pay_frequency": "Biweekly"}}
+        refresh = datetime.date(2026, 9, 24)
+        start = open_pay_period_start(profile, refresh)
+        self.assertEqual(start, datetime.date(2026, 9, 21))
+        # On the period's last day it is still open.
+        self.assertEqual(open_pay_period_start(profile, datetime.date(2026, 10, 4)),
+                         datetime.date(2026, 9, 21))
+        self.assertIsNone(open_pay_period_start({}, refresh))
+        dates = ingested_dates(refresh, refresh, extra_windows=((start, None),))
+        self.assertEqual(dates[0], "2026-09-21")
+        self.assertEqual(dates[-1], "2026-09-24")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,11 +1,4 @@
-# Sandbox live run config — Issue #309: solo-shift premium ($15.25 → $16.25).
-#
-# full-live: exercises the full Square + ADP pipeline against the sandbox for a date
-# inside the effective cycle, proving the solo-hours materialization runs end-to-end on
-# real punches rather than only in unit tests. 2026-09-08 carries the cycle's largest
-# eligible premium (4.8 solo hours across 2 people), so a regression in the occupancy
-# walk or the eligibility gate shows up as a changed number rather than a silent zero.
-#
-# Empty this back to `scenarios: []` before merge — a leftover armed date re-runs a
-# live ADP scrape on every push.
+# Sandbox live run config — list scenarios to run on the next push. Empty = off.
+# Issue #343's evidence run was triggered by PR comment (`/sandbox run full-live
+# date=2026-09-24`), so nothing is armed here.
 scenarios: []

@@ -606,6 +606,15 @@ def main() -> int:
                              column_bq_types=_TS_TYPES)
                 print(f"  adp_wage_rates (BQ): {n} rows upserted")
                 summaries.append({"table": "adp_wage_rates", "rows": n})
+                try:
+                    from skills.adp_run_automation.wage_rate_history import (  # noqa: PLC0415
+                        record_earnings_changes,
+                    )
+                    h = record_earnings_changes(rates, earnings)
+                    print(f"  adp_wage_rate_history (BQ): {h} earnings change row(s)")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[adp_rates] BREADCRUMB wage_rate_history_earnings_failed "
+                          f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
             # Per-line earnings (adp_earnings table)
             now_utc = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")

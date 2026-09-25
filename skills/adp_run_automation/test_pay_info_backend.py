@@ -9,6 +9,7 @@ from unittest import mock
 from skills.adp_run_automation.pay_info_backend import (
     _PEOPLE_SEARCH_PLACEHOLDER_RE,
     AmbiguousEmployeeError,
+    accepted_directory_names,
     directory_search_name,
     dismiss_blocking_modals,
     parse_hourly_pay_rate,
@@ -135,6 +136,46 @@ class TestSelectDirectoryMatch(unittest.TestCase):
             select_directory_match(["  flores,  Juan  "], "Flores,  Juan"),
             "  flores,  Juan  ",
         )
+
+    # Issue #343: the live Directory lists only `Johnson, Dolce J`; the alias
+    # table maps that spelling to the roster's `Johnson, Dolce`.
+    ALIASES = {
+        "Johnson, Dolce": "Johnson, Dolce",
+        "Johnson Dolce J": "Johnson, Dolce",
+        "Johnson, Dolce J": "Johnson, Dolce",
+        "Johnson, Dolly": "Johnson, Dolly",
+    }
+
+    def test_alias_spelling_is_accepted_when_it_is_the_only_record(self):
+        accepted = accepted_directory_names("Johnson, Dolce", self.ALIASES)
+        self.assertEqual(accepted, ["Johnson, Dolce J"])
+        self.assertEqual(
+            select_directory_match(["Johnson, Dolce J"], "Johnson, Dolce", accepted_names=accepted),
+            "Johnson, Dolce J",
+        )
+
+    def test_alias_of_another_employee_is_not_accepted(self):
+        accepted = accepted_directory_names("Johnson, Dolce", self.ALIASES)
+        with self.assertRaises(AmbiguousEmployeeError):
+            select_directory_match(["Johnson, Dolly"], "Johnson, Dol", accepted_names=accepted)
+
+    def test_exact_and_alias_records_together_refuse(self):
+        with self.assertRaises(AmbiguousEmployeeError):
+            select_directory_match(
+                self.ROSTER, "Johnson, Dolce", accepted_names=["Johnson, Dolce J"],
+            )
+
+    def test_two_alias_records_refuse(self):
+        with self.assertRaises(AmbiguousEmployeeError):
+            select_directory_match(
+                ["Johnson, Dolce J", "johnson,  dolce j"], "Johnson, Dolce",
+                accepted_names=["Johnson, Dolce J"],
+            )
+
+    def test_no_aliases_keeps_refusing_the_near_match(self):
+        self.assertEqual(accepted_directory_names("Johnson, Dolce", None), [])
+        with self.assertRaises(AmbiguousEmployeeError):
+            select_directory_match(["Johnson, Dolce J"], "Johnson, Dolce", accepted_names=[])
 
 
 class TestDismissBlockingModals(unittest.TestCase):

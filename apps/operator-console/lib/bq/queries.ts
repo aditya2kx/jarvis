@@ -32,7 +32,7 @@ export interface LaborDailyRow {
 // source_pulls) carry a real `store` key; do not add a WHERE store= filter
 // here until a second store's data actually lands in this table.
 //
-// Labor $ / %: `vw_labor_daily_live` (migration 074) = adp_shifts × the rate in
+// Labor $ / %: `vw_labor_daily_live` (migration 075) = adp_shifts × the rate in
 // effect on each shift date (vw_wage_rate_effective). Never read hourly/fulltime/total_labor_cost from
 // vw_model_labor_daily (frozen last recompute — Issue #267 $1.25 scrape).
 export function laborDaily(win: DateWindow): Promise<LaborDailyRow[]> {

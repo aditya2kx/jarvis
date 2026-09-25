@@ -109,7 +109,7 @@ Exemptions table → follow-up issue.
 ## Milestone 1 — Directory match + rate history table (Sonnet)
 
 **Files**
-- `core/migrations/073_wage_rate_history_punch_notes.sql` (new):
+- `core/migrations/074_wage_rate_history_punch_notes.sql` (new):
 
 ```sql
 CREATE TABLE IF NOT EXISTS `jarvis-bhaga-prod.bhaga.adp_wage_rate_history` (
@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS `jarvis-bhaga-prod.bhaga.adp_wage_rate_history` (
 INSERT INTO `jarvis-bhaga-prod.bhaga.adp_wage_rate_history`
   (employee_id, effective_date, wage_rate_dollars, ot_rate_dollars, source, observed_at_utc, note)
 SELECT w.employee_id, DATE '2000-01-01', w.wage_rate_dollars, w.ot_rate_dollars,
-       'seed', CURRENT_TIMESTAMP(), 'migration 073 seed from adp_wage_rates'
+       'seed', CURRENT_TIMESTAMP(), 'migration 074 seed from adp_wage_rates'
 FROM `jarvis-bhaga-prod.bhaga.adp_wage_rates` w
 WHERE w.wage_rate_dollars IS NOT NULL
   AND NOT EXISTS (
@@ -197,7 +197,7 @@ Pass criterion: all green; `select_directory_match` guard tests from payroll-pip
 ## Milestone 2 — Readers use rate-on-date (Sonnet; Opus review of the view SQL)
 
 **Files**
-- `core/migrations/074_payroll_labor_effective_rates.sql` (new) — copies 068's
+- `core/migrations/075_payroll_labor_effective_rates.sql` (new) — copies 068's
   `vw_model_payroll_period` and 069's two live views with these edits:
   - payroll `shift_hours` CTE (068 lines 93-122) becomes segment-based:
 
@@ -240,16 +240,16 @@ rate_at_end AS (   -- displayed rate + fallback for tip rows with no ADP shift h
     `s.date BETWEEN`) and use `COALESCE(r.wage_rate_dollars, w.wage_rate_dollars)` in the two cost
     SUMs (069 lines 26-35 and 85-94).
 - `apps/operator-console/lib/bq/queries.ts:84-95` — same join/COALESCE for `wage`.
-- `scripts/check_live_labor_cost.py:51-57` — point `_MIGRATION` at 074 and also require
+- `scripts/check_live_labor_cost.py:51-57` — point `_MIGRATION` at 075 and also require
   `vw_wage_rate_effective`.
 
-**Tests** — new `core/test_migration_074.py` (structural, like the 071/072 tests): payroll view
+**Tests** — new `core/test_migration_075.py` (structural, like the 071/072 tests): payroll view
 references `vw_wage_rate_effective`, keeps NUMERIC half-up `ROUND`, keeps 1:1 roster CTEs; live
 views join on date range. BQ dry-run of each `CREATE VIEW` against `bhaga_sandbox`.
 
 **Verify**
 ```bash
-python3 -m pytest core/test_migration_074.py -q
+python3 -m pytest core/test_migration_075.py -q
 python3 scripts/check_live_labor_cost.py
 cd apps/operator-console && npm test && npm run lint && npm run build
 ```
@@ -360,7 +360,7 @@ to every thread; never self-merge — operator merges.
 | Milestone | Model |
 |---|---|
 | M1 Directory match + history table/CLI | Sonnet |
-| M2 view SQL rewrite | Sonnet; Opus review of 074 before push |
+| M2 view SQL rewrite | Sonnet; Opus review of 075 before push |
 | M3 notes ingest + tip windows + scope | Sonnet |
 | M4 evidence/docs | Sonnet (Composer for doc-only) |
 

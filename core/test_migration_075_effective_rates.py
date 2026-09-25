@@ -1,9 +1,9 @@
-"""Structural tests for migrations 073 + 074 (Issue #343 effective-dated rates).
+"""Structural tests for migrations 074 + 075 (Issue #343 effective-dated rates).
 
-074 copies the payroll view forward from 068 and the live labor views from 069.
+075 copies the payroll view forward from 068 and the live labor views from 069.
 These guard what a copy-paste can silently break: the shift-date join that
 keeps closed periods on their old rate, the fallback that keeps unpriced
-employees on the pre-074 formula, and 073's rerunnable seed.
+employees on the pre-075 formula, and 074's rerunnable seed.
 """
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ def _strip_comments(sql: str) -> str:
     )
 
 
-_SQL_073 = _strip_comments((_DIR / "073_wage_rate_history_punch_notes.sql").read_text())
-_SQL_074 = _strip_comments((_DIR / "074_payroll_labor_effective_rates.sql").read_text())
+_SQL_074 = _strip_comments((_DIR / "074_wage_rate_history_punch_notes.sql").read_text())
+_SQL_075 = _strip_comments((_DIR / "075_payroll_labor_effective_rates.sql").read_text())
 
 _EFFECTIVE_JOIN = re.compile(
     r"vw_wage_rate_effective`\s+er\s+ON er\.employee_id = s\.(canonical_name|employee_id)"
@@ -38,23 +38,23 @@ def _statement_creating(sql: str, name: str) -> str:
     return matches[0]
 
 
-class TestMigration073(unittest.TestCase):
+class TestMigration074(unittest.TestCase):
     def test_seed_is_rerunnable(self):
-        seed = [s for s in _split_statements(_SQL_073) if s.lstrip().startswith("INSERT")][0]
+        seed = [s for s in _split_statements(_SQL_074) if s.lstrip().startswith("INSERT")][0]
         self.assertIn("NOT EXISTS", seed)
         self.assertIn("DATE '2000-01-01'", seed)
 
     def test_ranges_end_the_day_before_the_next_change(self):
-        view = _statement_creating(_SQL_073, "vw_wage_rate_effective")
+        view = _statement_creating(_SQL_074, "vw_wage_rate_effective")
         self.assertRegex(view, r"DATE_SUB\(\s*LEAD\(effective_date\) OVER \(PARTITION BY employee_id ORDER BY effective_date\),\s*INTERVAL 1 DAY")
         self.assertIn("DATE '9999-12-31'", view)
 
     def test_punch_note_column_is_rerunnable(self):
-        self.assertIn("ADD COLUMN IF NOT EXISTS note STRING", _SQL_073)
+        self.assertIn("ADD COLUMN IF NOT EXISTS note STRING", _SQL_074)
 
 
 class TestPayrollPricesByShiftDate(unittest.TestCase):
-    view = _statement_creating(_SQL_074, "vw_model_payroll_period")
+    view = _statement_creating(_SQL_075, "vw_model_payroll_period")
 
     def test_segments_join_the_rate_on_the_shift_date(self):
         self.assertRegex(self.view, _EFFECTIVE_JOIN)
@@ -89,7 +89,7 @@ class TestPayrollPricesByShiftDate(unittest.TestCase):
 class TestLiveLaborPricesByShiftDate(unittest.TestCase):
     def test_both_live_views_join_the_effective_rate(self):
         for name in ("vw_labor_daily_live", "vw_labor_weekly_live"):
-            view = _statement_creating(_SQL_074, name)
+            view = _statement_creating(_SQL_075, name)
             self.assertRegex(view, _EFFECTIVE_JOIN, name)
             self.assertEqual(view.count("COALESCE(er.wage_rate_dollars, w.wage_rate_dollars)"), 2, name)
             self.assertNotRegex(view, r"total_hours \* IFNULL\(w\.wage_rate_dollars", name)

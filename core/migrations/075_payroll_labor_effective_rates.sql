@@ -1,13 +1,13 @@
--- 074_payroll_labor_effective_rates.sql
+-- 075_payroll_labor_effective_rates.sql
 -- Issue #343: price every shift at the rate in effect on its date
--- (vw_wage_rate_effective, 073) instead of today's single adp_wage_rates rate,
+-- (vw_wage_rate_effective, 074) instead of today's single adp_wage_rates rate,
 -- so a raise never reprices closed pay periods.
 --
 -- Payroll: shifts are split into rate segments per period; est_wages sums
 -- each segment's regular + OT pay. wage_rate_dollars shows the rate as of
 -- period_end. A period with any unpriced segment (no history row) falls back
--- to hours × that displayed rate, which for an employee with only the 073
--- seed row is exactly the pre-074 formula.
+-- to hours × that displayed rate, which for an employee with only the 074
+-- seed row is exactly the pre-075 formula.
 -- Live labor views: same join, rate per shift date; flags stay on
 -- adp_wage_rates.
 --

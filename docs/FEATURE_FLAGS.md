@@ -48,7 +48,7 @@ These are noted here so future reviewers understand the policy: flags gate **cut
 **Tip exemption windows (Issue #167 / migration 038):** additive `exempt_start`/`exempt_end` on
 `bhaga.training_shifts`. NULL/NULL keeps legacy whole-day exclusion — no pipeline env flag.
 
-**Effective-dated rates + admin-punch tips (Issue #343 / migrations 073–074):** N/A — no env flag.
+**Effective-dated rates + admin-punch tips (Issue #343 / migrations 074–075):** N/A — no env flag.
 The history table is seeded from today's `adp_wage_rates`, so every employee without a recorded
 change prices bit-identically (prod parity: 0 rows differ on `vw_model_payroll_period` /
 `vw_labor_daily_live`). Admin-punch matching has a runtime kill switch instead of a flag:

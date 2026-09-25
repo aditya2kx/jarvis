@@ -165,6 +165,8 @@ def history_rows_from_earnings(
         emp, check, start = e.get("employee_name"), str(e.get("check_date") or ""), str(e.get("period_start") or "")
         if not emp or not check or not start or e.get("description") != "Regular":
             continue
+        # check_date is ISO 'YYYY-MM-DD' (compensation_backend.parse_xlsx), so
+        # string order is date order.
         if emp not in newest_period or check > newest_period[emp][0]:
             newest_period[emp] = (check, start)
 
@@ -267,7 +269,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         rows = read_query(
             f"SELECT * FROM {fq('vw_wage_rate_effective')} "
-            f"WHERE employee_id = '{employee.replace(chr(39), '')}' ORDER BY effective_from"
+            f"WHERE employee_id = {json.dumps(employee)} ORDER BY effective_from"
         )
         for r in rows:
             print(f"{r['effective_from']} → {r['effective_to']}  ${r['wage_rate_dollars']}  ({r['source']})")

@@ -135,7 +135,7 @@ latest **history** row:
   check at the pre-raise rate never undoes a newer pay_info raise).
 - `operator` — `python3 -m skills.adp_run_automation.wage_rate_history set --employee "Last, First"
   --effective YYYY-MM-DD --rate 18.00` (runtime, no deploy).
-Seeded at 2000-01-01 from `wage_rates` by migration 073, so employees without a change price as
+Seeded at 2000-01-01 from `wage_rates` by migration 074, so employees without a change price as
 before.
 
 ### B. `bhaga_square_raw` — sales & operations source of truth (from Square)
@@ -296,7 +296,7 @@ translation.
 
 Operator Console Labor / Home labor $ and Grafana Labor Wages / Net Sales read
 **`vw_labor_daily_live` / `vw_labor_weekly_live`** (`adp_shifts.total_hours ×` the rate in
-effect on the shift date from `vw_wage_rate_effective`, migration 074; FT = salaried or
+effect on the shift date from `vw_wage_rate_effective`, migration 075; FT = salaried or
 `excluded_from_labor_pct`) over Square net sales from `model_labor_daily`.
 Frozen `model_labor_daily` dollars are not a presentation source (Issue #267).
 

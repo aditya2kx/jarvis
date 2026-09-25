@@ -23,7 +23,7 @@ import sys
 _REPO = pathlib.Path(__file__).resolve().parents[1]
 _QUERIES = _REPO / "apps" / "operator-console" / "lib" / "bq" / "queries.ts"
 _DASHBOARD = _REPO / "agents" / "bhaga" / "grafana" / "dashboard.json"
-_MIGRATION = _REPO / "core" / "migrations" / "074_payroll_labor_effective_rates.sql"
+_MIGRATION = _REPO / "core" / "migrations" / "075_payroll_labor_effective_rates.sql"
 
 COST_RE = re.compile(
     r"\b(hourly_labor_cost|fulltime_labor_cost|total_labor_cost)\b"

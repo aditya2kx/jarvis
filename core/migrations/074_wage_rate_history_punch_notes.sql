@@ -1,11 +1,11 @@
--- 073_wage_rate_history_punch_notes.sql
+-- 074_wage_rate_history_punch_notes.sql
 -- Issue #343: effective-dated hourly rates + ADP punch notes.
 --
 -- adp_wage_rates keeps ONE current rate per employee (and the Mon/Tue earnings
 -- load rewrites it with the last paycheck's rate), so it cannot price a past
 -- shift. adp_wage_rate_history records each change with the date it took
 -- effect; vw_wage_rate_effective turns that into [effective_from, effective_to]
--- ranges for every wage consumer (074).
+-- ranges for every wage consumer (075).
 --
 -- Seeded once from today's adp_wage_rates at 2000-01-01 so every employee
 -- without a recorded change prices exactly as before.
@@ -36,7 +36,7 @@ SELECT
   w.ot_rate_dollars,
   'seed',
   CURRENT_TIMESTAMP(),
-  'migration 073 seed from adp_wage_rates'
+  'migration 074 seed from adp_wage_rates'
 FROM `jarvis-bhaga-prod.bhaga.adp_wage_rates` w
 WHERE w.wage_rate_dollars IS NOT NULL
   AND IFNULL(w.employee_id, '') != ''

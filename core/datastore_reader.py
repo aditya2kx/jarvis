@@ -128,7 +128,7 @@ def read_punches_bq() -> list[dict]:
         doubletime_hours → doubletime_hours (float)
         total_hours → total_hours (float)
         scraped_at_utc → scraped_at_utc (str)
-        note → note (str; ADP Timecard "Notes", '' for pre-073 rows)
+        note → note (str; ADP Timecard "Notes", '' for pre-074 rows)
     """
     rows = read_table("adp_punches")
     if not rows:

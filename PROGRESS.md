@@ -1,3 +1,13 @@
+## 2026-09-25 — Open shifts show on /labor, and a second ADP tab was costing codes (Issue #342, PR #344)
+
+**Scope:** The operator wanted unassigned ADP shifts next to assigned ones on `/labor`. ADP shows them only as a timeless "Open Shifts" row whose per-day details pane holds the times; the schedule parser skipped the row because it has no `.worker-name`.
+
+**Key changes:** `_scrape_open_shifts` opens and closes each day's pane (read-only) and records one row per slot into `adp_open_shifts` (migration 073), purged per scraped week. It is refreshed nightly and by both console Sync buttons; Sync clocked hours now also pulls the Team Schedule. The Hours chart stacks open hours as a violet hatch with Total if filled vs goal, and Staffing coverage draws dashed open lanes plus past unfilled gaps.
+
+**Process note:** local ADP runs relaunched Chrome each time, and every launch cost an SMS code (four in one hour). `BHAGA_ADP_CDP_URL` now attaches to one long-lived Chrome. The first version opened a second tab, which ADP RUN's one-tab guard parked on `/multitabmessage`: the localhost Sync failed and texted another code. Runs now drive the browser's single tab, and the next Sync reused the login with no code.
+
+**Evidence:** prod backfill loaded 8 slots matching the live grid (week of Sep 28: 7 slots, 45.5 h = ADP's `45:30 HRS`); both Sync paths ran live from the branch; localhost screenshots in PR #344 §4.
+
 ## 2026-09-23 — Two bonuses on one paycheck broke three nightlies (Issue #338, PR #339)
 
 **Scope:** 2026-09-15, 09-21 and 09-22 failed at `load_raw_bigquery` with `UPDATE/MERGE must match at most one source row`. Every failure was a Mon/Tue Earnings night. `adp_earnings` upserted on (period, employee, description, check_date), but ADP gave one employee two real `Bonus` lines on the 09-11 check: the first load inserted both into an empty key and every later one was rejected. Tips and the model were missing for 09-21/22 as a result.

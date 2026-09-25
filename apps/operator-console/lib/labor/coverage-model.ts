@@ -2,11 +2,15 @@
  * Day-strip + occupancy + swimlane model for Labor coverage (Issue #213 Option 1).
  */
 
-import { parseShiftRangesJson } from "@/lib/labor/shift-ranges";
+import { parseShiftRange, parseShiftRangesJson } from "@/lib/labor/shift-ranges";
 import { shiftCalendarDate, type DateWindow } from "@/lib/filters/range";
 import { showsFullTime, showsPartTime } from "@/lib/filters/labor-type";
 
-export type CoverageKind = "actual" | "scheduled";
+/** `open` = ADP open (unassigned) shift — a lane with no person (Issue #342). */
+export type CoverageKind = "actual" | "scheduled" | "open";
+
+/** Lane bucket for open-shift lanes; never PT/FT, shown under any labor filter. */
+export const OPEN_LANE_BUCKET = "open";
 
 export type CoverageSegment = {
   kind: CoverageKind;
@@ -23,14 +27,17 @@ export type CoveragePersonDay = {
 
 export type CoverageDayChip = {
   date: string;
+  /** People only — open lanes are counted in `open`. */
   headcount: number;
-  kind: CoverageKind | "mixed" | "empty";
+  kind: "actual" | "scheduled" | "mixed" | "empty";
+  open: number;
 };
 
 export type OccupancyPoint = {
   min: number;
   actual: number;
   scheduled: number;
+  open: number;
 };
 
 const HH_MM_RE = /^(\d{1,2}):(\d{2})$/;
@@ -195,6 +202,48 @@ export function buildPersonDaysForDate(
   });
 }
 
+export type OpenShiftInput = {
+  date: string;
+  slot_index: number;
+  shift_range: string | null;
+  scheduled_hours: number;
+};
+
+export function isOpenLane(p: Pick<CoveragePersonDay, "labor_bucket">): boolean {
+  return p.labor_bucket === OPEN_LANE_BUCKET;
+}
+
+/**
+ * Open slots for one day packed into as few lanes as possible (first lane whose
+ * last shift has ended). Past days keep them: an open slot on a worked day is
+ * an unfilled gap, not stale schedule.
+ */
+export function buildOpenLanesForDate(
+  date: string,
+  open: OpenShiftInput[],
+): CoveragePersonDay[] {
+  const segs: CoverageSegment[] = open
+    .filter((r) => r.date.slice(0, 10) === date)
+    .flatMap((r) => {
+      const range = parseShiftRange(r.shift_range);
+      if (!range) return [];
+      const hours = Number(r.scheduled_hours) > 0 ? Number(r.scheduled_hours) : range.hours;
+      return [{ kind: "open" as const, startMin: range.startMin, endMin: range.endMin, hours }];
+    })
+    .sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+  const lanes: CoverageSegment[][] = [];
+  for (const seg of segs) {
+    const lane = lanes.find((l) => l[l.length - 1]!.endMin <= seg.startMin);
+    if (lane) lane.push(seg);
+    else lanes.push([seg]);
+  }
+  return lanes.map((segments, i) => ({
+    employee: lanes.length > 1 ? `Open shift ${i + 1}` : "Open shift",
+    labor_bucket: OPEN_LANE_BUCKET,
+    segments,
+  }));
+}
+
 /**
  * Past days with clocked punches hide schedule. Past days with no punches
  * keep schedule (Timecard gap). Today+ always shows schedule.
@@ -216,12 +265,16 @@ export function dayChipSummary(
   date: string,
   people: CoveragePersonDay[],
 ): CoverageDayChip {
-  if (!people.length) return { date, headcount: 0, kind: "empty" };
-  const hasA = people.some((p) => p.segments.some((s) => s.kind === "actual"));
-  const hasS = people.some((p) => p.segments.some((s) => s.kind === "scheduled"));
+  const open = people
+    .filter(isOpenLane)
+    .reduce((n, p) => n + p.segments.length, 0);
+  const staff = people.filter((p) => !isOpenLane(p));
+  if (!staff.length) return { date, headcount: 0, kind: "empty", open };
+  const hasA = staff.some((p) => p.segments.some((s) => s.kind === "actual"));
+  const hasS = staff.some((p) => p.segments.some((s) => s.kind === "scheduled"));
   const kind: CoverageDayChip["kind"] =
     hasA && hasS ? "mixed" : hasA ? "actual" : hasS ? "scheduled" : "empty";
-  return { date, headcount: people.length, kind };
+  return { date, headcount: staff.length, kind, open };
 }
 
 /** Axis bounds from segments, padded to hour edges; fallback 9:00–21:00. */
@@ -261,13 +314,15 @@ export function occupancySeries(
   for (let t = startMin; t < endMin; t += stepMin) {
     let actual = 0;
     let scheduled = 0;
+    let open = 0;
     for (const p of people) {
       if (p.segments.some((s) => s.kind === "actual" && covers(s, t))) actual += 1;
       if (p.segments.some((s) => s.kind === "scheduled" && covers(s, t))) {
         scheduled += 1;
       }
+      open += p.segments.filter((s) => s.kind === "open" && covers(s, t)).length;
     }
-    out.push({ min: t, actual, scheduled });
+    out.push({ min: t, actual, scheduled, open });
   }
   return out;
 }

@@ -137,3 +137,27 @@ CREATE TABLE IF NOT EXISTS `jarvis-bhaga-prod.bhaga.adp_payroll_liability` (
 3. Extend runner `Schedule-*.json` payload with `employee_rows`  
 4. Payroll liability parser + migration `040` + seed `labor_burden_pct=0.10`  
 5. Console query/UI + docs lockstep  
+
+---
+
+## Open shifts spike (2026-09-25, Issue #342)
+
+Live Palmetto grid, read-only (open/close the details pane only):
+
+- **Where:** first `.calendar-row` in `timePartnerFrame` with no `.worker-name`; label
+  `Open Shifts N Shifts, HH:MM HRS`. Each day with open slots has one `.open-shift-count`
+  (count only — no times in the grid).
+- **Details:** clicking the count opens an `sdf-focus-pane` (shadow DOM), heading
+  `Open Shifts on Saturday, Oct 03`, one `sdf-quick-stat` per slot: light-DOM text = range
+  (`10:00 AM - 4:00 PM`), shadow `.quick-stat-label` = paid hours (`06:00 hours`). **Back**
+  closes it; the week › chevron does not advance while it is open. Hidden panes (e.g.
+  "Monthly Schedule") share the element — filter by heading + visibility.
+- **Data:** week of Sep 21: 1 slot (Sep 27, 6 h). Week of Sep 28: 7 slots / 45.5 h
+  (Sep 29 9–4, Oct 1 1:30–8:30, Oct 2 3:00–8:30, Oct 3 + Oct 4 each 10–4 and 1:30–8:30).
+  Weeks Jun 29 → Sep 20 (paged back) and Oct 5 → Nov 15: none. Backfill therefore equals the
+  existing 8-week forward scrape; no backward scrape.
+- **Footer:** ADP's day/week totals exclude open slots (footer ≈ employee sum within 0.5 h),
+  so a separate table cannot double-count `adp_scheduled_daily`.
+- **Auth:** four fresh-browser spike runs cost four SMS codes (`SMSESSION` is a session
+  cookie). Attaching to one long-lived Chrome over CDP cost one code for the rest of the day
+  → `BHAGA_ADP_CDP_URL` (`RUNBOOK.md` § ADP local attach).

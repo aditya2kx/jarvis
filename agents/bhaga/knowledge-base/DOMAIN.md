@@ -100,8 +100,16 @@ functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc /
    scrape of **all recent punchers** (People → Hourly pay rate). MERGEs raises
    before the next check. Does **not** overwrite existing OT / salaried flags.
    Scrape failures Slack a `:warning:` and do not fail Timecard/tips.
-   Operator Console **Sync clocked hours** re-scrapes Timecard only (`BHAGA_ADP_TIMECARD_ONLY`);
-   it never runs this pay_info path.
+   Operator Console **Sync clocked hours** re-scrapes Timecard + Team Schedule
+   (`BHAGA_ADP_TIMECARD_ONLY`); it never runs this pay_info path.
+
+**Open shifts** (`adp_open_shifts`, Issue #342): Team Schedule slots with no employee
+assigned — one row per `(date, slot_index)` with `shift_range` and ADP paid
+`scheduled_hours`. They are *capacity the schedule wants but nobody holds*, so they
+carry no PT/FT bucket, no wage and no labor $, and ADP's footer (`adp_scheduled_daily`)
+excludes them. The console stacks them on upcoming days of the Hours chart and
+reports "Total if filled" = actual + scheduled + open; on past days the coverage
+panel keeps them as unfilled gaps.
 
 | Field | Meaning |
 |---|---|

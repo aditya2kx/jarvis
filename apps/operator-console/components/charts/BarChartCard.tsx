@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import {
   Bar,
   BarChart,
@@ -218,6 +218,9 @@ export function BarChartCard({
   signedValueColors?: SignedValueColors;
 }) {
   const multilineX = data.some((row) => String(row[xKey] ?? "").includes("\n"));
+  // SVG url(#id) breaks on useId's colons; one chart can render twice per page.
+  const patternPrefix = `hatch-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
+  const hatched = series.filter((s) => s.pattern === "hatch");
   return (
     <Card>
       <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-2 space-y-0">
@@ -235,6 +238,26 @@ export function BarChartCard({
             data={data}
             margin={{ top: 8, right: 12, left: -4, bottom: multilineX ? 8 : 0 }}
           >
+            {hatched.length ? (
+              <defs>
+                {hatched.map((s) => {
+                  const color = s.color ?? chartColorAt(series.indexOf(s));
+                  return (
+                    <pattern
+                      key={s.key}
+                      id={`${patternPrefix}-${s.key}`}
+                      width={6}
+                      height={6}
+                      patternUnits="userSpaceOnUse"
+                      patternTransform="rotate(45)"
+                    >
+                      <rect width={6} height={6} fill={color} fillOpacity={0.18} />
+                      <line x1={0} y1={0} x2={0} y2={6} stroke={color} strokeWidth={2.5} />
+                    </pattern>
+                  );
+                })}
+              </defs>
+            ) : null}
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
             <XAxis
               dataKey={xKey}
@@ -263,12 +286,17 @@ export function BarChartCard({
                     ? "stack"
                     : undefined;
               const useSigned = signedValueColors?.dataKey === s.key;
+              const color = s.color ?? chartColorAt(i);
+              const hatch = s.pattern === "hatch";
               return (
                 <Bar
                   key={s.key}
                   dataKey={s.key}
                   name={s.label}
-                  fill={s.color ?? chartColorAt(i)}
+                  fill={hatch ? `url(#${patternPrefix}-${s.key})` : color}
+                  stroke={hatch ? color : undefined}
+                  strokeWidth={hatch ? 1 : undefined}
+                  strokeDasharray={hatch ? "3 2" : undefined}
                   radius={stackId && i < series.length - 1 ? 0 : 2}
                   stackId={stackId}
                 >

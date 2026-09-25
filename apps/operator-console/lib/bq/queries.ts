@@ -726,6 +726,61 @@ export function laborScheduledShiftDays(
   );
 }
 
+/**
+ * Open (unassigned) ADP shift hours per bucket — Issue #342. Same window
+ * contract as `laborScheduledHoursByGrain`; open shifts carry no employee, so
+ * they are neither part-time nor full-time.
+ */
+export interface LaborOpenShiftHoursRow {
+  date: string;
+  open_hours: number;
+  open_slots: number;
+  [key: string]: unknown;
+}
+
+export function laborOpenShiftHoursByGrain(
+  win: DateWindow,
+  grain: Grain,
+): Promise<LaborOpenShiftHoursRow[]> {
+  if (grain === "hour" || grain === "weekday") return Promise.resolve([]);
+  return q<LaborOpenShiftHoursRow>(
+    `SELECT
+       ${bucketSql(grain, "o.date")} AS date,
+       SUM(o.scheduled_hours) AS open_hours,
+       COUNT(*) AS open_slots
+     FROM ${fq("adp_open_shifts")} o
+     WHERE o.date BETWEEN @start AND @end
+       AND IFNULL(o.scheduled_hours, 0) > 0
+     GROUP BY date
+     ORDER BY date`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/** Per-slot open shifts for the coverage panel (past days render as gaps). */
+export interface LaborOpenShiftDayRow {
+  date: string;
+  slot_index: number;
+  shift_range: string | null;
+  scheduled_hours: number;
+  [key: string]: unknown;
+}
+
+export function laborOpenShiftDays(win: DateWindow): Promise<LaborOpenShiftDayRow[]> {
+  return q<LaborOpenShiftDayRow>(
+    `SELECT
+       CAST(o.date AS STRING) AS date,
+       o.slot_index,
+       o.shift_range,
+       o.scheduled_hours
+     FROM ${fq("adp_open_shifts")} o
+     WHERE o.date BETWEEN @start AND @end
+       AND IFNULL(o.scheduled_hours, 0) > 0
+     ORDER BY date, slot_index`,
+    { start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
 /** Day-level clocked shifts for coverage swimlanes (Issue #213). */
 export interface LaborActualShiftDayRow {
   date: string;
@@ -779,11 +834,15 @@ export function adpHoursScrapedAt(): Promise<string | null> {
   ).then((rows) => rows[0]?.scraped ?? null);
 }
 
-/** Latest calendar date with scheduled hours (today+), for chart horizon. */
+/** Latest calendar date with scheduled or open hours (today+), for chart horizon. */
 export function adpScheduleHorizonEnd(): Promise<string | null> {
   return q<{ horizon: string | null }>(
     `SELECT CAST(MAX(date) AS STRING) AS horizon
-     FROM ${fq("adp_scheduled_shifts")}
+     FROM (
+       SELECT date, scheduled_hours FROM ${fq("adp_scheduled_shifts")}
+       UNION ALL
+       SELECT date, scheduled_hours FROM ${fq("adp_open_shifts")}
+     )
      WHERE date >= CURRENT_DATE('America/Chicago')
        AND IFNULL(scheduled_hours, 0) > 0`,
   ).then((rows) => {

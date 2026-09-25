@@ -2690,11 +2690,12 @@ def _run_refresh(run_id: str) -> int:
         os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
         from skills.adp_run_automation.runner import (  # noqa: PLC0415
             DOWNLOADS_DIR,
-            download_timecard,
+            download_adp_bundle,
         )
         today_xlsx = DOWNLOADS_DIR / f"Timecard-{_today_ct().isoformat()}.xlsx"
         meta = today_xlsx.with_suffix(today_xlsx.suffix + ".target-meta.json")
-        for cached in (today_xlsx, meta):
+        today_sched = DOWNLOADS_DIR / f"Schedule-{_today_ct().isoformat()}.json"
+        for cached in (today_xlsx, meta, today_sched):
             if cached.exists():
                 cached.unlink()
                 print(f"[adp-timecard-only] removed cached {cached.name} (force re-scrape)")
@@ -2703,12 +2704,31 @@ def _run_refresh(run_id: str) -> int:
             f"[adp-timecard-only] headed={headed} "
             f"(set BHAGA_ADP_HEADED=1 for a visible browser)"
         )
-        path = download_timecard(
+        # Team Schedule rides the same login (open shifts, Issue #342); no
+        # earnings, liability or pay-rate scrape.
+        result = download_adp_bundle(
             store=args.store,
             target_date=refresh_date,
+            include_earnings=False,
+            include_schedule=True,
+            include_extras=False,
             headed=headed,
         )
-        print(f"[adp-timecard-only] wrote {path}")
+        if result["errors"].get("adp_timecard") or not result.get("timecard_xlsx"):
+            raise RuntimeError(
+                f"[adp-timecard-only] timecard scrape failed: "
+                f"{result['errors'].get('adp_timecard')}"
+            )
+        print(f"[adp-timecard-only] wrote {result['timecard_xlsx']}")
+        skips = ["square", "adp_rates", "adp_liability", "square_rollup"]
+        if result.get("schedule_json") and not result["errors"].get("adp_schedule"):
+            print(f"[adp-timecard-only] schedule refreshed → {result['schedule_json']}")
+        else:
+            skips.append("adp_schedule")
+            print(
+                f"[adp-timecard-only] WARN: schedule refresh failed "
+                f"({result['errors'].get('adp_schedule')}); clocked hours still load"
+            )
         bq_env = {**os.environ, "BHAGA_DATASTORE": "bigquery", "PYTHONUNBUFFERED": "1"}
         subprocess.run(
             [
@@ -2717,16 +2737,7 @@ def _run_refresh(run_id: str) -> int:
                 "agents.bhaga.scripts.backfill_from_downloads",
                 "--store",
                 args.store,
-                "--skip",
-                "square",
-                "--skip",
-                "adp_rates",
-                "--skip",
-                "adp_schedule",
-                "--skip",
-                "adp_liability",
-                "--skip",
-                "square_rollup",
+                *[a for s in skips for a in ("--skip", s)],
                 "--refresh-date",
                 refresh_date.isoformat(),
             ],

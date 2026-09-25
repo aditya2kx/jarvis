@@ -206,6 +206,14 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
   not already carry. Expect **one** code to establish a profile, then none until ADP ages it out.
   Opt out with `BHAGA_BROWSER_PROFILE=0`. Cloud Run stays ephemeral on purpose (`K_SERVICE` check) —
   its filesystem does not outlive an execution, so there the cookie jar remains the only lever.
+- **Local ADP work: attach to one long-lived Chrome, never relaunch per run (Issue #342).** Even a
+  persistent profile re-authenticates on every fresh browser process, because `SMSESSION` is a
+  session cookie that dies with the process — four spike runs on 2026-09-25 cost four codes. Start
+  Chrome once (`RUNBOOK.md` § ADP local attach), then set `BHAGA_ADP_CDP_URL=http://127.0.0.1:9333`;
+  `adp_session()` attaches via CDP and drives that browser's **one** tab: RUN allows one signed-in
+  tab per session and parks any second tab on `/apps/run/multitabmessage` (a 2026-09-25 localhost
+  sync failed and re-texted a code that way). A code is needed again only once ADP idles the session
+  out. Ignored on Cloud Run (`on_cloud_run()`).
 - **`BHAGA_SESSION_PERSIST` defaults to on.** It was opt-in and set only in the deploy workflow, so
   every command run by hand silently started from a fresh jar and interrupted the operator for a code.
   A flag whose only failure mode is an SMS to a human must not need remembering.

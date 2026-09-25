@@ -12,12 +12,14 @@ import { Badge } from "@/components/ui/badge";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
 import {
   axisBounds,
+  buildOpenLanesForDate,
   buildPersonDaysForDate,
   coverageNarrative,
   coverageStripDates,
   dayChipSummary,
   filterScheduledForCoverage,
   formatClockMin,
+  isOpenLane,
   occupancySeries,
   peopleActiveAt,
   defaultCoverageDay,
@@ -26,8 +28,10 @@ import {
   snapMinute,
   type ActualShiftInput,
   type CoverageDayChip,
+  type CoverageKind,
   type CoveragePersonDay,
   type OccupancyPoint,
+  type OpenShiftInput,
   type ScheduledShiftInput,
 } from "@/lib/labor/coverage-model";
 import { chicagoTodayIso, type DateWindow } from "@/lib/filters/range";
@@ -36,8 +40,11 @@ import { cn } from "@/lib/utils";
 const PT = LABOR_CHART_COLORS.parttimeActual;
 const FT = LABOR_CHART_COLORS.fulltimeActual;
 const SCHED = LABOR_CHART_COLORS.parttimeScheduled;
+const OPEN = LABOR_CHART_COLORS.openShift;
+const OPEN_HATCH = `repeating-linear-gradient(-45deg, ${OPEN}40, ${OPEN}40 2px, transparent 2px, transparent 4px)`;
 
 const GUTTER = "w-[7rem] sm:w-32";
+const NO_OPEN: OpenShiftInput[] = [];
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {
   const [y, m, d] = iso.split("-").map(Number);
@@ -48,7 +55,8 @@ function chipLabel(iso: string): { weekday: string; monthDay: string } {
   };
 }
 
-function barColor(bucket: string, kind: "actual" | "scheduled"): string {
+function barColor(bucket: string, kind: CoverageKind): string {
+  if (kind === "open") return OPEN;
   if (kind === "scheduled") return SCHED;
   return bucket === "fulltime" ? FT : PT;
 }
@@ -141,6 +149,14 @@ function DayStrip({
               >
                 {chip.headcount} {suffix}
               </Badge>
+              {chip.open > 0 ? (
+                <span
+                  className="mt-0.5 text-[10px] font-medium leading-none"
+                  style={{ color: OPEN }}
+                >
+                  +{chip.open} open
+                </span>
+              ) : null}
             </button>
           );
         })}
@@ -163,7 +179,7 @@ function CoverageRibbonBars({
   axisStart: number;
   axisEnd: number;
 }) {
-  const maxH = Math.max(1, ...points.map((p) => Math.max(p.actual, p.scheduled)));
+  const maxH = Math.max(1, ...points.map((p) => Math.max(p.actual, p.scheduled) + p.open));
   const span = axisEnd - axisStart;
   const bucketPct = (15 / span) * 100;
   // Thin stems (~30% of bucket, capped) so height reads clearly without a brick wall.
@@ -176,12 +192,19 @@ function CoverageRibbonBars({
         const left = bucketLeft + (bucketPct - barPct) / 2;
         const aH = (p.actual / maxH) * 100;
         const sH = (p.scheduled / maxH) * 100;
+        const oH = (p.open / maxH) * 100;
         return (
           <div
             key={p.min}
             className="absolute bottom-0 flex flex-col justify-end gap-px"
             style={{ left: `${left}%`, width: `${barPct}%`, height: "100%" }}
           >
+            {p.open > 0 ? (
+              <div
+                className="mx-auto w-full max-w-[2.5px] rounded-[1px] border border-dashed"
+                style={{ height: `${oH}%`, borderColor: OPEN, background: OPEN_HATCH }}
+              />
+            ) : null}
             {p.scheduled > 0 ? (
               <div
                 className="mx-auto w-full max-w-[2.5px] rounded-[1px] opacity-80"
@@ -246,6 +269,23 @@ function PersonLaneTrack({
         const width = segmentWidthPct(seg, axisStart, axisSpan);
         const color = barColor(person.labor_bucket, seg.kind);
         const isSched = seg.kind === "scheduled";
+        if (seg.kind === "open") {
+          return (
+            <div
+              key={`open-${seg.startMin}-${i}`}
+              className="absolute inset-y-1.5 flex items-center justify-center overflow-hidden rounded-sm border border-dashed text-[10px] font-semibold"
+              style={{
+                left: `${left}%`,
+                width: `${Math.max(width, 0.8)}%`,
+                borderColor: OPEN,
+                color: OPEN,
+                background: OPEN_HATCH,
+              }}
+            >
+              {width > 8 ? `${seg.hours}h` : null}
+            </div>
+          );
+        }
         return (
           <div
             key={`${seg.kind}-${seg.startMin}-${i}`}
@@ -278,6 +318,7 @@ function CoverageTimeline({
   axisEnd,
   scheduled,
   activeDay,
+  todayIso,
 }: {
   people: CoveragePersonDay[];
   points: OccupancyPoint[];
@@ -285,6 +326,7 @@ function CoverageTimeline({
   axisEnd: number;
   scheduled: ScheduledShiftInput[];
   activeDay: string;
+  todayIso: string;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ minute: number; pct: number } | null>(null);
@@ -309,10 +351,12 @@ function CoverageTimeline({
     ? (points.find((p) => p.min === hover.minute) ?? {
         actual: 0,
         scheduled: 0,
+        open: 0,
         min: hover.minute,
       })
     : null;
   const shownCount = occ ? (occ.actual > 0 ? occ.actual : occ.scheduled) : 0;
+  const openCount = occ?.open ?? 0;
 
   const crosshair = hover ? (
     <div
@@ -338,6 +382,9 @@ function CoverageTimeline({
       >
         <p className="mb-1.5 font-medium">
           {formatClockMin(hover.minute)} · {shownCount} on floor
+          {openCount > 0 ? (
+            <span style={{ color: OPEN }}> · {openCount} open</span>
+          ) : null}
         </p>
         {active.length ? (
           <ul className="flex max-h-56 flex-col gap-1 overflow-y-auto">
@@ -348,13 +395,22 @@ function CoverageTimeline({
               >
                 <span className="flex min-w-0 items-center gap-1.5">
                   <span
-                    className="mt-0.5 inline-block size-2.5 shrink-0 rounded-sm"
-                    style={{
-                      backgroundColor: barColor(p.labor_bucket, p.kind),
-                      opacity: p.kind === "scheduled" ? 0.7 : 1,
-                    }}
+                    className={cn(
+                      "mt-0.5 inline-block size-2.5 shrink-0 rounded-sm",
+                      p.kind === "open" && "border border-dashed",
+                    )}
+                    style={
+                      p.kind === "open"
+                        ? { borderColor: OPEN, background: OPEN_HATCH }
+                        : {
+                            backgroundColor: barColor(p.labor_bucket, p.kind),
+                            opacity: p.kind === "scheduled" ? 0.7 : 1,
+                          }
+                    }
                   />
-                  <span className="truncate">{p.employee}</span>
+                  <span className={cn("truncate", p.kind === "open" && "italic")}>
+                    {p.kind === "open" ? "Open (unassigned)" : p.employee}
+                  </span>
                 </span>
                 <span className="shrink-0 tabular-nums text-muted-foreground">
                   {formatClockMin(p.startMin)}–{formatClockMin(p.endMin)}
@@ -404,14 +460,20 @@ function CoverageTimeline({
         {people.length ? (
           people.map((p) => {
             const totalHrs = p.segments.reduce((sum, s) => sum + s.hours, 0);
+            const open = isOpenLane(p);
             return (
               <div key={p.employee} className="flex items-center gap-2">
                 <div className={cn(GUTTER, "shrink-0 truncate")}>
-                  <span className="block truncate text-xs font-medium" title={p.employee}>
+                  <span
+                    className={cn("block truncate text-xs font-medium", open && "italic")}
+                    style={open ? { color: OPEN } : undefined}
+                    title={p.employee}
+                  >
                     {p.employee}
                   </span>
                   <span className="text-[10px] text-muted-foreground">
                     {totalHrs.toFixed(1)}h
+                    {open ? (activeDay < todayIso ? " · unfilled" : " · unassigned") : ""}
                   </span>
                 </div>
                 <div className="relative min-w-0 flex-1 cursor-crosshair">
@@ -453,12 +515,15 @@ export function LaborCoveragePanel({
   win,
   actuals,
   scheduled,
+  open = NO_OPEN,
   laborTypes,
   todayIso = chicagoTodayIso(),
 }: {
   win: DateWindow;
   actuals: ActualShiftInput[];
   scheduled: ScheduledShiftInput[];
+  /** ADP open (unassigned) slots — shown on past days too, as unfilled gaps. */
+  open?: OpenShiftInput[];
   laborTypes: string[] | null;
   todayIso?: string;
 }) {
@@ -483,25 +548,25 @@ export function LaborCoveragePanel({
     [actuals, scheduled, todayIso],
   );
 
+  // Open lanes lead so unfilled capacity is the first thing read for a day.
+  const lanesFor = useCallback(
+    (iso: string) => [
+      ...buildOpenLanesForDate(iso, open),
+      ...buildPersonDaysForDate(iso, actuals, scheduledForCoverage, laborTypes),
+    ],
+    [open, actuals, scheduledForCoverage, laborTypes],
+  );
+
   const chips = useMemo(
-    () =>
-      strip.map((iso) =>
-        dayChipSummary(
-          iso,
-          buildPersonDaysForDate(iso, actuals, scheduledForCoverage, laborTypes),
-        ),
-      ),
-    [strip, actuals, scheduledForCoverage, laborTypes],
+    () => strip.map((iso) => dayChipSummary(iso, lanesFor(iso))),
+    [strip, lanesFor],
   );
 
   const activeDay = day ?? initial;
 
   const people = useMemo(
-    () =>
-      activeDay
-        ? buildPersonDaysForDate(activeDay, actuals, scheduledForCoverage, laborTypes)
-        : [],
-    [activeDay, actuals, scheduledForCoverage, laborTypes],
+    () => (activeDay ? lanesFor(activeDay) : []),
+    [activeDay, lanesFor],
   );
 
   const bounds = useMemo(() => axisBounds(people), [people]);
@@ -510,6 +575,14 @@ export function LaborCoveragePanel({
     [people, bounds.startMin, bounds.endMin],
   );
   const narrative = useMemo(() => coverageNarrative(points), [points]);
+  const openSummary = useMemo(() => {
+    const segs = people.filter(isOpenLane).flatMap((p) => p.segments);
+    if (!segs.length || !activeDay) return null;
+    const hrs = segs.reduce((sum, s) => sum + s.hours, 0);
+    const noun = segs.length === 1 ? "open shift" : "open shifts";
+    const state = activeDay < todayIso ? "went unfilled" : "unassigned";
+    return `${segs.length} ${noun} (${Number(hrs.toFixed(1))}h) ${state}`;
+  }, [people, activeDay, todayIso]);
 
   if (!activeDay) return null;
 
@@ -526,7 +599,8 @@ export function LaborCoveragePanel({
           ADP schedule — same horizon as the charts above). Scheduled swimlanes always
           render when ADP has shifts in that window — Aggregation does not filter them.
           Scroll for more days; chips update this panel in place. Hover the timeline for
-          headcount + who is on (start–end). Solid = clocked; slate hatch = scheduled.
+          headcount + who is on (start–end). Solid = clocked; slate hatch = scheduled;
+          violet dashed = open (unassigned) ADP shift — on past days, a slot nobody filled.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
@@ -544,7 +618,12 @@ export function LaborCoveragePanel({
           <h3 className="text-sm font-medium text-foreground">
             Coverage — {label.weekday} {label.monthDay}
           </h3>
-          <p className="text-sm text-muted-foreground">{narrative}</p>
+          <p className="text-sm text-muted-foreground">
+            {narrative}
+            {openSummary ? (
+              <span style={{ color: OPEN }}> · {openSummary}</span>
+            ) : null}
+          </p>
         </div>
 
         <CoverageTimeline
@@ -554,6 +633,7 @@ export function LaborCoveragePanel({
           axisEnd={bounds.endMin}
           scheduled={scheduledForCoverage}
           activeDay={activeDay}
+          todayIso={todayIso}
         />
 
         <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
@@ -571,6 +651,13 @@ export function LaborCoveragePanel({
               style={{ borderColor: SCHED }}
             />
             Scheduled
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-block size-2.5 rounded-sm border border-dashed"
+              style={{ borderColor: OPEN, background: OPEN_HATCH }}
+            />
+            Open (unassigned)
           </span>
         </div>
       </CardContent>

@@ -47,9 +47,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from skills._browser_runtime.runtime import (
     DOWNLOADS_DIR,
+    attach_cdp,
     download_to,
     is_fresh_download,
     launch_persistent,
+    on_cloud_run,
 )
 from skills.credentials import registry as cred_registry
 
@@ -1794,13 +1796,71 @@ def _scrape_one_week(page, frame) -> dict:
         f"[adp_schedule] employee_rows={len(emp.get('employees') or [])} "
         f"headers={emp.get('headers')}"
     )
-    return {
+    payload = {
         "week_label": week_label.strip(),
         "days": ext.get("days") or [],
         "grand": ext.get("grand"),
         "employee_rows": emp.get("employees") or [],
         "day_headers": emp.get("headers") or [],
     }
+    payload.update(_scrape_open_shifts(page, frame, week_label=week_label.strip()))
+    return payload
+
+
+def _scrape_open_shifts(page, frame, *, week_label: str) -> dict:
+    """Open each day's open-shift pane, read its shifts, close it (Issue #342).
+
+    Read-only: only the day cell (opens the details pane) and the pane's Back
+    button are clicked. Never raises — the assigned-shift scrape must survive a
+    drifted open-shift selector; the error is returned so the loader leaves the
+    week's existing open-shift rows untouched.
+    """
+    from skills.adp_run_automation import schedule_backend as sb
+
+    try:
+        info = frame.evaluate(sb.OPEN_SHIFT_CELLS_JS)
+        cells_out: list[dict] = []
+        prev_heading = None
+        for cell in info.get("cells") or []:
+            frame.locator(".open-shift-count").nth(int(cell["index"])).click(timeout=8_000)
+            pane = {"heading": None, "shifts": []}
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                page.wait_for_timeout(300)
+                pane = frame.evaluate(sb.OPEN_SHIFT_PANE_JS)
+                if pane.get("heading") and pane.get("heading") != prev_heading and pane.get("shifts"):
+                    break
+            if not pane.get("heading") or pane.get("heading") == prev_heading:
+                raise RuntimeError(
+                    f"open-shift pane did not open for cell {cell.get('summary')!r}"
+                )
+            prev_heading = pane["heading"]
+            cells_out.append({
+                "header_index": cell.get("header_index"),
+                "summary": cell.get("summary"),
+                "heading": pane["heading"],
+                "shifts": pane.get("shifts") or [],
+            })
+            frame.locator("sdf-focus-pane").get_by_role("button", name="Back").first.click(
+                timeout=5_000
+            )
+            page.wait_for_timeout(800)
+        n = sum(len(c["shifts"]) for c in cells_out)
+        print(
+            f"[adp_schedule] open_shifts={n} days={len(cells_out)} "
+            f"label={info.get('row_label')!r} week={week_label!r}"
+        )
+        return {"open_row_label": info.get("row_label"), "open_shift_cells": cells_out}
+    except Exception as exc:  # noqa: BLE001 — additive channel
+        print(
+            f"[adp_schedule] WARN: open-shift extract failed week={week_label!r}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        try:
+            page.keyboard.press("Escape")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"open_shifts_error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
 def _goto_next_week(page, frame) -> None:
@@ -2067,6 +2127,40 @@ def _persist_adp_session(ctx, *, store: str) -> None:
 
 
 @contextlib.contextmanager
+def _attached_adp_session(cdp_url: str, *, store: str):
+    """Laptop-only: run inside a long-lived signed-in Chrome (``BHAGA_ADP_CDP_URL``).
+
+    Every fresh launch re-authenticates because SMSESSION is a session cookie,
+    and ADP's risk engine then sends a code: 4 codes in one hour on 2026-09-25.
+    Attaching to one Chrome started with ``--remote-debugging-port`` (see
+    RUNBOOK) reuses that browser's login until ADP expires the idle session.
+    The run drives the browser's one tab (RUN's single-tab guard): reloading
+    its dashboard proves the session is live; only a bounce means logging in.
+    """
+    with attach_cdp(cdp_url) as (ctx, page):
+        if POST_LOGIN_URL_RE.search(page.url):
+            page.goto(page.url.split("#")[0], wait_until="domcontentloaded", timeout=60_000)
+            try:
+                page.wait_for_url(POST_LOGIN_URL_RE, timeout=15_000)
+            except Exception:  # noqa: BLE001 — session aged out; log in below
+                pass
+        if POST_LOGIN_URL_RE.search(page.url):
+            print(f"[adp_login] reusing signed-in browser session url={page.url}")
+        else:
+            _ensure_logged_in(page, store=store)
+            _persist_adp_session(ctx, store=store)
+        home = page.url.split("#")[0]
+        try:
+            yield ctx, page
+        finally:
+            # Park on the dashboard so the next run's reload check recognises it.
+            try:
+                page.goto(home, wait_until="domcontentloaded", timeout=30_000)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+@contextlib.contextmanager
 def adp_session(
     *,
     store: str,
@@ -2093,6 +2187,11 @@ def adp_session(
     the live flow 2026-09-15). So a burst of runs costs one code instead of N, but
     a run after ADP's idle window will still be challenged.
     """
+    cdp_url = os.environ.get("BHAGA_ADP_CDP_URL", "").strip()
+    if cdp_url and not on_cloud_run():
+        with _attached_adp_session(cdp_url, store=store) as (ctx, page):
+            yield ctx, page
+        return
     with launch_persistent(
         portal="adp",
         headed=headed,
@@ -2111,6 +2210,7 @@ def download_adp_bundle(
     target_date: Optional[datetime.date] = None,
     include_earnings: bool = True,
     include_schedule: bool = True,
+    include_extras: bool = True,
     schedule_weeks: int = None,
     earnings_window_days: int = 90,
     earnings_start: Optional[datetime.date] = None,
@@ -2153,6 +2253,8 @@ def download_adp_bundle(
             Passed through to `_timecard_within_session`. None = backfill.
         include_earnings: if False, only Timecard runs (orchestrator sets
             this off Mon/Tue per `_should_run_rates`).
+        include_extras: if False, skip the Payroll Liability report and the
+            pay_info wage-rate refresh (console "Sync clocked hours").
         earnings_window_days: how far back the earnings scrape's "From"
             date should go (default 90). Nightly always uses custom range.
         earnings_start: explicit window start for historical backfill.
@@ -2375,6 +2477,9 @@ def download_adp_bundle(
                     )
                 except Exception:  # noqa: BLE001
                     pass
+
+        if not include_extras:
+            return result
 
         # Employer burden (Payroll Liability) — best-effort, non-fatal.
         try:

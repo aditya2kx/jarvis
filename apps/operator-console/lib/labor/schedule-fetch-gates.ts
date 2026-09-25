@@ -12,6 +12,18 @@ export function showChartSchedule(opts: {
   return opts.includesToday && opts.hasSchedWin && opts.grain !== "hour";
 }
 
+/**
+ * Open-shift stack on the Hours chart (Issue #342): follows the schedule stack,
+ * and also skips Weekday, where one open slot would be blended across weeks.
+ */
+export function showChartOpenShifts(opts: {
+  includesToday: boolean;
+  hasSchedWin: boolean;
+  grain: string;
+}): boolean {
+  return showChartSchedule(opts) && opts.grain !== "weekday";
+}
+
 /** Staffing coverage: any Aggregation; any Period with a non-null schedule window. */
 export function showCoverageSchedule(opts: { hasSchedWin: boolean }): boolean {
   return opts.hasSchedWin;

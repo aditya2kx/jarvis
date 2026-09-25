@@ -314,6 +314,43 @@ def launch_persistent(
         pw.stop()
 
 
+def on_cloud_run() -> bool:
+    return bool(os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"))
+
+
+@contextlib.contextmanager
+def attach_cdp(cdp_url: str) -> Iterator[tuple[BrowserContext, Page]]:
+    """Attach to an already-running Chrome over CDP; yield its single tab.
+
+    The browser, the tab and its in-memory session cookies all survive the
+    with-block. This is what lets a burst of laptop runs share ONE portal login
+    (ADP's SMSESSION is a session cookie, so every relaunch re-authenticates and
+    risks a 2FA SMS). Exactly one tab: ADP RUN allows one signed-in tab per
+    session and parks any other on ``/apps/run/multitabmessage``.
+    """
+    pw = sync_playwright().start()
+    try:
+        browser = pw.chromium.connect_over_cdp(cdp_url)
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        pages = list(context.pages)
+        page = pages[0] if pages else context.new_page()
+        for extra in pages[1:]:
+            extra.close()
+        # Same CT pin as launched contexts (module docstring, 2026-05-22 incident):
+        # an attached browser otherwise runs in the laptop's zone.
+        context.new_cdp_session(page).send(
+            "Emulation.setTimezoneOverride", {"timezoneId": "America/Chicago"}
+        )
+        print(f"[runtime] attached to running browser at {cdp_url}", file=sys.stderr)
+        try:
+            yield context, page
+        except Exception:
+            _capture_failure_evidence(page, portal="cdp")
+            raise
+    finally:
+        pw.stop()
+
+
 def _portal_profile_dir(portal: str) -> "pathlib.Path | None":
     """Stable Chromium profile for ``portal``, or None to stay ephemeral.
 

@@ -26,7 +26,7 @@ function clampTargetDate(targetDate: string): string {
 }
 
 /**
- * Local console (BYPASS_IAP): Timecard-only refresh from this worktree.
+ * Local console (BYPASS_IAP): Timecard + Team Schedule refresh from this worktree.
  * Detached — caller polls scraped_at. Does not scrape pay_info.
  */
 export function startLocalAdpTimecardSync(store: string, targetDate: string): void {

@@ -1526,8 +1526,42 @@ If Timecard **Select All** (or a closed period) loads with **zero** `adp_shifts`
 `refresh_date`, `clear_adp_reports_if_shifts_missing` **clears** Firestore `adp_reports`
 (`BREADCRUMB adp_shifts_missing_refresh_date`) so the next run retries ADP instead of skipping. Operator Console Labor overlays Team Schedule
 on past days only when that date has no punches. **Sync clocked hours** (Labor + Payroll) re-scrapes
-Timecard only (`BHAGA_ADP_TIMECARD_ONLY=1`; skips pay_info / token hourlies) for yesterday, a past
-coverage chip, or a closed pay-period end — same OTP path as nightly.
+Timecard plus Team Schedule in one login (`BHAGA_ADP_TIMECARD_ONLY=1` → `download_adp_bundle(
+include_earnings=False, include_extras=False)`; skips pay_info / token hourlies / Payroll Liability)
+for yesterday, a past coverage chip, or a closed pay-period end — same OTP path as nightly. A Team
+Schedule failure there only logs `WARN: schedule refresh failed` and still loads clocked hours; a
+Timecard failure fails the sync.
+
+**ADP open shifts (Issue #342).** The Team Schedule's first row, "Open Shifts N Shifts, HH:MM HRS",
+holds unassigned slots; the grid shows only a per-day count, so `runner._scrape_open_shifts` clicks
+each `.open-shift-count` cell, reads the `sdf-focus-pane` ("Open Shifts on Saturday, Oct 03": one
+`sdf-quick-stat` per slot — time range + paid hours), and clicks **Back**. Read-only: it never
+touches Create / Claim / Publish. Rows land in `bhaga.adp_open_shifts` (migration 073; one row per
+`(date, slot_index)`), purged per scraped `week_start` so a slot filled in ADP disappears on the next
+scrape; a week whose extract failed (`open_shifts_error` in the Schedule JSON) keeps its old rows.
+ADP footer totals exclude open shifts, so they never double-count `adp_scheduled_daily`. Refreshed by
+the nightly (bundle), **Sync scheduled shifts**, and **Sync clocked hours**. Load failures surface as
+an isolated `adp_schedule` PARTIAL (`BREADCRUMB raw_load_failed source=adp_schedule`). Reconcile
+warnings (`adp_open_shifts reconcile week_start=…`) mean the parsed slots disagree with the row label.
+Check: `bq query 'SELECT * FROM bhaga.adp_open_shifts ORDER BY date, slot_index'`.
+
+**ADP local attach — one OTP per live ADP session (Issue #342).** Every fresh browser process is a new
+ADP login (`SMSESSION` is a session cookie), and ADP's risk engine texts a code for most of them. For
+laptop ADP work (spikes, backfills, localhost console syncs) start one Chrome on the ADP profile and
+attach to it:
+
+```bash
+open -na "Google Chrome" --args --user-data-dir="$HOME/.bhaga/browser-profiles/adp" \
+  --remote-debugging-port=9333 --no-first-run https://runpayroll.adp.com
+export BHAGA_ADP_CDP_URL=http://127.0.0.1:9333   # every runner entry point now attaches
+BHAGA_ADP_SCHEDULE_ONLY=1 python3 -m agents.bhaga.scripts.daily_refresh --store palmetto
+```
+
+The first attached run logs in (one Slack OTP ask); later runs reload the same tab's dashboard and
+reuse the session with no code until ADP idles it out. Runs drive the browser's single tab and close
+any others, because RUN allows one signed-in tab and parks extras on `/apps/run/multitabmessage`, so
+don't open a second ADP tab in that window. Leave the window open; quitting Chrome ends the session.
+`BHAGA_ADP_CDP_URL` is ignored on Cloud Run.
 
 **Post-login maintenance interstitial (RUN maintenance window) + smart retry.** ADP also serves
 a maintenance/throttle interstitial **after** a valid login during scheduled RUN maintenance.

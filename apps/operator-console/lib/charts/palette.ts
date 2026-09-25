@@ -45,6 +45,11 @@ export const LABOR_CHART_COLORS = {
   fulltimeScheduled: "#94a3b8", // slate-400
   /** Goal reference line — gold, not red (PT bars already use rose). */
   goalLine: "#eab308", // yellow-500
+  /** ADP open (unassigned) shifts — hatched, never solid, so unfilled ≠ booked. */
+  openShift: "#8b5cf6", // violet-500
+  /** CSS swatch for tooltips/legends outside the chart SVG. */
+  openShiftSwatch:
+    "repeating-linear-gradient(135deg, #8b5cf6 0 2px, rgba(139,92,246,0.25) 2px 4px)",
 } as const;
 
 export function expenseCategoryColor(index: number, isOther = false): string {

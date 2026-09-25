@@ -1,0 +1,42 @@
+{
+  "_note": "Open Shifts row + focus-pane text captured live from Palmetto ADP Team Schedule on 2026-09-25 (Issue #342 spike). Shape = runner._scrape_open_shifts payload.",
+  "weeks": [
+    {
+      "week_label": "Week of Sep 21, 2026 - Sep 27, 2026",
+      "open_row_label": "Open Shifts 1 Shifts, 6:00 HRS",
+      "open_shift_cells": [
+        {"index": 0, "header_index": 6, "summary": "1",
+         "heading": "Open Shifts on Sunday, Sep 27",
+         "shifts": [{"range": "10:00 AM - 4:00 PM", "hours_text": "06:00 hours"}]}
+      ]
+    },
+    {
+      "week_label": "Week of Sep 28, 2026 - Oct 4, 2026",
+      "open_row_label": "Open Shifts 7 Shifts, 45:30 HRS",
+      "open_shift_cells": [
+        {"index": 0, "header_index": 1, "summary": "1",
+         "heading": "Open Shifts on Tuesday, Sep 29",
+         "shifts": [{"range": "9:00 AM - 4:00 PM", "hours_text": "07:00 hours"}]},
+        {"index": 1, "header_index": 3, "summary": "1",
+         "heading": "Open Shifts on Thursday, Oct 01",
+         "shifts": [{"range": "1:30 PM - 8:30 PM", "hours_text": "07:00 hours"}]},
+        {"index": 2, "header_index": 4, "summary": "1",
+         "heading": "Open Shifts on Friday, Oct 02",
+         "shifts": [{"range": "3:00 PM - 8:30 PM", "hours_text": "05:30 hours"}]},
+        {"index": 3, "header_index": 5, "summary": "2",
+         "heading": "Open Shifts on Saturday, Oct 03",
+         "shifts": [{"range": "10:00 AM - 4:00 PM", "hours_text": "06:00 hours"},
+                    {"range": "1:30 PM - 8:30 PM", "hours_text": "07:00 hours"}]},
+        {"index": 4, "header_index": 6, "summary": "2",
+         "heading": "Open Shifts on Sunday, Oct 04",
+         "shifts": [{"range": "10:00 AM - 4:00 PM", "hours_text": "06:00 hours"},
+                    {"range": "1:30 PM - 8:30 PM", "hours_text": "07:00 hours"}]}
+      ]
+    },
+    {
+      "week_label": "Week of Oct 5, 2026 - Oct 11, 2026",
+      "open_row_label": null,
+      "open_shift_cells": []
+    }
+  ]
+}

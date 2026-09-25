@@ -574,3 +574,60 @@ def test_a_busy_profile_still_yields_a_working_session(monkeypatch, tmp_path):
         assert ctx is not None and page is not None
 
     assert chromium.profile_dirs == [], "must not have touched the busy profile"
+
+
+# --- attach_cdp (Issue #342) ----------------------------------------------
+
+
+class _CdpPage:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _CdpContext:
+    def __init__(self, pages: list) -> None:
+        self.pages = pages
+        self.created: list = []
+
+    def new_page(self):
+        page = _CdpPage("new")
+        self.created.append(page)
+        return page
+
+    def new_cdp_session(self, _page):
+        class _S:
+            def send(self, *_a, **_k):
+                return None
+        return _S()
+
+
+def _install_cdp(monkeypatch, ctx: _CdpContext) -> None:
+    browser = type("B", (), {"contexts": [ctx]})()
+    chromium = type("C", (), {"connect_over_cdp": lambda self, url: browser})()
+    driver = type("D", (), {"chromium": chromium, "stop": lambda self: None})()
+    monkeypatch.setattr(
+        runtime, "sync_playwright", lambda: type("F", (), {"start": lambda self: driver})()
+    )
+
+
+def test_attach_cdp_drives_the_one_existing_tab_and_keeps_it(monkeypatch):
+    """ADP RUN parks a second tab on /multitabmessage: reuse tab 1, close strays."""
+    keep, stray = _CdpPage("keep"), _CdpPage("stray")
+    ctx = _CdpContext([keep, stray])
+    _install_cdp(monkeypatch, ctx)
+    with runtime.attach_cdp("http://127.0.0.1:9333") as (_c, page):
+        assert page is keep
+    assert stray.closed and not keep.closed
+    assert ctx.created == []
+
+
+def test_attach_cdp_opens_a_tab_only_when_none_exist(monkeypatch):
+    ctx = _CdpContext([])
+    _install_cdp(monkeypatch, ctx)
+    with runtime.attach_cdp("http://127.0.0.1:9333") as (_c, page):
+        assert page is ctx.created[0]
+    assert not page.closed

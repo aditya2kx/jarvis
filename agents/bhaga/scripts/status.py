@@ -142,6 +142,10 @@ BQ_TARGETS: list[Target] = [
     # republishes those same two views — no new target: the freshness signal is
     # still the table's `date`, and remote hours are only ever written by the
     # same nightly walk. Registering the views would double-count one signal.
+    # migration 073 (Issue #342): adp_open_shifts holds only unassigned slots, so
+    # "empty" is the healthy state whenever every shift is filled — a freshness
+    # target would false-alarm. Its scrape rides adp_scheduled_shifts (same JSON,
+    # same load), which is the freshness signal. Intentionally NOT a BQ_TARGETS entry.
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —
     # intentionally NOT a BQ_TARGETS entry (same class as store_config /

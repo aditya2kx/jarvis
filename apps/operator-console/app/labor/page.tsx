@@ -7,6 +7,8 @@ import {
   laborByGrain,
   laborConcurrentByGrain,
   laborHoursPerPersonDaily,
+  laborOpenShiftDays,
+  laborOpenShiftHoursByGrain,
   laborScheduledHoursByGrain,
   laborScheduledShiftDays,
   laborSoloHoursPerPerson,
@@ -70,6 +72,7 @@ import {
   rollConcurrentToGrain,
 } from "@/lib/labor/schedule-aggregate";
 import {
+  showChartOpenShifts,
   showChartSchedule,
   showCoverageSchedule,
 } from "@/lib/labor/schedule-fetch-gates";
@@ -86,6 +89,8 @@ import type {
   LaborActualShiftDayRow,
   LaborConcurrentRow,
   LaborDailyRow,
+  LaborOpenShiftDayRow,
+  LaborOpenShiftHoursRow,
   LaborScheduledHoursRow,
   LaborScheduledShiftDayRow,
   LaborSoloHoursRow,
@@ -164,6 +169,8 @@ export default async function LaborPage({
   let coverageActuals: LaborActualShiftDayRow[] = [];
   let coverageScheduled: LaborScheduledShiftDayRow[] = [];
   let soloRows: LaborSoloHoursRow[] = [];
+  let openHoursRows: LaborOpenShiftHoursRow[] = [];
+  let coverageOpen: LaborOpenShiftDayRow[] = [];
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
@@ -193,6 +200,13 @@ export default async function LaborPage({
     const coverageSchedule = showCoverageSchedule({
       hasSchedWin: schedWin != null,
     });
+    // Open shifts (#342): chart = upcoming only (schedWin); coverage = whole strip,
+    // so a past slot nobody filled still shows as a gap.
+    const chartOpen = showChartOpenShifts({
+      includesToday,
+      hasSchedWin: schedWin != null,
+      grain,
+    });
 
     const [
       labor,
@@ -206,6 +220,8 @@ export default async function LaborPage({
       hoursScraped,
       actualShiftDays,
       solo,
+      openHours,
+      openDays,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -238,8 +254,14 @@ export default async function LaborPage({
       punchWin
         ? laborSoloHoursPerPerson(punchWin).catch(() => [])
         : Promise.resolve([]),
+      chartOpen && schedWin
+        ? laborOpenShiftHoursByGrain(schedWin, grain).catch(() => [])
+        : Promise.resolve([]),
+      laborOpenShiftDays(chartWin).catch(() => []),
     ]);
     soloRows = solo;
+    openHoursRows = openHours;
+    coverageOpen = openDays;
     rows = labor;
     concurrentRows = concurrent;
     scheduledHoursRows = schedHours;
@@ -296,6 +318,16 @@ export default async function LaborPage({
     }),
   );
 
+  const openByBucket = new Map(
+    openHoursRows.map((r) => [
+      isoKey(r.date),
+      {
+        open_hours: r.open_hours != null ? Number(Number(r.open_hours).toFixed(1)) : null,
+        open_slots: r.open_slots != null ? Number(r.open_slots) : null,
+      },
+    ] as const),
+  );
+
   const concurrentActualByBucket = new Map(
     concurrentRows.map((r) => {
       const iso = isoKey(r.date);
@@ -325,9 +357,12 @@ export default async function LaborPage({
   const chartData = bucketIsos.map((iso) => {
     const a = actualByBucket.get(iso);
     const s = schedHoursByBucket.get(iso);
+    const o = openByBucket.get(iso);
     return {
       date: formatBucket(iso, grain, grain === "day" ? { weekday: true } : undefined),
       bucket_iso: iso,
+      open_hours: o?.open_hours ?? null,
+      open_slots: o?.open_slots ?? null,
       total_hours: a?.total_hours ?? null,
       parttime_hours: a?.parttime_hours ?? null,
       fulltime_hours: a?.fulltime_hours ?? null,
@@ -588,7 +623,12 @@ export default async function LaborPage({
           on the hours / concurrent charts only for days after that, through the latest
           ADP scheduled dates when the Period includes today (not only through Period
           end) — so a day never shows both, and once the evening ingest lands the day
-          switches from schedule to what was actually worked. Hover
+          switches from schedule to what was actually worked.{" "}
+          <span className="font-medium text-foreground">Open (unassigned)</span> ADP
+          shifts stack on top in violet hatch on the Hours chart for those same upcoming
+          days (not on Hour of day or Weekday); hover shows the Total if filled, which
+          is what the weekly Goal compares against. Staffing coverage also keeps past
+          open slots as unfilled gaps. Hover
           also shows{" "}
           <span className="font-medium text-foreground">Total (combined)</span> vs
           weekly Goal.{" "}
@@ -618,7 +658,8 @@ export default async function LaborPage({
           <span className="font-medium text-foreground">Sync scheduled shifts</span> after
           editing the ADP schedule, and{" "}
           <span className="font-medium text-foreground">Sync clocked hours</span> after
-          punch-out fixes (Timecard only — does not re-scrape pay rates). Status under
+          punch-out fixes (Timecard plus Team Schedule, so open shifts refresh too — does
+          not re-scrape pay rates). Status under
           each button shows starting / syncing / done / error without blocking the rest
           of the page. Hover a sync button when idle for last-synced time. Paid PTO is included in
           scheduled hours by default (matches ADP); use the PTO filter to exclude it.
@@ -656,6 +697,7 @@ export default async function LaborPage({
             win={chartWin}
             actuals={coverageActuals}
             scheduled={coverageScheduled}
+            open={coverageOpen}
             laborTypes={laborTypes}
           />
 

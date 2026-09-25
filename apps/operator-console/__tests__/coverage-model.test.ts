@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   axisBounds,
+  buildOpenLanesForDate,
   buildPersonDaysForDate,
+  dayChipSummary,
   coverageNarrative,
   coverageStripDates,
   defaultCoverageDay,
@@ -227,5 +229,57 @@ describe("filterScheduledForCoverage", () => {
       "2026-08-25",
     );
     expect(out.map((s) => s.date)).toEqual(["2026-08-24", "2026-08-25"]);
+  });
+});
+
+describe("open shifts (Issue #342)", () => {
+  const open = [
+    { date: "2026-10-03", slot_index: 0, shift_range: "10:00 AM - 4:00 PM", scheduled_hours: 6 },
+    { date: "2026-10-03", slot_index: 1, shift_range: "1:30 PM - 8:30 PM", scheduled_hours: 7 },
+    { date: "2026-10-04", slot_index: 0, shift_range: "10:00 AM - 4:00 PM", scheduled_hours: 6 },
+  ];
+
+  it("packs overlapping slots into separate lanes, non-overlapping into one", () => {
+    const lanes = buildOpenLanesForDate("2026-10-03", open);
+    expect(lanes.map((l) => l.employee)).toEqual(["Open shift 1", "Open shift 2"]);
+    expect(lanes[0]!.segments[0]).toMatchObject({ kind: "open", startMin: 600, endMin: 960, hours: 6 });
+    const seq = buildOpenLanesForDate("2026-10-05", [
+      { date: "2026-10-05", slot_index: 0, shift_range: "9:00 AM - 1:00 PM", scheduled_hours: 4 },
+      { date: "2026-10-05", slot_index: 1, shift_range: "1:00 PM - 5:00 PM", scheduled_hours: 4 },
+    ]);
+    expect(seq).toHaveLength(1);
+    expect(seq[0]!.employee).toBe("Open shift");
+    expect(seq[0]!.segments).toHaveLength(2);
+  });
+
+  it("uses ADP paid hours and skips unparseable ranges", () => {
+    const lanes = buildOpenLanesForDate("2026-10-06", [
+      { date: "2026-10-06", slot_index: 0, shift_range: "9:00 AM - 4:00 PM", scheduled_hours: 6.5 },
+      { date: "2026-10-06", slot_index: 1, shift_range: null, scheduled_hours: 5 },
+    ]);
+    expect(lanes).toHaveLength(1);
+    expect(lanes[0]!.segments[0]!.hours).toBe(6.5);
+  });
+
+  it("chip headcount counts people only; open is its own count", () => {
+    const staff = buildPersonDaysForDate(
+      "2026-10-03",
+      [],
+      [{ date: "2026-10-03", employee: "Brooke", labor_bucket: "parttime",
+         scheduled_hours: 7, shift_ranges_json: '["1:30 PM - 8:30 PM"]' }],
+      null,
+    );
+    const chip = dayChipSummary("2026-10-03", [...buildOpenLanesForDate("2026-10-03", open), ...staff]);
+    expect(chip).toEqual({ date: "2026-10-03", headcount: 1, kind: "scheduled", open: 2 });
+    expect(dayChipSummary("2026-10-04", buildOpenLanesForDate("2026-10-04", open))).toEqual({
+      date: "2026-10-04", headcount: 0, kind: "empty", open: 1,
+    });
+  });
+
+  it("occupancy counts open slots apart from people on the floor", () => {
+    const lanes = buildOpenLanesForDate("2026-10-03", open);
+    const at2pm = occupancySeries(lanes, 600, 1260, 60).find((p) => p.min === 14 * 60);
+    expect(at2pm).toEqual({ min: 840, actual: 0, scheduled: 0, open: 2 });
+    expect(peopleActiveAt(lanes, 14 * 60).every((p) => p.kind === "open")).toBe(true);
   });
 });

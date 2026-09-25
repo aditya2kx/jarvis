@@ -202,6 +202,64 @@ describe("laborTooltipContent", () => {
   });
 });
 
+describe("laborTooltipContent — open shifts (Issue #342)", () => {
+  const upcoming = {
+    date: "Wk of Sep 28",
+    bucket_iso: "2026-09-28",
+    total_hours: null,
+    parttime_hours: null,
+    fulltime_hours: null,
+    labor_pct: null,
+    hourly_pct: null,
+    fulltime_pct: null,
+    net_sales: null,
+    parttime_scheduled_hours: 150,
+    fulltime_scheduled_hours: 40,
+    open_hours: 45.5,
+    open_slots: 7,
+  };
+
+  it("adds Open (unassigned) + Total if filled, and Goal compares total-if-filled", () => {
+    const tip = laborTooltipContent(upcoming, 230, "week", null);
+    expect(tip.entries.map((e) => e.label)).toEqual([
+      "Part-time (scheduled)",
+      "Full-time (scheduled)",
+      "Total (scheduled)",
+      "Open (unassigned)",
+      "Total if filled",
+    ]);
+    expect(tip.entries[3]?.value).toBe("45.5 · 7 shifts");
+    expect(tip.entries[4]?.value).toBe("235.5");
+    // 235.5 / 230 = 102.4% — the scheduled-only 190 would read 82.6%.
+    expect(tip.lines).toContain("Goal 230 hrs (102.4% of goal)");
+  });
+
+  it("totals actual + scheduled + open on a week that is part done", () => {
+    const tip = laborTooltipContent(
+      { ...upcoming, parttime_hours: 20, fulltime_hours: 8, total_hours: 28,
+        labor_pct: 0.3, hourly_pct: 0.2, fulltime_pct: 0.1, open_hours: 6, open_slots: 1 },
+      230,
+      "week",
+      null,
+    );
+    expect(tip.entries.find((e) => e.label === "Total (combined)")?.value).toBe("218");
+    expect(tip.entries.find((e) => e.label === "Total if filled")?.value).toBe("224");
+    expect(tip.entries.find((e) => e.label === "Open (unassigned)")?.value).toBe("6 · 1 shift");
+    expect(tip.lines[0]).toBe("Goal 230 hrs (97.4% of goal)");
+  });
+
+  it("shows open under a single labor-type filter (open has no PT/FT split)", () => {
+    const tip = laborTooltipContent(upcoming, undefined, "day", ["Part-time"]);
+    expect(tip.entries.find((e) => e.label === "Total if filled")?.value).toBe("195.5");
+  });
+
+  it("no open hours leaves the tooltip unchanged", () => {
+    const tip = laborTooltipContent({ ...upcoming, open_hours: null }, 230, "week", null);
+    expect(tip.entries.map((e) => e.label)).not.toContain("Total if filled");
+    expect(tip.lines).toContain("Goal 230 hrs (82.6% of goal)");
+  });
+});
+
 describe("GOAL_FIELDS labor hours", () => {
   it("includes weekly labor hours goal", () => {
     expect(GOAL_FIELDS.find((f) => f.key === "goal_labor_hours_week")?.kind).toBe("hours");

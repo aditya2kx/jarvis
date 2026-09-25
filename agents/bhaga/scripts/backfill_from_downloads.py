@@ -467,6 +467,45 @@ def main() -> int:
                 print(f"  adp_scheduled_shifts (BQ): {n} rows upserted")
                 summaries.append({"table": "adp_scheduled_shifts", "rows": n})
 
+            _load_adp_open_shifts(payload.get("weeks", []), scraped_at, now_utc)
+
+    def _load_adp_open_shifts(weeks: list, scraped_at, now_utc: str) -> None:
+        """Open (unassigned) slots — Issue #342. Purge scope is by scraped week."""
+        weeks_ok = schedule_backend.open_shift_weeks(weeks)
+        if not weeks_ok:
+            print("  adp_open_shifts: no week scraped open shifts — table untouched")
+            return
+        for warn in schedule_backend.reconcile_open_shifts(weeks):
+            print(f"  WARN: {warn}")
+        open_bq = [
+            {**r, "scraped_at_utc": scraped_at, "materialized_at_utc": now_utc}
+            for r in schedule_backend.build_open_shift_records(weeks)
+        ]
+        print(f"  parsed: {len(open_bq)} open slots across {len(weeks_ok)} weeks")
+        if args.dry_run:
+            print(f"  DRY: would replace adp_open_shifts for weeks {weeks_ok}")
+            return
+        from core.datastore import fq, get_client  # noqa: PLC0415
+        client = get_client()
+        if client is not None:
+            week_list = ", ".join(f"DATE '{w}'" for w in weeks_ok)
+            client.query(
+                f"DELETE FROM {fq('adp_open_shifts')} WHERE week_start IN ({week_list})"
+            ).result()
+            print(f"  purged adp_open_shifts for weeks {weeks_ok[0]}→{weeks_ok[-1]}")
+        n = 0
+        if open_bq:
+            n = load_rows(
+                "adp_open_shifts", open_bq,
+                merge_keys=["date", "slot_index"],
+                column_bq_types={
+                    "date": "DATE", "week_start": "DATE", "slot_index": "INT64",
+                    "scraped_at_utc": "TIMESTAMP", "materialized_at_utc": "TIMESTAMP",
+                },
+            )
+        print(f"  adp_open_shifts (BQ): {n} rows upserted")
+        summaries.append({"table": "adp_open_shifts", "rows": n})
+
     if "adp_schedule" not in args.skip:
         _isolated("adp_schedule", _load_adp_schedule)
 

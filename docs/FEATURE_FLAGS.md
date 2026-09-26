@@ -48,6 +48,13 @@ These are noted here so future reviewers understand the policy: flags gate **cut
 **Tip exemption windows (Issue #167 / migration 038):** additive `exempt_start`/`exempt_end` on
 `bhaga.training_shifts`. NULL/NULL keeps legacy whole-day exclusion — no pipeline env flag.
 
+**Effective-dated rates + admin-punch tips (Issue #343 / migrations 074–075):** N/A — no env flag.
+The history table is seeded from today's `adp_wage_rates`, so every employee without a recorded
+change prices bit-identically (prod parity: 0 rows differ on `vw_model_payroll_period` /
+`vw_labor_daily_live`). Admin-punch matching has a runtime kill switch instead of a flag:
+`store_config tip_exempt_punch_note_keywords = ""` disables it (the default `admin` applies when
+the row is absent).
+
 Migration 005 raw-parity tables, the 5-section Grafana dashboard redesign, and the **BQ-primary raw layer** (PR #33) fall into this category — all changes are additive and idempotent:
 
 ### BQ-primary raw layer (PR #33, 2026-06) — hard cutover, no flag

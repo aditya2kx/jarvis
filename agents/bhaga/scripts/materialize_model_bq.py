@@ -51,6 +51,7 @@ from agents.bhaga.scripts.update_model_sheet import (
     build_tip_alloc_period_rows,
     discover_periods,
     load_cc_tips_earnings_from_bq,
+    tip_exempt_windows_from_punches,
     _read_training_excluded_from_sheet,
     _read_training_shifts_from_sheet,
 )
@@ -334,6 +335,24 @@ def parse_remote_days(raw: str | None) -> frozenset[tuple[str, str]]:
         if date and employee:
             keys.add(remote_day_key(date, employee))
     return frozenset(keys)
+
+
+TIP_EXEMPT_NOTE_KEY = "tip_exempt_punch_note_keywords"
+TIP_EXEMPT_NOTE_DEFAULT = "admin"
+
+
+def load_tip_exempt_note_keywords(store: str) -> list[str]:
+    """Keywords that make an ADP punch tip-exempt when found in its note.
+
+    store_config ``tip_exempt_punch_note_keywords``: ';'-separated, any case.
+    Missing row → 'admin'; a row set to '' disables note matching.
+    """
+    from core.store_config import get_config  # noqa: PLC0415
+
+    raw = get_config(store, TIP_EXEMPT_NOTE_KEY)
+    if raw is None:
+        raw = TIP_EXEMPT_NOTE_DEFAULT
+    return [k.strip() for k in raw.split(";") if k.strip()]
 
 
 def load_solo_config(store: str) -> SoloConfig:
@@ -716,6 +735,17 @@ def materialize(
             )
     training_through = normalized_through
 
+    # ── Admin punches: paid, no tips (Issue #343) ───────────────────────────
+    note_keywords = load_tip_exempt_note_keywords(store)
+    punch_exempt_windows = tip_exempt_windows_from_punches(
+        [{**p, "employee_name": normalize_employee_name(p.get("employee_name") or "", aliases)}
+         for p in punches],
+        note_keywords,
+    )
+    for (emp, d), wins in sorted(punch_exempt_windows.items()):
+        print(f"[materialize] BREADCRUMB tip_exempt_punch employee={emp!r} date={d} "
+              f"windows={','.join(f'{a}-{b}' for a, b in wins)} keywords={note_keywords}")
+
     # ── Build all model tabs (same logic as update_model_sheet) ──────────────
     print("# Building model...")
     daily_rows, daily_summary = build_daily_rows(
@@ -724,6 +754,7 @@ def materialize(
         excluded=excluded,
         training_through=training_through,
         training_shifts=training_shifts,
+        punch_exempt_windows=punch_exempt_windows,
     )
     labor_daily_rows = build_labor_daily_rows(
         txns=txns,
@@ -757,6 +788,7 @@ def materialize(
         square_data_start=min(t["date_local"] for t in txns),
         training_through=training_through,
         training_shifts=training_shifts,
+        punch_exempt_windows=punch_exempt_windows,
     )
     period_rows = build_tip_alloc_period_rows(period_results)
     day_alloc_rows = build_tip_alloc_daily_rows(period_results, daily_summary)

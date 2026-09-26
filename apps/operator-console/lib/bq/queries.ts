@@ -32,8 +32,8 @@ export interface LaborDailyRow {
 // source_pulls) carry a real `store` key; do not add a WHERE store= filter
 // here until a second store's data actually lands in this table.
 //
-// Labor $ / %: `vw_labor_daily_live` (migration 069) = current adp_wage_rates ×
-// adp_shifts. Never read hourly/fulltime/total_labor_cost from
+// Labor $ / %: `vw_labor_daily_live` (migration 075) = adp_shifts × the rate in
+// effect on each shift date (vw_wage_rate_effective). Never read hourly/fulltime/total_labor_cost from
 // vw_model_labor_daily (frozen last recompute — Issue #267 $1.25 scrape).
 export function laborDaily(win: DateWindow): Promise<LaborDailyRow[]> {
   return q<LaborDailyRow>(
@@ -87,10 +87,13 @@ export function laborByGrain(
              'fulltime',
              'parttime'
            ) AS labor_bucket,
-           IFNULL(w.wage_rate_dollars, 0) AS wage
+           IFNULL(COALESCE(er.wage_rate_dollars, w.wage_rate_dollars), 0) AS wage
          FROM ${fq("adp_shifts")} s
          LEFT JOIN ${fq("adp_wage_rates")} w
            ON w.employee_id = s.employee_id
+         LEFT JOIN ${fq("vw_wage_rate_effective")} er
+           ON er.employee_id = s.employee_id
+          AND s.date BETWEEN er.effective_from AND er.effective_to
          WHERE s.date BETWEEN @start AND @end
            AND IFNULL(s.total_hours, 0) > 0
            AND s.in_time IS NOT NULL AND s.out_time IS NOT NULL

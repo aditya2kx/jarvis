@@ -14,77 +14,54 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from agents.bhaga.scripts import update_model_sheet as ums
 
 
-class TestOverlapHours(unittest.TestCase):
+class TestUnionOverlapHours(unittest.TestCase):
+    def _ov(self, tin, tout, ws, we):
+        return ums._union_overlap_hours(tin, tout, [(ws, we)])
+
     def test_full_overlap_inside_shift(self):
         # 13:30–20:30 (7h) ∩ 18:00–18:30 = 0.5h
-        self.assertAlmostEqual(
-            ums._overlap_hours("13:30", "20:30", "18:00", "18:30"), 0.5,
-        )
+        self.assertAlmostEqual(self._ov("13:30", "20:30", "18:00", "18:30"), 0.5)
 
     def test_no_overlap(self):
-        self.assertEqual(ums._overlap_hours("13:30", "20:30", "10:00", "10:30"), 0.0)
+        self.assertEqual(self._ov("13:30", "20:30", "10:00", "10:30"), 0.0)
 
     def test_inverted_window(self):
-        self.assertEqual(ums._overlap_hours("13:30", "20:30", "18:30", "18:00"), 0.0)
+        self.assertEqual(self._ov("13:30", "20:30", "18:30", "18:00"), 0.0)
 
     def test_malformed(self):
-        self.assertEqual(ums._overlap_hours("", "20:30", "18:00", "18:30"), 0.0)
-        self.assertEqual(ums._overlap_hours("13:30", "20:30", "bad", "18:30"), 0.0)
+        self.assertEqual(self._ov("", "20:30", "18:00", "18:30"), 0.0)
+        self.assertEqual(self._ov("13:30", "20:30", "bad", "18:30"), 0.0)
 
     def test_window_clips_to_shift_bounds(self):
         # exempt starts before shift → clip to in_time
+        self.assertAlmostEqual(self._ov("13:30", "20:30", "13:00", "14:00"), 0.5)
+
+    def test_overlapping_windows_count_shared_minutes_once(self):
         self.assertAlmostEqual(
-            ums._overlap_hours("13:30", "20:30", "13:00", "14:00"), 0.5,
-        )
-
-
-class TestTipHoursAfterExemption(unittest.TestCase):
-    def test_whole_day_zeros(self):
-        self.assertEqual(
-            ums._tip_hours_after_exemption(
-                7.0, "13:30", "20:30",
-                whole_day=True, exempt_start=None, exempt_end=None,
+            ums._union_overlap_hours(
+                "13:30", "20:30", [("18:00", "19:00"), ("18:30", "19:30"), ("15:00", "15:30")],
             ),
-            0.0,
+            2.0,
         )
 
-    def test_partial_window_subtracts_overlap(self):
-        # 7.0 total − 0.5 overlap = 6.5
-        self.assertAlmostEqual(
-            ums._tip_hours_after_exemption(
-                7.0, "13:30", "20:30",
-                whole_day=False, exempt_start="18:00", exempt_end="18:30",
-            ),
-            6.5,
+
+class TestWindowEdgeCases(unittest.TestCase):
+    def _eligible(self, total, tin, tout, start, end):
+        ts = {("Doe, Jane", "2026-07-08"): {"exempt_start": start, "exempt_end": end}}
+        shift = {"employee_name": "Doe, Jane", "date": "2026-07-08",
+                 "in_time": tin, "out_time": tout, "total_hours": total}
+        return ums._eligible_tip_hours_for_shift(
+            shift, permanent=set(), training_through={}, training_shifts=ts,
         )
 
-    def test_missing_window_unchanged(self):
-        self.assertEqual(
-            ums._tip_hours_after_exemption(
-                7.0, "13:30", "20:30",
-                whole_day=False, exempt_start=None, exempt_end=None,
-            ),
-            7.0,
-        )
+    def test_one_sided_window_is_ignored(self):
+        self.assertEqual(self._eligible(7.0, "13:30", "20:30", "18:00", None), 7.0)
 
     def test_orphan_window_no_overlap_leaves_hours(self):
-        # Window outside shift clock → 0 overlap → full tip hours
-        self.assertEqual(
-            ums._tip_hours_after_exemption(
-                6.5, "13:30", "20:00",
-                whole_day=False, exempt_start="10:00", exempt_end="10:30",
-            ),
-            6.5,
-        )
+        self.assertEqual(self._eligible(6.5, "13:30", "20:00", "10:00", "10:30"), 6.5)
 
     def test_window_covers_entire_shift(self):
-        self.assertEqual(
-            ums._tip_hours_after_exemption(
-                4.0, "10:00", "14:00",
-                whole_day=False, exempt_start="09:00", exempt_end="15:00",
-            ),
-            0.0,
-        )
+        self.assertEqual(self._eligible(4.0, "10:00", "14:00", "09:00", "15:00"), 0.0)
 
 
 class TestEligibleTipHoursForShift(unittest.TestCase):

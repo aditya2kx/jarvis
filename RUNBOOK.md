@@ -1159,6 +1159,31 @@ BQ and triggers `bhaga-daily-refresh` **recompute-only** for each touched date
 Verify in Grafana / console: exempted tip hours drop (or go to $0 for whole-day) and the daily
 pool total is conserved.
 
+**Admin punches (Issue #343):** add a **separate ADP punch** for the admin time with a note
+containing `admin` (any case, anywhere — ADP prefixes the editor's name). That punch is paid but
+earns no tips. The nightly reloads the open period's Timecard and rewrites every day from the open
+pay-period start, so a note added days later lands on the next nightly; for an immediate rebuild use
+`/bhaga-cloud refresh YYYY-MM-DD`. Keywords: `/bhaga-cloud config set tip_exempt_punch_note_keywords
+"admin;inventory"` (`;`-separated); set `""` to disable. Confirm in Cloud Run logs:
+`BREADCRUMB tip_exempt_punch employee=… date=… windows=…`.
+
+### Set an effective-dated hourly rate (raise / demotion)
+
+Shifts are paid at the rate in effect on their date (`vw_wage_rate_effective`). A raise entered in
+ADP normally records itself: the nightly pay_info scrape dates it by ADP's "Added on" (current or
+previous pay period only, else the current period start). To set or correct it explicitly (runtime,
+no deploy), from an ADC surface:
+
+```bash
+python3 -m skills.adp_run_automation.wage_rate_history set \
+  --employee "Johnson, Dolce" --effective 2026-09-21 --rate 18.00 --dry-run   # then without --dry-run
+python3 -m skills.adp_run_automation.wage_rate_history show --employee "Johnson, Dolce"
+```
+
+Then recompute each affected date (`python3 scripts/trigger_dated_refresh.py --date D
+--force-recompute`) so model tables pick it up; the payroll and live labor views read the history
+directly.
+
 ### Run the sandbox e2e (prod-like, zero-OTP) — opt-in
 
 > **Policy change (2026-06-09):** `Sandbox e2e` is **no longer a required CI gate on every PR**.

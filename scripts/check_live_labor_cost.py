@@ -5,7 +5,9 @@ Issue #267: a bad pay_info scrape wrote ~$1.25 rates into adp_wage_rates, the
 nightly materialize froze those dollars into model_labor_daily, and restoring
 rates did not fix Labor/Home/Grafana % until FORCE_MODEL_RECOMPUTE. Presentation
 must use vw_labor_daily_live / vw_labor_weekly_live (current rates × shifts) or
-an in-query adp_shifts × adp_wage_rates join (hour grain).
+an in-query adp_shifts × adp_wage_rates join (hour grain). Since Issue #343 a
+query that prices worked shifts must take the rate in effect on the shift date
+(vw_wage_rate_effective), not today's rate.
 
 Fails if a console BQ query or Grafana panel selects hourly/fulltime/total
 labor_cost from vw_model_labor_daily / vw_model_labor_weekly.
@@ -21,7 +23,7 @@ import sys
 _REPO = pathlib.Path(__file__).resolve().parents[1]
 _QUERIES = _REPO / "apps" / "operator-console" / "lib" / "bq" / "queries.ts"
 _DASHBOARD = _REPO / "agents" / "bhaga" / "grafana" / "dashboard.json"
-_MIGRATION = _REPO / "core" / "migrations" / "069_labor_cost_live_rates.sql"
+_MIGRATION = _REPO / "core" / "migrations" / "075_payroll_labor_effective_rates.sql"
 
 COST_RE = re.compile(
     r"\b(hourly_labor_cost|fulltime_labor_cost|total_labor_cost)\b"
@@ -52,9 +54,9 @@ def main() -> int:
     else:
         mig = _MIGRATION.read_text()
         if "vw_labor_daily_live" not in mig or "vw_labor_weekly_live" not in mig:
-            errors.append("069_labor_cost_live_rates.sql must define vw_labor_daily_live and vw_labor_weekly_live")
-        if "adp_wage_rates" not in mig or "adp_shifts" not in mig:
-            errors.append("069 live views must join adp_shifts × adp_wage_rates")
+            errors.append(f"{_MIGRATION.name} must define vw_labor_daily_live and vw_labor_weekly_live")
+        if "vw_wage_rate_effective" not in mig or "adp_shifts" not in mig:
+            errors.append(f"{_MIGRATION.name} live views must join adp_shifts × vw_wage_rate_effective")
 
     queries = _strip_ts_comments(_QUERIES.read_text())
     if "vw_labor_daily_live" not in queries:
@@ -64,6 +66,12 @@ def main() -> int:
             errors.append(
                 f"queries.ts function #{i} selects labor $ from vw_model_labor_daily/weekly — "
                 "use vw_labor_daily_live (or adp_shifts × adp_wage_rates for hour grain)"
+            )
+        if ('fq("adp_shifts")' in chunk and "wage_rate_dollars" in chunk
+                and "vw_wage_rate_effective" not in chunk):
+            errors.append(
+                f"queries.ts function #{i} prices adp_shifts with today's adp_wage_rates — "
+                "join vw_wage_rate_effective on the shift date (Issue #343)"
             )
 
     # BHAGA Grafana dashboard retired (Issue #276). Skip JSON if the file is gone.

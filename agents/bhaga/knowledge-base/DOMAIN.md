@@ -122,6 +122,22 @@ panel keeps them as unfilled gaps.
 | `rate_history_json` / `earnings_json` | full rate-change audit trail |
 | `raw_employee_names_json` | every ADP spelling seen for this person |
 
+`wage_rates` is **today's** rate only (and the Mon/Tue earnings load puts the last paycheck's
+rate back). Every wage consumer instead prices a shift at the rate **in effect on its date**
+(Issue #343): **`adp_wage_rate_history`** (`employee_id, effective_date` → rate, `source`
+`seed|pay_info|earnings|operator`) exposed as **`vw_wage_rate_effective`**
+(`effective_from..effective_to`). Rows are appended only when a loaded rate differs from the
+latest **history** row:
+- `pay_info` — effective on ADP's "Added on" date when it falls in the current or previous pay
+  period (and after the last change), else the current pay-period start (a raise is never
+  back-dated into a closed period).
+- `earnings` — effective on the paid period's start, only if later than the last change (an old
+  check at the pre-raise rate never undoes a newer pay_info raise).
+- `operator` — `python3 -m skills.adp_run_automation.wage_rate_history set --employee "Last, First"
+  --effective YYYY-MM-DD --rate 18.00` (runtime, no deploy).
+Seeded at 2000-01-01 from `wage_rates` by migration 074, so employees without a change price as
+before.
+
 ### B. `bhaga_square_raw` — sales & operations source of truth (from Square)
 
 **`transactions`** — one row per **Square transaction**. Key: `(transaction_id,)`. Source:
@@ -279,8 +295,9 @@ translation.
   (fraction; recommended start `0.13`) without changing the warehouse columns.
 
 Operator Console Labor / Home labor $ and Grafana Labor Wages / Net Sales read
-**`vw_labor_daily_live` / `vw_labor_weekly_live`** (`adp_shifts.total_hours × adp_wage_rates`,
-FT = salaried or `excluded_from_labor_pct`) over Square net sales from `model_labor_daily`.
+**`vw_labor_daily_live` / `vw_labor_weekly_live`** (`adp_shifts.total_hours ×` the rate in
+effect on the shift date from `vw_wage_rate_effective`, migration 075; FT = salaried or
+`excluded_from_labor_pct`) over Square net sales from `model_labor_daily`.
 Frozen `model_labor_daily` dollars are not a presentation source (Issue #267).
 
 **Labor % (two denominators × three scopes)**
@@ -388,6 +405,16 @@ redistributes to everyone else. Three BQ-canonical sources, all funnelling throu
 | `excluded_from_tip_pool` | `bhaga.store_config` (BQ) | permanent | manager/owner — never in the pool |
 | `training_excluded:<name>` | `bhaga.store_config` (BQ) | through that date (inclusive) | bulk "all shifts up to date X were training" |
 | **`training_shifts`** | `bhaga.training_shifts` BQ table | one `(store, employee, date)` ± optional window | tip exemption (whole day or HH:MM window) |
+| **Admin punch note** | `adp_punches.note` (ADP Timecard "Notes") | one punch window | punch paid, no tips (Issue #343) |
+
+**Admin punches.** When an employee does admin work the operator adds a **separate ADP punch**
+with a note. A punch whose note contains any keyword from `store_config`
+`tip_exempt_punch_note_keywords` (`;`-separated, case-insensitive substring anywhere in the note,
+whoever left it; missing row = `admin`, empty value disables) becomes a tip-exemption window for
+that `(employee, date)`. Its hours stay in `adp_shifts`, so it is **paid** at the effective rate
+and counts in labor %; only tip-eligible hours drop. Windows are unioned with any
+`training_shifts` window and subtracted once. `materialize_model_bq` prints
+`BREADCRUMB tip_exempt_punch employee=… date=… windows=…` per matched day.
 
 **BQ-canonical:** operators edit tip exemptions in the **Operator Console → Payroll** page
 (period picker by start–end with Unpaid / Paid (ADP); editable only for the unpaid current

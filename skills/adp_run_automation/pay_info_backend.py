@@ -18,7 +18,7 @@ import pathlib
 import re
 import sys
 import time
-from typing import Optional
+from typing import Iterable, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
@@ -65,6 +65,19 @@ def directory_search_name(canonical: str) -> str:
     if len(parts) >= 2:
         return f"{parts[0]}, {' '.join(parts[1:])}"
     return name
+
+
+def accepted_directory_names(canonical: str, aliases: Optional[dict] = None) -> list[str]:
+    """Directory spellings of every alias key that resolves to ``canonical``."""
+    search = directory_search_name(canonical)
+    out: list[str] = []
+    for raw, canon in (aliases or {}).items():
+        if canon != canonical:
+            continue
+        name = directory_search_name(raw)
+        if name and _name_key(name) != _name_key(search) and name not in out:
+            out.append(name)
+    return out
 
 
 def parse_hourly_pay_rate(body_text: str, *, input_values: Optional[list[str]] = None) -> dict:
@@ -127,6 +140,7 @@ def rate_record(
         "excluded_from_labor_pct": excluded,
         "raw_employee_names": [employee_name],
         "rate_source": "pay_info",
+        "added_on": added_on,
         "scraped_at_utc": now,
     }
 
@@ -301,25 +315,54 @@ class AmbiguousEmployeeError(RuntimeError):
     """More than one Directory record could be the person we searched for."""
 
 
-def select_directory_match(candidates: list[str], search_name: str) -> str:
+def _name_key(name: str) -> str:
+    return " ".join(name.split()).casefold()
+
+
+def select_directory_match(
+    candidates: list[str],
+    search_name: str,
+    *,
+    accepted_names: Iterable[str] = (),
+) -> str:
     """Pick the one Directory row that IS ``search_name``, or refuse.
 
     Exact match only. ``Johnson, Dolce`` and ``Johnson, Dolce J`` are two
-    different people who both exist in this Directory, and our punch roster
-    carries the first — a substring or first-hit match would attach one person's
-    wage rate to the other. A missing rate is recoverable from the earnings
-    report; a wrong rate is silently wrong pay.
+    different Directory records, and our punch roster carries the first — a
+    substring or first-hit match would attach one record's wage rate to the
+    other. A missing rate is recoverable from the earnings report; a wrong rate
+    is silently wrong pay.
+
+    ``accepted_names`` are other spellings the alias table maps to the SAME
+    canonical employee. With no exact hit on ``search_name``, exactly one hit
+    on an accepted spelling is taken. When the exact name and an accepted
+    spelling are both listed, the scrape refuses: they are two records and only
+    one carries the live rate.
     """
-    norm = search_name.strip().casefold()
-    exact = [c for c in candidates if c.strip().casefold() == norm]
-    if len(exact) == 1:
-        return exact[0]
+    norm = _name_key(search_name)
+    exact = [c for c in candidates if _name_key(c) == norm]
     if len(exact) > 1:
         raise AmbiguousEmployeeError(
             f"{search_name!r} matches {len(exact)} Directory records exactly — "
             f"cannot tell them apart by name: {exact}"
         )
-    near = [c for c in candidates if norm in c.strip().casefold()]
+    accepted = {_name_key(n) for n in accepted_names} - {norm}
+    via_alias = [c for c in candidates if _name_key(c) in accepted]
+    if exact and via_alias:
+        raise AmbiguousEmployeeError(
+            f"{search_name!r} and alias spelling(s) {via_alias} are separate "
+            f"Directory records — refusing to pick one."
+        )
+    if len(exact) == 1:
+        return exact[0]
+    if len(via_alias) == 1:
+        return via_alias[0]
+    if len(via_alias) > 1:
+        raise AmbiguousEmployeeError(
+            f"{search_name!r} has {len(via_alias)} alias-matched Directory "
+            f"records: {via_alias}"
+        )
+    near = [c for c in candidates if norm in _name_key(c)]
     if near:
         raise AmbiguousEmployeeError(
             f"no Directory record is exactly {search_name!r}; closest are {near}. "
@@ -372,12 +415,19 @@ def _wait_for_directory_results(page, needle: str, *, timeout_ms: int = 15_000) 
         page.wait_for_timeout(300)
 
 
-def scrape_one_pay_info(page, canonical_name: str, *, dashboard_url: str) -> dict:
+def scrape_one_pay_info(
+    page,
+    canonical_name: str,
+    *,
+    dashboard_url: str,
+    accepted_names: Iterable[str] = (),
+) -> dict:
     """People → directory search → Manage pay info / Payroll info; return rate fields.
 
     Calibrated against 2026-08-01 spike (Brooke $15.2500 on Payroll info input).
     """
     search_name = directory_search_name(canonical_name)
+    profile_name = search_name
     last_name = search_name.split(",")[0].strip()
 
     page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
@@ -400,7 +450,9 @@ def scrape_one_pay_info(page, canonical_name: str, *, dashboard_url: str) -> dic
         # (Terminated) and `Johnson, Dolce J` (Active). Now that the status
         # filter is cleared, a substring match would silently pick the wrong
         # person, and a wrong wage rate is worse than a missing one.
-        select_directory_match(candidates, search_name)
+        profile_name = select_directory_match(
+            candidates, search_name, accepted_names=accepted_names
+        )
 
     mpi = page.get_by_text("Manage pay info", exact=False)
     if mpi.count():
@@ -416,9 +468,9 @@ def scrape_one_pay_info(page, canonical_name: str, *, dashboard_url: str) -> dic
             )
         page.wait_for_timeout(5000)
     else:
-        link = page.get_by_role("link", name=re.compile(re.escape(search_name), re.I))
+        link = page.get_by_role("link", name=re.compile(re.escape(profile_name), re.I))
         if link.count() == 0:
-            link = page.get_by_text(re.compile(re.escape(search_name), re.I))
+            link = page.get_by_text(re.compile(re.escape(profile_name), re.I))
         _click_through_modals(link.first, page=page, timeout=10_000)
         page.wait_for_timeout(4000)
 
@@ -479,7 +531,7 @@ def scrape_one_pay_info(page, canonical_name: str, *, dashboard_url: str) -> dic
     parsed = parse_hourly_pay_rate(text, input_values=inputs)
     return {
         "employee_name": canonical_name,
-        "search_name": search_name,
+        "search_name": profile_name,
         **parsed,
         "body_excerpt": text[:500],
         "inputs": inputs[:20],
@@ -514,6 +566,7 @@ def scrape_pay_info_rates(
     *,
     dashboard_url: str,
     excluded: Optional[set[str]] = None,
+    aliases: Optional[dict] = None,
 ) -> tuple[list[dict], dict[str, str]]:
     """Scrape Payroll info rates for names. Per-employee failures are soft."""
     excluded = excluded or set()
@@ -521,7 +574,10 @@ def scrape_pay_info_rates(
     errors: dict[str, str] = {}
     for name in names:
         try:
-            raw = scrape_one_pay_info(page, name, dashboard_url=dashboard_url)
+            raw = scrape_one_pay_info(
+                page, name, dashboard_url=dashboard_url,
+                accepted_names=accepted_directory_names(name, aliases),
+            )
             out.append(
                 rate_record(
                     name,
@@ -788,12 +844,15 @@ def write_pay_info_rates_bq(rates: list[dict], *, dry_run: bool = False) -> int:
         )
     if not fill:
         return 0
+    from skills.adp_run_automation.wage_rate_history import record_pay_info_changes  # noqa: PLC0415
+
     profile = load_store_profile("palmetto")
     bq_rows = [map_adp_wage_rate(r, profile) for r in fill]
     if dry_run:
         print(f"[pay_info] DRY: would MERGE {len(bq_rows)} rows ({len(changes)} rate change(s))")
         for r in fill:
             print(f"  {r['employee_name']}: ${r['wage_rate_dollars']}")
+        record_pay_info_changes(fill, dry_run=True)
         return 0
     n = load_rows(
         "adp_wage_rates",
@@ -805,6 +864,8 @@ def write_pay_info_rates_bq(rates: list[dict], *, dry_run: bool = False) -> int:
         f"[pay_info] adp_wage_rates MERGE {n} rows "
         f"(rate_source=pay_info, changes={len(changes)})"
     )
+    h = record_pay_info_changes(fill)
+    print(f"[pay_info] adp_wage_rate_history MERGE {h} row(s)")
     return n
 
 
@@ -914,10 +975,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     from skills.adp_run_automation.runner import adp_session  # noqa: PLC0415
+    from skills.store_profile import load_aliases  # noqa: PLC0415
 
+    aliases = load_aliases(args.store)
     with adp_session(store=args.store, headed=args.headed, slow_mo_ms=50) as (_ctx, page):
         dashboard_url = page.url
-        rates, errors = scrape_pay_info_rates(page, names, dashboard_url=dashboard_url)
+        rates, errors = scrape_pay_info_rates(
+            page, names, dashboard_url=dashboard_url, aliases=aliases,
+        )
         write_pay_info_json(rates, store=args.store, errors=errors, attempted=names)
         if args.write_bq or args.dry_run:
             write_pay_info_rates_bq(rates, dry_run=args.dry_run)

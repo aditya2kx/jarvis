@@ -2110,6 +2110,54 @@ export function storeConfig(store: string): Promise<StoreConfigRow[]> {
   );
 }
 
+/**
+ * Avg Payment orders per weekday (0 = Mon … 6 = Sun) × local hour over the
+ * `weeks` full weeks before `asOfIso`. Divides by days that had orders, so a
+ * closed day (e.g. couldn't open) doesn't drag the average down. Issue #337.
+ */
+export function laborDemandProfile(
+  asOfIso: string,
+  weeks = 4,
+): Promise<{ dow: number; hour: number; avg_orders: number }[]> {
+  return q(
+    `WITH o AS (
+       SELECT
+         COALESCE(ops_date_local, date_local) AS d,
+         COALESCE(
+           ops_hour_local,
+           EXTRACT(HOUR FROM DATETIME(
+             TIMESTAMP(COALESCE(NULLIF(ops_at_local_iso, ''), created_at_local_iso)),
+             'America/Chicago'))
+         ) AS hr,
+         COUNT(*) AS n
+       FROM ${fq("square_transactions")}
+       WHERE event_type = 'Payment'
+         AND COALESCE(ops_date_local, date_local)
+           BETWEEN DATE_SUB(@asOf, INTERVAL @days DAY) AND DATE_SUB(@asOf, INTERVAL 1 DAY)
+       GROUP BY 1, 2
+     ),
+     dd AS (SELECT EXTRACT(DAYOFWEEK FROM d) AS wd, COUNT(DISTINCT d) AS nd FROM o GROUP BY 1)
+     SELECT
+       MOD(EXTRACT(DAYOFWEEK FROM o.d) + 5, 7) AS dow,
+       o.hr AS hour,
+       SUM(o.n) / ANY_VALUE(dd.nd) AS avg_orders
+     FROM o JOIN dd ON EXTRACT(DAYOFWEEK FROM o.d) = dd.wd
+     WHERE o.hr IS NOT NULL
+     GROUP BY 1, 2`,
+    { asOf: dateParam(asOfIso), days: intParam(weeks * 7) },
+  );
+}
+
+/** Frozen delivery dates on or after `fromIso` (dates only; no time window stored). */
+export async function upcomingRestockDates(store: string, fromIso: string): Promise<string[]> {
+  const rows = await q<{ d: string }>(
+    `SELECT CAST(delivery_date AS STRING) AS d FROM ${fq("inventory_restock_schedule")}
+     WHERE store = @store AND delivery_date >= @from ORDER BY delivery_date`,
+    { store, from: dateParam(fromIso) },
+  );
+  return rows.map((r) => r.d);
+}
+
 export interface OrderAssistantRow {
   Item: string;
   "Current Qty": number;

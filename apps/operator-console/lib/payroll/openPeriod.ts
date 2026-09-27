@@ -54,6 +54,17 @@ export function mostRecentClosedPeriod(
   return { start: toIso(start), end: toIso(end) };
 }
 
+/** First day of the pay period containing `dateIso`. */
+export function payPeriodStartFor(
+  dateIso: string,
+  anchorEndIso = PALMETTO_ANCHOR_END,
+  periodDays = PALMETTO_PERIOD_DAYS,
+): string {
+  const firstStart = addDays(parseIso(anchorEndIso), 1);
+  const delta = Math.round((parseIso(dateIso).getTime() - firstStart.getTime()) / 86_400_000);
+  return toIso(addDays(firstStart, periodDays * Math.floor(delta / periodDays)));
+}
+
 /** Calendar open window: day after closed end through closed_end + periodDays. */
 export function calendarOpenPayPeriod(
   todayIso = chicagoTodayIso(),

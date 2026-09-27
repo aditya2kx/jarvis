@@ -34,7 +34,24 @@ import {
   type OpenShiftInput,
   type ScheduledShiftInput,
 } from "@/lib/labor/coverage-model";
-import { chicagoTodayIso, type DateWindow } from "@/lib/filters/range";
+import {
+  DEFAULT_LABOR_FLOOR,
+  isoWeekdayMon0,
+  needSeries,
+  onFloor,
+  shortNarrative,
+  shortPersonHours,
+  shortWindows,
+  type DemandCell,
+} from "@/lib/labor/staffing-need";
+import { draftDay, sampleRoster, type DraftShift } from "@/lib/labor/shift-draft";
+import { applyDayRules, staffLimits, type DayRule } from "@/lib/labor/schedule-inputs";
+import { payPeriodStartFor } from "@/lib/payroll/openPeriod";
+import { DRAFT_COLOR, ShiftDraftSummary } from "@/components/labor/ShiftDraftSummary";
+import { ScheduleInputsPanel } from "@/components/labor/ScheduleInputsPanel";
+import { useScheduleRules } from "@/components/labor/useScheduleRules";
+import { Button } from "@/components/ui/button";
+import { chicagoTodayIso, shiftCalendarDate, type DateWindow } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
 
 const PT = LABOR_CHART_COLORS.parttimeActual;
@@ -42,6 +59,51 @@ const FT = LABOR_CHART_COLORS.fulltimeActual;
 const SCHED = LABOR_CHART_COLORS.parttimeScheduled;
 const OPEN = LABOR_CHART_COLORS.openShift;
 const OPEN_HATCH = `repeating-linear-gradient(-45deg, ${OPEN}40, ${OPEN}40 2px, transparent 2px, transparent 4px)`;
+const NEED = LABOR_CHART_COLORS.goalLine;
+const SHORT_TINT = "rgb(244 63 94 / 0.16)";
+
+/** Axis must span open hours so the need line isn't clipped on sparse days. */
+function withOpenHours(b: { startMin: number; endMin: number }) {
+  const open = Math.floor(DEFAULT_LABOR_FLOOR[0]!.fromMin / 60) * 60;
+  const close = Math.ceil(DEFAULT_LABOR_FLOOR[DEFAULT_LABOR_FLOOR.length - 1]!.toMin / 60) * 60;
+  return {
+    startMin: Math.min(b.startMin, open),
+    endMin: Math.max(b.endMin, close),
+  };
+}
+
+type NeedCtx = { ordersPerPerson?: number; dayRules: DayRule[]; deliveries: ReadonlySet<string> };
+
+function dayCoverage(
+  iso: string,
+  people: CoveragePersonDay[],
+  demand: DemandCell[] | undefined,
+  ctx: NeedCtx,
+) {
+  const base = axisBounds(people);
+  const bounds = demand?.length ? withOpenHours(base) : base;
+  const points = occupancySeries(people, bounds.startMin, bounds.endMin, 15);
+  const need = demand?.length
+    ? applyDayRules(
+        iso,
+        points.map((p) => p.min),
+        needSeries(iso, points, demand, ctx.ordersPerPerson),
+        ctx.dayRules,
+        ctx.deliveries,
+      )
+    : null;
+  return { bounds, points, need };
+}
+
+/** Person-day hours, clocked when punched, else scheduled. */
+function personDayHours(p: CoveragePersonDay): number {
+  const actual = p.segments.filter((s) => s.kind === "actual");
+  return (actual.length ? actual : p.segments).reduce((a, s) => a + s.hours, 0);
+}
+
+function draftCountSeries(points: OccupancyPoint[], shifts: DraftShift[]): number[] {
+  return points.map((p) => shifts.filter((s) => p.min >= s.startMin && p.min < s.endMin).length);
+}
 
 const GUTTER = "w-[7rem] sm:w-32";
 const NO_OPEN: OpenShiftInput[] = [];
@@ -73,11 +135,15 @@ function DayStrip({
   selected,
   onSelect,
   todayIso,
+  shortHours,
+  draftShifts,
 }: {
   chips: CoverageDayChip[];
   selected: string;
   onSelect: (day: string) => void;
   todayIso: string;
+  shortHours?: Map<string, number>;
+  draftShifts?: Map<string, DraftShift[]>;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLButtonElement>(null);
@@ -157,6 +223,18 @@ function DayStrip({
                   +{chip.open} open
                 </span>
               ) : null}
+              {draftShifts?.has(chip.date) ? (
+                <span
+                  className="mt-0.5 text-[10px] font-medium tabular-nums"
+                  style={{ color: DRAFT_COLOR }}
+                >
+                  +{draftShifts.get(chip.date)!.length} draft
+                </span>
+              ) : (shortHours?.get(chip.date) ?? 0) > 0 ? (
+                <span className="mt-0.5 text-[10px] font-medium tabular-nums text-rose-600 dark:text-rose-400">
+                  {shortHours!.get(chip.date)!.toFixed(1)}h short
+                </span>
+              ) : null}
             </button>
           );
         })}
@@ -174,12 +252,20 @@ function CoverageRibbonBars({
   points,
   axisStart,
   axisEnd,
+  need,
+  draft,
 }: {
   points: OccupancyPoint[];
   axisStart: number;
   axisEnd: number;
+  need: number[] | null;
+  draft: number[] | null;
 }) {
-  const maxH = Math.max(1, ...points.map((p) => Math.max(p.actual, p.scheduled) + p.open));
+  const maxH = Math.max(
+    1,
+    ...points.map((p, i) => Math.max(p.actual, p.scheduled) + p.open + (draft?.[i] ?? 0)),
+    ...(need ?? []),
+  );
   const span = axisEnd - axisStart;
   const bucketPct = (15 / span) * 100;
   // Thin stems (~30% of bucket, capped) so height reads clearly without a brick wall.
@@ -187,18 +273,46 @@ function CoverageRibbonBars({
 
   return (
     <div className="relative h-14 w-full">
-      {points.map((p) => {
+      {need
+        ? points.map((p, i) => {
+            const n = need[i] ?? 0;
+            if (n <= 0) return null;
+            const short = onFloor(p) + (draft?.[i] ?? 0) < n;
+            return (
+              <div
+                key={`need-${p.min}`}
+                aria-hidden
+                className="absolute bottom-0"
+                style={{
+                  left: `${((p.min - axisStart) / span) * 100}%`,
+                  width: `${bucketPct}%`,
+                  height: `${(n / maxH) * 100}%`,
+                  borderTop: `1.5px solid ${NEED}`,
+                  backgroundColor: short ? SHORT_TINT : undefined,
+                }}
+              />
+            );
+          })
+        : null}
+      {points.map((p, i) => {
         const bucketLeft = ((p.min - axisStart) / span) * 100;
         const left = bucketLeft + (bucketPct - barPct) / 2;
         const aH = (p.actual / maxH) * 100;
         const sH = (p.scheduled / maxH) * 100;
         const oH = (p.open / maxH) * 100;
+        const dH = ((draft?.[i] ?? 0) / maxH) * 100;
         return (
           <div
             key={p.min}
             className="absolute bottom-0 flex flex-col justify-end gap-px"
             style={{ left: `${left}%`, width: `${barPct}%`, height: "100%" }}
           >
+            {dH > 0 ? (
+              <div
+                className="mx-auto w-full max-w-[2.5px] rounded-[1px]"
+                style={{ height: `${dH}%`, backgroundColor: DRAFT_COLOR }}
+              />
+            ) : null}
             {p.open > 0 ? (
               <div
                 className="mx-auto w-full max-w-[2.5px] rounded-[1px] border border-dashed"
@@ -319,6 +433,8 @@ function CoverageTimeline({
   scheduled,
   activeDay,
   todayIso,
+  need,
+  draftShifts,
 }: {
   people: CoveragePersonDay[];
   points: OccupancyPoint[];
@@ -327,7 +443,13 @@ function CoverageTimeline({
   scheduled: ScheduledShiftInput[];
   activeDay: string;
   todayIso: string;
+  need: number[] | null;
+  draftShifts: DraftShift[];
 }) {
+  const draft = useMemo(
+    () => (draftShifts.length ? draftCountSeries(points, draftShifts) : null),
+    [points, draftShifts],
+  );
   const trackRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ minute: number; pct: number } | null>(null);
   const span = axisEnd - axisStart;
@@ -357,6 +479,12 @@ function CoverageTimeline({
     : null;
   const shownCount = occ ? (occ.actual > 0 ? occ.actual : occ.scheduled) : 0;
   const openCount = occ?.open ?? 0;
+  const hoverIdx = hover ? points.findIndex((p) => p.min === hover.minute) : -1;
+  const neededCount = need && hoverIdx >= 0 ? (need[hoverIdx] ?? 0) : null;
+  const draftAt = draft && hoverIdx >= 0 ? (draft[hoverIdx] ?? 0) : 0;
+  const activeDraft = hover
+    ? draftShifts.filter((s) => hover.minute >= s.startMin && hover.minute < s.endMin)
+    : [];
 
   const crosshair = hover ? (
     <div
@@ -385,7 +513,47 @@ function CoverageTimeline({
           {openCount > 0 ? (
             <span style={{ color: OPEN }}> · {openCount} open</span>
           ) : null}
+          {neededCount ? (
+            <span
+              className={cn(
+                "font-normal",
+                shownCount + openCount + draftAt < neededCount
+                  ? "text-rose-600 dark:text-rose-400"
+                  : "text-muted-foreground",
+              )}
+            >
+              {" "}
+              · {neededCount} needed
+            </span>
+          ) : null}
+          {draftAt ? (
+            <span className="font-normal" style={{ color: DRAFT_COLOR }}>
+              {" "}
+              · +{draftAt} draft
+            </span>
+          ) : null}
         </p>
+        {activeDraft.length ? (
+          <ul className="mb-1 flex flex-col gap-1">
+            {activeDraft.map((s, i) => (
+              <li
+                key={`draft-${s.startMin}-${i}`}
+                className="flex items-start justify-between gap-3"
+              >
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className="mt-0.5 inline-block size-2.5 shrink-0 rounded-sm"
+                    style={{ backgroundColor: DRAFT_COLOR }}
+                  />
+                  <span className="truncate">{s.employee ?? "Open shift"}</span>
+                </span>
+                <span className="shrink-0 tabular-nums text-muted-foreground">
+                  {formatClockMin(s.startMin)}–{formatClockMin(s.endMin)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
         {active.length ? (
           <ul className="flex max-h-56 flex-col gap-1 overflow-y-auto">
             {active.map((p) => (
@@ -418,7 +586,7 @@ function CoverageTimeline({
               </li>
             ))}
           </ul>
-        ) : (
+        ) : activeDraft.length ? null : (
           <p className="text-muted-foreground">Nobody on at this time.</p>
         )}
       </div>
@@ -447,6 +615,8 @@ function CoverageTimeline({
               points={points}
               axisStart={axisStart}
               axisEnd={axisEnd}
+              need={need}
+              draft={draft}
             />
             <AxisTicks axisStart={axisStart} axisEnd={axisEnd} />
           </div>
@@ -486,7 +656,7 @@ function CoverageTimeline({
               </div>
             );
           })
-        ) : (
+        ) : draftShifts.length ? null : (
           <p className="text-sm text-muted-foreground">
             No clocked ADP punches for this day
             {scheduled.some((s) => s.date.slice(0, 10) === activeDay)
@@ -494,6 +664,46 @@ function CoverageTimeline({
               : " — if the store was open, Timecard may not have included this date yet."}
           </p>
         )}
+        {draftShifts.map((s, i) => {
+          const left = ((s.startMin - axisStart) / span) * 100;
+          const width = ((s.endMin - s.startMin) / span) * 100;
+          return (
+            <div key={`draft-${s.startMin}-${i}`} className="flex items-center gap-2">
+              <div className={cn(GUTTER, "shrink-0 truncate")}>
+                <span
+                  className={cn(
+                    "block truncate text-xs font-medium",
+                    !s.employee && "italic text-muted-foreground",
+                  )}
+                  title={s.employee ?? "Open shift"}
+                >
+                  {s.employee ?? "Open shift"}
+                </span>
+                <span className="text-[10px]" style={{ color: DRAFT_COLOR }}>
+                  draft · {s.hours.toFixed(1)}h
+                </span>
+              </div>
+              <div className="relative min-w-0 flex-1 cursor-crosshair">
+                <div className="relative h-9 w-full overflow-hidden rounded-md bg-muted/40">
+                  <div
+                    className="absolute top-1.5 flex h-6 items-center justify-center overflow-hidden rounded-sm border border-dashed text-[10px] font-medium"
+                    style={{
+                      left: `${left}%`,
+                      width: `${Math.max(width, 0.8)}%`,
+                      borderColor: DRAFT_COLOR,
+                      backgroundColor: `${DRAFT_COLOR}26`,
+                      color: DRAFT_COLOR,
+                    }}
+                  >
+                    {width > 14
+                      ? `${s.kind === "open" ? "Open" : s.kind === "mid" ? "Mid" : "Close"} · ${formatClockMin(s.startMin)}–${formatClockMin(s.endMin)}`
+                      : `${s.hours}h`}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
         {/* Crosshair over track column only (past name gutter + gap). */}
         {hover ? (
           <div
@@ -518,6 +728,10 @@ export function LaborCoveragePanel({
   open = NO_OPEN,
   laborTypes,
   todayIso = chicagoTodayIso(),
+  demand,
+  ordersPerPerson,
+  goalHoursWeek,
+  deliveryDates,
 }: {
   win: DateWindow;
   actuals: ActualShiftInput[];
@@ -526,6 +740,12 @@ export function LaborCoveragePanel({
   open?: OpenShiftInput[];
   laborTypes: string[] | null;
   todayIso?: string;
+  /** Avg orders per weekday × hour (last 4 weeks); enables the Needed line. */
+  demand?: DemandCell[];
+  ordersPerPerson?: number;
+  goalHoursWeek?: number;
+  /** Upcoming frozen delivery dates (restock schedule). */
+  deliveryDates?: string[];
 }) {
   const strip = useMemo(
     () => coverageStripDates(win),
@@ -557,10 +777,38 @@ export function LaborCoveragePanel({
     [open, actuals, scheduledForCoverage, laborTypes],
   );
 
-  const chips = useMemo(
-    () => strip.map((iso) => dayChipSummary(iso, lanesFor(iso))),
-    [strip, lanesFor],
+  const baseRoster = useMemo(() => {
+    const hours = new Map<string, number>();
+    for (const r of actuals)
+      hours.set(r.employee, (hours.get(r.employee) ?? 0) + (r.total_hours || 0));
+    for (const r of scheduled) {
+      hours.set(r.employee, (hours.get(r.employee) ?? 0) + (r.scheduled_hours || 0));
+    }
+    return sampleRoster(hours);
+  }, [actuals, scheduled]);
+
+  const [rules, setRules] = useScheduleRules();
+  const inputs = useMemo<NeedCtx>(
+    () => ({ ordersPerPerson, dayRules: rules.dayRules, deliveries: new Set(deliveryDates ?? []) }),
+    [ordersPerPerson, rules.dayRules, deliveryDates],
   );
+  const roster = useMemo(() => {
+    const limits = staffLimits(rules.staffRules);
+    return baseRoster.map((a) => ({ ...a, ...limits.get(a.employee) }));
+  }, [baseRoster, rules.staffRules]);
+
+  const { chips, shortHours } = useMemo(() => {
+    const short = new Map<string, number>();
+    const summaries = strip.map((iso) => {
+      const lanes = lanesFor(iso);
+      if (iso >= todayIso) {
+        const cov = dayCoverage(iso, lanes, demand, inputs);
+        if (cov.need) short.set(iso, shortPersonHours(cov.points, cov.need));
+      }
+      return dayChipSummary(iso, lanes);
+    });
+    return { chips: summaries, shortHours: short };
+  }, [strip, lanesFor, demand, inputs, todayIso]);
 
   const activeDay = day ?? initial;
 
@@ -569,10 +817,15 @@ export function LaborCoveragePanel({
     [activeDay, lanesFor],
   );
 
-  const bounds = useMemo(() => axisBounds(people), [people]);
-  const points = useMemo(
-    () => occupancySeries(people, bounds.startMin, bounds.endMin, 15),
-    [people, bounds.startMin, bounds.endMin],
+  const { bounds, points, need } = useMemo(
+    () =>
+      dayCoverage(
+        activeDay ?? "",
+        people,
+        activeDay && activeDay >= todayIso ? demand : undefined,
+        inputs,
+      ),
+    [activeDay, people, demand, inputs, todayIso],
   );
   const narrative = useMemo(() => coverageNarrative(points), [points]);
   const openSummary = useMemo(() => {
@@ -583,6 +836,182 @@ export function LaborCoveragePanel({
     const state = activeDay < todayIso ? "went unfilled" : "unassigned";
     return `${segs.length} ${noun} (${Number(hrs.toFixed(1))}h) ${state}`;
   }, [people, activeDay, todayIso]);
+
+  const [showDraft, setShowDraft] = useState(true);
+
+  // Draft each Mon–Sun week from today through the strip horizon. Each week
+  // has its own hours budget; weekly hours are shared within a week so hour
+  // targets and caps span it. Shift counts carry across weeks per pay period.
+  const drafts = useMemo(() => {
+    if (!demand?.length) return null;
+    const weekStarts = [
+      ...new Set(
+        strip
+          .filter((iso) => iso >= todayIso)
+          .map((iso) => shiftCalendarDate(iso, "day", -isoWeekdayMon0(iso))),
+      ),
+    ].sort();
+    const periodShifts = new Map<string, Map<string, number>>();
+    const shiftsInPeriod = (iso: string) => {
+      const start = payPeriodStartFor(iso);
+      let counts = periodShifts.get(start);
+      if (!counts) {
+        counts = new Map();
+        for (let i = 0; i < 14; i++) {
+          const d = shiftCalendarDate(start, "day", i);
+          for (const p of buildPersonDaysForDate(d, actuals, scheduledForCoverage, laborTypes))
+            counts.set(p.employee, (counts.get(p.employee) ?? 0) + 1);
+        }
+        periodShifts.set(start, counts);
+      }
+      return counts;
+    };
+    const draftWeek = (weekStart: string) => {
+      const days = Array.from({ length: 7 }, (_, i) => shiftCalendarDate(weekStart, "day", i));
+      const peopleByDay = new Map(days.map((iso) => [iso, lanesFor(iso)]));
+      const weekHours = new Map<string, number>();
+      let existingHours = 0;
+      for (const dayPeople of peopleByDay.values()) {
+        for (const p of dayPeople) {
+          const h = personDayHours(p);
+          existingHours += h;
+          if (!isOpenLane(p)) weekHours.set(p.employee, (weekHours.get(p.employee) ?? 0) + h);
+        }
+      }
+      const state = days
+        .filter((iso) => iso >= todayIso)
+        .map((iso) => {
+          const dayPeople = peopleByDay.get(iso)!;
+          const cov = dayCoverage(iso, dayPeople, demand, inputs);
+          const mins = cov.points.map((p) => p.min);
+          return {
+            iso,
+            mins,
+            cover: cov.points.map(onFloor),
+            floorNeed: applyDayRules(
+              iso,
+              mins,
+              needSeries(iso, cov.points, [], inputs.ordersPerPerson),
+              inputs.dayRules,
+              inputs.deliveries,
+            ),
+            need: cov.need!,
+            busy: new Set(dayPeople.filter((p) => !isOpenLane(p)).map((p) => p.employee)),
+            shifts: [] as DraftShift[],
+          };
+        });
+      const add = (d: (typeof state)[number], shifts: DraftShift[]) => {
+        for (const s of shifts) {
+          d.shifts.push(s);
+          if (s.employee) d.busy.add(s.employee);
+          d.mins.forEach((t, i) => {
+            if (t >= s.startMin && t < s.endMin) d.cover[i]! += 1;
+          });
+        }
+      };
+      const run = (d: (typeof state)[number], need: number[], maxShifts?: number) =>
+        draftDay({
+          iso: d.iso,
+          mins: d.mins,
+          onFloor: d.cover,
+          need,
+          roster,
+          weekHours,
+          busy: d.busy,
+          periodShifts: shiftsInPeriod(d.iso),
+          maxShifts,
+        });
+
+      // Pass 1: labor floor + day rules are mandatory regardless of the goal.
+      for (const d of state) add(d, run(d, d.floorNeed));
+      // Pass 2: spend what's left of the goal on the largest order-driven gaps.
+      let budget =
+        goalHoursWeek != null
+          ? goalHoursWeek -
+            existingHours -
+            state.reduce((a, d) => a + d.shifts.reduce((b, s) => b + s.hours, 0), 0)
+          : Infinity;
+      let peakLeftHours = 0;
+      for (;;) {
+        const gaps = state
+          .map((d) => ({
+            d,
+            short: d.need.reduce((a, n, i) => a + Math.max(0, n - d.cover[i]!) * 0.25, 0),
+          }))
+          .filter((g) => g.short > 0)
+          .sort((a, b) => b.short - a.short);
+        if (!gaps.length) break;
+        const next = run(gaps[0]!.d, gaps[0]!.d.need, 1)[0];
+        if (!next || next.hours > budget) {
+          peakLeftHours = gaps.reduce((a, g) => a + g.short, 0);
+          if (next?.employee) {
+            weekHours.set(next.employee, (weekHours.get(next.employee) ?? 0) - next.hours);
+            const counts = shiftsInPeriod(next.date);
+            counts.set(next.employee, (counts.get(next.employee) ?? 1) - 1);
+          }
+          break;
+        }
+        add(gaps[0]!.d, [next]);
+        budget -= next.hours;
+      }
+
+      const byDay = new Map<string, DraftShift[]>();
+      for (const d of state) {
+        if (d.shifts.length)
+          byDay.set(
+            d.iso,
+            [...d.shifts].sort((a, b) => a.startMin - b.startMin),
+          );
+      }
+      const all = [...byDay.values()].flat();
+      return {
+        weekStart,
+        byDay,
+        existingHours,
+        draftHours: all.reduce((a, s) => a + s.hours, 0),
+        draftCount: all.length,
+        peakLeftHours,
+      };
+    };
+    const weeks = new Map(weekStarts.map((w) => [w, draftWeek(w)]));
+    const byDay = new Map<string, DraftShift[]>();
+    for (const w of weeks.values()) for (const [iso, s] of w.byDay) byDay.set(iso, s);
+    return { weeks, byDay };
+  }, [
+    demand,
+    strip,
+    todayIso,
+    lanesFor,
+    actuals,
+    scheduledForCoverage,
+    laborTypes,
+    inputs,
+    roster,
+    goalHoursWeek,
+  ]);
+
+  const weekDraft =
+    drafts && activeDay && activeDay >= todayIso
+      ? (drafts.weeks.get(shiftCalendarDate(activeDay, "day", -isoWeekdayMon0(activeDay))) ?? null)
+      : null;
+
+  const draftShifts = useMemo(
+    () => (showDraft && activeDay ? (weekDraft?.byDay.get(activeDay) ?? []) : []),
+    [showDraft, activeDay, weekDraft],
+  );
+
+  const shortLine = useMemo(() => {
+    if (!need) return null;
+    const draft = draftCountSeries(points, draftShifts);
+    const withDraft = points.map((p, i) => ({
+      ...p,
+      actual: 0,
+      open: 0,
+      scheduled: onFloor(p) + draft[i]!,
+    }));
+    const line = shortNarrative(shortWindows(withDraft, need));
+    return draftShifts.length ? `With draft — ${line}` : line;
+  }, [points, need, draftShifts]);
 
   if (!activeDay) return null;
 
@@ -604,10 +1033,22 @@ export function LaborCoveragePanel({
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
+        {demand?.length ? (
+          <ScheduleInputsPanel
+            rules={rules}
+            onChange={setRules}
+            employees={baseRoster.map((a) => a.employee).sort()}
+            deliveryDates={deliveryDates ?? []}
+            goalHoursWeek={goalHoursWeek}
+          />
+        ) : null}
+
         <DayStrip
           chips={chips}
           selected={activeDay}
           todayIso={todayIso}
+          shortHours={demand?.length ? shortHours : undefined}
+          draftShifts={showDraft ? drafts?.byDay : undefined}
           onSelect={(next) => {
             setDay(next);
             syncDayInUrl(next);
@@ -615,16 +1056,55 @@ export function LaborCoveragePanel({
         />
 
         <div className="flex flex-col gap-1">
-          <h3 className="text-sm font-medium text-foreground">
-            Coverage — {label.weekday} {label.monthDay}
-          </h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-medium text-foreground">
+              Coverage — {label.weekday} {label.monthDay}
+            </h3>
+            {weekDraft ? (
+              <Button
+                size="sm"
+                variant={showDraft ? "default" : "outline"}
+                aria-pressed={showDraft}
+                onClick={() => setShowDraft((v) => !v)}
+              >
+                {showDraft ? "Hide draft shifts" : "Draft shifts"}
+              </Button>
+            ) : null}
+          </div>
           <p className="text-sm text-muted-foreground">
             {narrative}
             {openSummary ? (
               <span style={{ color: OPEN }}> · {openSummary}</span>
             ) : null}
           </p>
+          {shortLine ? (
+            <p
+              data-testid="coverage-short"
+              className={cn(
+                "text-sm",
+                /short:/i.test(shortLine)
+                  ? "text-rose-600 dark:text-rose-400"
+                  : "text-muted-foreground",
+              )}
+            >
+              {shortLine}
+            </p>
+          ) : null}
         </div>
+
+        {showDraft && weekDraft ? (
+          <ShiftDraftSummary
+            dayLabel={`${label.weekday} ${label.monthDay}`}
+            shifts={draftShifts}
+            roster={roster}
+            weekStart={weekDraft.weekStart}
+            existingHours={weekDraft.existingHours}
+            draftHours={weekDraft.draftHours}
+            draftCount={weekDraft.draftCount}
+            peakLeftHours={weekDraft.peakLeftHours}
+            goalHoursWeek={goalHoursWeek}
+          />
+        ) : null}
 
         <CoverageTimeline
           people={people}
@@ -634,6 +1114,8 @@ export function LaborCoveragePanel({
           scheduled={scheduledForCoverage}
           activeDay={activeDay}
           todayIso={todayIso}
+          need={need}
+          draftShifts={draftShifts}
         />
 
         <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
@@ -659,6 +1141,39 @@ export function LaborCoveragePanel({
             />
             Open (unassigned)
           </span>
+          {need ? (
+            <>
+              <span
+                className="inline-flex items-center gap-1.5"
+                title={`Larger of the labor floor (1 from 6:30, 2 from 7:30 to 8:30 PM) and avg orders for this weekday+hour over the last 4 weeks ÷ ${ordersPerPerson ?? 4} per person, then your day & time rules`}
+              >
+                <span
+                  className="inline-block h-0.5 w-3 rounded-full"
+                  style={{ backgroundColor: NEED }}
+                />
+                Needed
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  className="inline-block size-2.5 rounded-sm"
+                  style={{ backgroundColor: SHORT_TINT }}
+                />
+                Short
+              </span>
+            </>
+          ) : null}
+          {draftShifts.length ? (
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className="inline-block size-2.5 rounded-sm border border-dashed"
+                style={{
+                  borderColor: DRAFT_COLOR,
+                  backgroundColor: `${DRAFT_COLOR}26`,
+                }}
+              />
+              Draft
+            </span>
+          ) : null}
         </div>
       </CardContent>
     </Card>

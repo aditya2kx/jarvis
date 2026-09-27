@@ -6,6 +6,7 @@ import {
   laborActualsThrough,
   laborByGrain,
   laborConcurrentByGrain,
+  laborDemandProfile,
   laborHoursPerPersonDaily,
   laborOpenShiftDays,
   laborOpenShiftHoursByGrain,
@@ -15,10 +16,12 @@ import {
   laborScheduledShiftDays,
   laborSoloHoursPerPerson,
   storeConfig,
+  upcomingRestockDates,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey, formatCents } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
+import type { DemandCell } from "@/lib/labor/staffing-need";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
 import { LaborWeeklyHoursGoal } from "@/components/labor/LaborWeeklyHoursGoal";
@@ -176,6 +179,9 @@ export default async function LaborPage({
   let openHoursRows: LaborOpenShiftHoursRow[] = [];
   let coverageOpen: LaborOpenShiftDayRow[] = [];
   let punchGaps: PunchGap[] = [];
+  let coverageDemand: DemandCell[] = [];
+  let ordersPerPerson: number | undefined;
+  let deliveryDates: string[] = [];
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
@@ -230,6 +236,8 @@ export default async function LaborPage({
       gapRows,
       gapCoworkers,
       punchDays,
+      demand,
+      restockDates,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -271,11 +279,16 @@ export default async function LaborPage({
       laborPunchGaps(win, DEFAULT_STORE).catch(() => []),
       laborActualShiftDays(win).catch(() => []),
       laborPunchDays(win, DEFAULT_STORE).catch(() => []),
+      laborDemandProfile(todayIso).catch(() => []),
+      upcomingRestockDates(DEFAULT_STORE, todayIso).catch(() => []),
     ]);
     punchGaps = mergePunchDays(buildPunchGaps(gapRows, gapCoworkers), punchDays, gapCoworkers);
     soloRows = solo;
     openHoursRows = openHours;
     coverageOpen = openDays;
+    coverageDemand = demand;
+    deliveryDates = restockDates;
+    ordersPerPerson = goalFromConfig(config, "saturation_orders_per_labor_hour");
     rows = labor;
     concurrentRows = concurrent;
     scheduledHoursRows = schedHours;
@@ -713,6 +726,10 @@ export default async function LaborPage({
             scheduled={coverageScheduled}
             open={coverageOpen}
             laborTypes={laborTypes}
+            demand={coverageDemand}
+            ordersPerPerson={ordersPerPerson}
+            goalHoursWeek={goalLaborHoursWeek}
+            deliveryDates={deliveryDates}
           />
 
           <div data-testid="labor-hours-per-person" className="flex flex-col gap-2">

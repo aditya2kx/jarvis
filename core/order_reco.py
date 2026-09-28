@@ -19,22 +19,29 @@ then DELETE rows whose `refreshed_at` differs. Avoids an empty/torn table
 between DELETE and INSERT. `tvf_order_reco_slot_n` QUALIFYs `s_prev` to the
 latest `refreshed_at` per item.
 
+Issue #350: the whole recompute is one BigQuery stored procedure,
+`sp_refresh_order_reco` (migration 081) — one job, all slots, atomic swap,
+append-only history + a runs ledger, and superseded-on-conflict so concurrent
+refreshes never tear the table. The TVF chain below survives only as the
+`BHAGA_ORDER_RECO_LEGACY=1` rollback path.
+
 Public API
 ----------
-refresh_order_reco(store="palmetto") -> None
-    INSERT-then-DELETE-old (idempotent) inventory_order_reco for *store*: reads
-    `order_reco_max_tubs` from store_config (default 120), then runs slot 1's
-    TVF and inserts its rows, then runs slot_n for each live slot >= 2, then
-    drops prior generations.
+refresh_order_reco(store="palmetto", *, trigger="python", requested_by="bhaga") -> str | None
+    CALLs sp_refresh_order_reco and waits for it; returns the run_id (None when
+    BQ is disabled or the legacy path ran). Raises on failure after logging an
+    `order_reco_failed run_id=...` breadcrumb.
 
-Called from: nightly daily_refresh, restock submit, config-set on
-order_reco_max_tubs, deploy post-ensure_schema, and console stale-refresh.
-cloud/webhook/handler.py duplicates the SQL inline — keep both in sync.
+Called from: nightly daily_refresh, deploy post-ensure_schema, and the console
+order-reco-only job. cloud/webhook/handler.py duplicates the CALL inline —
+keep both in sync.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import uuid
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -54,8 +61,41 @@ _RECO_SELECT_FROM_TVF = (
 )
 
 
-def refresh_order_reco(store: str = "palmetto") -> None:
+def refresh_order_reco(
+    store: str = "palmetto", *, trigger: str = "python", requested_by: str = "bhaga",
+) -> str | None:
     """Recompute inventory_order_reco for *store*. No-op when BQ is disabled."""
+    if os.environ.get("BHAGA_ORDER_RECO_LEGACY") == "1":
+        _refresh_legacy(store)
+        return None
+    from core.datastore import _param_config, fq, get_client
+
+    client = get_client()
+    if client is None:
+        return None
+    run_id = f"py-{uuid.uuid4().hex[:12]}"
+    try:
+        client.query(
+            f"CALL {fq('sp_refresh_order_reco')}"
+            "(@store, @trigger, @by, @run_id, FALSE, NULL, NULL, NULL)",
+            job_config=_param_config([
+                ("store", "STRING", store),
+                ("trigger", "STRING", trigger),
+                ("by", "STRING", requested_by),
+                ("run_id", "STRING", run_id),
+            ]),
+        ).result()
+    except Exception as exc:
+        logger.error(
+            "order_reco_failed run_id=%s store=%s trigger=%s exc=%s", run_id, store, trigger, exc,
+        )
+        raise
+    logger.info("refresh_order_reco: committed store=%s run_id=%s trigger=%s", store, run_id, trigger)
+    return run_id
+
+
+def _refresh_legacy(store: str) -> None:
+    """Pre-#350 TVF chain (write-then-swap, migration 067) — rollback path only."""
     from core.datastore import fq, read_query
     from core.store_config import get_config
 

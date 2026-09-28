@@ -48,17 +48,14 @@ export function UsageDayAuditTable({
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   // Gate: client files that call *Action must import useConsoleAction.
   useConsoleAction();
-  const { banner: recoBanner, followOrderReco } = useOrderRecoRefreshFollowup({
-    pendingBanner:
-      "Order recommendation refreshing — Avg/day and Order tubs update when ready.",
-    doneToast: "Averages updated",
-  });
+  // Progress shows in the page-level OrderRecoStatusBanner, not above this table.
+  const { followOrderReco } = useOrderRecoRefreshFollowup();
 
   const onApplied = useCallback(
     (result: UsageDayOverridesApplied) => {
       followOrderReco({
         queued: result.queued ? ["order-reco"] : undefined,
-        baselineRefreshedAt: result.baselineRefreshedAt,
+        data: result.data,
       });
     },
     [followOrderReco],
@@ -74,15 +71,6 @@ export function UsageDayAuditTable({
 
   return (
     <>
-      {recoBanner ? (
-        <p
-          className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100"
-          data-testid="usage-day-reco-banner"
-        >
-          {recoBanner}
-        </p>
-      ) : null}
-
       <div
         className={`max-w-full min-w-0 overflow-auto rounded-lg border border-border ${TABLE_MAX_H}`}
         data-testid="usage-day-audit"

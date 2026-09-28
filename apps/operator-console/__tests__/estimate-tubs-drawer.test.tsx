@@ -9,7 +9,7 @@ const applyOrderTubOverridesAction = vi.fn();
 vi.mock("@/app/inventory/actions", () => ({
   submitRestockAction: (...args: unknown[]) => submitRestockAction(...args),
   applyOrderTubOverridesAction: (...args: unknown[]) => applyOrderTubOverridesAction(...args),
-  pollOrderRecoRefreshAction: vi.fn(),
+  orderRecoStatusAction: vi.fn(),
 }));
 
 vi.mock("@/lib/inventory/useOrderRecoRefreshFollowup", () => ({

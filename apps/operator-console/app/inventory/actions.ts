@@ -19,64 +19,32 @@ import {
   type RestockAction,
   type UsageDayOverrideMode,
 } from "@/lib/bq/writes";
-import { nextDates, orderRecoRefreshedAt, orderRecoSlots } from "@/lib/bq/queries";
-import { orderRecoRefreshedAdvanced } from "@/lib/inventory/orderRecoFreshness";
 import {
-  normalizeDeliveryDate,
-  selectPaintGeneration,
-} from "@/lib/inventory/orderRecoPivot";
+  orderRecoLastChange,
+  orderRecoStatus,
+  requestOrderRecoRefresh,
+} from "@/lib/bhaga/orderReco";
+import type { OrderRecoChange, OrderRecoStatus } from "@/lib/inventory/orderRecoStatus";
 import type { RestockRow } from "@/lib/restock/parse";
 import { okAck, failAck, type ActionAck } from "@/lib/actions/types";
 import { FEATURES } from "@/lib/config/features";
-import { triggerOrderRecoRefresh } from "@/lib/bhaga/recompute";
 
-async function maybeQueueOrderReco(): Promise<string[] | undefined> {
-  if (!FEATURES.asyncOrderReco) return undefined;
-  await triggerOrderRecoRefresh(DEFAULT_STORE);
-  return ["order-reco"];
-}
+const QUEUED = ["order-reco"];
 
 export type OrderRecoQueuedMeta = {
-  baselineRefreshedAt: string | null;
+  /** The refresh this write started (null on the legacy Cloud Run path). */
+  runId: string | null;
 };
 
-/**
- * Prod: skip inline TVFs and enqueue Cloud Run (Issue #175).
- * Local BYPASS_IAP dogfood: run refresh inline so Inventory updates without a job.
- */
-function shouldSkipInlineOrderReco(): boolean {
-  const syncLocal = Boolean(process.env.BYPASS_IAP_EMAIL?.trim());
-  return FEATURES.asyncOrderReco && !syncLocal;
-}
-
-/** Capture refreshed_at, then enqueue (client polls until it advances). */
-async function queueOrderRecoWithBaseline(): Promise<{
-  queued: string[] | undefined;
-  baselineRefreshedAt: string | null;
-}> {
-  const baselineRefreshedAt = await orderRecoRefreshedAt(DEFAULT_STORE);
-  const queued = await maybeQueueOrderReco();
-  return { queued, baselineRefreshedAt };
-}
-
+/** Every inventory input write ends here: one refresh for the whole edit. */
 async function finishOrderRecoWrite(
-  skipRefresh: boolean,
-  messages: { done: string; queued: string },
+  trigger: string,
+  by: string,
+  message: string,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
-  if (skipRefresh) {
-    const { queued, baselineRefreshedAt } = await queueOrderRecoWithBaseline();
-    revalidatePath("/inventory");
-    return okAck({
-      message: queued ? messages.queued : messages.done,
-      queued,
-      data: { baselineRefreshedAt },
-    });
-  }
+  const { runId } = await requestOrderRecoRefresh({ store: DEFAULT_STORE, trigger, requestedBy: by });
   revalidatePath("/inventory");
-  return okAck({
-    message: messages.done,
-    data: { baselineRefreshedAt: await orderRecoRefreshedAt(DEFAULT_STORE) },
-  });
+  return okAck({ message: `${message} — recommendation updating…`, queued: QUEUED, data: { runId } });
 }
 
 export async function submitRestockAction(
@@ -86,14 +54,8 @@ export async function submitRestockAction(
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
-    const skipRefresh = shouldSkipInlineOrderReco();
-    await submitRestock(DEFAULT_STORE, deliveryDate, action, rows, by, {
-      skipRefresh,
-    });
-    return finishOrderRecoWrite(skipRefresh, {
-      done: "Restock saved.",
-      queued: "Restock saved — recommendation refreshing…",
-    });
+    await submitRestock(DEFAULT_STORE, deliveryDate, action, rows, by);
+    return finishOrderRecoWrite(`restock-${action}`, by, "Restock saved");
   } catch (e) {
     return failAck(e);
   }
@@ -106,14 +68,8 @@ export async function replaceEstimatedRestockDateAction(
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
-    const skipRefresh = shouldSkipInlineOrderReco();
-    await replaceEstimatedRestockDate(DEFAULT_STORE, fromDate, toDate, by, {
-      skipRefresh,
-    });
-    return finishOrderRecoWrite(skipRefresh, {
-      done: "Date replaced.",
-      queued: "Date replaced — recommendation refreshing…",
-    });
+    await replaceEstimatedRestockDate(DEFAULT_STORE, fromDate, toDate, by);
+    return finishOrderRecoWrite("restock-replace-estimated", by, "Date replaced");
   } catch (e) {
     return failAck(e);
   }
@@ -126,14 +82,8 @@ export async function moveRestockDateAction(
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
-    const skipRefresh = shouldSkipInlineOrderReco();
-    await moveRestockDate(DEFAULT_STORE, fromDate, toDate, by, {
-      skipRefresh,
-    });
-    return finishOrderRecoWrite(skipRefresh, {
-      done: "Date moved.",
-      queued: "Date moved — recommendation refreshing…",
-    });
+    await moveRestockDate(DEFAULT_STORE, fromDate, toDate, by);
+    return finishOrderRecoWrite("restock-move-date", by, "Date moved");
   } catch (e) {
     return failAck(e);
   }
@@ -145,14 +95,8 @@ export async function removeRestockDateAction(
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
-    const skipRefresh = shouldSkipInlineOrderReco();
-    await removeRestockDate(DEFAULT_STORE, deliveryDate, by, {
-      skipRefresh,
-    });
-    return finishOrderRecoWrite(skipRefresh, {
-      done: "Date removed.",
-      queued: "Date removed — recommendation refreshing…",
-    });
+    await removeRestockDate(DEFAULT_STORE, deliveryDate, by);
+    return finishOrderRecoWrite("restock-remove-date", by, "Date removed");
   } catch (e) {
     return failAck(e);
   }
@@ -163,14 +107,8 @@ export async function setCapacityAction(
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
     const by = await operatorEmail();
-    const skipRefresh = shouldSkipInlineOrderReco();
-    await setConfig(DEFAULT_STORE, "order_reco_max_tubs", String(maxTubs), by, {
-      skipRefresh,
-    });
-    return finishOrderRecoWrite(skipRefresh, {
-      done: "Capacity saved.",
-      queued: "Capacity saved — recommendation refreshing…",
-    });
+    await setConfig(DEFAULT_STORE, "order_reco_max_tubs", String(maxTubs), by);
+    return finishOrderRecoWrite("capacity", by, "Capacity saved");
   } catch (e) {
     return failAck(e);
   }
@@ -187,14 +125,12 @@ export async function setUsageDayOverrideAction(
   try {
     const by = await operatorEmail();
     await setUsageDayOverride(DEFAULT_STORE, item, submittedDate, mode, by);
-    const queued = await maybeQueueOrderReco();
+    await requestOrderRecoRefresh({ store: DEFAULT_STORE, trigger: "usage-day", requestedBy: by });
     const preview = await readUsageDayAuditRow(DEFAULT_STORE, item, submittedDate);
     revalidatePath("/inventory");
     return okAck({
-      message: queued
-        ? `Override ${mode} saved — recommendation refreshing…`
-        : `Override ${mode} saved.`,
-      queued,
+      message: `Override ${mode} saved — recommendation updating…`,
+      queued: QUEUED,
       data: preview,
     });
   } catch (e) {
@@ -210,14 +146,14 @@ export async function clearUsageDayOverrideAction(
     return failAck(new Error("Usage day overrides are disabled"));
   }
   try {
-    await operatorEmail();
-    await clearUsageDayOverride(DEFAULT_STORE, item, submittedDate);
-    const queued = await maybeQueueOrderReco();
+    const by = await operatorEmail();
+    await clearUsageDayOverride(DEFAULT_STORE, item, submittedDate, by);
+    await requestOrderRecoRefresh({ store: DEFAULT_STORE, trigger: "usage-day", requestedBy: by });
     const preview = await readUsageDayAuditRow(DEFAULT_STORE, item, submittedDate);
     revalidatePath("/inventory");
     return okAck({
-      message: queued ? "Override cleared — recommendation refreshing…" : "Override cleared.",
-      queued,
+      message: "Override cleared — recommendation updating…",
+      queued: QUEUED,
       data: preview,
     });
   } catch (e) {
@@ -231,41 +167,27 @@ export type UsageDayOverrideDraft = {
   mode: UsageDayOverrideMode | "rule";
 };
 
-export type ApplyUsageDayOverridesResult = {
-  baselineRefreshedAt: string | null;
-};
-
 /** Batch apply drafts for one date — single reco refresh (Issue #194 drawer). */
 export async function applyUsageDayOverridesAction(
   submittedDate: string,
   changes: UsageDayOverrideDraft[],
-): Promise<ActionAck<ApplyUsageDayOverridesResult>> {
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  if (!changes.length) {
   if (!FEATURES.writeInventoryDayOverrides) {
     return failAck(new Error("Usage day overrides are disabled"));
   }
-  if (!changes.length) {
     return okAck({ message: "No changes." });
   }
   try {
     const by = await operatorEmail();
-    // Capture before enqueue so the client can poll until materialization advances.
-    const baselineRefreshedAt = await orderRecoRefreshedAt(DEFAULT_STORE);
     for (const c of changes) {
       if (c.mode === "rule") {
-        await clearUsageDayOverride(DEFAULT_STORE, c.item, submittedDate);
+        await clearUsageDayOverride(DEFAULT_STORE, c.item, submittedDate, by);
       } else {
         await setUsageDayOverride(DEFAULT_STORE, c.item, submittedDate, c.mode, by);
       }
     }
-    const queued = await maybeQueueOrderReco();
-    revalidatePath("/inventory");
-    return okAck({
-      message: queued
-        ? `Saved ${changes.length} override(s) — averages updating…`
-        : `Saved ${changes.length} override(s).`,
-      queued,
-      data: { baselineRefreshedAt },
-    });
+    return finishOrderRecoWrite("usage-day", by, `Saved ${changes.length} override(s)`);
   } catch (e) {
     return failAck(e);
   }
@@ -275,46 +197,31 @@ export async function applyOrderTubOverridesAction(
   deliveryDate: string,
   rows: { item: string; quantityTubs: number }[],
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  try {
+    const by = await operatorEmail();
+    await replaceOrderTubOverrides(DEFAULT_STORE, deliveryDate, rows, by);
+    return finishOrderRecoWrite("order-tub-pins", by, "Estimate pins saved");
+  } catch (e) {
   if (!FEATURES.writeRestock) {
     return failAck(new Error("Order tub overrides are disabled"));
   }
-  try {
-    const by = await operatorEmail();
-    // Local BYPASS_IAP dogfood: sync recompute so Apply shows new tubs without
-    // waiting on Cloud Run (prod keeps asyncOrderReco enqueue).
-    const skipRefresh = shouldSkipInlineOrderReco();
-    await replaceOrderTubOverrides(DEFAULT_STORE, deliveryDate, rows, by, {
-      skipRefresh,
-    });
-    return finishOrderRecoWrite(skipRefresh, {
-      done: "Estimate pins saved.",
-      queued: "Estimate pins saved — recommendation refreshing…",
-    });
-  } catch (e) {
     return failAck(e);
   }
 }
 
-/** Issue #240 — sticky Current Qty override (gated like Order Tubs). */
+/** Issue #240 — sticky Current Qty override. */
 export async function setCurrentQtyOverrideAction(
   item: string,
   quantityUnits: number,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  try {
+    const by = await operatorEmail();
+    await setCurrentQtyOverride(DEFAULT_STORE, item, quantityUnits, by);
+    return finishOrderRecoWrite("current-qty", by, "Current Qty saved");
+  } catch (e) {
   if (!FEATURES.writeRestock) {
     return failAck(new Error("Current Qty overrides are disabled"));
   }
-  try {
-    const by = await operatorEmail();
-    // Always rematerialize inline — On Hand / Order Tubs / Days left / runway
-    // all derive from current_qty; async enqueue would leave the table stale.
-    await setCurrentQtyOverride(DEFAULT_STORE, item, quantityUnits, by, {
-      skipRefresh: false,
-    });
-    return finishOrderRecoWrite(false, {
-      done: "Current Qty saved — order reco recalculated.",
-      queued: "Current Qty saved — recommendation refreshing…",
-    });
-  } catch (e) {
     return failAck(e);
   }
 }
@@ -322,17 +229,14 @@ export async function setCurrentQtyOverrideAction(
 export async function clearCurrentQtyOverrideAction(
   item: string,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  try {
+    const by = await operatorEmail();
+    await clearCurrentQtyOverride(DEFAULT_STORE, item, by);
+    return finishOrderRecoWrite("current-qty", by, "Current Qty reset");
+  } catch (e) {
   if (!FEATURES.writeRestock) {
     return failAck(new Error("Current Qty overrides are disabled"));
   }
-  try {
-    await operatorEmail(); // same IAP gate as set / usage-day clear
-    await clearCurrentQtyOverride(DEFAULT_STORE, item, { skipRefresh: false });
-    return finishOrderRecoWrite(false, {
-      done: "Current Qty reset — order reco recalculated.",
-      queued: "Current Qty reset — recommendation refreshing…",
-    });
-  } catch (e) {
     return failAck(e);
   }
 }
@@ -341,18 +245,14 @@ export async function clearCurrentQtyOverrideAction(
 export async function applyCurrentQtyOverridesAction(
   rows: { item: string; quantityUnits: number }[],
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  try {
+    const by = await operatorEmail();
+    await applyCurrentQtyOverrides(DEFAULT_STORE, rows, by);
+    return finishOrderRecoWrite("current-qty", by, "Current Qty saved");
+  } catch (e) {
   if (!FEATURES.writeRestock) {
     return failAck(new Error("Current Qty overrides are disabled"));
   }
-  try {
-    const by = await operatorEmail();
-    // Always rematerialize inline — see setCurrentQtyOverrideAction.
-    await applyCurrentQtyOverrides(DEFAULT_STORE, rows, by, { skipRefresh: false });
-    return finishOrderRecoWrite(false, {
-      done: "Current Qty saved — order reco recalculated.",
-      queued: "Current Qty saved — recommendation refreshing…",
-    });
-  } catch (e) {
     return failAck(e);
   }
 }
@@ -361,48 +261,46 @@ export async function applyCurrentQtyOverridesAction(
 export async function clearCurrentQtyOverridesAction(
   items: string[],
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  try {
+    const by = await operatorEmail();
+    await clearCurrentQtyOverrides(DEFAULT_STORE, items, by);
+    return finishOrderRecoWrite("current-qty", by, "Current Qty reset");
+  } catch (e) {
   if (!FEATURES.writeRestock) {
     return failAck(new Error("Current Qty overrides are disabled"));
   }
+    return failAck(e);
+  }
+}
+
+export type OrderRecoStatusPoll = {
+  status: OrderRecoStatus;
+  /** Per-date TOTAL tubs before/after the latest refresh (only when requested). */
+  changes?: OrderRecoChange[];
+};
+
+/** Page-level poller for the refresh banner (OrderRecoStatusProvider). */
+export async function orderRecoStatusAction(opts?: {
+  withChanges?: boolean;
+  awaitRunId?: string | null;
+}): Promise<ActionAck<OrderRecoStatusPoll>> {
   try {
-    await operatorEmail();
-    await clearCurrentQtyOverrides(DEFAULT_STORE, items, { skipRefresh: false });
-    return finishOrderRecoWrite(false, {
-      done: "Current Qty reset — order reco recalculated.",
-      queued: "Current Qty reset — recommendation refreshing…",
-    });
+    const [status, changes] = await Promise.all([
+      orderRecoStatus(DEFAULT_STORE, opts?.awaitRunId),
+      opts?.withChanges ? orderRecoLastChange(DEFAULT_STORE) : Promise.resolve(undefined),
+    ]);
+    return okAck({ data: { status, changes } });
   } catch (e) {
     return failAck(e);
   }
 }
 
-export type OrderRecoRefreshPoll = {
-  refreshedAt: string | null;
-  advanced: boolean;
-};
-
-/** Poll until the painted reco generation is complete and newer than baseline. */
-export async function pollOrderRecoRefreshAction(opts: {
-  baselineRefreshedAt: string | null;
-}): Promise<ActionAck<OrderRecoRefreshPoll>> {
+/** Banner Retry after a failed refresh. */
+export async function retryOrderRecoAction(): Promise<ActionAck<OrderRecoQueuedMeta>> {
   try {
-    const [refreshedAt, slotRows, nd] = await Promise.all([
-      orderRecoRefreshedAt(DEFAULT_STORE),
-      orderRecoSlots(),
-      nextDates(),
-    ]);
-    const live = nd.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
-    const paint = selectPaintGeneration(live, slotRows);
-    const genAdvanced = orderRecoRefreshedAdvanced(
-      opts.baselineRefreshedAt,
-      paint.refreshedAt,
-    );
-    return okAck({
-      data: {
-        refreshedAt,
-        advanced: !paint.pending && genAdvanced,
-      },
-    });
+    const by = await operatorEmail();
+    const { runId } = await requestOrderRecoRefresh({ store: DEFAULT_STORE, trigger: "retry", requestedBy: by });
+    return okAck({ message: "Retrying recommendation refresh…", queued: QUEUED, data: { runId } });
   } catch (e) {
     return failAck(e);
   }

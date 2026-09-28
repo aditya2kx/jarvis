@@ -1901,7 +1901,10 @@ class TestRestockSubmission:
             resp = _post_interaction(client, payload)
         body = resp.get_json()
         assert body["response_action"] == "errors"
-        insert_calls = [c for c in fake_bq.query.call_args_list if "INSERT INTO" in c[0][0]]
+        insert_calls = [
+            c for c in fake_bq.query.call_args_list
+            if "INSERT INTO" in c[0][0] and "inventory_restock_orders" in c[0][0]
+        ]
         assert len(insert_calls) == 0
 
     def test_reset_clears_orders(self, monkeypatch):
@@ -1933,7 +1936,7 @@ class TestRestockSubmission:
         assert len(dispatched) == 1
         fn, args = dispatched[0]
         assert fn is handler._refresh_order_reco
-        assert args == ("palmetto",)
+        assert args == ("palmetto", "slack-restock")
 
     def test_missing_delivery_date_returns_error(self, monkeypatch):
         payload = _restock_view_submission("Register date only (estimated)", "")
@@ -2216,3 +2219,61 @@ class TestMultiDateSerialization:
         # Only the first date launched; the second is reported as skipped.
         assert mock_trigger.call_count == 1
         assert "skipped" in posted[0]["text"]
+
+
+class TestInventoryEditLog:
+    """Issue #350: Slack edits append to the shared inventory_edit_log."""
+
+    def test_config_set_logs_edit(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        monkeypatch.setattr(handler, "_post_response_url", MagicMock())
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn, *a: None)
+        handler._handle_config_set("order_reco_max_tubs", "112", {"user_name": "adi"})
+        logs = [c for c in fake_bq.query.call_args_list if "inventory_edit_log" in c[0][0]]
+        assert len(logs) == 1
+        params = {p.name: p.value for p in logs[0].kwargs["job_config"].query_parameters}
+        assert params["entity"] == "store_config"
+        assert params["key"] == "order_reco_max_tubs"
+        assert json.loads(params["value"]) == "112"
+
+    def test_log_failure_is_breadcrumb(self, monkeypatch, caplog):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.side_effect = RuntimeError("bq down")
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with caplog.at_level("ERROR"):
+            handler._log_inventory_edit("palmetto", "store_config", "set", key="k", new_value="v", by="adi")
+        assert "inventory_edit_log_failed store=palmetto entity=store_config" in caplog.text
+
+
+class TestRefreshOrderRecoProcedure:
+    """Issue #350: webhook refresh is one CALL; legacy TVF chain behind env flag."""
+
+    def test_calls_procedure_once(self, monkeypatch):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        monkeypatch.delenv("BHAGA_ORDER_RECO_LEGACY", raising=False)
+        handler._refresh_order_reco("palmetto", "slack-capacity")
+        assert fake_bq.query.call_count == 1
+        sql = fake_bq.query.call_args.args[0]
+        assert "sp_refresh_order_reco" in sql
+        assert "tvf_order_reco" not in sql
+
+    def test_failure_is_a_breadcrumb_not_a_crash(self, monkeypatch, caplog):
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.side_effect = RuntimeError("boom")
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        monkeypatch.delenv("BHAGA_ORDER_RECO_LEGACY", raising=False)
+        with caplog.at_level("ERROR"):
+            handler._refresh_order_reco("palmetto", "slack-restock")
+        assert "order_reco_failed run_id=webhook-" in caplog.text
+
+    def test_legacy_flag_uses_tvf_chain(self, monkeypatch):
+        monkeypatch.setattr(handler, "_bq", MagicMock())
+        monkeypatch.setenv("BHAGA_ORDER_RECO_LEGACY", "1")
+        legacy = MagicMock()
+        monkeypatch.setattr(handler, "_refresh_order_reco_legacy", legacy)
+        handler._refresh_order_reco("palmetto")
+        legacy.assert_called_once_with("palmetto")

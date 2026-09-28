@@ -82,6 +82,8 @@ function orderRecoOnlyEnv(store: string): { name: string; value: string }[] {
     // daily_refresh --store is CLI; job image reads STORE / default palmetto.
     // Pass both common knobs so the early-exit path has a store.
     { name: "BHAGA_STORE", value: store },
+    // Only the ORDER_RECO_LEGACY rollback reaches this job path (Issue #350).
+    { name: "BHAGA_ORDER_RECO_LEGACY", value: "1" },
   ];
 }
 
@@ -119,7 +121,8 @@ export async function triggerModelRecompute(
 }
 
 /**
- * Enqueue dual-date order-reco refresh only (Issue #175 Option B).
+ * Legacy (ORDER_RECO_LEGACY=1) order-reco refresh via the Cloud Run job
+ * (Issue #175 Option B); the default path is lib/bhaga/orderReco.ts.
  * Job short-circuits via BHAGA_ORDER_RECO_ONLY in daily_refresh.py.
  * No-ops when a bhaga-daily-refresh execution is already running (#261).
  */

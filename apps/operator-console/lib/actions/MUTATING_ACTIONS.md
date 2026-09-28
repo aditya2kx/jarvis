@@ -9,10 +9,12 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Home | Goals drawer | `saveGoalsAction` | — |
 | Home | Inline goal pencil | `saveGoalAction` | — |
 | Labor | Weekly hours goal pencil | `saveGoalAction` (`goal_labor_hours_week`) | — |
-| Inventory | Restock submit | `submitRestockAction` | `order-reco` job |
-| Inventory | Replace estimated date | `replaceEstimatedRestockDateAction` | `order-reco` job |
-| Inventory | Capacity | `setCapacityAction` | `order-reco` job |
-| Inventory | Page self-heal | `ensureOrderRecoFresh` (RSC) | `order-reco` job when stale; skip `:run` if a job is already running |
+| Inventory | Restock submit | `submitRestockAction` | `order-reco` (`sp_refresh_order_reco` CALL, not awaited) |
+| Inventory | Replace estimated date | `replaceEstimatedRestockDateAction` | `order-reco` |
+| Inventory | Capacity | `setCapacityAction` | `order-reco` |
+| Inventory | Order-reco status poll | `orderRecoStatusAction` | — (read-only; `OrderRecoStatusProvider`) |
+| Inventory | Order-reco Retry / Update now | `retryOrderRecoAction` | `order-reco` |
+| Inventory | Page self-heal | `ensureOrderRecoFresh` (RSC, `lib/bhaga/orderReco.ts`) | `order-reco` only when the live inputs fingerprint ≠ last committed run; never auto-retries a failed run |
 | Payroll | Tip exemptions Update | `applyTipExemptionsAction` | `model-recompute` job |
 | Payroll | Run ADP Preview | `runPayrollDraftAction` / `pollPayrollDraftAction` | Headless `adp-payroll-draft` (local laptop when BYPASS_IAP); BQ stores Preview hours + Gross |
 | Payroll | Recognition bonus | `addRecognitionBonusAction` | — |

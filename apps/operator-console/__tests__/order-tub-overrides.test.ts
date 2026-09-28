@@ -42,13 +42,12 @@ describe("replaceOrderTubOverrides", () => {
         "2026-08-20",
         [{ item: "Mango", quantityTubs: 121 }],
         "op@test",
-        { skipRefresh: true },
       ),
     ).rejects.toThrow(/Manual Order Tubs sum \(121\) exceeds capacity \(120\)/);
     expect(mutate).not.toHaveBeenCalled();
   });
 
-  it("writes pins under capacity then refreshes unless skipRefresh", async () => {
+  it("writes pins under capacity and logs one edit, no inline refresh", async () => {
     q.mockImplementation(async (sql: string) => {
       if (sql.includes("order_reco_max_tubs")) return [{ value: "120" }];
       if (sql.includes("vw_order_reco_next_dates")) return [{ slot: 1 }, { slot: 2 }];
@@ -68,6 +67,7 @@ describe("replaceOrderTubOverrides", () => {
     expect(sqls.some((s) => s.includes("INSERT INTO") && s.includes("inventory_order_tub_overrides"))).toBe(
       true,
     );
-    expect(sqls.some((s) => s.includes("tvf_order_reco_slot1"))).toBe(true);
+    expect(sqls.filter((s) => s.includes("inventory_edit_log")).length).toBe(1);
+    expect(sqls.some((s) => s.includes("tvf_order_reco"))).toBe(false);
   });
 });

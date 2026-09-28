@@ -188,10 +188,11 @@ flowchart LR
   SA --> AU{IAP-verified identity\n= updated_by}
   AU --> M[BQ MERGE / replace-per-key]
   M --> OK[revalidate screen]
-  SA -. restock/capacity/self-heal .-> Job[Cloud Run Job\nBHAGA_ORDER_RECO_ONLY]
+  SA -. restock/capacity/pins/qty/self-heal .-> SP[BQ CALL sp_refresh_order_reco\nsubmitted, not awaited]
   SA -. tip exemptions .-> Job2[Cloud Run Job\nFORCE_MODEL_RECOMPUTE]
   SA -. sync clocked hours .-> Job3[Cloud Run Job\nBHAGA_ADP_TIMECARD_ONLY]
-  Job --> RR[refresh_order_reco]
+  SP --> RUNS[(inventory_order_reco_runs\nrunning → committed)]
+  RUNS --> BAN[OrderRecoStatusProvider\npolls 2s → repaint + toast]
 ```
 
 Reused write contracts (already proven in `handler.py`):
@@ -200,7 +201,7 @@ Reused write contracts (already proven in `handler.py`):
   optional `exempt_start`/`exempt_end` HH:MM window) via Payroll Detail **Update**, then
   Cloud Run Jobs recompute-only for touched dates. Editable only for the open pay period.
 - **Goals / capacity** → MERGE into `store_config` (key: store, key). Capacity =
-  `order_reco_max_tubs`; changing it enqueues order-reco refresh (`FEATURES.asyncOrderReco`).
+  `order_reco_max_tubs`; changing it requests an order-reco refresh (Issue #350).
 - **Restock schedule** → MERGE into `inventory_restock_schedule` (key: store, date).
 - **Restock actuals** → **replace-per-date**: DELETE `inventory_restock_orders`
   for (store, date), INSERT parsed rows, then enqueue `refresh_order_reco`.
@@ -250,8 +251,8 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   **Current Qty** is editable when `FEATURES.writeRestock` is on (Issue #240): click the
   cell or header pencil → right Sheet listing **all bases** (same pattern as Order Tubs)
   → Apply once → sticky `inventory_current_qty_overrides` MERGEs (COALESCE into
-  `vw_inventory_order_assistant`) → **inline** `refresh_order_reco` so On hand / Order
-  tubs / Days left converge before the Sheet closes (not async-enqueue).
+  `vw_inventory_order_assistant`) → order-reco refresh requested; the status banner
+  shows progress and the table repaints when the run commits.
   Reset all clears overrides so ClickUp closings win again.
 - **Per-date column group ×N** (live dates from `vw_order_reco_next_dates`,
   capped by `order_reco_max_slots` default 4 — migration 052; includes
@@ -262,16 +263,23 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   `Manual` is a per-base pin on an Estimated date (`inventory_order_tub_overrides`,
   migration 055) — does not flip the date to Actuals. Console
   pivots `inventory_order_reco` long-format so adding another registered
-  schedule date adds another column group automatically. While an async
-  `order-reco` job is in flight, the table paints only a **complete
-  generation** (item Order tubs sum to TOTAL per date); new dates stay
-  hidden until ready. Pending uses `InventoryRecoFreshness` (poll
-  `refreshed_at` / paint-ready — not a “reload the page” banner). Refresh
-  is write-then-swap (`refreshed_at` generation, migration 067).
+  schedule date adds another column group automatically. Refresh is one
+  atomic BigQuery procedure (`sp_refresh_order_reco`, migration 081, Issue #350)
+  so the table only ever holds a complete generation. `OrderRecoStatusBanner`
+  (page-level `OrderRecoStatusProvider`) reads the `inventory_order_reco_runs`
+  ledger: **Updating** (elapsed vs typical p95, "safe to keep editing — the latest
+  edit always wins"), **Inputs changed** + Update now (live inputs fingerprint ≠
+  the painted run's), **Last refresh failed** + Retry, or **Up to date · updated X
+  ago · 10/09: 29 → 31 tubs** from `inventory_order_reco_history`. A page reload
+  mid-refresh shows the same state — it is read from BQ, not tab memory.
 - **Edit estimates / actuals** (Issues #225 / #238): click an **Order tubs**
   cell (or the header pencil) to open a batch Sheet for that date. Estimated
   dates: set Estimated vs Manual tubs, then Apply → replace-per-date overrides +
-  one `refresh_order_reco`. Actuals dates: edit qty → replace-per-date
+  one refresh. The drawer previews the result live (`lib/inventory/waterFill.ts`,
+  same water-fill as the procedure, golden fixture shared with Python): per-base
+  `→ N` with a ±delta chip and "After Apply: N tubs · M fit under capacity C with
+  X on hand", because capacity is a hard cap and a pin on one base takes tubs from
+  the Estimated bases. Actuals dates: edit qty → replace-per-date
   `inventory_restock_orders` (same write as Restock Add actuals). Water-fill
   budget shrinks by pinned tubs on Estimated dates; pinned items (incl. 0) are
   excluded from candidates.
@@ -298,7 +306,14 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   split the column, so the metric read 0 regardless of stock. The view still
   exists in BQ with no reader.
 - **Capacity control** bound to `order_reco_max_tubs` (default 120); editing it
-  recomputes the recommendation.
+  recomputes the recommendation. Capacity is a hard cap per delivery date
+  (on hand at delivery + order ≤ capacity).
+- **History (Issue #350, migration 080, append-only — `check_append_only_history.py`)**:
+  every committed generation lands in `inventory_order_reco_history` (with `run_id`,
+  `Source`), every run in `inventory_order_reco_runs` (inputs JSON + fingerprint +
+  capacity), and every operator edit (console `lib/bq/editLog.ts`, Slack
+  `handler._log_inventory_edit`) in `inventory_edit_log`; `vw_inventory_edit_log`
+  derives `old_value` with `LAG`.
 
 Freshness for the closing-form source (`inventory_closing_daily` /
 `vw_inventory_base_latest_daily`) and the restock schedule is surfaced on

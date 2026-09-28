@@ -595,6 +595,18 @@ or `process_reviews.py`). Every raw scrape also has a 1:1 raw BQ table (mirrored
 |---|---|---|---|
 | `vw_order_reco_combined` | one row per (store, Item) | `Item`, `Current Qty`, `Avg per day`, then per date N∈{1,2}: `On Hand N`, `Order Tubs N`, `Order Weight N`, `After Restock N`, `Days Left N`, `Source N` | Self-join pivot (`FULL OUTER JOIN` of reco rows for live `d1`/`d2` **by `delivery_date`**, migration 041 — not Slot alone) so shared identity columns appear once and each date gets its own column group. `Source N` = `'Actuals'` if `inventory_restock_orders` has any rows for that date, else `'Estimated'` (`Source 2` is `NULL` when no second date is registered). What Grafana panel 83 / Operator Console `/inventory` actually reads. |
 
+**Migrations 080/081 additions** (Issue #350 — atomic refresh + append-only history). The water-fill itself is unchanged except for a deterministic tie-break (`ORDER BY sort_key, item, k`; the TVFs left exact ties to BigQuery). **Capacity is a hard cap per delivery date**: `budget = FLOOR(capacity − Σ on_hand at delivery) − Σ Manual pins`, so a pin on one base takes tubs from the Estimated bases (10/09 at cap 110: pinning Açaí 12 / Pitaya 2 / Pog 3 moved Matcha 7→6 and Mango 7→5, total still 29).
+
+| Object | Grain | Key columns | Notes |
+|---|---|---|---|
+| `sp_refresh_order_reco(p_store, p_trigger, p_requested_by, p_run_id, p_dry_run, p_pins_override, p_capacity_override, p_as_of)` | procedure | — | Replaces the TVF chain. One script job: all slots chained in-memory, then one transaction (MERGE swap of `inventory_order_reco` + history insert + `committed` runs row). Re-checks `vw_order_reco_inputs_fingerprint` and recomputes (≤ 3 passes) if an edit landed mid-run. Concurrent-conflict → `superseded`; other errors → `failed` + RAISE `order_reco_failed run_id=…`. Dry run returns rows without writing. |
+| `inventory_order_reco_history` | one row per (run, Slot, Item) incl. TOTAL | live columns + `run_id`, `Source` | Append-only; partitioned `DATE(refreshed_at)`, no expiry. |
+| `inventory_order_reco_runs` | one row per run status event | `run_id`, `status` (running/committed/superseded/failed), `event_at`, `trigger`, `requested_by`, `inputs_fingerprint`, `capacity`, `passes`, `error`, `inputs` JSON | Append-only ledger; latency = committed − running `event_at`. |
+| `inventory_edit_log` / `vw_inventory_edit_log` | one row per operator edit | `entity`, `action`, `delivery_date`, `item`, `key`, `new_value` JSON, `edited_by`, `source` (console/slack) | Full post-edit state per row; the view derives `old_value` with `LAG`. |
+| `vw_order_reco_inputs_fingerprint` | one row per store | `fingerprint` | Hash of every input (closings, overrides, schedule, actuals, pins, capacity). Staleness = live ≠ last committed run's. |
+
+`inventory_order_reco` gains `Source` and `run_id` (the console `Source` badge reads the stored value, falling back to the legacy EXISTS check for pre-#350 rows).
+
 ---
 
 ## 7. Forecast — `model_forecast_daily` (BQ-authoritative, 2026-06-09)

@@ -2,7 +2,6 @@ import {
   estimatedScheduleDates,
   inventoryStockLevels,
   nextDates,
-  orderRecoRefreshedAt,
   orderRecoSlots,
   restockActuals,
   scheduledRestockDates,
@@ -10,11 +9,10 @@ import {
   usageDayAudit,
   type UsageDayAuditRow,
 } from "@/lib/bq/queries";
-import { ensureOrderRecoFresh } from "@/lib/bq/writes";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { ensureOrderRecoFresh } from "@/lib/bhaga/orderReco";
+import { DEFAULT_STORE, operatorEmail } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
-import { triggerOrderRecoRefresh } from "@/lib/bhaga/recompute";
 import {
   normalizeDeliveryDate,
   pivotOrderRecoSlots,
@@ -37,7 +35,11 @@ import { CapacityEdit } from "@/components/drawers/CapacityEdit";
 import { UsageDayAuditTable } from "@/components/inventory/UsageDayAuditTable";
 import { OrderRecoTable } from "@/components/inventory/OrderRecoTable";
 import { OrderedTubsActualsTable } from "@/components/inventory/OrderedTubsActualsTable";
-import { InventoryRecoFreshness } from "@/components/inventory/InventoryRecoFreshness";
+import {
+  OrderRecoStatusBanner,
+  OrderRecoStatusProvider,
+} from "@/components/inventory/OrderRecoStatus";
+import type { OrderRecoStatus } from "@/lib/inventory/orderRecoStatus";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
 
@@ -85,27 +87,19 @@ export default async function InventoryPage({
   let estimateByDate: Record<string, RestockRow[]> = {};
   let maxTubs: number | undefined;
   let error: string | undefined;
-  let recoQueued = false;
-  let recoBaseline: string | null = null;
-  let recoPending = false;
+  let recoStatus: OrderRecoStatus | null = null;
   /** Showing stock/burn only, because no delivery date is registered. */
   let stockOnly = false;
   try {
-    // Prod: enqueue Cloud Run when stale. Local BYPASS_IAP: refresh inline so
-    // Inventory columns match schedule without waiting on a job.
-    const syncLocal = Boolean(process.env.BYPASS_IAP_EMAIL?.trim());
-    recoBaseline = await orderRecoRefreshedAt(DEFAULT_STORE);
-    const ensure = await ensureOrderRecoFresh(
-      DEFAULT_STORE,
-      FEATURES.asyncOrderReco && !syncLocal
-        ? {
-            enqueue: async () => {
-              await triggerOrderRecoRefresh(DEFAULT_STORE);
-            },
-          }
-        : {},
-    );
-    recoQueued = ensure.status === "queued";
+    // Inputs changed since the painted generation (new day, nightly closings,
+    // a refresh that never started): start one; the banner follows it. The
+    // table still renders when status is unavailable.
+    try {
+      const by = await operatorEmail().catch(() => "page-open");
+      recoStatus = (await ensureOrderRecoFresh(DEFAULT_STORE, by)).status;
+    } catch (e) {
+      console.error(`order_reco_status_unavailable store=${DEFAULT_STORE}: ${String(e)}`);
+    }
     const [slotRows, nd, config, estimated, scheduled, audit, actuals] =
       await Promise.all([
         orderRecoSlots(),
@@ -120,7 +114,6 @@ export default async function InventoryPage({
     liveDates = nd.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
     const paint = selectPaintGeneration(liveDates, slotRows);
     dates = paint.readyDates;
-    recoPending = paint.pending || recoQueued;
     const paintRows = rowsForPaintGeneration(slotRows, paint);
     rows = pivotOrderRecoSlots(dates, paintRows);
     auditRows = audit;
@@ -155,7 +148,7 @@ export default async function InventoryPage({
           "Register a delivery date to get order quantities."
         : "No delivery date registered yet.";
 
-  return (
+  const page = (
     <div className="flex min-w-0 max-w-full flex-col gap-4">
       <PageHeader
         title="Inventory / Ordering"
@@ -196,12 +189,7 @@ export default async function InventoryPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
-          {recoPending ? (
-            <InventoryRecoFreshness
-              pending={recoPending}
-              baselineRefreshedAt={recoBaseline}
-            />
-          ) : null}
+          <OrderRecoStatusBanner />
           <p className="text-sm text-muted-foreground">{nextDeliveryLabel}</p>
           {stockOnly ? (
             <p className="text-xs text-muted-foreground">
@@ -217,8 +205,9 @@ export default async function InventoryPage({
               other bases 20 lbs; Blade is direct-delivery / not weighed). TOTAL includes +50
               lbs per pallet (40 tubs/pallet) — same as Grafana Order Assistant. Click an
               Order tubs cell (or the pencil in the header) to edit that delivery: Estimated
-              dates pin Manual values; Actuals dates update uploaded Actuals. Apply once
-              recomputes the recommendation.
+              dates pin Manual values; Actuals dates update uploaded Actuals. Capacity is a
+              hard cap per delivery: pinning more tubs on one base leaves fewer for the
+              Estimated bases on that date. Apply once recomputes the recommendation.
             </p>
           )}
           <OrderRecoTable
@@ -259,5 +248,10 @@ export default async function InventoryPage({
         </>
       )}
     </div>
+  );
+  return recoStatus ? (
+    <OrderRecoStatusProvider initialStatus={recoStatus}>{page}</OrderRecoStatusProvider>
+  ) : (
+    page
   );
 }

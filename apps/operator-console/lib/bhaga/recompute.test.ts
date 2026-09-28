@@ -133,6 +133,7 @@ describe("triggerOrderRecoRefresh", () => {
     const env = body.overrides.containerOverrides[0].env as { name: string; value: string }[];
     expect(env.find((e) => e.name === "BHAGA_ORDER_RECO_ONLY")?.value).toBe("1");
     expect(env.find((e) => e.name === "BHAGA_STORE")?.value).toBe("palmetto");
+    expect(env.find((e) => e.name === "BHAGA_ORDER_RECO_LEGACY")?.value).toBe("1");
   });
 
   it("skips :run when a Cloud Run execution is already in flight", async () => {

@@ -188,6 +188,7 @@ Automation maturity: M0 manual prose → M1 scripted → M2 gate/hook → M3 sel
 | | 100% test coverage | pytest | gate | M2 | agent | M2 |
 | Evidence & verification | Local verify harness | verify.py | gate | M2 | agent | M2 ✓ (this PR) |
 | | Live labor $ (no frozen model dollars) | check_live_labor_cost.py (wired in verify.py) | gate | M2 | agent | M2 (#267) |
+| | Order-reco history append-only | check_append_only_history.py (wired in verify.py) | gate | M2 | agent | M2 (#350) |
 | | Plan readiness gate | check_plan_readiness.py (evidence-tier declaration required) | gate | M2 | agent | M2 ✓ |
 | | Evidence readiness predictor | check_evidence_readiness.py (mirrors D2a rubric; exits 1 for pytest-only) | gate | M2 | agent | M2 ✓ |
 | | Lifecycle conformance | verify_lifecycle.py | gate | M2 | agent | M2 ✓ |

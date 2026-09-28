@@ -343,6 +343,13 @@ GRAFANA_VIEWS: list[Target] = [
     # Registered in GRAFANA_VIEWS above.
     # migration 065–066 (Issue #251): payroll_draft_runs — last Start→Preview
     # status + preview_hours / preview_gross. Console /payroll only — not Grafana.
+    # migration 080/081 (Issue #350): sp_refresh_order_reco replaces the TVF chain;
+    # append-only inventory_order_reco_history / inventory_edit_log and the
+    # inventory_order_reco_runs ledger (running → committed | superseded | failed,
+    # latency = committed − running event_at). The runs ledger is the freshness
+    # signal: every nightly writes a row, so an empty 2-day window means the
+    # recompute stopped running.
+    Target("inventory_order_reco_runs", "event_at", "refreshed_recently"),
 ]
 
 # Tables/views referenced in dashboard.json that are NOT vw_* views and are

@@ -58,7 +58,7 @@ describe("replaceEstimatedRestockDate", () => {
     ).rejects.toThrow(/has Actuals/);
   });
 
-  it("happy path: deletes schedule+orders for from, MERGEs to, refreshes reco", async () => {
+  it("happy path: deletes schedule+orders for from, MERGEs to, logs the edit (reco refresh is the caller's job)", async () => {
     q.mockResolvedValueOnce([{ n: 1 }]) // on schedule
       .mockResolvedValueOnce([{ n: 0 }]) // no actuals
       .mockImplementation(async (sql: string) => {
@@ -78,8 +78,8 @@ describe("replaceEstimatedRestockDate", () => {
       true,
     );
     expect(sqls.some((s) => s.includes("MERGE") && s.includes("inventory_restock_schedule"))).toBe(true);
-    expect(sqls.some((s) => s.includes("tvf_order_reco_slot1"))).toBe(true);
-    expect(sqls.some((s) => s.includes("tvf_order_reco_slot_n"))).toBe(true);
+    expect(sqls.some((s) => s.includes("inventory_edit_log"))).toBe(true);
+    expect(sqls.some((s) => s.includes("tvf_order_reco"))).toBe(false);
   });
 
   it("submitRestock refuses replace-estimated", async () => {
@@ -114,7 +114,7 @@ describe("moveRestockDate", () => {
     expect(mutate).not.toHaveBeenCalled();
   });
 
-  it("moves Actuals from→to then refreshes reco", async () => {
+  it("moves Actuals from→to and logs the edit", async () => {
     q.mockImplementation(async (sql: string) => {
       if (sql.includes("COUNT(*)") && sql.includes("inventory_restock_schedule")) {
         return [{ n: 1 }];
@@ -144,7 +144,8 @@ describe("moveRestockDate", () => {
     expect(sqls.some((s) => s.includes("INSERT INTO") && s.includes("inventory_restock_orders"))).toBe(
       true,
     );
-    expect(sqls.some((s) => s.includes("tvf_order_reco_slot1"))).toBe(true);
+    expect(sqls.some((s) => s.includes("inventory_edit_log"))).toBe(true);
+    expect(sqls.some((s) => s.includes("tvf_order_reco"))).toBe(false);
   });
 });
 
@@ -172,7 +173,7 @@ describe("removeRestockDate", () => {
     );
   });
 
-  it("clears schedule + orders and refreshes", async () => {
+  it("clears schedule + orders and logs the edit", async () => {
     q.mockResolvedValueOnce([{ n: 1 }]).mockImplementation(async (sql: string) => {
       if (sql.includes("order_reco_max_tubs")) return [{ value: "120" }];
       if (sql.includes("vw_order_reco_next_dates")) return [{ slot: 1 }];
@@ -187,6 +188,7 @@ describe("removeRestockDate", () => {
     expect(sqls.some((s) => s.includes("DELETE FROM") && s.includes("inventory_restock_orders"))).toBe(
       true,
     );
-    expect(sqls.some((s) => s.includes("tvf_order_reco_slot1"))).toBe(true);
+    expect(sqls.some((s) => s.includes("inventory_edit_log"))).toBe(true);
+    expect(sqls.some((s) => s.includes("tvf_order_reco"))).toBe(false);
   });
 });

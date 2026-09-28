@@ -22,7 +22,8 @@ export const MUTATING_ACTIONS = [
   { name: "clearCurrentQtyOverrideAction", page: "inventory", heavy: "order-reco" },
   { name: "applyCurrentQtyOverridesAction", page: "inventory", heavy: "order-reco" },
   { name: "clearCurrentQtyOverridesAction", page: "inventory", heavy: "order-reco" },
-  { name: "pollOrderRecoRefreshAction", page: "inventory", heavy: null },
+  { name: "orderRecoStatusAction", page: "inventory", heavy: null },
+  { name: "retryOrderRecoAction", page: "inventory", heavy: "order-reco" },
   // Payroll
   { name: "addTrainingShiftAction", page: "payroll", heavy: null },
   { name: "addRecognitionBonusAction", page: "payroll", heavy: null },

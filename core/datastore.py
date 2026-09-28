@@ -315,13 +315,23 @@ def _scan_migration_files() -> list[tuple[int, str, pathlib.Path]]:
     return results
 
 
+SCRIPT_DIRECTIVE = "-- jarvis:script"
+
+
 def _split_statements(sql: str) -> list[str]:
     """Split a SQL file into individual statements.
 
     Splits on semicolons that are NOT inside a line comment (-- ...), a
     block comment (/* ... */), or a single-quoted string literal ('...').
     Single-quoted strings handle escaped quotes via doubling ('').
+
+    A file whose first line is ``-- jarvis:script`` is returned whole as one
+    statement: BigQuery runs it as a single multi-statement script job. Use it
+    for procedures, whose bodies contain semicolons at every nesting level.
     """
+    if sql.lstrip().startswith(SCRIPT_DIRECTIVE):
+        body = sql.strip()
+        return [body] if body.removeprefix(SCRIPT_DIRECTIVE).strip() else []
     statements: list[str] = []
     current: list[str] = []
     i = 0

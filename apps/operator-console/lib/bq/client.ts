@@ -98,3 +98,17 @@ export async function mutate(
 ): Promise<void> {
   await bq().query({ query: sql, params, types, location: "US" });
 }
+
+/**
+ * Start a query job and return without waiting for it to finish — for long
+ * statements (e.g. `CALL sp_refresh_order_reco`) whose progress is tracked
+ * through their own status rows rather than by holding the request open.
+ */
+export async function submitQuery(
+  sql: string,
+  params?: Record<string, unknown>,
+  types?: Record<string, string>,
+): Promise<string> {
+  const [job] = await bq().createQueryJob({ query: sql, params, types, location: "US" });
+  return job.id ?? "";
+}

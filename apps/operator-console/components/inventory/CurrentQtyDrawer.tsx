@@ -50,7 +50,6 @@ export function CurrentQtyDrawer({
   const { banner, followOrderReco } = useOrderRecoRefreshFollowup({
     pendingBanner:
       "Recalculating On hand / Order tubs / Days left from the new Current Qty…",
-    doneToast: "Current Qty saved — order recommendation updated",
   });
 
   useEffect(() => {
@@ -97,7 +96,7 @@ export function CurrentQtyDrawer({
     if (!ack.ok) return;
     followOrderReco({
       queued: ack.queued,
-      baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+      data: ack.data,
     });
     onOpenChange(false);
   }
@@ -113,7 +112,7 @@ export function CurrentQtyDrawer({
     if (!ack.ok) return;
     followOrderReco({
       queued: ack.queued,
-      baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+      data: ack.data,
     });
     onOpenChange(false);
   }

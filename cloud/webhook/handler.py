@@ -156,8 +156,6 @@ _BQ_TRAINING_SHIFTS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.training_shifts"
 _BQ_EMPLOYEE_ALIASES_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.employee_aliases"
 _BQ_RESTOCK_SCHEDULE_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_schedule"
 _BQ_RESTOCK_ORDERS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_orders"
-_BQ_ORDER_RECO_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_order_reco"
-_ORDER_RECO_DEFAULT_MAX_TUBS = 120
 
 # Bot token for Slack Web API calls (views.open, files download, chat.postMessage).
 # Unlike response_url (used by every other command), the restock modal needs a
@@ -931,6 +929,7 @@ def _handle_config_set(key: str, value: str, form: dict, response_url: str = "")
                 ("by", "STRING", user_name),
             ]),
         ).result()
+        _log_inventory_edit(store, "store_config", "set", key=key, new_value=value, by=user_name)
         _post_response_url(response_url, {
             "response_type": "ephemeral",
             "text": f":white_check_mark: `{key}` set to *{value}* (by {user_name})",
@@ -938,7 +937,7 @@ def _handle_config_set(key: str, value: str, form: dict, response_url: str = "")
         if key == "order_reco_max_tubs":
             # Recompute async so a capacity change reflects on the Grafana
             # tables promptly without delaying the config-set confirmation.
-            _dispatch_async(_refresh_order_reco, store)
+            _dispatch_async(_refresh_order_reco, store, "slack-capacity")
     except Exception as exc:
         log.error("config set failed: %s", exc)
         _post_response_url(response_url, {
@@ -1250,6 +1249,42 @@ def _parse_restock_csv(text: str) -> tuple[list[tuple[str, float]], list[str]]:
     return list(deduped.items()), errors
 
 
+def _log_inventory_edit(
+    store: str, entity: str, action: str, *, by: str,
+    delivery_date: str | None = None, item: str | None = None,
+    key: str | None = None, new_value: object = None,
+) -> None:
+    """Append one full-state row to inventory_edit_log (Issue #350, migration 080).
+
+    Same shape as the console's logInventoryEdit (apps/operator-console/lib/bq/
+    editLog.ts) so Slack and console edits share one history. Best effort: the
+    edit itself already landed, so a failure is a breadcrumb, never a raise.
+    """
+    try:
+        _bq.query(  # type: ignore[union-attr]
+            f"INSERT INTO `{_BQ_PROJECT}.{_BQ_DATASET}.inventory_edit_log`"
+            " (event_id, store, entity, action, delivery_date, item, key, new_value,"
+            "  edited_by, edited_at, source)"
+            " VALUES (GENERATE_UUID(), @store, @entity, @action, @date, @item, @key,"
+            "  SAFE.PARSE_JSON(@value), @by, CURRENT_TIMESTAMP(), 'slack')",
+            job_config=_bq_param_config([
+                ("store", "STRING", store),
+                ("entity", "STRING", entity),
+                ("action", "STRING", action),
+                ("date", "DATE", delivery_date),
+                ("item", "STRING", item),
+                ("key", "STRING", key),
+                ("value", "STRING", None if new_value is None else json.dumps(new_value)),
+                ("by", "STRING", by),
+            ]),
+        ).result()
+    except Exception as exc:
+        log.error(
+            "inventory_edit_log_failed store=%s entity=%s action=%s date=%s item=%s key=%s: %s",
+            store, entity, action, delivery_date or "", item or "", key or "", exc,
+        )
+
+
 def _restock_set_schedule(store: str, delivery_date: str, user_name: str) -> None:
     """MERGE the delivery date into inventory_restock_schedule (idempotent)."""
     fq = f"`{_BQ_RESTOCK_SCHEDULE_TABLE}`"
@@ -1266,6 +1301,9 @@ def _restock_set_schedule(store: str, delivery_date: str, user_name: str) -> Non
             ("by", "STRING", user_name),
         ]),
     ).result()
+    _log_inventory_edit(
+        store, "restock_schedule", "set", delivery_date=delivery_date, new_value=True, by=user_name,
+    )
 
 
 def _restock_clear_orders(store: str, delivery_date: str) -> None:
@@ -1298,6 +1336,10 @@ def _restock_replace_orders(
     from google.cloud import bigquery as _bq_mod  # type: ignore[import]  # noqa: PLC0415
 
     _restock_clear_orders(store, delivery_date)
+    _log_inventory_edit(
+        store, "restock_actuals", "set" if rows else "clear", delivery_date=delivery_date,
+        new_value=[{"item": item, "tubs": qty} for item, qty in rows], by=user_name,
+    )
     if not rows:
         return
     fq = f"`{_BQ_RESTOCK_ORDERS_TABLE}`"
@@ -1319,93 +1361,35 @@ def _restock_replace_orders(
     ).result()
 
 
-def _refresh_order_reco(store: str) -> None:
-    """Recompute inventory_order_reco for `store` (Issue #137, Option D).
+def _refresh_order_reco(store: str, trigger: str = "webhook") -> None:
+    """Recompute inventory_order_reco for `store` via sp_refresh_order_reco (Issue #350).
 
     Mirrors core/order_reco.py's refresh_order_reco — duplicated here because
     handler.py is a standalone deploy unit and cannot import core/ (see
     module docstring; same rationale as _ACTIVE_BASES). Keep both in sync.
     Dispatched async from a restock submission or an order_reco_max_tubs
-    config-set — never called on the 3s-deadline request path.
-
-    Migration 052: loops live next-dates slots (cap order_reco_max_slots,
-    default 4) via tvf_order_reco_slot1 + tvf_order_reco_slot_n.
-    Migration 067: write-then-swap with a shared refreshed_at generation.
+    config-set — never called on the 3s-deadline request path. The procedure
+    is atomic and supersedes concurrent runs, so overlapping dispatches are safe.
     """
     if _bq is None:
         return
+    import uuid
+    run_id = f"webhook-{uuid.uuid4().hex[:12]}"
     try:
-        rows = list(_bq.query(  # type: ignore[union-attr]
-            f"SELECT value FROM `{_BQ_STORE_CONFIG_TABLE}`"
-            f" WHERE store = @store AND key = 'order_reco_max_tubs'"
-            f" ORDER BY updated_at DESC LIMIT 1",
-            job_config=_bq_param_config([("store", "STRING", store)]),
-        ).result())
-        max_tubs = int(rows[0]["value"]) if rows else _ORDER_RECO_DEFAULT_MAX_TUBS
-
-        slot_rows = list(_bq.query(  # type: ignore[union-attr]
-            f"SELECT slot FROM `{_BQ_PROJECT}.{_BQ_DATASET}.vw_order_reco_next_dates`"
-            f" ORDER BY slot",
-        ).result())
-        slots = [int(r["slot"]) for r in slot_rows]
-
-        fq_reco = f"`{_BQ_ORDER_RECO_TABLE}`"
-        # Explicit columns — migration 041 added delivery_date; t.* + ts would mis-map.
-        _cols = (
-            "store, Slot, Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, "
-            "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, "
-            "_ord, refreshed_at, delivery_date"
-        )
-        if not slots:
-            _bq.query(  # type: ignore[union-attr]
-                f"DELETE FROM {fq_reco} WHERE store = @store",
-                job_config=_bq_param_config([("store", "STRING", store)]),
-            ).result()
-            log.info("refresh_order_reco: no next dates store=%s — cleared", store)
-            return
-        from datetime import datetime, timezone
-        gen = datetime.now(timezone.utc)
-        _sel = (
-            "Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, "
-            "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, "
-            "_ord, @gen, delivery_date"
-        )
         _bq.query(  # type: ignore[union-attr]
-            f"INSERT INTO {fq_reco} ({_cols}) SELECT @store, 1, {_sel}"
-            f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot1`(@mt)",
+            f"CALL `{_BQ_PROJECT}.{_BQ_DATASET}.sp_refresh_order_reco`"
+            f"(@store, @trigger, 'webhook', @run_id, FALSE, NULL, NULL, NULL)",
             job_config=_bq_param_config([
                 ("store", "STRING", store),
-                ("mt", "INT64", max_tubs),
-                ("gen", "TIMESTAMP", gen),
+                ("trigger", "STRING", trigger),
+                ("run_id", "STRING", run_id),
             ]),
         ).result()
-        for slot in slots:
-            if slot < 2:
-                continue
-            # Slot N reads prior slot's materialized row (migration 052).
-            _bq.query(  # type: ignore[union-attr]
-                f"INSERT INTO {fq_reco} ({_cols}) SELECT @store, @slot, {_sel}"
-                f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot_n`(@mt, @slot)",
-                job_config=_bq_param_config([
-                    ("store", "STRING", store),
-                    ("mt", "INT64", max_tubs),
-                    ("slot", "INT64", slot),
-                    ("gen", "TIMESTAMP", gen),
-                ]),
-            ).result()
-        _bq.query(  # type: ignore[union-attr]
-            f"DELETE FROM {fq_reco} WHERE store = @store AND refreshed_at != @gen",
-            job_config=_bq_param_config([
-                ("store", "STRING", store),
-                ("gen", "TIMESTAMP", gen),
-            ]),
-        ).result()
-        log.info(
-            "refresh_order_reco: recomputed store=%s max_tubs=%d slots=%s",
-            store, max_tubs, slots,
-        )
+        log.info("refresh_order_reco: committed store=%s run_id=%s trigger=%s", store, run_id, trigger)
     except Exception as exc:
-        log.error("refresh_order_reco failed (breadcrumb): store=%s exc=%s", store, exc)
+        log.error(
+            "order_reco_failed run_id=%s store=%s trigger=%s exc=%s", run_id, store, trigger, exc,
+        )
 
 
 def _handle_restock_submission(payload: dict) -> dict:
@@ -1458,6 +1442,9 @@ def _handle_restock_submission(payload: dict) -> dict:
 
         if action == "Reset to estimated":
             _restock_clear_orders(store, delivery_date)
+            _log_inventory_edit(
+                store, "restock_actuals", "clear", delivery_date=delivery_date, new_value=[], by=user_name,
+            )
             summary = f":white_check_mark: Restock {delivery_date} reset to estimated (actuals cleared)."
         elif action == "Add order (actuals)":
             csv_text = _download_slack_file(files[0]["url_private_download"])
@@ -1480,7 +1467,7 @@ def _handle_restock_submission(payload: dict) -> dict:
         _slack_api("chat.postMessage", {"channel": user_id, "text": summary})
         # Recompute the dual-date reco off the request path (Issue #137) —
         # keeps the modal's < 3s deadline; the Grafana tables catch up async.
-        _dispatch_async(_refresh_order_reco, store)
+        _dispatch_async(_refresh_order_reco, store, "slack-restock")
         return {"response_action": "clear"}
     except Exception as exc:
         log.error("restock submission failed: %s", exc)

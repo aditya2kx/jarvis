@@ -1,103 +1,43 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { pollOrderRecoRefreshAction } from "@/app/inventory/actions";
-import { useActionToast } from "@/lib/actions/ActionToast";
-
-const RECO_POLL_MS = 3000;
-const RECO_TIMEOUT_MS = 3 * 60 * 1000;
+import { useOrderRecoStatus } from "@/components/inventory/OrderRecoStatus";
 
 export type OrderRecoFollowupInput = {
   queued?: string[] | null;
-  baselineRefreshedAt?: string | null;
+  /** Action ack data; carries `runId` of the refresh this write started. */
+  data?: unknown;
 };
 
+function runIdOf(data: unknown): string | null {
+  if (!data || typeof data !== "object" || !("runId" in data)) return null;
+  const id = (data as { runId?: unknown }).runId;
+  return typeof id === "string" && id ? id : null;
+}
+
 /**
- * After any inventory write that enqueues async order-reco: immediate
- * router.refresh(), then poll refreshed_at and refresh again when it advances
- * (Capacity / Restock / usage-day Apply).
+ * After an inventory write that started an order-reco refresh: repaint now
+ * (the edited inputs), then let the page-level OrderRecoStatusProvider follow
+ * the refresh — it outlives the drawer that triggered it (Issue #350).
  */
-export function useOrderRecoRefreshFollowup(opts?: {
-  pendingBanner?: string;
-  doneToast?: string;
-  timeoutBanner?: string;
-}) {
+export function useOrderRecoRefreshFollowup(opts?: { pendingBanner?: string }) {
   const router = useRouter();
-  const toast = useActionToast();
-  const [banner, setBanner] = useState<string | null>(null);
-  const baselineRef = useRef<string | null>(null);
-  const startedAtRef = useRef(0);
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const pendingBanner =
-    opts?.pendingBanner ??
-    "Order recommendation refreshing — Order tubs / Avg/day update when ready.";
-  const doneToast = opts?.doneToast ?? "Order recommendation updated";
-  const timeoutBanner =
-    opts?.timeoutBanner ??
-    "Recommendation still refreshing — reload the page in a minute if numbers look stale.";
-
-  const stopPolling = useCallback(() => {
-    if (pollTimerRef.current) {
-      clearInterval(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => () => stopPolling(), [stopPolling]);
-
-  const finishOk = useCallback(() => {
-    stopPolling();
-    setBanner(null);
-    toast.push(doneToast, "info");
-    router.refresh();
-  }, [doneToast, router, stopPolling, toast]);
-
-  const finishTimeout = useCallback(() => {
-    stopPolling();
-    setBanner(timeoutBanner);
-    toast.push("Order recommendation still refreshing — try reload shortly", "error");
-  }, [stopPolling, timeoutBanner, toast]);
-
-  const pollOnce = useCallback(async () => {
-    if (Date.now() - startedAtRef.current > RECO_TIMEOUT_MS) {
-      finishTimeout();
-      return;
-    }
-    const ack = await pollOrderRecoRefreshAction({
-      baselineRefreshedAt: baselineRef.current,
-    });
-    if (!ack.ok) {
-      stopPolling();
-      setBanner(null);
-      toast.push(ack.error, "error");
-      return;
-    }
-    if (ack.data?.advanced) {
-      finishOk();
-    }
-  }, [finishOk, finishTimeout, stopPolling, toast]);
+  const ctx = useOrderRecoStatus();
+  const follow = ctx?.follow;
 
   const followOrderReco = useCallback(
-    (input: OrderRecoFollowupInput, opts?: { skipImmediateRefresh?: boolean }) => {
-      if (!opts?.skipImmediateRefresh) {
-        router.refresh();
-      }
-      if (!input.queued?.length) {
-        return;
-      }
-      stopPolling();
-      baselineRef.current = input.baselineRefreshedAt ?? null;
-      startedAtRef.current = Date.now();
-      setBanner(pendingBanner);
-      void pollOnce();
-      pollTimerRef.current = setInterval(() => {
-        void pollOnce();
-      }, RECO_POLL_MS);
+    (input: OrderRecoFollowupInput, o?: { skipImmediateRefresh?: boolean }) => {
+      if (!o?.skipImmediateRefresh) router.refresh();
+      if (input.queued?.length) follow?.(runIdOf(input.data));
     },
-    [pendingBanner, pollOnce, router, stopPolling],
+    [follow, router],
   );
 
-  return { banner, followOrderReco, stopPolling };
+  const pending = Boolean(ctx && (ctx.awaiting || ctx.status.state === "running"));
+  const banner = pending
+    ? `${opts?.pendingBanner ?? "Order recommendation updating — numbers repaint when it finishes."} Safe to keep editing — the latest edit wins.`
+    : null;
+
+  return { banner, followOrderReco, stopPolling: () => {} };
 }

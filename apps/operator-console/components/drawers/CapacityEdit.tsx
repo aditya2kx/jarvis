@@ -14,11 +14,8 @@ export function CapacityEdit({ currentMaxTubs }: { currentMaxTubs?: number }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(String(currentMaxTubs ?? 120));
   const { isPending, stage, error, run, setError } = useConsoleAction();
-  const { banner, followOrderReco } = useOrderRecoRefreshFollowup({
-    pendingBanner:
-      "Order recommendation refreshing — Order tubs update when capacity is applied.",
-    doneToast: "Capacity applied — Order tubs updated",
-  });
+  // Progress shows in the page-level OrderRecoStatusBanner, not inline here.
+  const { followOrderReco } = useOrderRecoRefreshFollowup();
 
   if (!editing) {
     return (
@@ -26,11 +23,6 @@ export function CapacityEdit({ currentMaxTubs }: { currentMaxTubs?: number }) {
         <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
           Capacity: {currentMaxTubs ?? "—"} tubs
         </Button>
-        {banner ? (
-          <p className="max-w-xs text-right text-xs text-amber-800 dark:text-amber-200">
-            {banner}
-          </p>
-        ) : null}
       </div>
     );
   }
@@ -63,7 +55,7 @@ export function CapacityEdit({ currentMaxTubs }: { currentMaxTubs?: number }) {
               setEditing(false);
               followOrderReco({
                 queued: ack.queued,
-                baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+                data: ack.data,
               });
             });
           }}
@@ -79,11 +71,6 @@ export function CapacityEdit({ currentMaxTubs }: { currentMaxTubs?: number }) {
           </span>
         ) : null}
       </div>
-      {banner ? (
-        <p className="max-w-xs text-right text-xs text-amber-800 dark:text-amber-200">
-          {banner}
-        </p>
-      ) : null}
     </div>
   );
 }

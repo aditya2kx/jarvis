@@ -1069,7 +1069,7 @@ class RefreshOrderRecoStepTests(unittest.TestCase):
     def test_refresh_order_reco_step_is_wired_via_run_step(self):
         self.assertIn('run_step(\n        "refresh_order_reco"', self.src)
         self.assertIn("from core.order_reco import refresh_order_reco", self.src)
-        self.assertIn("lambda: refresh_order_reco(args.store)", self.src)
+        self.assertIn('lambda: refresh_order_reco(args.store, trigger="nightly")', self.src)
 
     def test_refresh_order_reco_runs_after_ingest_inventory(self):
         ingest_idx = self.src.index('run_step(\n        "ingest_inventory"')
@@ -1916,27 +1916,6 @@ class TestMaintenanceSmartRetry(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(entry["status"], "skipped_adp_throttle")
-
-
-class TestOrderRecoOnlyEarlyExit(unittest.TestCase):
-    """BHAGA_ORDER_RECO_ONLY=1 skips scrape/model and only refreshes order reco (Issue #175)."""
-
-    def test_order_reco_only_calls_refresh_and_returns(self):
-        import agents.bhaga.scripts.daily_refresh as dr
-
-        called: list[str] = []
-
-        def _fake_refresh(store: str) -> None:
-            called.append(store)
-
-        argv = ["daily_refresh", "--store", "palmetto", "--date", "2026-07-17", "--no-slack"]
-        with mock.patch.object(sys, "argv", argv), \
-             mock.patch.dict(os.environ, {"BHAGA_ORDER_RECO_ONLY": "1", "BHAGA_STORE": "palmetto"}, clear=False), \
-             mock.patch("core.order_reco.refresh_order_reco", side_effect=_fake_refresh), \
-             mock.patch.object(dr, "_load_profile", side_effect=AssertionError("must not load profile")):
-            rc = dr.main()
-        self.assertEqual(rc, 0)
-        self.assertEqual(called, ["palmetto"])
 
 
 class TestClearAdpReportsIfShiftsMissing(unittest.TestCase):

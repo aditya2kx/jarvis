@@ -40,7 +40,7 @@ function seedChoice(row: UsageDayAuditRow): OverrideDraftChoice {
 
 export type UsageDayOverridesApplied = {
   queued: boolean;
-  baselineRefreshedAt: string | null;
+  data?: unknown;
 };
 
 /**
@@ -61,7 +61,7 @@ export function UsageDayOverrideDrawer({
   date: string | null;
   rows: UsageDayAuditRow[];
   writable: boolean;
-  /** Parent polls reco + router.refresh (drawer unmounts on close). */
+  /** Parent hands the refresh to the page-level status provider (drawer unmounts on close). */
   onApplied?: (result: UsageDayOverridesApplied) => void;
 }) {
   const dayRows = useMemo(
@@ -102,7 +102,7 @@ export function UsageDayOverrideDrawer({
     onOpenChange(false);
     onApplied?.({
       queued: Boolean(ack.queued?.length),
-      baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+      data: ack.data,
     });
   }
 

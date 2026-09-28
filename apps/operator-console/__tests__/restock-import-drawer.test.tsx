@@ -12,7 +12,7 @@ vi.mock("@/app/inventory/actions", () => ({
   moveRestockDateAction: (...args: unknown[]) => moveRestockDateAction(...args),
   removeRestockDateAction: (...args: unknown[]) => removeRestockDateAction(...args),
   replaceEstimatedRestockDateAction: vi.fn(),
-  pollOrderRecoRefreshAction: vi.fn(),
+  orderRecoStatusAction: vi.fn(),
 }));
 
 vi.mock("@/lib/inventory/useOrderRecoRefreshFollowup", () => ({

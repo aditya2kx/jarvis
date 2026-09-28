@@ -1,0 +1,158 @@
+{
+  "bases": [
+    {
+      "item": "Açaí",
+      "onHand": 25.97,
+      "avgPerDay": 1.73
+    },
+    {
+      "item": "Blade",
+      "onHand": 0.0,
+      "avgPerDay": 1.0
+    },
+    {
+      "item": "Coconut",
+      "onHand": 13.97,
+      "avgPerDay": 0.73
+    },
+    {
+      "item": "Mango",
+      "onHand": 7.76,
+      "avgPerDay": 0.84
+    },
+    {
+      "item": "Matcha",
+      "onHand": 3.96,
+      "avgPerDay": 0.64
+    },
+    {
+      "item": "Pitaya",
+      "onHand": 9.6,
+      "avgPerDay": 0.4
+    },
+    {
+      "item": "Pog",
+      "onHand": 0.0,
+      "avgPerDay": 0.63
+    },
+    {
+      "item": "Tropical",
+      "onHand": 17.29,
+      "avgPerDay": 0.61
+    },
+    {
+      "item": "Ube",
+      "onHand": 2.13,
+      "avgPerDay": 0.17
+    }
+  ],
+  "cases": [
+    {
+      "name": "2026-10-09 before pins, capacity 110",
+      "capacity": 110,
+      "pins": {},
+      "budget": 29,
+      "cutoffTie": false,
+      "expected": {
+        "Açaí": 3,
+        "Blade": 0,
+        "Coconut": 0,
+        "Mango": 7,
+        "Matcha": 7,
+        "Pitaya": 0,
+        "Pog": 11,
+        "Tropical": 0,
+        "Ube": 1
+      }
+    },
+    {
+      "name": "2026-10-09 after pins Açaí 12 / Pitaya 2 / Pog 3, capacity 110",
+      "capacity": 110,
+      "pins": {
+        "Açaí": 12,
+        "Pitaya": 2,
+        "Pog": 3
+      },
+      "budget": 12,
+      "cutoffTie": false,
+      "expected": {
+        "Açaí": 12,
+        "Blade": 0,
+        "Coconut": 0,
+        "Mango": 5,
+        "Matcha": 6,
+        "Pitaya": 2,
+        "Pog": 3,
+        "Tropical": 0,
+        "Ube": 1
+      }
+    },
+    {
+      "name": "2026-10-09 same pins, capacity 112 (Matcha 6th / Mango 5th tub both score ~14.0; float order decides)",
+      "capacity": 112,
+      "pins": {
+        "Açaí": 12,
+        "Pitaya": 2,
+        "Pog": 3
+      },
+      "budget": 14,
+      "cutoffTie": false,
+      "expected": {
+        "Açaí": 12,
+        "Blade": 0,
+        "Coconut": 0,
+        "Mango": 6,
+        "Matcha": 7,
+        "Pitaya": 2,
+        "Pog": 3,
+        "Tropical": 0,
+        "Ube": 1
+      }
+    },
+    {
+      "name": "pins exceed the budget: nothing left to water-fill",
+      "capacity": 90,
+      "pins": {
+        "Açaí": 12,
+        "Pitaya": 2,
+        "Pog": 3
+      },
+      "budget": 0,
+      "cutoffTie": false,
+      "expected": {
+        "Açaí": 12,
+        "Blade": 0,
+        "Coconut": 0,
+        "Mango": 0,
+        "Matcha": 0,
+        "Pitaya": 2,
+        "Pog": 3,
+        "Tropical": 0,
+        "Ube": 0
+      }
+    },
+    {
+      "name": "exact tie at the cutoff: item name breaks it (legacy SQL had no tie-break)",
+      "bases": [
+        {
+          "item": "Mango",
+          "onHand": 1.0,
+          "avgPerDay": 0.5
+        },
+        {
+          "item": "Matcha",
+          "onHand": 1.0,
+          "avgPerDay": 0.5
+        }
+      ],
+      "capacity": 3,
+      "pins": {},
+      "budget": 1,
+      "cutoffTie": true,
+      "expected": {
+        "Mango": 1,
+        "Matcha": 0
+      }
+    }
+  ]
+}

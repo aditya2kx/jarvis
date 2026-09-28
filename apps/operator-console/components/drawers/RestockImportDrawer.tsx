@@ -95,7 +95,6 @@ export function RestockImportDrawer({
   const [showImport, setShowImport] = useState(false);
   const { isPending, stage, error, run } = useConsoleAction();
   const { banner: recoBanner, followOrderReco } = useOrderRecoRefreshFollowup({
-    doneToast: "Restock applied — Order tubs updated",
   });
 
   const isMove = action === "move-date";
@@ -164,7 +163,7 @@ export function RestockImportDrawer({
         setOpen(false);
         followOrderReco({
           queued: ack.queued,
-          baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+          data: ack.data,
         });
       }
       return;
@@ -189,7 +188,7 @@ export function RestockImportDrawer({
         setRemoveConfirmed(false);
         followOrderReco({
           queued: ack.queued,
-          baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+          data: ack.data,
         });
       }
       return;
@@ -219,7 +218,7 @@ export function RestockImportDrawer({
       setOpen(false);
       followOrderReco({
         queued: ack.queued,
-        baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+        data: ack.data,
       });
     }
   }
@@ -232,11 +231,6 @@ export function RestockImportDrawer({
 
   return (
     <>
-      {recoBanner && !open ? (
-        <p className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
-          {recoBanner}
-        </p>
-      ) : null}
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger render={<Button size="sm">Restock…</Button>} />
         <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-md">

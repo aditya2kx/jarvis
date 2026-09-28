@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -21,6 +22,9 @@ import {
 } from "@/components/ui/select";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { useOrderRecoRefreshFollowup } from "@/lib/inventory/useOrderRecoRefreshFollowup";
+import { waterFillDate } from "@/lib/inventory/waterFill";
+import { deltaLabel } from "@/lib/inventory/orderRecoStatus";
+import { formatNumber } from "@/lib/format";
 import {
   applyOrderTubOverridesAction,
   submitRestockAction,
@@ -30,6 +34,9 @@ export type EstimateTubRow = {
   item: string;
   orderTubs: number;
   source: "Estimated" | "Manual" | "Actuals" | null;
+  /** On hand at this delivery (before its order) — drives the live preview. */
+  onHand?: number | null;
+  avgPerDay?: number | null;
 };
 
 type Mode = "estimated" | "manual";
@@ -70,9 +77,6 @@ export function EstimateTubsDrawer({
     pendingBanner: isActuals
       ? "Order recommendation refreshing — Actuals update when ready."
       : "Order recommendation refreshing — Order tubs update when pins apply.",
-    doneToast: isActuals
-      ? "Actuals saved — Order tubs updated"
-      : "Estimate pins applied — Order tubs updated",
   });
 
   useEffect(() => {
@@ -95,6 +99,32 @@ export function EstimateTubsDrawer({
       qty: String(r?.orderTubs ?? 0),
     };
   }
+
+  // Live preview of Apply: pins don't move this date's on-hand, so the
+  // water-fill for the date can be recomputed here as the operator types.
+  const preview = useMemo(() => {
+    if (isActuals || maxTubs == null) return null;
+    const fill = rows.filter((r) => r.item !== "TOTAL");
+    if (!fill.length || fill.some((r) => r.onHand == null || r.avgPerDay == null)) return null;
+    const pins: Record<string, number> = {};
+    for (const r of bases) {
+      const d = drafts[r.item];
+      const mode = d?.mode ?? (r.source === "Manual" ? "manual" : "estimated");
+      if (mode !== "manual") continue;
+      const n = Number(d?.qty ?? r.orderTubs);
+      if (!Number.isInteger(n) || n < 0) return null;
+      pins[r.item] = n;
+    }
+    const onHand = fill.reduce((a, r) => a + Number(r.onHand), 0);
+    const tubs = waterFillDate(
+      fill.map((r) => ({ item: r.item, onHand: Number(r.onHand), avgPerDay: Number(r.avgPerDay) })),
+      maxTubs,
+      pins,
+    );
+    const total = Object.values(tubs).reduce((a, n) => a + n, 0);
+    const current = fill.reduce((a, r) => a + r.orderTubs, 0);
+    return { tubs, total, current, onHand, room: Math.max(Math.floor(maxTubs - onHand), 0) };
+  }, [isActuals, maxTubs, rows, bases, drafts]);
 
   const dirty = bases.filter((r) => {
     const d = drafts[r.item] ?? seed(r.item);
@@ -133,7 +163,7 @@ export function EstimateTubsDrawer({
       onOpenChange(false);
       followOrderReco({
         queued: ack.queued,
-        baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+        data: ack.data,
       });
       return;
     }
@@ -166,7 +196,7 @@ export function EstimateTubsDrawer({
     onOpenChange(false);
     followOrderReco({
       queued: ack.queued,
-      baselineRefreshedAt: ack.data?.baselineRefreshedAt ?? null,
+      data: ack.data,
     });
   }
 
@@ -190,20 +220,38 @@ export function EstimateTubsDrawer({
             {isActuals ? (
               <>
                 Update Actuals Order Tubs for this delivery, then Apply once. Saves replace the
-                uploaded Actuals for the date (same as Restock → Add actuals).
+                uploaded Actuals for the date (same as Restock → Add actuals). Actuals are used
+                as entered — capacity and Manual pins do not apply to this date.
               </>
             ) : (
               <>
-                Pin Order Tubs per base for this Estimated date, then Apply once. Unpinned bases
-                recompute under capacity{maxTubs != null ? ` (${maxTubs} tubs)` : ""}.
+                Pin Order Tubs per base for this Estimated date, then Apply once. Capacity
+                {maxTubs != null ? ` (${maxTubs} tubs)` : ""} is a hard cap for the date, so tubs
+                pinned on one base come out of the Estimated bases.
               </>
             )}
           </SheetDescription>
         </SheetHeader>
 
         <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+          {preview ? (
+            <p
+              className="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+              data-testid="estimate-preview-summary"
+            >
+              <span className="font-medium text-foreground">
+                After Apply: {preview.total} tubs
+                {preview.total !== preview.current ? ` (now ${preview.current})` : ""}
+              </span>
+              {" · "}
+              {preview.room} fit under capacity {maxTubs} with {formatNumber(preview.onHand, 1)} on
+              hand at delivery. Preview — final numbers land when the refresh finishes.
+            </p>
+          ) : null}
           {bases.map((r) => {
             const d = drafts[r.item] ?? seed(r.item);
+            const next = preview?.tubs[r.item];
+            const delta = next == null ? null : deltaLabel(r.orderTubs, next);
             return (
               <div
                 key={r.item}
@@ -211,13 +259,25 @@ export function EstimateTubsDrawer({
               >
                 <div className="min-w-[7rem] flex-1">
                   <Label className="text-xs text-muted-foreground">{r.item}</Label>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
                     Current: {r.orderTubs}
                     {isActuals
                       ? " · Actuals"
                       : r.source === "Manual"
                         ? " · Manual"
                         : " · Estimated"}
+                    {next != null && d.mode === "estimated" ? (
+                      <span className="tabular-nums text-foreground">→ {next}</span>
+                    ) : null}
+                    {delta ? (
+                      <Badge
+                        variant={delta.startsWith("+") ? "secondary" : "outline"}
+                        className="h-5 px-1.5 text-[0.7rem] tabular-nums"
+                        aria-label={`${r.item} changes by ${delta} tubs`}
+                      >
+                        {delta}
+                      </Badge>
+                    ) : null}
                   </p>
                 </div>
                 {isActuals ? null : (

@@ -37,7 +37,7 @@ describe("setCurrentQtyOverride / clearCurrentQtyOverride", () => {
   it("rejects negative qty and does not write", async () => {
     const { setCurrentQtyOverride } = await load();
     await expect(
-      setCurrentQtyOverride("palmetto", "Mango", -1, "op@test", { skipRefresh: true }),
+      setCurrentQtyOverride("palmetto", "Mango", -1, "op@test"),
     ).rejects.toThrow(/quantity must be/);
     expect(mutate).not.toHaveBeenCalled();
   });
@@ -45,15 +45,15 @@ describe("setCurrentQtyOverride / clearCurrentQtyOverride", () => {
   it("rejects TOTAL / Blade", async () => {
     const { setCurrentQtyOverride } = await load();
     await expect(
-      setCurrentQtyOverride("palmetto", "TOTAL", 1, "op@test", { skipRefresh: true }),
+      setCurrentQtyOverride("palmetto", "TOTAL", 1, "op@test"),
     ).rejects.toThrow(/invalid item/);
     await expect(
-      setCurrentQtyOverride("palmetto", "Blade", 1, "op@test", { skipRefresh: true }),
+      setCurrentQtyOverride("palmetto", "Blade", 1, "op@test"),
     ).rejects.toThrow(/invalid item/);
     expect(mutate).not.toHaveBeenCalled();
   });
 
-  it("MERGEs override then refreshes unless skipRefresh", async () => {
+  it("MERGEs override and logs the edit without an inline reco refresh", async () => {
     q.mockImplementation(async (sql: string) => {
       if (sql.includes("order_reco_max_tubs")) return [{ value: "120" }];
       if (sql.includes("vw_order_reco_next_dates")) return [{ slot: 1 }];
@@ -65,19 +65,20 @@ describe("setCurrentQtyOverride / clearCurrentQtyOverride", () => {
     expect(sqls.some((s) => s.includes("MERGE") && s.includes("inventory_current_qty_overrides"))).toBe(
       true,
     );
-    expect(sqls.some((s) => s.includes("tvf_order_reco_slot1"))).toBe(true);
+    expect(sqls.some((s) => s.includes("INSERT INTO") && s.includes("inventory_edit_log"))).toBe(true);
+    expect(sqls.some((s) => s.includes("tvf_order_reco") || s.includes("sp_refresh_order_reco"))).toBe(false);
   });
 
   it("DELETEs override on clear", async () => {
     const { clearCurrentQtyOverride } = await load();
-    await clearCurrentQtyOverride("palmetto", "Mango", { skipRefresh: true });
+    await clearCurrentQtyOverride("palmetto", "Mango", "op@test");
     const sqls = mutate.mock.calls.map((c) => String(c[0]));
     expect(
       sqls.some((s) => s.includes("DELETE FROM") && s.includes("inventory_current_qty_overrides")),
     ).toBe(true);
   });
 
-  it("batch apply MERGEs each dirty row then refreshes once", async () => {
+  it("batch apply MERGEs + logs each dirty row, no inline refresh", async () => {
     q.mockImplementation(async (sql: string) => {
       if (sql.includes("order_reco_max_tubs")) return [{ value: "120" }];
       if (sql.includes("vw_order_reco_next_dates")) return [{ slot: 1 }];
@@ -97,6 +98,7 @@ describe("setCurrentQtyOverride / clearCurrentQtyOverride", () => {
       (s) => s.includes("MERGE") && s.includes("inventory_current_qty_overrides"),
     );
     expect(merges.length).toBe(2);
-    expect(sqls.filter((s) => s.includes("tvf_order_reco_slot1")).length).toBe(1);
+    expect(sqls.filter((s) => s.includes("inventory_edit_log")).length).toBe(2);
+    expect(sqls.some((s) => s.includes("tvf_order_reco"))).toBe(false);
   });
 });

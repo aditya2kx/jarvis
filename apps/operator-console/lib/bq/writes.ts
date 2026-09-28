@@ -1,18 +1,18 @@
 import "server-only";
-import { dateParam, fq, intParam, mutate, q, timestampParam } from "./client";
+import { dateParam, fq, intParam, mutate, q } from "./client";
+import { logInventoryEdit } from "./editLog";
 
 // Every write here mirrors the exact statement cloud/webhook/handler.py uses
 // (see handler.py::_restock_set_schedule/_restock_clear_orders/
-// _restock_replace_orders/_refresh_order_reco/_handle_config_set) so the app
+// _restock_replace_orders/_handle_config_set) so the app
 // write path and the /bhaga-cloud Slack path converge on identical rows —
 // never invent a different statement shape for the "same" write.
+//
+// Writes never recompute the order recommendation inline: the caller requests
+// one refresh after the whole edit (lib/bhaga/orderReco.ts). Every inventory
+// write appends its new state to inventory_edit_log (lib/bq/editLog.ts).
 
 const DEFAULT_MAX_TUBS = 120;
-
-export type RecoRefreshOpts = {
-  /** When true, caller enqueues durable order-reco refresh (Issue #175 Option B). */
-  skipRefresh?: boolean;
-};
 
 /** MERGE the delivery date into inventory_restock_schedule (idempotent). */
 export async function setRestockSchedule(store: string, deliveryDate: string, by: string): Promise<void> {
@@ -25,14 +25,20 @@ export async function setRestockSchedule(store: string, deliveryDate: string, by
        VALUES (@store, @date, CURRENT_TIMESTAMP(), @by)`,
     { store, date: dateParam(deliveryDate), by },
   );
+  await logInventoryEdit({ store, entity: "restock_schedule", action: "set", deliveryDate, newValue: true, by });
 }
 
-/** DELETE all actual-order rows for (store, date) — "reset to estimated". */
-export async function clearRestockOrders(store: string, deliveryDate: string): Promise<void> {
+async function deleteRestockOrders(store: string, deliveryDate: string): Promise<void> {
   await mutate(`DELETE FROM ${fq("inventory_restock_orders")} WHERE store = @store AND delivery_date = @date`, {
     store,
     date: dateParam(deliveryDate),
   });
+}
+
+/** DELETE all actual-order rows for (store, date) — "reset to estimated". */
+export async function clearRestockOrders(store: string, deliveryDate: string, by: string): Promise<void> {
+  await deleteRestockOrders(store, deliveryDate);
+  await logInventoryEdit({ store, entity: "restock_actuals", action: "clear", deliveryDate, newValue: [], by });
 }
 
 /**
@@ -40,34 +46,39 @@ export async function clearRestockOrders(store: string, deliveryDate: string): P
  * for that date so nothing is orphaned. Console-only "Replace estimated date"
  * uses this; Slack has no schedule-DELETE path yet.
  */
-export async function clearRestockSchedule(store: string, deliveryDate: string): Promise<void> {
+export async function clearRestockSchedule(store: string, deliveryDate: string, by: string): Promise<void> {
   await mutate(`DELETE FROM ${fq("inventory_restock_schedule")} WHERE store = @store AND delivery_date = @date`, {
     store,
     date: dateParam(deliveryDate),
   });
-  await clearRestockOrders(store, deliveryDate);
-  await clearOrderTubOverrides(store, deliveryDate);
+  await logInventoryEdit({ store, entity: "restock_schedule", action: "clear", deliveryDate, newValue: false, by });
+  await clearRestockOrders(store, deliveryDate, by);
+  await clearOrderTubOverrides(store, deliveryDate, by);
 }
 
-/** DELETE manual Order Tubs pins for (store, date). */
-export async function clearOrderTubOverrides(store: string, deliveryDate: string): Promise<void> {
+async function deleteOrderTubOverrides(store: string, deliveryDate: string): Promise<void> {
   await mutate(
     `DELETE FROM ${fq("inventory_order_tub_overrides")} WHERE store = @store AND delivery_date = @date`,
     { store, date: dateParam(deliveryDate) },
   );
 }
 
+/** DELETE manual Order Tubs pins for (store, date). */
+export async function clearOrderTubOverrides(store: string, deliveryDate: string, by: string): Promise<void> {
+  await deleteOrderTubOverrides(store, deliveryDate);
+  await logInventoryEdit({ store, entity: "order_tub_pins", action: "clear", deliveryDate, newValue: [], by });
+}
+
 /**
  * Replace-per-date manual Order Tubs pins (Issue #225). Empty `rows` clears all
  * pins for the date (all bases back to Estimated water-fill). Does not touch
- * Actuals. Caller refreshes reco once after save.
+ * Actuals.
  */
 export async function replaceOrderTubOverrides(
   store: string,
   deliveryDate: string,
   rows: { item: string; quantityTubs: number }[],
   by: string,
-  opts: RecoRefreshOpts = {},
 ): Promise<void> {
   for (const r of rows) {
     if (!Number.isInteger(r.quantityTubs) || r.quantityTubs < 0) {
@@ -91,7 +102,7 @@ export async function replaceOrderTubOverrides(
     );
   }
 
-  await clearOrderTubOverrides(store, deliveryDate);
+  await deleteOrderTubOverrides(store, deliveryDate);
   if (rows.length) {
     const params: Record<string, unknown> = { store, date: dateParam(deliveryDate), by };
     const valuesSql = rows
@@ -108,7 +119,14 @@ export async function replaceOrderTubOverrides(
       params,
     );
   }
-  if (!opts.skipRefresh) await refreshOrderReco(store);
+  await logInventoryEdit({
+    store,
+    entity: "order_tub_pins",
+    action: rows.length ? "set" : "clear",
+    deliveryDate,
+    newValue: rows.map((r) => ({ item: r.item, tubs: r.quantityTubs })),
+    by,
+  });
 }
 
 /**
@@ -124,7 +142,15 @@ export async function replaceRestockOrders(
   rows: { item: string; quantityTubs: number }[],
   by: string,
 ): Promise<void> {
-  await clearRestockOrders(store, deliveryDate);
+  await deleteRestockOrders(store, deliveryDate);
+  await logInventoryEdit({
+    store,
+    entity: "restock_actuals",
+    action: rows.length ? "set" : "clear",
+    deliveryDate,
+    newValue: rows.map((r) => ({ item: r.item, tubs: r.quantityTubs })),
+    by,
+  });
   if (!rows.length) return;
 
   const params: Record<string, unknown> = { store, date: dateParam(deliveryDate), by };
@@ -143,135 +169,6 @@ export async function replaceRestockOrders(
   );
 }
 
-/**
- * Recompute inventory_order_reco for `store` — mirrors
- * core/order_reco.py::refresh_order_reco / handler.py::_refresh_order_reco.
- * Order matters: slot N's TVF reads slot N-1's materialized row (latest
- * refreshed_at, migration 067), so earlier INSERTs must land first. After all
- * slots insert with a shared generation timestamp, DELETE prior generations.
- * Call after any restock write or an
- * order_reco_max_tubs config change. Slot count follows live
- * vw_order_reco_next_dates (migration 052, default cap 4).
- */
-export async function refreshOrderReco(store: string): Promise<void> {
-  const [cfgRows, slotRows] = await Promise.all([
-    q<{ value: string }>(
-      `SELECT value FROM ${fq("store_config")}
-       WHERE store = @store AND key = 'order_reco_max_tubs'
-       ORDER BY updated_at DESC LIMIT 1`,
-      { store },
-    ),
-    q<{ slot: number }>(`SELECT slot FROM ${fq("vw_order_reco_next_dates")} ORDER BY slot`),
-  ]);
-  const maxTubs = intParam(cfgRows.length ? Number(cfgRows[0].value) : DEFAULT_MAX_TUBS);
-  const slots = slotRows.map((r) => Number(r.slot)).filter((n) => Number.isFinite(n));
-  const gen = timestampParam(new Date());
-
-  // Explicit columns — migration 041 added delivery_date; t.* + ts would mis-map.
-  const cols =
-    "store, Slot, Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, " +
-    "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, " +
-    "_ord, refreshed_at, delivery_date";
-  const sel =
-    "Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, " +
-    "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, " +
-    "_ord, @gen, delivery_date";
-
-  if (!slots.length) {
-    await mutate(`DELETE FROM ${fq("inventory_order_reco")} WHERE store = @store`, { store });
-    return;
-  }
-
-  await mutate(
-    `INSERT INTO ${fq("inventory_order_reco")} (${cols})
-     SELECT @store, 1, ${sel} FROM ${fq("tvf_order_reco_slot1")}(@maxTubs)`,
-    { store, maxTubs, gen },
-  );
-  for (const slot of slots) {
-    if (slot < 2) continue;
-    await mutate(
-      `INSERT INTO ${fq("inventory_order_reco")} (${cols})
-       SELECT @store, @slot, ${sel} FROM ${fq("tvf_order_reco_slot_n")}(@maxTubs, @slot)`,
-      { store, maxTubs, slot: intParam(slot), gen },
-    );
-  }
-  await mutate(
-    `DELETE FROM ${fq("inventory_order_reco")} WHERE store = @store AND refreshed_at != @gen`,
-    { store, gen },
-  );
-}
-
-export type EnsureOrderRecoResult =
-  | { status: "fresh" }
-  | { status: "refreshed" }
-  | { status: "queued" };
-
-/**
- * Self-heal when live next-delivery dates and materialized reco rows diverge
- * (e.g. Chicago midnight rolled Slot 1 to a new calendar date but nightly
- * refresh has not run yet). Also refreshes when refreshed_at's CT date is
- * before today. Idempotent — no-op when already aligned.
- *
- * When `enqueue` is provided and the reco is stale, calls enqueue instead of
- * blocking the RSC on inline TVFs (Issue #175 Option B).
- */
-export async function ensureOrderRecoFresh(
-  store: string,
-  opts: { enqueue?: () => Promise<unknown> } = {},
-): Promise<EnsureOrderRecoResult> {
-  const [next, mat, todayRows, refreshedRows, dupRows] = await Promise.all([
-    q<{ delivery_date: string }>(
-      `SELECT CAST(delivery_date AS STRING) AS delivery_date
-       FROM ${fq("vw_order_reco_next_dates")} ORDER BY slot`,
-    ),
-    q<{ delivery_date: string | null }>(
-      `SELECT DISTINCT CAST(delivery_date AS STRING) AS delivery_date
-       FROM ${fq("inventory_order_reco")}
-       WHERE store = @store AND Item = 'TOTAL'`,
-      { store },
-    ),
-    q<{ today: string }>(`SELECT CAST(CURRENT_DATE('America/Chicago') AS STRING) AS today`),
-    q<{ refreshed_ct: string | null }>(
-      `SELECT CAST(DATE(MAX(refreshed_at), 'America/Chicago') AS STRING) AS refreshed_ct
-       FROM ${fq("inventory_order_reco")} WHERE store = @store`,
-      { store },
-    ),
-    // Concurrent refresh races leave duplicate (store, Slot, Item) rows — date
-    // sets still "match", so detect dups explicitly (Issue #238 localhost race).
-    q<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM (
-         SELECT Slot, Item FROM ${fq("inventory_order_reco")}
-         WHERE store = @store
-         GROUP BY Slot, Item
-         HAVING COUNT(*) > 1
-       )`,
-      { store },
-    ),
-  ]);
-
-  const live = new Set(next.map((d) => d.delivery_date.slice(0, 10)));
-  const have = new Set(
-    mat
-      .map((r) => (r.delivery_date == null ? "" : r.delivery_date.slice(0, 10)))
-      .filter(Boolean),
-  );
-  const today = todayRows[0]?.today ?? "";
-  const refreshedCt = refreshedRows[0]?.refreshed_ct ?? "";
-  const datesMatch = live.size === have.size && [...live].every((d) => have.has(d));
-  const staleDay = Boolean(today && refreshedCt && refreshedCt < today);
-  const hasDupes = Boolean(dupRows.length && Number(dupRows[0].n) > 0);
-
-  if (!datesMatch || staleDay || hasDupes || (live.size === 0 && have.size > 0)) {
-    if (opts.enqueue) {
-      await opts.enqueue();
-      return { status: "queued" };
-    }
-    await refreshOrderReco(store);
-    return { status: "refreshed" };
-  }
-  return { status: "fresh" };
-}
-
 export type RestockAction =
   | "add-order"
   | "register-only"
@@ -284,7 +181,7 @@ export type RestockAction =
  * One restock submission — mirrors handler.py::_handle_restock_submission's
  * three shared actions (add-order / register-only / reset-to-estimated).
  * Always registers the schedule first (even before any row write, same as
- * the Slack path), then always refreshes the reco at the end.
+ * the Slack path).
  * Console-only move/remove/replace use dedicated helpers — not submitRestock.
  */
 export async function submitRestock(
@@ -293,7 +190,6 @@ export async function submitRestock(
   action: RestockAction,
   rows: { item: string; quantityTubs: number }[],
   by: string,
-  opts: RecoRefreshOpts = {},
 ): Promise<void> {
   if (action === "replace-estimated") {
     throw new Error("submitRestock: use replaceEstimatedRestockDate for replace-estimated");
@@ -306,12 +202,11 @@ export async function submitRestock(
   }
   await setRestockSchedule(store, deliveryDate, by);
   if (action === "reset-to-estimated") {
-    await clearRestockOrders(store, deliveryDate);
+    await clearRestockOrders(store, deliveryDate, by);
   } else if (action === "add-order") {
     await replaceRestockOrders(store, deliveryDate, rows, by);
   }
   // "register-only" writes nothing further — the date is now tracked.
-  if (!opts.skipRefresh) await refreshOrderReco(store);
 }
 
 /**
@@ -324,7 +219,6 @@ export async function moveRestockDate(
   fromDate: string,
   toDate: string,
   by: string,
-  opts: RecoRefreshOpts = {},
 ): Promise<void> {
   if (fromDate === toDate) {
     throw new Error("moveRestockDate: from and to dates must differ");
@@ -352,7 +246,7 @@ export async function moveRestockDate(
     ),
   ]);
 
-  await clearRestockSchedule(store, fromDate);
+  await clearRestockSchedule(store, fromDate, by);
   await setRestockSchedule(store, toDate, by);
 
   if (orderRows.length) {
@@ -369,11 +263,9 @@ export async function moveRestockDate(
       toDate,
       overrideRows.map((r) => ({ item: r.item, quantityTubs: Number(r.quantity_tubs) })),
       by,
-      { skipRefresh: true },
     );
   }
 
-  if (!opts.skipRefresh) await refreshOrderReco(store);
 }
 
 /** Console-only: delete a registered delivery date (schedule + actuals + overrides). */
@@ -381,9 +273,7 @@ export async function removeRestockDate(
   store: string,
   deliveryDate: string,
   by: string,
-  opts: RecoRefreshOpts = {},
 ): Promise<void> {
-  void by; // audited via caller identity; DELETE rows don't store updated_by
   const scheduled = await q<{ n: number }>(
     `SELECT COUNT(*) AS n FROM ${fq("inventory_restock_schedule")}
      WHERE store = @store AND delivery_date = @date`,
@@ -392,8 +282,7 @@ export async function removeRestockDate(
   if (!scheduled.length || Number(scheduled[0].n) === 0) {
     throw new Error(`removeRestockDate: ${deliveryDate} is not on the restock schedule`);
   }
-  await clearRestockSchedule(store, deliveryDate);
-  if (!opts.skipRefresh) await refreshOrderReco(store);
+  await clearRestockSchedule(store, deliveryDate, by);
 }
 
 /**
@@ -405,7 +294,6 @@ export async function replaceEstimatedRestockDate(
   fromDate: string,
   toDate: string,
   by: string,
-  opts: RecoRefreshOpts = {},
 ): Promise<void> {
   if (fromDate === toDate) {
     throw new Error("replaceEstimatedRestockDate: from and to dates must differ");
@@ -431,9 +319,8 @@ export async function replaceEstimatedRestockDate(
     );
   }
 
-  await clearRestockSchedule(store, fromDate);
+  await clearRestockSchedule(store, fromDate, by);
   await setRestockSchedule(store, toDate, by);
-  if (!opts.skipRefresh) await refreshOrderReco(store);
 }
 
 /** MERGE a store_config key (goals, capacity) — shared by M3 capacity edits and M4 goals. */
@@ -442,7 +329,6 @@ export async function setConfig(
   key: string,
   value: string,
   by: string,
-  opts: RecoRefreshOpts = {},
 ): Promise<void> {
   await mutate(
     `MERGE ${fq("store_config")} T
@@ -453,9 +339,7 @@ export async function setConfig(
        VALUES (@store, @key, @value, CURRENT_TIMESTAMP(), @by)`,
     { store, key, value, by },
   );
-  if (key === "order_reco_max_tubs" && !opts.skipRefresh) {
-    await refreshOrderReco(store);
-  }
+  await logInventoryEdit({ store, entity: "store_config", action: "set", key, newValue: value, by });
 }
 
 /** Goal keys editable from the Home Goal and Tracking scorecard / Goals drawer.
@@ -978,6 +862,9 @@ export async function setUsageDayOverride(
     },
     { note: "STRING" },
   );
+  await logInventoryEdit({
+    store, entity: "usage_day_override", action: "set", deliveryDate: submittedDate, item, newValue: mode, by,
+  });
 }
 
 /** Clear override → rule-only eligibility (Issue #194). */
@@ -985,24 +872,27 @@ export async function clearUsageDayOverride(
   store: string,
   item: string,
   submittedDate: string,
+  by: string,
 ): Promise<void> {
   await mutate(
     `DELETE FROM ${fq("inventory_usage_day_overrides")}
      WHERE store = @store AND item = @item AND submitted_date = @date`,
     { store, item, date: dateParam(submittedDate) },
   );
+  await logInventoryEdit({
+    store, entity: "usage_day_override", action: "clear", deliveryDate: submittedDate, item, newValue: null, by,
+  });
 }
 
 /**
  * Sticky Current Qty override (Issue #240). COALESCE'd in
- * vw_inventory_order_assistant; rematerialize reco after write.
+ * vw_inventory_order_assistant.
  */
 export async function setCurrentQtyOverride(
   store: string,
   item: string,
   quantityUnits: number,
   by: string,
-  opts: RecoRefreshOpts = {},
 ): Promise<void> {
   const trimmed = item.trim();
   if (!trimmed || trimmed === "TOTAL" || trimmed === "Blade") {
@@ -1022,14 +912,16 @@ export async function setCurrentQtyOverride(
        VALUES (@store, @item, @qty, @by, CURRENT_TIMESTAMP())`,
     { store, item: trimmed, qty: quantityUnits, by },
   );
-  if (!opts.skipRefresh) await refreshOrderReco(store);
+  await logInventoryEdit({
+    store, entity: "current_qty_override", action: "set", item: trimmed, newValue: quantityUnits, by,
+  });
 }
 
 /** Drop Current Qty override → ClickUp closing reading wins again. */
 export async function clearCurrentQtyOverride(
   store: string,
   item: string,
-  opts: RecoRefreshOpts = {},
+  by: string,
 ): Promise<void> {
   const trimmed = item.trim();
   if (!trimmed || trimmed === "TOTAL" || trimmed === "Blade") {
@@ -1040,32 +932,29 @@ export async function clearCurrentQtyOverride(
      WHERE store = @store AND item = @item`,
     { store, item: trimmed },
   );
-  if (!opts.skipRefresh) await refreshOrderReco(store);
+  await logInventoryEdit({ store, entity: "current_qty_override", action: "clear", item: trimmed, newValue: null, by });
 }
 
-/** Batch MERGE Current Qty overrides, then one reco refresh (Issue #240). */
+/** Batch MERGE Current Qty overrides (Issue #240). */
 export async function applyCurrentQtyOverrides(
   store: string,
   rows: { item: string; quantityUnits: number }[],
   by: string,
-  opts: RecoRefreshOpts = {},
 ): Promise<void> {
   for (const r of rows) {
-    await setCurrentQtyOverride(store, r.item, r.quantityUnits, by, { skipRefresh: true });
+    await setCurrentQtyOverride(store, r.item, r.quantityUnits, by);
   }
-  if (!opts.skipRefresh) await refreshOrderReco(store);
 }
 
-/** Clear overrides for many items, then one reco refresh. */
+/** Clear overrides for many items. */
 export async function clearCurrentQtyOverrides(
   store: string,
   items: string[],
-  opts: RecoRefreshOpts = {},
+  by: string,
 ): Promise<void> {
   for (const item of items) {
-    await clearCurrentQtyOverride(store, item, { skipRefresh: true });
+    await clearCurrentQtyOverride(store, item, by);
   }
-  if (!opts.skipRefresh) await refreshOrderReco(store);
 }
 
 /** Read one audit row after override for threshold preview. */

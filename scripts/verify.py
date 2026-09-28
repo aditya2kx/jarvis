@@ -139,6 +139,12 @@ GATES: list[Gate] = [
         modes={"fast", "full"},
     ),
     Gate(
+        name="append-only-history",
+        argv=["python3", "scripts/check_append_only_history.py"],
+        hard=True,
+        modes={"fast", "full"},
+    ),
+    Gate(
         name="progress-push-guard",
         argv=["python3", "scripts/check_no_main_progress_push.py", "--gate"],
         hard=True,

@@ -20,7 +20,6 @@ Deployment-env config variables (e.g. `BHAGA_SECRETS_BACKEND`, `BHAGA_STATE_BACK
 | **Local event webhook** | `LOCAL_EVENT_WEBHOOK=1` | 2026-06 (PR #101) | off | Enables `dev_event_listener serve` HTTP push endpoint (Tailscale/smee). When unset (default), delivery is catch-up/`--watch` poll only. | Remove flag when webhook transport graduates from v2.1 experiment to default. | follow-up |
 | **Operator Console Accounting** | `FEATURES.accounting` / `FEATURES.writePlaidLink` in `apps/operator-console/lib/config/features.ts` | 2026-07 (Issue #158) | **on** | Gates Accounting nav/page and bank Link+sync writes. Code-level flags (not env). Accounting KPIs/ledger are linked-bank feed only (no Square mix on Finance). Runtime `PLAID_ENV=production` after Issue #168 cutover. **#160:** Palmetto taxonomy + Copilot rules live; PFC debug-only. **#189:** exclude-from-accounting on taxonomy; Home Finance=bank / Sales=Square / Labor=rates+bank payroll twin; propose-rule + multi-select filters. **#220:** `PLAID_WEBHOOK_URL` required on console (bhaga-webhook `/plaid/webhook`); nightly `daily_refresh` best-effort `plaid_sync` catch-up on existing `bhaga-nightly` (no dedicated Plaid scheduler); Manual Sync for backfill. No new flag. | Remove once Accounting+bank link have run stably in prod ≥ 14 days with successful sync screenshots. | follow-up |
 | **Operator Console Tip Exemptions** | `FEATURES.writeTipExemptions` (and `writeTraining=false`) in `features.ts` | 2026-07 (Issue #167) | **on** | Gates Payroll Tip Exemptions batch Update. Additive BQ columns (`exempt_start`/`exempt_end`); NULL/NULL remains whole-day bit-identical — no pipeline feature flag. | Fold into permanent Payroll UX once stable ≥ 14 days; then drop the unused `writeTraining` quick-add path. | follow-up |
-| **Operator Console async order-reco** | `FEATURES.asyncOrderReco` in `apps/operator-console/lib/config/features.ts` | 2026-07 (Issue #175) | **on** | After restock/capacity/self-heal, enqueue `bhaga-daily-refresh` with `BHAGA_ORDER_RECO_ONLY=1` instead of awaiting inline BQ TVFs on the click/RSC path. UI polls until a complete reco generation is paint-ready (Issue #261); skips a second `:run` if a job is already in flight. Set `false` to restore sync `refreshOrderReco`. | Remove once async path has run stably ≥ 14 days with no operator-reported stale-order incidents. | follow-up |
 | **Operator Console usage-day overrides** | `FEATURES.writeInventoryDayOverrides` in `features.ts` | 2026-07 (Issue #194) | **on** | Gates tap-to-override on `/inventory` Base usage-by-day table (`force_include` / `force_exclude` → `inventory_usage_day_overrides`). Changes avg/day + order reco. Flag-off = read-only chips. | Fold into permanent inventory UX after ≥ 14 days stable; keep table. | follow-up |
 | **Operator Console reimbursements** | `FEATURES.writePerks` in `apps/operator-console/lib/config/features.ts` | 2026-08 (Issue #267) | **on** | Gates Payroll **Add reimbursement…** MERGE into `employee_perks`. Recurring gym uses `pay_period=''`; mileage/cert use `YYYY-MM-DD..YYYY-MM-DD`. Flag-off hides the drawer; view still shows existing chips. | Fold into permanent Payroll UX after ≥ 14 days stable. | follow-up |
 | **Scoped model materialize** | `BHAGA_SCOPED_MATERIALIZE=1` | 2026-09 (Issue #285) | **on** — set on `bhaga-daily-refresh` 2026-09-14 (operator-approved); default in code remains off | Makes `materialize_model_bq --dates <iso,…>` scope the *write* to the grain units those dates touch (the days themselves; the containing ISO week and pay period, rebuilt as whole units). Off, `--dates` is ignored and every run rewrites all history — the behaviour that gave a one-date console recompute an 83-day blast radius. Computation stays full-history either way, so a scoped write is a subset of the full write, never a different one. **The scope must be as wide as the ingest window** — `daily_refresh` derives it with `ingested_dates(gap_start, refresh_date, …)`, which also folds in `--square-from`/`--adp-to` overrides. Passing only `refresh_date` left stale model rows under fresh raw data on every catch-up day but the last (Issue #295). | One full pay period has closed with the flag on and `assert_tip_pool_conserved` clean over the whole window. Clock started 2026-09-14. | follow-up |
@@ -33,6 +32,7 @@ Deployment-env config variables (e.g. `BHAGA_SECRETS_BACKEND`, `BHAGA_STATE_BACK
 | Name | Env Var | Removed | Notes |
 |------|---------|---------|-------|
 | BQ-canonical Sheet projector | `BHAGA_SHEET_FROM_BQ` | 2026-06-14 (PR TBD) | Path is unconditional: `daily_refresh` always runs `materialize_model_bq` → `render_model_sheet_from_bq`. Legacy `update_model_sheet` nightly step removed. |
+| Operator Console async order-reco | `FEATURES.asyncOrderReco` + job `BHAGA_ORDER_RECO_ONLY=1` | 2026-09 (Issue #350) | Console now CALLs `sp_refresh_order_reco` directly (submitted without waiting; the status banner follows the runs ledger). The Cloud Run order-reco-only job path is deleted. |
 
 ---
 
@@ -54,6 +54,14 @@ change prices bit-identically (prod parity: 0 rows differ on `vw_model_payroll_p
 `vw_labor_daily_live`). Admin-punch matching has a runtime kill switch instead of a flag:
 `store_config tip_exempt_punch_note_keywords = ""` disables it (the default `admin` applies when
 the row is absent).
+
+**Atomic order-reco refresh (Issue #350 / migrations 080–081):** hard cutover, no flag — operator
+decision 2026-09-28 after sandbox proof. `sp_refresh_order_reco` matches the pre-#350 TVF chain and an
+independent Python reference cell-for-cell at every capacity tested, and it is atomic: a failed run
+writes a `failed` ledger row and leaves the live table untouched, so the failure mode is "stale", never
+"wrong". The runtime identities that CALL it already hold the needed BigQuery roles (console
+`roles/editor`; webhook/job `bigquery.dataEditor` + `jobUser`), and deploy applies migrations before
+rolling out code. Rollback is a revert + deploy.
 
 Migration 005 raw-parity tables, the 5-section Grafana dashboard redesign, and the **BQ-primary raw layer** (PR #33) fall into this category — all changes are additive and idempotent:
 

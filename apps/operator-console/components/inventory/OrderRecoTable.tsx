@@ -56,6 +56,8 @@ export function OrderRecoTable({
         item: String(r.Item),
         orderTubs: Number(r[`Order Tubs ${slot}`] ?? 0),
         source: (r[`Source ${slot}`] as EstimateTubRow["source"]) ?? "Estimated",
+        onHand: r[`On Hand ${slot}`] == null ? null : Number(r[`On Hand ${slot}`]),
+        avgPerDay: r["Avg per day"] == null ? null : Number(r["Avg per day"]),
       }));
   }, [openDate, dates, rows]);
 

@@ -1993,20 +1993,41 @@ fallback while the BQ table is being seeded. After seeding, Sheet config becomes
 > `/bhaga-cloud config set order_reco_max_tubs <N>` — expected to change *seldomly* (only when the
 > shop's freezer capacity itself changes, e.g. a bigger freezer), never per-day. Setting it triggers
 > an immediate recompute (`cloud/webhook/handler.py::_handle_config_set` dispatches
-> `_refresh_order_reco` async). The recommendation is a MATERIALIZED table, `bhaga.inventory_order_reco`
+> `_refresh_order_reco` async). **Capacity is a hard cap per delivery date**: on hand at delivery +
+> order ≤ capacity, so pinning more tubs on one base lowers the Estimated bases (the console Order
+> tubs drawer previews this live). The recommendation is a MATERIALIZED table, `bhaga.inventory_order_reco`
 > — see `agents/bhaga/knowledge-base/DOMAIN.md` § migration 031 for why (BQ query-planning complexity
 > limit) and `.cursor/rules/bhaga.mdc` for the full invariant. It is recomputed by
-> `core.order_reco.refresh_order_reco()` from **five** triggers: (1) the nightly `daily_refresh.py`
+> **one atomic BigQuery procedure, `sp_refresh_order_reco` (migration 081, Issue #350)** — all slots
+> in one job, MERGE swap + history + runs row in one transaction, re-checks its inputs fingerprint and
+> recomputes if an edit landed mid-run, and records `superseded` (not an error) when a concurrent run
+> won. Every recompute is logged append-only (`inventory_order_reco_runs`, `inventory_order_reco_history`,
+> `inventory_edit_log`; gate `scripts/check_append_only_history.py`). It is invoked by
+> `core.order_reco.refresh_order_reco()` / webhook `_refresh_order_reco` / console
+> `requestOrderRecoRefresh` from **five** triggers: (1) the nightly `daily_refresh.py`
 > step `refresh_order_reco` (runs after `ingest_inventory`, non-fatal), (2) the restock modal's
 > `view_submission` handler after any schedule/orders write, (3) this config-set, (4) Operator
-> Console `/inventory` page load when materialized `delivery_date`s ≠ live next dates or
-> `refreshed_at` CT day is stale (`ensureOrderRecoFresh`), and (5) post-merge deploy after
+> Console `/inventory` page load when the live inputs fingerprint (`vw_order_reco_inputs_fingerprint`)
+> ≠ the last committed run's (`ensureOrderRecoFresh`), and (5) post-merge deploy after
 > `ensure_schema` (`deploy.yml` + `operator-console-deploy.yml`). If the tables
 > on the dashboard look stale, check which trigger last ran via
 > `python3 -m agents.bhaga.scripts.status --store palmetto` (nightly step) or re-trigger manually:
 > ```bash
 > BHAGA_DATASTORE=bigquery python3 -c "from core.order_reco import refresh_order_reco; refresh_order_reco('palmetto')"
 > ```
+>
+> **Order-reco run ledger (Issue #350).** Did a refresh land, and how long did it take?
+> ```sql
+> SELECT run_id, status, trigger, requested_by, event_at, capacity, passes, error
+> FROM `jarvis-bhaga-prod.bhaga.inventory_order_reco_runs`
+> WHERE store = 'palmetto' ORDER BY event_at DESC LIMIT 20
+> ```
+> `committed.event_at − running.event_at` per `run_id` is commit latency (typically ~20 s; the console
+> banner shows p95). Failures log `order_reco_failed run_id=<id>` (console, Cloud Run, webhook) and a
+> `failed` row with the BQ error; the banner offers Retry and nothing auto-retries. Who changed an
+> input: `SELECT * FROM bhaga.vw_inventory_edit_log WHERE store='palmetto' ORDER BY edited_at DESC`.
+> A failed run never changes the live table (the numbers go stale, not wrong). Fix the cause and press
+> Retry; there is no rollback flag — revert the PR and redeploy if the procedure itself is at fault.
 >
 > **Troubleshooting: /inventory On hand / Order tubs look like the wrong delivery date.**
 > Fixed in migration 041: live next-date headers were painted onto stale Slot 1/2 rows
@@ -2016,9 +2037,9 @@ fallback while the BQ table is being seeded. After seeding, Sheet config becomes
 > `inventory_closing_daily` row exists for today (restock-morning visibility without
 > evening double-count after closing absorbs received tubs). Migration **052**: planning
 > slots expand beyond 2 — cap `order_reco_max_slots` in `store_config` (default **4**);
-> `refresh_order_reco` / webhook `_refresh_order_reco` / console `refreshOrderReco` loop
-> `tvf_order_reco_slot1` then `tvf_order_reco_slot_n` for each live slot, then DELETE
-> prior `refreshed_at` generations (067 write-then-swap — no empty-table window).
+> `sp_refresh_order_reco` (081) loops every live slot in one job (the legacy path loops
+> `tvf_order_reco_slot1` then `tvf_order_reco_slot_n`, then DELETEs prior `refreshed_at`
+> generations — 067 write-then-swap).
 > Grafana `vw_order_reco_combined` stays dual-slot; Operator Console paints only
 > dates whose item Order tubs sum to TOTAL (Issue #261).
 > Deploy refreshes reco after schema so prod Operator Console updates on merge.
@@ -2202,8 +2223,10 @@ was removed in Issue #208).
    (clears IAP cookies, keeps Google session, asserts chooser → allowlisted tap → console).
 
 Mutating controls (restock, tip exemptions, goals, accounting writes, usage-day overrides, …) use the shared
-`useConsoleAction` feedback shell; order-reco refresh after restock/capacity/usage overrides is enqueued as a
-Cloud Run Job (`BHAGA_ORDER_RECO_ONLY=1`) so the click path stays responsive (Issue #175).
+`useConsoleAction` feedback shell; order-reco refresh after restock/capacity/usage overrides is a
+`sp_refresh_order_reco` CALL submitted without waiting (Issue #350; pre-#350 it was a Cloud Run Job),
+so the click path stays responsive
+and the page-level status banner follows the run.
 
 **Granting a new admin/operator** — one command, one layer:
 ```

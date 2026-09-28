@@ -33,10 +33,4 @@ export const FEATURES = {
   writeInventoryDayOverrides: true,
   /** Issue #158 — Plaid Link + sync write path. */
   writePlaidLink: true,
-  /**
-   * Issue #175 — enqueue order-reco refresh via Cloud Run Job instead of
-   * awaiting inline BQ TVFs on the click path. Brief Order Tubs staleness
-   * until the job finishes; set false to restore sync refresh.
-   */
-  asyncOrderReco: true,
 } as const;

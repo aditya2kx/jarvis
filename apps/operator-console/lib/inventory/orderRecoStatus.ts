@@ -60,8 +60,8 @@ export function relativeAgo(iso: string | null, now: number = Date.now()): strin
 /**
  * True once the refresh the operator is waiting on has landed. With a run id
  * that run must itself be committed or superseded (a superseded run lost to a
- * concurrent one that already committed); without one (legacy job path) any
- * commit newer than the baseline counts.
+ * concurrent one that already committed); without one (an action ack that
+ * carried no run id) any commit newer than the baseline counts.
  */
 export function awaitedRunLanded(
   status: OrderRecoStatus,

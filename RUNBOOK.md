@@ -2026,8 +2026,8 @@ fallback while the BQ table is being seeded. After seeding, Sheet config becomes
 > banner shows p95). Failures log `order_reco_failed run_id=<id>` (console, Cloud Run, webhook) and a
 > `failed` row with the BQ error; the banner offers Retry and nothing auto-retries. Who changed an
 > input: `SELECT * FROM bhaga.vw_inventory_edit_log WHERE store='palmetto' ORDER BY edited_at DESC`.
-> Rollback: set `ORDER_RECO_LEGACY=1` on the console service (and `BHAGA_ORDER_RECO_LEGACY=1` on the
-> webhook/job) to restore the pre-#350 TVF chain — see `docs/FEATURE_FLAGS.md`.
+> A failed run never changes the live table (the numbers go stale, not wrong). Fix the cause and press
+> Retry; there is no rollback flag — revert the PR and redeploy if the procedure itself is at fault.
 >
 > **Troubleshooting: /inventory On hand / Order tubs look like the wrong delivery date.**
 > Fixed in migration 041: live next-date headers were painted onto stale Slot 1/2 rows
@@ -2224,8 +2224,8 @@ was removed in Issue #208).
 
 Mutating controls (restock, tip exemptions, goals, accounting writes, usage-day overrides, …) use the shared
 `useConsoleAction` feedback shell; order-reco refresh after restock/capacity/usage overrides is a
-`sp_refresh_order_reco` CALL submitted without waiting (Issue #350; pre-#350 it was a Cloud Run Job,
-`BHAGA_ORDER_RECO_ONLY=1`, still used under `ORDER_RECO_LEGACY=1`), so the click path stays responsive
+`sp_refresh_order_reco` CALL submitted without waiting (Issue #350; pre-#350 it was a Cloud Run Job),
+so the click path stays responsive
 and the page-level status banner follows the run.
 
 **Granting a new admin/operator** — one command, one layer:

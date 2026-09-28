@@ -72,21 +72,6 @@ function recomputeEnv(date: string): { name: string; value: string }[] {
   ];
 }
 
-function orderRecoOnlyEnv(store: string): { name: string; value: string }[] {
-  return [
-    { name: "BHAGA_ORDER_RECO_ONLY", value: "1" },
-    { name: "BHAGA_IGNORE_HALT", value: "1" },
-    { name: "BHAGA_SKIP_SQUARE", value: "1" },
-    { name: "BHAGA_SKIP_ADP", value: "1" },
-    { name: "BHAGA_SKIP_KDS", value: "1" },
-    // daily_refresh --store is CLI; job image reads STORE / default palmetto.
-    // Pass both common knobs so the early-exit path has a store.
-    { name: "BHAGA_STORE", value: store },
-    // Only the ORDER_RECO_LEGACY rollback reaches this job path (Issue #350).
-    { name: "BHAGA_ORDER_RECO_LEGACY", value: "1" },
-  ];
-}
-
 export type ModelRecomputeResult = {
   started: boolean;
   touched: string[];
@@ -118,21 +103,6 @@ export async function triggerModelRecompute(
     `triggerModelRecompute(anchor=${anchor}, touched=${touched.join(",")})`,
   );
   return { started: true, touched };
-}
-
-/**
- * Legacy (ORDER_RECO_LEGACY=1) order-reco refresh via the Cloud Run job
- * (Issue #175 Option B); the default path is lib/bhaga/orderReco.ts.
- * Job short-circuits via BHAGA_ORDER_RECO_ONLY in daily_refresh.py.
- * No-ops when a bhaga-daily-refresh execution is already running (#261).
- */
-export async function triggerOrderRecoRefresh(store: string): Promise<{ started: boolean }> {
-  if (!store) throw new Error("triggerOrderRecoRefresh: store is required");
-  if (await hasRunningBhagaJob()) {
-    return { started: false };
-  }
-  await runJob(orderRecoOnlyEnv(store), `triggerOrderRecoRefresh(store=${store})`);
-  return { started: true };
 }
 
 /** True when any bhaga-daily-refresh execution has not set completionTime. */

@@ -11,6 +11,12 @@ gates, #27 UI polish, #29 runtime tunables, J2 sandbox + prod evidence, J5 reuse
 
 ## As-built deviations (read these first — the sections below are the pre-build plan)
 
+- **No rollback flag** (operator decision 2026-09-28, after sandbox proof). `ORDER_RECO_LEGACY` /
+  `BHAGA_ORDER_RECO_LEGACY`, the Python/webhook TVF-chain refresh and the console's Cloud Run
+  `BHAGA_ORDER_RECO_ONLY` job route are deleted; the §"Feature flag" sections below are superseded.
+  In their place: deploy applies migrations before rolling out the job/webhook, the runtime service
+  accounts were checked to hold the BigQuery roles a CALL needs, and a refresh that fails to start
+  after a saved edit reports the edit as saved and leaves the banner on "Update now".
 - **Migrations are 080/081**, not 076/077 (prod already applied 076/077 from another branch).
 - **No `inventory_order_reco_inputs` table.** The inputs of each run live in
   `inventory_order_reco_runs.inputs` (JSON), next to its fingerprint and capacity — one ledger instead of two.

@@ -56,6 +56,18 @@ jobs:
           docker push ${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }}
           docker push ${{ env.REGISTRY }}/bhaga-webhook:latest
 
+      # Apply pending BQ migrations from core/migrations/ BEFORE rolling out the
+      # job and webhook, so new code never serves against a schema (or stored
+      # procedure, e.g. 081 sp_refresh_order_reco) that does not exist yet —
+      # same order as operator-console-deploy.yml. Idempotent — no-op when
+      # already applied. Migrations are additive, so old code keeps working.
+      - name: Apply BQ schema migrations
+        if: ${{ !inputs.rollback_sha }}
+        run: |
+          pip install --quiet google-cloud-bigquery google-auth
+          BHAGA_DATASTORE=bigquery python3 -c \
+            "from core.datastore import ensure_schema; applied = ensure_schema(); print('applied:', applied or 'none')"
+
       - name: Deploy orchestrator (Cloud Run Job)
         if: ${{ !inputs.rollback_sha }}
         run: |
@@ -154,24 +166,14 @@ jobs:
           fi
           echo "Both units run ${{ github.sha }}."
 
-      # Apply pending BQ migrations from core/migrations/ before recording the
-      # deploy. Idempotent — no-op when already applied. Keeps schema in sync
-      # with the merged code + Grafana panels that reference new columns/views.
-      - name: Apply BQ schema migrations
-        if: ${{ !inputs.rollback_sha }}
-        run: |
-          pip install --quiet google-cloud-bigquery google-auth
-          BHAGA_DATASTORE=bigquery python3 -c \
-            "from core.datastore import ensure_schema; applied = ensure_schema(); print('applied:', applied or 'none')"
-
-      # Recompute dual-date order reco after schema so Operator Console
+      # Recompute order reco after the new code is live so Operator Console
       # /inventory shows correct date-bound columns immediately (not next nightly).
       - name: Refresh order reco (prod inventory)
         if: ${{ !inputs.rollback_sha }}
         run: |
           pip install --quiet google-cloud-bigquery google-auth
           BHAGA_DATASTORE=bigquery python3 -c \
-            "from core.order_reco import refresh_order_reco; refresh_order_reco('palmetto'); print('refresh_order_reco: ok store=palmetto')" \
+            "from core.order_reco import refresh_order_reco; print('refresh_order_reco: committed run_id=%s store=palmetto' % refresh_order_reco('palmetto', trigger='deploy', requested_by='deploy'))" \
             || echo "::warning::refresh_order_reco failed (non-fatal) — Operator Console /inventory may stay stale until nightly or page self-heal"
 
       # Auto-rerun the nightly for any dates the merged PR declares it fixes, via

@@ -32,19 +32,28 @@ import { FEATURES } from "@/lib/config/features";
 const QUEUED = ["order-reco"];
 
 export type OrderRecoQueuedMeta = {
-  /** The refresh this write started (null on the legacy Cloud Run path). */
-  runId: string | null;
+  /** The refresh this write started. */
+  runId: string;
 };
 
-/** Every inventory input write ends here: one refresh for the whole edit. */
+/**
+ * Every inventory input write ends here: one refresh for the whole edit. The
+ * write has already committed, so a refresh that fails to start is not an
+ * error for the operator — the banner shows the inputs as stale with Update now.
+ */
 async function finishOrderRecoWrite(
   trigger: string,
   by: string,
   message: string,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
-  const { runId } = await requestOrderRecoRefresh({ store: DEFAULT_STORE, trigger, requestedBy: by });
   revalidatePath("/inventory");
-  return okAck({ message: `${message} — recommendation updating…`, queued: QUEUED, data: { runId } });
+  try {
+    const { runId } = await requestOrderRecoRefresh({ store: DEFAULT_STORE, trigger, requestedBy: by });
+    return okAck({ message: `${message} — recommendation updating…`, queued: QUEUED, data: { runId } });
+  } catch (e) {
+    console.error(`order_reco_submit_failed trigger=${trigger} by=${by} err=${e instanceof Error ? e.message : String(e)}`);
+    return okAck({ message: `${message} — recommendation didn't start; press Update now above the table` });
+  }
 }
 
 export async function submitRestockAction(

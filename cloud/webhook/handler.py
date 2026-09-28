@@ -156,8 +156,6 @@ _BQ_TRAINING_SHIFTS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.training_shifts"
 _BQ_EMPLOYEE_ALIASES_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.employee_aliases"
 _BQ_RESTOCK_SCHEDULE_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_schedule"
 _BQ_RESTOCK_ORDERS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_orders"
-_BQ_ORDER_RECO_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_order_reco"
-_ORDER_RECO_DEFAULT_MAX_TUBS = 120
 
 # Bot token for Slack Web API calls (views.open, files download, chat.postMessage).
 # Unlike response_url (used by every other command), the restock modal needs a
@@ -1372,12 +1370,8 @@ def _refresh_order_reco(store: str, trigger: str = "webhook") -> None:
     Dispatched async from a restock submission or an order_reco_max_tubs
     config-set — never called on the 3s-deadline request path. The procedure
     is atomic and supersedes concurrent runs, so overlapping dispatches are safe.
-    BHAGA_ORDER_RECO_LEGACY=1 keeps the pre-#350 TVF chain as a rollback path.
     """
     if _bq is None:
-        return
-    if os.environ.get("BHAGA_ORDER_RECO_LEGACY") == "1":
-        _refresh_order_reco_legacy(store)
         return
     import uuid
     run_id = f"webhook-{uuid.uuid4().hex[:12]}"
@@ -1396,89 +1390,6 @@ def _refresh_order_reco(store: str, trigger: str = "webhook") -> None:
         log.error(
             "order_reco_failed run_id=%s store=%s trigger=%s exc=%s", run_id, store, trigger, exc,
         )
-
-
-def _refresh_order_reco_legacy(store: str) -> None:
-    """Pre-#350 TVF chain (Issue #137, Option D) — rollback path only.
-
-    Migration 052: loops live next-dates slots (cap order_reco_max_slots,
-    default 4) via tvf_order_reco_slot1 + tvf_order_reco_slot_n.
-    Migration 067: write-then-swap with a shared refreshed_at generation.
-    """
-    if _bq is None:
-        return
-    try:
-        rows = list(_bq.query(  # type: ignore[union-attr]
-            f"SELECT value FROM `{_BQ_STORE_CONFIG_TABLE}`"
-            f" WHERE store = @store AND key = 'order_reco_max_tubs'"
-            f" ORDER BY updated_at DESC LIMIT 1",
-            job_config=_bq_param_config([("store", "STRING", store)]),
-        ).result())
-        max_tubs = int(rows[0]["value"]) if rows else _ORDER_RECO_DEFAULT_MAX_TUBS
-
-        slot_rows = list(_bq.query(  # type: ignore[union-attr]
-            f"SELECT slot FROM `{_BQ_PROJECT}.{_BQ_DATASET}.vw_order_reco_next_dates`"
-            f" ORDER BY slot",
-        ).result())
-        slots = [int(r["slot"]) for r in slot_rows]
-
-        fq_reco = f"`{_BQ_ORDER_RECO_TABLE}`"
-        # Explicit columns — migration 041 added delivery_date; t.* + ts would mis-map.
-        _cols = (
-            "store, Slot, Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, "
-            "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, "
-            "_ord, refreshed_at, delivery_date"
-        )
-        if not slots:
-            _bq.query(  # type: ignore[union-attr]
-                f"DELETE FROM {fq_reco} WHERE store = @store",
-                job_config=_bq_param_config([("store", "STRING", store)]),
-            ).result()
-            log.info("refresh_order_reco: no next dates store=%s — cleared", store)
-            return
-        from datetime import datetime, timezone
-        gen = datetime.now(timezone.utc)
-        _sel = (
-            "Item, `Current Qty`, `Avg per day`, `On Hand at Restock`, "
-            "`Order Tubs`, `Order Weight lbs`, `After Restock`, `Days Left After Restock`, "
-            "_ord, @gen, delivery_date"
-        )
-        _bq.query(  # type: ignore[union-attr]
-            f"INSERT INTO {fq_reco} ({_cols}) SELECT @store, 1, {_sel}"
-            f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot1`(@mt)",
-            job_config=_bq_param_config([
-                ("store", "STRING", store),
-                ("mt", "INT64", max_tubs),
-                ("gen", "TIMESTAMP", gen),
-            ]),
-        ).result()
-        for slot in slots:
-            if slot < 2:
-                continue
-            # Slot N reads prior slot's materialized row (migration 052).
-            _bq.query(  # type: ignore[union-attr]
-                f"INSERT INTO {fq_reco} ({_cols}) SELECT @store, @slot, {_sel}"
-                f" FROM `{_BQ_PROJECT}.{_BQ_DATASET}.tvf_order_reco_slot_n`(@mt, @slot)",
-                job_config=_bq_param_config([
-                    ("store", "STRING", store),
-                    ("mt", "INT64", max_tubs),
-                    ("slot", "INT64", slot),
-                    ("gen", "TIMESTAMP", gen),
-                ]),
-            ).result()
-        _bq.query(  # type: ignore[union-attr]
-            f"DELETE FROM {fq_reco} WHERE store = @store AND refreshed_at != @gen",
-            job_config=_bq_param_config([
-                ("store", "STRING", store),
-                ("gen", "TIMESTAMP", gen),
-            ]),
-        ).result()
-        log.info(
-            "refresh_order_reco: recomputed store=%s max_tubs=%d slots=%s",
-            store, max_tubs, slots,
-        )
-    except Exception as exc:
-        log.error("refresh_order_reco failed (breadcrumb): store=%s exc=%s", store, exc)
 
 
 def _handle_restock_submission(payload: dict) -> dict:

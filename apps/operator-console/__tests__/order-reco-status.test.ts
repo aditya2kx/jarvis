@@ -19,12 +19,6 @@ vi.mock("@/lib/bq/client", () => ({
   submitQuery: (...a: unknown[]) => submitQuery(...a),
   fq: (n: string) => `\`${n}\``,
 }));
-const triggerOrderRecoRefresh = vi.fn();
-vi.mock("@/lib/bhaga/recompute", () => ({
-  triggerOrderRecoRefresh: (...a: unknown[]) => triggerOrderRecoRefresh(...a),
-}));
-const features = { orderRecoLegacy: false };
-vi.mock("@/lib/config/features", () => ({ FEATURES: features }));
 
 const base = {
   running_run_id: null,
@@ -79,8 +73,6 @@ describe("orderRecoStatus", () => {
 describe("requestOrderRecoRefresh", () => {
   beforeEach(() => {
     submitQuery.mockReset().mockResolvedValue("job-1");
-    triggerOrderRecoRefresh.mockReset();
-    features.orderRecoLegacy = false;
   });
   it("submits the procedure without waiting and returns its run id", async () => {
     const { requestOrderRecoRefresh } = await import("@/lib/bhaga/orderReco");
@@ -89,21 +81,12 @@ describe("requestOrderRecoRefresh", () => {
     const [sql, params] = submitQuery.mock.calls[0]!;
     expect(String(sql)).toContain("CALL `sp_refresh_order_reco`");
     expect(params).toMatchObject({ store: "palmetto", trigger: "capacity", by: "op", runId });
-    expect(triggerOrderRecoRefresh).not.toHaveBeenCalled();
-  });
-  it("ORDER_RECO_LEGACY routes to the Cloud Run job", async () => {
-    features.orderRecoLegacy = true;
-    const { requestOrderRecoRefresh } = await import("@/lib/bhaga/orderReco");
-    expect((await requestOrderRecoRefresh({ store: "palmetto", trigger: "t", requestedBy: "op" })).runId).toBeNull();
-    expect(triggerOrderRecoRefresh).toHaveBeenCalledWith("palmetto");
-    expect(submitQuery).not.toHaveBeenCalled();
   });
 });
 
 describe("ensureOrderRecoFresh", () => {
   beforeEach(() => {
     submitQuery.mockReset().mockResolvedValue("job");
-    features.orderRecoLegacy = false;
   });
   it("requests a refresh only when stale", async () => {
     const { ensureOrderRecoFresh } = await import("@/lib/bhaga/orderReco");
@@ -143,7 +126,7 @@ describe("status helpers", () => {
     expect(awaitedRunLanded(s({ awaitedStatus: "running" }), "console-797a", null)).toBe(false);
     expect(awaitedRunLanded(s({ awaitedStatus: "committed" }), "console-797a", null)).toBe(true);
     expect(awaitedRunLanded(s({ awaitedStatus: "superseded" }), "console-797a", null)).toBe(true);
-    // Legacy job path has no run id: any newer commit while nothing runs.
+    // Ack without a run id: any newer commit while nothing runs.
     expect(awaitedRunLanded(gap, null, "2026-09-28T16:55:32.000Z")).toBe(true);
     expect(awaitedRunLanded({ ...gap, state: "running" }, null, "2026-09-28T16:55:32.000Z")).toBe(false);
   });

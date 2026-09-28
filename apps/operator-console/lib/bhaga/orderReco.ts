@@ -1,8 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { fq, q, submitQuery } from "@/lib/bq/client";
-import { FEATURES } from "@/lib/config/features";
-import { triggerOrderRecoRefresh } from "@/lib/bhaga/recompute";
 import type { OrderRecoChange, OrderRecoStatus } from "@/lib/inventory/orderRecoStatus";
 
 /** A `running` row older than this with no terminal row is a dead run, not a live one. */
@@ -20,11 +18,7 @@ export async function requestOrderRecoRefresh(opts: {
   store: string;
   trigger: string;
   requestedBy: string;
-}): Promise<{ runId: string | null }> {
-  if (FEATURES.orderRecoLegacy) {
-    await triggerOrderRecoRefresh(opts.store);
-    return { runId: null };
-  }
+}): Promise<{ runId: string }> {
   const runId = `console-${randomUUID()}`;
   await submitQuery(
     `CALL ${fq("sp_refresh_order_reco")}(@store, @trigger, @by, @runId, FALSE, NULL, NULL, NULL)`,

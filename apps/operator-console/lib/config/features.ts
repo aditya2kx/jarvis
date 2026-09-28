@@ -33,10 +33,4 @@ export const FEATURES = {
   writeInventoryDayOverrides: true,
   /** Issue #158 — Plaid Link + sync write path. */
   writePlaidLink: true,
-  /**
-   * Issue #350 rollback — ORDER_RECO_LEGACY=1 routes order-reco refreshes back
-   * through the bhaga-daily-refresh Cloud Run job + slot TVFs instead of the
-   * atomic sp_refresh_order_reco procedure. Server-only env.
-   */
-  orderRecoLegacy: process.env.ORDER_RECO_LEGACY === "1",
 } as const;

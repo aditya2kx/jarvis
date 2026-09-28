@@ -2248,13 +2248,12 @@ class TestInventoryEditLog:
 
 
 class TestRefreshOrderRecoProcedure:
-    """Issue #350: webhook refresh is one CALL; legacy TVF chain behind env flag."""
+    """Issue #350: webhook refresh is one sp_refresh_order_reco CALL."""
 
     def test_calls_procedure_once(self, monkeypatch):
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.return_value = []
         monkeypatch.setattr(handler, "_bq", fake_bq)
-        monkeypatch.delenv("BHAGA_ORDER_RECO_LEGACY", raising=False)
         handler._refresh_order_reco("palmetto", "slack-capacity")
         assert fake_bq.query.call_count == 1
         sql = fake_bq.query.call_args.args[0]
@@ -2265,15 +2264,6 @@ class TestRefreshOrderRecoProcedure:
         fake_bq = MagicMock()
         fake_bq.query.return_value.result.side_effect = RuntimeError("boom")
         monkeypatch.setattr(handler, "_bq", fake_bq)
-        monkeypatch.delenv("BHAGA_ORDER_RECO_LEGACY", raising=False)
         with caplog.at_level("ERROR"):
             handler._refresh_order_reco("palmetto", "slack-restock")
         assert "order_reco_failed run_id=webhook-" in caplog.text
-
-    def test_legacy_flag_uses_tvf_chain(self, monkeypatch):
-        monkeypatch.setattr(handler, "_bq", MagicMock())
-        monkeypatch.setenv("BHAGA_ORDER_RECO_LEGACY", "1")
-        legacy = MagicMock()
-        monkeypatch.setattr(handler, "_refresh_order_reco_legacy", legacy)
-        handler._refresh_order_reco("palmetto")
-        legacy.assert_called_once_with("palmetto")

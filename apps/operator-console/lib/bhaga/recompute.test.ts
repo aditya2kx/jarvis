@@ -12,7 +12,6 @@ vi.mock("google-auth-library", () => ({
 import {
   pickRecomputeAnchorDate,
   triggerModelRecompute,
-  triggerOrderRecoRefresh,
   triggerPayrollDraft,
 } from "@/lib/bhaga/recompute";
 
@@ -95,55 +94,6 @@ describe("triggerModelRecompute", () => {
       touched: ["2026-07-06", "2026-07-08"],
       blockedReason: "already-running",
     });
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toMatch(/\/executions/);
-  });
-});
-
-describe("triggerOrderRecoRefresh", () => {
-  beforeEach(() => {
-    getAccessToken.mockReset();
-    getAccessToken.mockResolvedValue({ token: "test-token" });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        text: async () => "",
-        json: async () => ({}),
-      }),
-    );
-  });
-
-  it("POSTs :run with BHAGA_ORDER_RECO_ONLY", async () => {
-    vi.mocked(fetch)
-      .mockResolvedValueOnce({
-        ok: true,
-        text: async () => "",
-        json: async () => ({ executions: [] }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        text: async () => "",
-        json: async () => ({}),
-      } as Response);
-    await triggerOrderRecoRefresh("palmetto");
-    expect(fetch).toHaveBeenCalledTimes(2);
-    const [, init] = vi.mocked(fetch).mock.calls[1]!;
-    const body = JSON.parse(String(init?.body));
-    const env = body.overrides.containerOverrides[0].env as { name: string; value: string }[];
-    expect(env.find((e) => e.name === "BHAGA_ORDER_RECO_ONLY")?.value).toBe("1");
-    expect(env.find((e) => e.name === "BHAGA_STORE")?.value).toBe("palmetto");
-    expect(env.find((e) => e.name === "BHAGA_ORDER_RECO_LEGACY")?.value).toBe("1");
-  });
-
-  it("skips :run when a Cloud Run execution is already in flight", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce({
-      ok: true,
-      text: async () => "",
-      json: async () => ({ executions: [{ name: "x" }] }),
-    } as Response);
-    const out = await triggerOrderRecoRefresh("palmetto");
-    expect(out).toEqual({ started: false });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(String(vi.mocked(fetch).mock.calls[0]![0])).toMatch(/\/executions/);
   });

@@ -182,8 +182,11 @@ def build_sandbox_env(
         env["BHAGA_WINDOW_TO"] = window_to
     # When running a windowed backfill, clear any tripped circuit breaker so the
     # operator-supervised sandbox run can proceed (a healthy run auto-clears it).
+    # Like a deploy hole repair, a windowed run must scrape even when the date's
+    # scrape markers are already done.
     if window_from or window_to:
         env["BHAGA_IGNORE_HALT"] = "1"
+        env["BHAGA_FORCE_RESCRAPE"] = "1"
     # Scenario scoping: skip steps outside the surface under test (e.g. item-sales
     # only needs the Square download, so skip ADP/reviews/model). daily_refresh.main
     # reads each BHAGA_SKIP_<STEP> and ORs it with the matching CLI flag.

@@ -257,6 +257,17 @@ class GapWindowMultiDayTest(unittest.TestCase):
             self.assertIsNone(dr._rate_change_floor(
                 {}, datetime.date(2026, 10, 2), datetime.datetime.now(datetime.timezone.utc)))
 
+    def test_model_scope_from_env(self):
+        from unittest import mock
+
+        from agents.bhaga.scripts import daily_refresh as dr
+
+        with mock.patch.dict("os.environ", {"BHAGA_MODEL_SCOPE_FROM": "2026-09-07"}):
+            self.assertEqual(dr.model_scope_from_env(), datetime.date(2026, 9, 7))
+        with mock.patch.dict("os.environ", {"BHAGA_MODEL_SCOPE_FROM": ""}):
+            self.assertIsNone(dr.model_scope_from_env())
+        self.assertIn("(model_scope_from_env(), None)", inspect.getsource(dr._run_refresh))
+
     def test_rate_change_floor_is_wired_into_model_scope(self):
         from agents.bhaga.scripts import daily_refresh as dr
 

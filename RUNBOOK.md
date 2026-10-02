@@ -885,25 +885,36 @@ Multiple dates are comma-separated: `Retry-Dates: 2026-06-12, 2026-06-13`.
 
 **Smart mode selection per date** (via `scripts/trigger_dated_refresh.py`):
 - If the date is covered by **both** `square_daily_rollup` (Square) **and** `adp_shifts` (ADP) in
-  BQ → **recompute-only**: sets `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1` so
+  BQ — and both actually hold rows for that day, not merely a later max date → **recompute-only**: sets `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1` so
   no browser/OTP; only the model is rebuilt from updated human inputs (`training_shifts`,
   `store_config`). Both sources must be present: a date where ADP failed (e.g. a sorry.adp.com
   throttle night) has Square coverage but missing ADP — that date triggers a full scrape even though
   Square is already in BQ.
 - If either source is missing, or BQ probes fail (fail-open) → **full refresh**: normal scrape + OTP
-  flow.
+  flow, with `BHAGA_FORCE_RESCRAPE=1` so the date's done scrape markers cannot skip the portals.
 
 The rerun uses Cloud Run v2 per-execution env overrides (`RunJobRequest.Overrides`) so the job
 definition is **never mutated** (a persisted `REFRESH_DATE` would corrupt future nightlies). The
 step is best-effort: a failure never fails the deploy and logs a `::warning::`.
 
 **Detected gaps, no trailer needed (Issue #348).** The same step also runs
-`scripts/detect_gap_dates.py`: any night in the last 14 CT days whose latest run failed, never ran,
-or has no `model_daily` row is rerun **recompute-only** (`--force-recompute`, max 7). Only dates whose
-raw data is already in BQ qualify, so a deploy never fires an OTP on its own; a night with no raw
-data is left to the next nightly's gap window (it re-scrapes from `data_window_end + 1`). Grep the
-deploy log for `[detect_gap_dates] gaps=[…] recompute=[…] left_to_nightly=[…]`. Dry check:
-`python3 scripts/detect_gap_dates.py` (read-only; prints the dates it would rerun).
+`scripts/detect_gap_dates.py`, which plans every repair over the last 14 CT days and prints one
+`trigger_dated_refresh.py` argument line per run:
+- **Raw holes** — a past day missing Square or ADP rows, even behind a later max date (the
+  nightly only scrapes forward from `data_window_end + 1`, so it never refills these). All holes
+  share **one** windowed full scrape (`--force-scrape --window-from <first hole> --date <last
+  hole>`), so a deploy costs at most one OTP prompt. Days the store was shut go in the
+  store profile's optional `closed_dates: [YYYY-MM-DD, …]` so they are not chased.
+- **Model-code change** — when the merged PR touched any file the model build imports (AST
+  closure of `materialize_model_bq.py`, plus store profiles; tests ignored), one recompute of
+  yesterday with `--model-scope-from <last closed pay-period start>` rebuilds that history on the
+  new code. It covers every later gap, so those are not rerun separately.
+- **Failed / never-ran / no `model_daily` row** — the remaining nights rerun recompute-only
+  (`--force-recompute`, max 7, newest first).
+
+Grep the deploy log for `[detect_gap_dates] gaps=[…] raw_holes=[…] model_rebuild_from=… runs=N`
+(`gap_scan_failed` = BQ error; the deploy carries on). Dry check (read-only):
+`python3 scripts/detect_gap_dates.py --changed-files <file with one path per line>`.
 
 **Rate corrections reach past days (Issue #348).** The nightly rebuilds the whole open pay period
 anyway. When tonight writes a wage-history row dated earlier (ADP "Added on" in the last closed
@@ -917,6 +928,8 @@ Manual one-off rerun (using the same smart logic):
 python3 scripts/trigger_dated_refresh.py --date 2026-06-13 --dry-run   # check mode
 python3 scripts/trigger_dated_refresh.py --date 2026-06-13              # trigger
 python3 scripts/trigger_dated_refresh.py --date 2026-06-14 --force-scrape  # force full scrape
+python3 scripts/trigger_dated_refresh.py --date 2026-09-29 --force-scrape --window-from 2026-09-27  # refill holes
+python3 scripts/trigger_dated_refresh.py --date 2026-10-01 --force-recompute --model-scope-from 2026-09-07  # rebuild history
 ```
 
 IAM: the WIF SA needs `run.jobs.run`. `roles/run.admin` on `bhaga-orchestrator` covers this.

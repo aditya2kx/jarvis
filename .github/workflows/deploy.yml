@@ -181,9 +181,11 @@ jobs:
       # SMART (scripts/trigger_dated_refresh.py): already-covered dates are
       # recompute-only (no portal login/OTP); uncovered dates do a full scrape.
       # Per-execution env overrides only — the job definition is never mutated.
-      # Nights nobody listed (latest run failed / never ran / no model_daily row
-      # in the last 14 days) are found by scripts/detect_gap_dates.py and rerun
-      # recompute-only — never a scrape, so a deploy never fires an OTP on its own.
+      # scripts/detect_gap_dates.py plans the rest over the last 14 days: one
+      # full scrape for days missing raw Square/ADP rows (one login, at most one
+      # OTP prompt), one recompute-only rebuild from the last closed pay period
+      # when the PR changed model code, and recompute-only reruns for failed /
+      # never-ran / model-less nights.
       # Best-effort: a failure here never fails the deploy (operator can retrigger).
       # IAM: the WIF SA needs run.jobs.run (roles/run.developer covers this).
       - name: Auto-rerun fixed dates (Retry-Dates trailer + detected gaps)
@@ -200,9 +202,17 @@ jobs:
                    | sed -n 's/^[[:space:]]*[Rr]etry-[Dd]ates:[[:space:]]*//p' \
                    | tr ',' '\n' | tr -d ' ' \
                    | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || true)"
-          GAPS="$(python3 scripts/detect_gap_dates.py || true)"
-          if [ -z "$DATES" ] && [ -z "$GAPS" ]; then
-            echo "No Retry-Dates trailer and no detected gaps — nothing to rerun."
+          PR="$(gh api repos/${{ github.repository }}/commits/${{ github.sha }}/pulls \
+                 --jq '.[0].number' 2>/dev/null || echo '')"
+          : > changed-files.txt
+          if [ -n "$PR" ]; then
+            gh api --paginate repos/${{ github.repository }}/pulls/$PR/files \
+              --jq '.[].filename' > changed-files.txt 2>/dev/null || true
+          fi
+          PLAN="$(python3 scripts/detect_gap_dates.py --changed-files changed-files.txt \
+                   --exclude "$(echo $DATES)" || true)"
+          if [ -z "$DATES" ] && [ -z "$PLAN" ]; then
+            echo "No Retry-Dates trailer and nothing detected — nothing to rerun."
             exit 0
           fi
           for d in $DATES; do
@@ -211,11 +221,11 @@ jobs:
               || echo "::warning::trigger_dated_refresh failed for $d (non-fatal)"
             echo "::endgroup::"
           done
-          for d in $GAPS; do
-            if printf '%s\n' $DATES | grep -qx "$d"; then continue; fi
-            echo "::group::Rerun $d (detected gap)"
-            python3 scripts/trigger_dated_refresh.py --date "$d" --force-recompute \
-              || echo "::warning::trigger_dated_refresh failed for $d (non-fatal)"
+          printf '%s\n' "$PLAN" | while read -r ARGS; do
+            [ -z "$ARGS" ] && continue
+            echo "::group::Rerun (detected) $ARGS"
+            python3 scripts/trigger_dated_refresh.py $ARGS \
+              || echo "::warning::trigger_dated_refresh failed for $ARGS (non-fatal)"
             echo "::endgroup::"
           done
 

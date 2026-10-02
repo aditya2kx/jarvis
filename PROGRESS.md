@@ -1,3 +1,11 @@
+## 2026-10-01 — ADP redesigned Payroll info, and pay_info went blind for everyone (Issue #348, PR #353)
+
+**Scope:** Issue #348 reported 6 of 15 nightly pay_info scrapes failing; re-checked on 2026-10-01, ADP's 2026-09-29 Pay rates redesign had broken the parser for every employee. Rates kept flowing only through the earnings fallback, which lags raises until the next check, and nothing alerted when a person went blind for days.
+
+**Key changes:** `parse_pay_rate_cards` reads the `pay-rate-card-N` card labelled *Default rate* (never the unlabelled rate-2 $16.25 card); a blank Payroll info pane is retried by reopening the profile from the Directory (reload lands on the SPA root). The Directory status filter is driven by real clicks verified through the filter badges; when an exact and an alias match collide, the single Active record wins (Dolce → $18). Migration 082 adds `adp_pay_info_outcomes`; ≥3 consecutive blind CT nights Slacks `pay_info_blind_alert` once per streak. Migration 083 drops the raw alias-key rate rows (`Huang Wing`, `Huynh Hillary`). Separately, `phase_state.py drift-check` now nudges once per pending set instead of every idle turn.
+
+**Evidence:** live read-only ADP run of the branch: 16/16 OK, `rate_layout=cards`, one real blank pane recovered on attempt 2; migration 083 dry-check matched exactly 4 rows; sandbox `full-live` and the first prod nightly in the PR §4.
+
 ## 2026-09-28 — Pinning 10/09's bases moved the others, and nothing said why (Issue #350)
 
 **Scope:** The operator pinned frozen bases for the 10/09 delivery and watched the total and the unpinned bases shift. Capacity is a hard cap, so pins take room from the unpinned bases, but the console gave no preview, no signal that a refresh was running, and no word on whether it was safe to keep editing. The refresh itself was a chain of separate BQ jobs (about 60s), overwrote its output with no history, and two overlapping edits could race.

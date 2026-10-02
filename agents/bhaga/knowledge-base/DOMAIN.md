@@ -99,7 +99,12 @@ functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc /
 2. **Payroll info refresh** (`pay_info_backend`, `rate_source=pay_info`) — nightly
    scrape of **all recent punchers** (People → Hourly pay rate). MERGEs raises
    before the next check. Does **not** overwrite existing OT / salaried flags.
-   Scrape failures Slack a `:warning:` and do not fail Timecard/tips.
+   Scrape failures Slack a `:warning:` and do not fail Timecard/tips. Each night's
+   per-employee outcome lands in **`adp_pay_info_outcomes`** (`employee_id`,
+   `scraped_at_utc`, `ok`, `error`); ≥3 consecutive CT nights without an `ok` row
+   Slacks a one-time "blind streak" alert (Issue #348) — the rate is stale until the
+   next check's earnings load. Rate = the card labelled **Default rate** (a second
+   unlabelled card, e.g. $16.25 rate 2, is never the base).
    Operator Console **Sync clocked hours** re-scrapes Timecard + Team Schedule
    (`BHAGA_ADP_TIMECARD_ONLY`); it never runs this pay_info path.
 

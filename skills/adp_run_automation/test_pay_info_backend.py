@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pathlib
 import unittest
+from html.parser import HTMLParser
 
 from unittest import mock
 
+from skills.adp_run_automation import pay_info_backend as pib
 from skills.adp_run_automation.pay_info_backend import (
     _PEOPLE_SEARCH_PLACEHOLDER_RE,
     AmbiguousEmployeeError,
@@ -13,11 +16,52 @@ from skills.adp_run_automation.pay_info_backend import (
     directory_search_name,
     dismiss_blocking_modals,
     parse_hourly_pay_rate,
+    parse_pay_rate_cards,
+    parse_payroll_info,
     prepare_pay_info_writes,
     rate_record,
     report_pay_info_issues,
     select_directory_match,
+    status_filter_clicks,
 )
+
+_TESTDATA = pathlib.Path(__file__).parent / "testdata"
+
+
+class _CardHTML(HTMLParser):
+    """Mirror of _PAYROLL_CARDS_JS over a saved ADP 'Pay rates' fragment."""
+
+    _FIELDS = {
+        "current-pay-rate": "rate_text",
+        "default-rate-label": "label",
+        "default-rate-date-message": "date_text",
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.cards: list[dict] = []
+        self._field = None
+
+    def handle_starttag(self, tag, attrs):
+        tid = dict(attrs).get("data-test-id") or ""
+        if tid.startswith("pay-rate-card-"):
+            self.cards.append({"rate_text": "", "label": "", "date_text": ""})
+        elif tid in self._FIELDS and self.cards:
+            self._field = self._FIELDS[tid]
+
+    def handle_endtag(self, tag):
+        if tag == "div":
+            self._field = None
+
+    def handle_data(self, data):
+        if self._field:
+            self.cards[-1][self._field] += data.strip()
+
+
+def _fixture_cards(name: str) -> list[dict]:
+    p = _CardHTML()
+    p.feed((_TESTDATA / f"pay_info_cards_{name}.html").read_text())
+    return p.cards
 
 
 class TestPayInfoParse(unittest.TestCase):
@@ -178,6 +222,192 @@ class TestSelectDirectoryMatch(unittest.TestCase):
             select_directory_match(["Johnson, Dolce J"], "Johnson, Dolce", accepted_names=[])
 
 
+class TestParsePayRateCards(unittest.TestCase):
+    """ADP's 2026-09-29 'Pay rates' cards, from live fixtures (spike 2026-10-01)."""
+
+    def test_single_card_added_on(self):
+        parsed = parse_pay_rate_cards(_fixture_cards("single_added_on"))
+        self.assertEqual(parsed["wage_rate_dollars"], 25.0)
+        self.assertEqual(parsed["added_on"], "2025-09-25")
+        self.assertTrue(parsed["default_card"])
+
+    def test_last_changed_on_is_the_date(self):
+        parsed = parse_pay_rate_cards(_fixture_cards("last_changed_on"))
+        self.assertEqual(parsed["wage_rate_dollars"], 18.0)
+        self.assertEqual(parsed["added_on"], "2026-09-25")
+
+    def test_default_card_beats_rate2_card(self):
+        """10 of 17 records carry an unlabelled $16.25 rate-2 card (invariant 12)."""
+        cards = _fixture_cards("default_plus_rate2")
+        self.assertEqual(len(cards), 2)
+        for order in (cards, list(reversed(cards))):
+            parsed = parse_pay_rate_cards(order)
+            self.assertEqual(parsed["wage_rate_dollars"], 15.25)
+            self.assertEqual(parsed["added_on"], "2026-02-16")
+            self.assertTrue(parsed["default_card"])
+
+    def test_no_default_label_takes_lowest_and_says_so(self):
+        cards = [{"rate_text": "$16.2500"}, {"rate_text": "$15.2500"}]
+        parsed = parse_pay_rate_cards(cards)
+        self.assertEqual(parsed["wage_rate_dollars"], 15.25)
+        self.assertFalse(parsed["default_card"])
+
+    def test_card_without_rate_text_is_not_ready(self):
+        """A card renders ~0.5 s before its rate (Pascone)."""
+        self.assertIsNone(parse_pay_rate_cards([{"rate_text": "", "label": "Default rate"}]))
+        self.assertIsNone(parse_pay_rate_cards([]))
+
+    def test_thousands_separator(self):
+        parsed = parse_pay_rate_cards([{"rate_text": "$1,234.5000", "label": "Default rate"}])
+        self.assertEqual(parsed["wage_rate_dollars"], 1234.5)
+
+    def test_implausible_rate_is_returned_for_the_writer_to_refuse(self):
+        parsed = parse_pay_rate_cards([{"rate_text": "$1.2500", "label": "Default rate"}])
+        self.assertEqual(parsed["wage_rate_dollars"], 1.25)
+
+
+class TestParsePayrollInfo(unittest.TestCase):
+    def test_cards_first(self):
+        parsed = parse_payroll_info(
+            [{"rate_text": "$15.2500", "label": "Default rate"}],
+            "Hourly pay rate $99.0000",
+        )
+        self.assertEqual(parsed["wage_rate_dollars"], 15.25)
+        self.assertEqual(parsed["rate_layout"], "cards")
+
+    def test_legacy_label_fallback(self):
+        parsed = parse_payroll_info([], "Payroll info Hourly pay rate $15.2500 Added on 06/18/2026")
+        self.assertEqual(parsed["wage_rate_dollars"], 15.25)
+        self.assertEqual(parsed["rate_layout"], "legacy")
+
+    def test_blank_pane_is_none(self):
+        """The 'undefined' heading page: card-less body with stray prices."""
+        self.assertIsNone(parse_payroll_info([], "Hillary Huynh Active undefined Cancel Save"))
+        self.assertIsNone(parse_payroll_info([], "$15.2500 Hourly", ["Pay rate $15.2500"]))
+
+
+class TestPayrollPaneRetry(unittest.TestCase):
+    """Blank pane: reopen from the Directory, never reload, never edit."""
+
+    BLANK = {"cards": [], "heading_undefined": True, "text": "undefined", "inputs": []}
+    READY = {"cards": [{"rate_text": "$15.2500", "label": "Default rate",
+                        "date_text": "Added on 08/31/2026"}],
+             "heading_undefined": False, "text": "", "inputs": []}
+
+    def _scrape(self, panes):
+        page = mock.Mock()
+        with mock.patch.object(pib, "_open_profile", return_value="Huynh, Hillary") as op, \
+                mock.patch.object(pib, "_read_payroll_info", side_effect=panes):
+            try:
+                return pib.scrape_one_pay_info(page, "Huynh, Hillary", dashboard_url="u"), op, page
+            except ValueError as exc:
+                return exc, op, page
+
+    def test_blank_twice_then_ready(self):
+        with mock.patch("builtins.print") as out:
+            raw, op, page = self._scrape([self.BLANK, self.BLANK, self.READY])
+        self.assertEqual(raw["wage_rate_dollars"], 15.25)
+        self.assertEqual(raw["rate_layout"], "cards")
+        self.assertEqual(op.call_count, 3)
+        page.reload.assert_not_called()
+        crumbs = [c.args[0] for c in out.call_args_list if "payroll_info_blank" in c.args[0]]
+        self.assertEqual(len(crumbs), 2)
+        self.assertIn("attempt=2/3", crumbs[1])
+
+    def test_always_blank_raises(self):
+        with mock.patch("builtins.print"):
+            exc, op, page = self._scrape([self.BLANK] * 3)
+        self.assertIsInstance(exc, ValueError)
+        self.assertEqual(op.call_count, 3)
+        page.reload.assert_not_called()
+
+    def test_card_reader_never_clicks(self):
+        """Every card carries an Edit rate button; the reader is text-only."""
+        self.assertNotIn("click", pib._PAYROLL_CARDS_JS)
+
+
+class TestStatusFilterClicks(unittest.TestCase):
+    T = "aeed-filter-checkbox-Terminated"
+    L = "aeed-filter-checkbox-Leave of absence"
+
+    def test_unticked_wanted_boxes_are_clicked(self):
+        states = [
+            {"test_id": "aeed-filter-checkbox-Active", "aria_checked": "true"},
+            {"test_id": self.L, "aria_checked": "false"},
+            {"test_id": self.T, "aria_checked": "false"},
+        ]
+        self.assertEqual(status_filter_clicks(states), [self.L, self.T])
+
+    def test_already_ticked_is_left_alone(self):
+        states = [{"test_id": self.T, "aria_checked": "true"},
+                  {"test_id": self.L, "aria_checked": "true"}]
+        self.assertEqual(status_filter_clicks(states), [])
+
+    def test_aria_checked_is_the_only_state_read(self):
+        """sdf-checkbox always has checked="true|false"; the old code read it as ticked."""
+        states = [{"test_id": self.T, "checked": "false", "aria_checked": "false"},
+                  {"test_id": self.L, "checked": "true", "aria_checked": "true"}]
+        self.assertEqual(status_filter_clicks(states), [self.T])
+
+    def test_other_filters_never_clicked(self):
+        states = [{"test_id": "aeed-filter-checkbox-MyADP", "aria_checked": "false"},
+                  {"test_id": "aeed-filter-checkbox-Paperless payroll", "aria_checked": "false"}]
+        self.assertEqual(status_filter_clicks(states), [])
+
+
+class TestActiveWins(unittest.TestCase):
+    """Dolce: Terminated `Johnson, Dolce` $15.25 beside Active `Johnson, Dolce J` $18."""
+
+    TERM = {"name": "Johnson, Dolce", "status": "Terminated"}
+    ACTIVE = {"name": "Johnson, Dolce J", "status": "Active"}
+
+    def test_active_record_wins_when_aliased(self):
+        self.assertEqual(
+            select_directory_match([self.TERM, self.ACTIVE], "Johnson, Dolce",
+                                   accepted_names=["Johnson, Dolce J"]),
+            "Johnson, Dolce J",
+        )
+
+    def test_both_active_refuses(self):
+        with self.assertRaises(AmbiguousEmployeeError):
+            select_directory_match(
+                [{**self.TERM, "status": "Active"}, self.ACTIVE], "Johnson, Dolce",
+                accepted_names=["Johnson, Dolce J"],
+            )
+
+    def test_both_terminated_refuses(self):
+        with self.assertRaises(AmbiguousEmployeeError):
+            select_directory_match(
+                [self.TERM, {**self.ACTIVE, "status": "Terminated"}], "Johnson, Dolce",
+                accepted_names=["Johnson, Dolce J"],
+            )
+
+    def test_unaliased_rehire_refuses_instead_of_taking_the_old_rate(self):
+        """Aliases failed to load: the exact Terminated match must not win."""
+        with self.assertRaises(AmbiguousEmployeeError):
+            select_directory_match([self.TERM, self.ACTIVE], "Johnson, Dolce")
+
+    def test_terminated_exact_match_alone_is_taken(self):
+        """Alvarez: Terminated, no lookalike — still the right record."""
+        self.assertEqual(
+            select_directory_match(
+                [{"name": "Alvarez, Sebastian", "status": "Terminated"}], "Alvarez, Sebastian"),
+            "Alvarez, Sebastian",
+        )
+
+
+class TestPuncherNamesCanonical(unittest.TestCase):
+    def test_unaliased_new_hire_is_keyed_canonically(self):
+        """Wing Huang, 2026-09-29: scraped as `Huang Wing` before onboarding ran."""
+        punches = [{"employee_name": "Huang Wing"}, {"employee_name": "Garcia, Jacob"}]
+        xlsx = mock.Mock()
+        xlsx.exists.return_value = True
+        with mock.patch("skills.adp_run_automation.shift_backend.parse_xlsx",
+                        return_value=punches):
+            names = pib.puncher_names_from_session_files(timecard_xlsx=xlsx)
+        self.assertEqual(names, ["Garcia, Jacob", "Huang, Wing"])
+
+
 class TestDismissBlockingModals(unittest.TestCase):
     def test_returns_false_when_page_evaluate_raises(self):
         page = mock.Mock()
@@ -231,6 +461,105 @@ class TestReportPayInfoIssues(unittest.TestCase):
 
     def test_all_clear_is_silent(self):
         self.assertEqual(self._alerts(), [])
+
+
+def _nights(name, *oks):
+    """oks oldest→newest; None = no attempt that night."""
+    import datetime as _dt
+    start = _dt.date(2026, 9, 26)
+    return [
+        {"employee_id": name, "night": start + _dt.timedelta(days=i), "ok": ok}
+        for i, ok in enumerate(oks) if ok is not None
+    ]
+
+
+class TestBlindStreaks(unittest.TestCase):
+    def test_three_failed_nights(self):
+        self.assertEqual(pib.blind_streaks(_nights("A", False, False, False)), {"A": 3})
+
+    def test_older_success_bounds_the_streak(self):
+        self.assertEqual(pib.blind_streaks(_nights("A", True, False, False)), {"A": 2})
+
+    def test_skipped_night_neither_breaks_nor_extends(self):
+        self.assertEqual(pib.blind_streaks(_nights("A", False, False, None, False)), {"A": 3})
+
+    def test_latest_ok_is_omitted(self):
+        self.assertEqual(pib.blind_streaks(_nights("A", False, False, True)), {})
+
+    def test_night_ok_if_any_attempt_succeeded(self):
+        """The query collapses attempts with LOGICAL_OR; mirror one night as ok."""
+        rows = _nights("A", False, False) + _nights("A", None, None, True)
+        self.assertEqual(pib.blind_streaks(rows), {})
+
+
+class TestOutcomeRows(unittest.TestCase):
+    def test_all_failed_night(self):
+        names = [f"N{i}, X" for i in range(16)]
+        rows = pib.outcome_rows({
+            "scraped_at_utc": "2026-09-30T02:40:00Z", "rates": [],
+            "errors": {n: "ValueError: Hourly pay rate not found" for n in names},
+            "attempted": names,
+        })
+        self.assertEqual(len(rows), 16)
+        self.assertFalse(any(r["ok"] for r in rows))
+
+    def test_ok_and_failed(self):
+        rows = pib.outcome_rows({
+            "scraped_at_utc": "t", "rates": [{"employee_name": "A"}],
+            "errors": {"B": "x" * 400}, "attempted": ["A", "B", "C"],
+        })
+        self.assertEqual([(r["employee_id"], r["ok"]) for r in rows], [("A", True), ("B", False)])
+        self.assertEqual(len(rows[1]["error"]), 300)
+
+    def test_legacy_payload_without_timestamp_records_nothing(self):
+        self.assertEqual(pib.outcome_rows({"rates": [{"employee_name": "A"}]}), [])
+
+
+class TestReportBlindStreaks(unittest.TestCase):
+    """Alert once per streak; tonight's blind set is what is remembered."""
+
+    def setUp(self):
+        self.state: dict = {}
+        self.sent: list = []
+        fake = mock.Mock()
+        fake.partition_anomalies = __import__(
+            "agents.bhaga.notify", fromlist=["partition_anomalies"]).partition_anomalies
+        fake.pay_info_blind_alert = lambda **kw: self.sent.append(kw["names"])
+        sa = mock.Mock()
+        sa.get_notify_state = lambda k: list(self.state.get(k, []))
+        sa.set_notify_state = lambda k, v: self.state.__setitem__(k, list(v))
+        self._patch = mock.patch.dict("sys.modules", {
+            "agents.bhaga.notify": fake,
+            "skills.bhaga_config.state_adapter": sa,
+        })
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self._sa = sa
+
+    def _night(self, streaks):
+        with mock.patch("builtins.print"):
+            return pib.report_blind_streaks(date="d", streaks=streaks)
+
+    def test_two_nights_is_silent(self):
+        self.assertEqual(self._night({"A": 2}), [])
+        self.assertEqual(self.sent, [])
+
+    def test_third_night_alerts_once(self):
+        self.assertEqual(self._night({"A": 3}), ["A"])
+        self.assertEqual(self._night({"A": 4}), [])
+        self.assertEqual(self.sent, [["A"]])
+
+    def test_recovered_then_blind_again_re_alerts(self):
+        self._night({"A": 3})
+        self._night({})
+        self._night({"A": 3})
+        self.assertEqual(self.sent, [["A"], ["A"]])
+
+    def test_state_read_failure_still_alerts(self):
+        def boom(_k):
+            raise RuntimeError("firestore down")
+        self._sa.get_notify_state = boom
+        self.assertEqual(self._night({"A": 3, "B": 1}), ["A"])
 
 
 if __name__ == "__main__":

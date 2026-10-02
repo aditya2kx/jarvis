@@ -867,13 +867,13 @@ def cmd_drift_check(args) -> int:
     all_steps = lc.all_substeps()
 
     observed_idx, observed_name = _observed_floor()
-    if observed_idx < 0:
-        return 0
 
     # Inclusive of the observed substep: if the world shows 'implement' evidence,
     # 'implement' itself should be on record too (the gate only enforces priors).
     missing = [s for s in all_steps[: observed_idx + 1] if s.name not in done_set]
     if not missing:
+        if data.pop("drift_nudged", None) is not None:
+            _save_cache(branch, data)
         return 0
 
     # The idle hook re-fires this every turn. When the agent cannot act on it

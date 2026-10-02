@@ -887,6 +887,21 @@ class TestDriftCheck(PhaseStateTestBase):
         self.assertIn("--to implement", first)
         self.assertEqual(second.strip(), "")
 
+    def test_nudge_rearms_after_drift_resolves(self):
+        """Same pending set, resolved and later re-broken, must nudge again."""
+        branch = "feat/resolve-rebreak"
+        observed = {"on": True}
+        data = ps._load_cache(branch)
+        data["done"] = ["specify", "setup", "jam", "define-evidence", "plan"]
+        ps._save_cache(branch, data)
+        with patch.object(ps, "OBSERVABLE_FLOOR", [("implement", lambda: observed["on"])]):
+            self._run(branch)
+            observed["on"] = False
+            self._run(branch)
+            observed["on"] = True
+            _, out = self._run(branch)
+        self.assertIn("--to implement", out)
+
 
 class TestCheckPlanReadinessPhasePrecheck(PhaseStateTestBase):
     """Tests for the phase gate integration in check_plan_readiness.py."""

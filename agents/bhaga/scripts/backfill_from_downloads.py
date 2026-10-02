@@ -691,6 +691,26 @@ def main() -> int:
                             )
                         except Exception as exc:  # noqa: BLE001
                             print(f"WARN: pay_info Slack warn failed: {type(exc).__name__}: {exc}")
+                    try:
+                        from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+                        from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
+                            blind_streaks,
+                            pay_info_streak_rows_bq,
+                            record_pay_info_outcomes,
+                            report_blind_streaks,
+                        )
+                        record_pay_info_outcomes(payload)
+                        report_blind_streaks(
+                            date=datetime.datetime.now(ZoneInfo("America/Chicago")).date().isoformat(),
+                            streaks=blind_streaks(pay_info_streak_rows_bq()),
+                            errors=scrape_errors,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(
+                            f"[pay_info] BREADCRUMB pay_info_blind_streak_failed "
+                            f"err={type(exc).__name__}: {exc}"
+                        )
             except Exception as exc:  # noqa: BLE001
                 print(f"WARN: pay_info rate load failed: {type(exc).__name__}: {exc}")
 

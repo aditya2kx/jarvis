@@ -117,6 +117,66 @@ def parse_hourly_pay_rate(body_text: str, *, input_values: Optional[list[str]] =
     return {"wage_rate_dollars": rate, "added_on": added}
 
 
+_CARD_RATE_RE = re.compile(r"\$?\s*([\d,]+\.\d{2,4})")
+_CARD_DATE_RE = re.compile(
+    r"(?:Added|Last\s+changed)\s+on\s+(\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE,
+)
+
+
+def parse_pay_rate_cards(cards: list[dict]) -> Optional[dict]:
+    """Pick the base rate from the 'Pay rates' cards (ADP layout since 2026-09-29).
+
+    ``cards`` rows: ``{"rate_text": "$15.2500", "label": "Default rate",
+    "date_text": "Added on 02/16/2026"}``. Most employees carry a second,
+    unlabelled, undated card — the rate-2 premium. It must never become the
+    base rate (invariant 12), so the ``Default rate`` card wins; with no single
+    default card the lowest rate is taken and ``default_card`` is False so the
+    caller can leave a breadcrumb.
+
+    Returns ``{"wage_rate_dollars", "added_on", "default_card", "cards"}`` or
+    None when no card has rendered its rate yet.
+    """
+    parsed = []
+    for card in cards:
+        m = _CARD_RATE_RE.fullmatch((card.get("rate_text") or "").strip())
+        if not m:
+            continue
+        dm = _CARD_DATE_RE.search(card.get("date_text") or "")
+        added = None
+        if dm:
+            mm, dd, yyyy = dm.group(1).split("/")
+            added = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+        parsed.append({
+            "rate": float(m.group(1).replace(",", "")),
+            "default": bool(re.search(r"\bdefault\s+rate\b", card.get("label") or "", re.I)),
+            "added_on": added,
+        })
+    if not parsed:
+        return None
+    defaults = [p for p in parsed if p["default"]]
+    pick = defaults[0] if len(defaults) == 1 else min(defaults or parsed, key=lambda p: p["rate"])
+    return {
+        "wage_rate_dollars": pick["rate"],
+        "added_on": pick["added_on"],
+        "default_card": len(defaults) == 1,
+        "cards": len(parsed),
+    }
+
+
+def parse_payroll_info(
+    cards: list[dict], body_text: str, input_values: Optional[list[str]] = None,
+) -> Optional[dict]:
+    """Rate from the Pay rates cards, else the pre-2026-09-29 label; None if blank."""
+    parsed = parse_pay_rate_cards(cards)
+    if parsed:
+        return {**parsed, "rate_layout": "cards"}
+    try:
+        return {**parse_hourly_pay_rate(body_text, input_values=input_values),
+                "rate_layout": "legacy"}
+    except ValueError:
+        return None
+
+
 def rate_record(
     employee_name: str,
     *,
@@ -224,7 +284,7 @@ def clear_directory_status_filter(page) -> bool:
     require a rate. ``Flores, Juan`` and ``Urrutia, Emely`` are both terminated
     and both appear in the last-60-day punch roster.
 
-    Returns True if the filter was opened and adjusted.
+    Returns True when the Terminated badge is showing afterwards.
     """
     try:
         trigger = page.locator('[data-test-id="filter-button"]').first
@@ -232,35 +292,60 @@ def clear_directory_status_filter(page) -> bool:
             return False
         _click_through_modals(trigger, page=page, timeout=8_000)
         page.wait_for_timeout(1200)
-        changed = page.evaluate(
-            """() => {
-              let n = 0;
-              const wanted = /terminated|leave of absence/i;
-              const boxes = [...document.querySelectorAll(
-                'input[type="checkbox"], sdf-checkbox'
-              )];
-              for (const b of boxes) {
-                const label = (
-                  b.getAttribute('aria-label') || b.getAttribute('label') ||
-                  (b.labels && b.labels[0] && b.labels[0].innerText) ||
-                  (b.closest('label') && b.closest('label').innerText) || ''
-                );
-                if (!wanted.test(label)) continue;
-                const checked = b.checked ?? b.hasAttribute('checked');
-                if (!checked) { b.click(); n++; }
-              }
-              return n;
-            }"""
-        )
+        states = page.evaluate(
+            """() => [...document.querySelectorAll('[data-test-id^="aeed-filter-checkbox-"]')]
+              .map(b => ({test_id: b.getAttribute('data-test-id'),
+                          aria_checked: b.getAttribute('aria-checked')}))"""
+        ) or []
+        clicks = status_filter_clicks(states)
+        for tid in clicks:
+            page.locator(f'[data-test-id="{tid}"]').first.click(timeout=5_000)
+            page.wait_for_timeout(500)
+        # No Apply button: Escape closes the pane and the list re-queries.
         page.keyboard.press("Escape")
-        page.wait_for_timeout(1200)
-        if changed:
-            print(f"[pay_info] directory status filter: enabled {changed} extra status(es)")
-        return bool(changed)
+        page.wait_for_timeout(1500)
+        badges = _directory_status_badges(page)
+        print(f"[pay_info] directory status filter badges={badges} clicked={len(clicks)}")
+        if "Terminated" not in badges:
+            print(f"[pay_info] BREADCRUMB directory_status_filter_unchanged badges={badges}")
+        return "Terminated" in badges
     except Exception as exc:  # noqa: BLE001
         print(f"[pay_info] status-filter clear failed (non-fatal): "
               f"{type(exc).__name__}: {exc}")
         return False
+
+
+_FILTER_CHECKBOX_PREFIX = "aeed-filter-checkbox-"
+_FILTER_BADGE_PREFIX = "aeed-filter-badge-"
+_WANTED_STATUSES = ("Terminated", "Leave of absence")
+
+
+def status_filter_clicks(states: list[dict]) -> list[str]:
+    """data-test-ids of the wanted status checkboxes that are not yet ticked.
+
+    ``states`` rows: ``{"test_id", "aria_checked"}``. sdf-checkbox always
+    carries a ``checked`` attribute (``"true"``/``"false"``), so the old
+    ``hasAttribute('checked')`` read every box as ticked and never clicked one
+    (four employees invisible every night until 2026-10). ``aria-checked`` is
+    the only reliable read.
+    """
+    wanted = {f"{_FILTER_CHECKBOX_PREFIX}{s}" for s in _WANTED_STATUSES}
+    return [
+        s["test_id"] for s in states
+        if s.get("test_id") in wanted and (s.get("aria_checked") or "").lower() != "true"
+    ]
+
+
+def _directory_status_badges(page) -> list[str]:
+    """Statuses currently applied to the Directory list (badge text is empty)."""
+    try:
+        ids = page.evaluate(
+            f"""() => [...document.querySelectorAll('[data-test-id^="{_FILTER_BADGE_PREFIX}"]')]
+              .map(t => t.getAttribute('data-test-id'))"""
+        ) or []
+    except Exception:  # noqa: BLE001
+        return []
+    return [i[len(_FILTER_BADGE_PREFIX):] for i in ids if i.startswith(_FILTER_BADGE_PREFIX)]
 
 
 def _open_people_home(page) -> None:
@@ -319,8 +404,13 @@ def _name_key(name: str) -> str:
     return " ".join(name.split()).casefold()
 
 
+def _only_active(rows: list[tuple[str, str]]) -> Optional[str]:
+    active = [n for n, status in rows if status.casefold() == "active"]
+    return active[0] if len(active) == 1 else None
+
+
 def select_directory_match(
-    candidates: list[str],
+    candidates: list,
     search_name: str,
     *,
     accepted_names: Iterable[str] = (),
@@ -336,33 +426,59 @@ def select_directory_match(
     ``accepted_names`` are other spellings the alias table maps to the SAME
     canonical employee. With no exact hit on ``search_name``, exactly one hit
     on an accepted spelling is taken. When the exact name and an accepted
-    spelling are both listed, the scrape refuses: they are two records and only
-    one carries the live rate.
+    spelling are both listed, they are two records of one person and only one
+    carries the live rate: the single ``Active`` one is taken (a rehire leaves
+    the old record Terminated — Dolce, $15.25 Terminated vs $18 Active), and
+    with no single Active record the scrape refuses. An inactive exact match
+    beside an Active longer spelling with no alias between them also refuses.
+
+    ``candidates`` rows are ``{"name", "status"}`` dicts or bare names.
     """
+    rows = [
+        (c["name"], c.get("status") or "") if isinstance(c, dict) else (c, "")
+        for c in candidates
+    ]
     norm = _name_key(search_name)
-    exact = [c for c in candidates if _name_key(c) == norm]
+    exact = [r for r in rows if _name_key(r[0]) == norm]
     if len(exact) > 1:
         raise AmbiguousEmployeeError(
             f"{search_name!r} matches {len(exact)} Directory records exactly — "
-            f"cannot tell them apart by name: {exact}"
+            f"cannot tell them apart by name: {[n for n, _ in exact]}"
         )
     accepted = {_name_key(n) for n in accepted_names} - {norm}
-    via_alias = [c for c in candidates if _name_key(c) in accepted]
-    if exact and via_alias:
+    via_alias = [r for r in rows if _name_key(r[0]) in accepted]
+    if (exact and via_alias) or len(via_alias) > 1:
+        same_person = exact + via_alias
+        picked = _only_active(same_person)
+        if picked:
+            print(
+                f"[pay_info] BREADCRUMB directory_active_wins name={search_name!r} "
+                f"picked={picked!r} others={[n for n, _ in same_person if n != picked]}"
+            )
+            return picked
         raise AmbiguousEmployeeError(
-            f"{search_name!r} and alias spelling(s) {via_alias} are separate "
-            f"Directory records — refusing to pick one."
+            f"{search_name!r} has {len(same_person)} Directory records for one "
+            f"person and not exactly one is Active: {same_person} — refusing to pick."
         )
     if len(exact) == 1:
-        return exact[0]
+        name, status = exact[0]
+        # With Terminated rows listed, an inactive exact match can be the old
+        # record of someone rehired under a longer spelling. Without an alias
+        # tying the two together we cannot tell, and taking the old record's
+        # rate (Dolce: $15.25 over $18) passes every plausibility check.
+        rehired = [
+            n for n, s in rows
+            if n != name and norm in _name_key(n) and s.casefold() == "active"
+        ]
+        if status and status.casefold() != "active" and rehired:
+            raise AmbiguousEmployeeError(
+                f"{search_name!r} is {status} and Active record(s) {rehired} "
+                f"share the name with no alias linking them — refusing to pick."
+            )
+        return name
     if len(via_alias) == 1:
-        return via_alias[0]
-    if len(via_alias) > 1:
-        raise AmbiguousEmployeeError(
-            f"{search_name!r} has {len(via_alias)} alias-matched Directory "
-            f"records: {via_alias}"
-        )
-    near = [c for c in candidates if norm in _name_key(c)]
+        return via_alias[0][0]
+    near = [n for n, _ in rows if norm in _name_key(n)]
     if near:
         raise AmbiguousEmployeeError(
             f"no Directory record is exactly {search_name!r}; closest are {near}. "
@@ -371,13 +487,14 @@ def select_directory_match(
     raise LookupError(f"{search_name!r} not found in the Directory")
 
 
-def _directory_candidates(page) -> list[str]:
-    """Names of the currently-listed Directory rows.
+def _directory_candidates(page) -> list[dict]:
+    """``{"name", "status"}`` of the currently-listed Directory rows.
 
     Rows carry ``aria-label="Go to the profile page for <Name>"`` and
     ``data-test-id="active-name-cell-button"``; neither exposes an ADP associate
     ID, so the name is all we have to match on today (see the identity note in
-    docs/plans/payroll-pipeline-robustness.md).
+    docs/plans/payroll-pipeline-robustness.md). Status (``Active`` /
+    ``Terminated`` / ``Leave of absence``) is the row's ``-col-Status`` cell.
     """
     try:
         return page.evaluate(
@@ -389,7 +506,11 @@ def _directory_candidates(page) -> list[str]:
               for (const n of nodes) {
                 const m = (n.getAttribute('aria-label') || '')
                   .replace(/^Go to the profile page for\\s*/i, '').trim();
-                if (m) out.push(m);
+                if (!m) continue;
+                const row = n.closest('[data-test-id^="table-row-"]');
+                const cell = row && row.querySelector('[data-test-id$="-col-Status"]');
+                const status = cell ? (cell.innerText || cell.textContent || '').trim() : '';
+                out.push({name: m, status});
               }
               return out;
             }"""
@@ -407,12 +528,31 @@ def _wait_for_directory_results(page, needle: str, *, timeout_ms: int = 15_000) 
     """
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
-        if any(needle.casefold() in c.casefold() for c in _directory_candidates(page)):
+        if any(needle.casefold() in c["name"].casefold() for c in _directory_candidates(page)):
             page.wait_for_timeout(400)  # let row handlers bind
             return
         if dismiss_blocking_modals(page):
             print("[pay_info] dismissed Session Timeout modal while awaiting results")
         page.wait_for_timeout(300)
+
+
+PAYROLL_INFO_ATTEMPTS = 3
+_PAYROLL_READY_BUDGET_S = 10.0
+
+# Read-only: collects text, never clicks (the cards carry an Edit rate button).
+_PAYROLL_CARDS_JS = """() => {
+  const txt = (root, sel) => {
+    const el = root.querySelector(sel);
+    return el ? (el.innerText || el.textContent || '').trim() : '';
+  };
+  const cards = [...document.querySelectorAll('[data-test-id^="pay-rate-card-"]')]
+    .map(c => ({
+      rate_text: txt(c, '[data-test-id="current-pay-rate"]'),
+      label: txt(c, '[data-test-id="default-rate-label"]'),
+      date_text: txt(c, '[data-test-id="default-rate-date-message"]'),
+    }));
+  return {cards, heading_undefined: !!document.querySelector('[data-test-id="undefined"]')};
+}"""
 
 
 def scrape_one_pay_info(
@@ -422,10 +562,54 @@ def scrape_one_pay_info(
     dashboard_url: str,
     accepted_names: Iterable[str] = (),
 ) -> dict:
-    """People → directory search → Manage pay info / Payroll info; return rate fields.
+    """Directory → profile → Payroll info; return rate fields.
 
-    Calibrated against 2026-08-01 spike (Brooke $15.2500 on Payroll info input).
+    The Payroll info pane sometimes renders only an ``undefined`` heading and
+    never fills in (Huynh, 2026-10-01 spike). Waiting, toggling to Tax info and
+    reloading all failed to recover it — the profile URL is the SPA root, so a
+    reload lands on the dashboard — while reopening the profile from the
+    Directory recovered it every time. So each attempt starts from the Directory.
     """
+    for attempt in range(1, PAYROLL_INFO_ATTEMPTS + 1):
+        profile_name = _open_profile(
+            page, canonical_name, dashboard_url=dashboard_url, accepted_names=accepted_names,
+        )
+        pane = _read_payroll_info(page)
+        parsed = parse_payroll_info(pane["cards"], pane["text"], pane["inputs"])
+        if parsed:
+            break
+        print(
+            f"[pay_info] BREADCRUMB payroll_info_blank name={canonical_name!r} "
+            f"attempt={attempt}/{PAYROLL_INFO_ATTEMPTS} "
+            f"heading_undefined={pane['heading_undefined']} cards={len(pane['cards'])}"
+        )
+    else:
+        raise ValueError(
+            f"Payroll info blank after {PAYROLL_INFO_ATTEMPTS} attempts "
+            f"(no pay-rate card, no Hourly pay rate)"
+        )
+    if parsed.get("rate_layout") == "cards" and not parsed.get("default_card"):
+        print(
+            f"[pay_info] BREADCRUMB pay_rate_card_no_default name={canonical_name!r} "
+            f"cards={parsed.get('cards')} took_lowest={parsed['wage_rate_dollars']}"
+        )
+    return {
+        "employee_name": canonical_name,
+        "search_name": profile_name,
+        **parsed,
+        "body_excerpt": pane["text"][:500],
+        "inputs": pane["inputs"][:20],
+    }
+
+
+def _open_profile(
+    page,
+    canonical_name: str,
+    *,
+    dashboard_url: str,
+    accepted_names: Iterable[str] = (),
+) -> str:
+    """Dashboard → Directory → search → the one matching profile. Returns its name."""
     search_name = directory_search_name(canonical_name)
     profile_name = search_name
     last_name = search_name.split(",")[0].strip()
@@ -445,14 +629,18 @@ def scrape_one_pay_info(
     _wait_for_directory_results(page, last_name)
 
     candidates = _directory_candidates(page)
-    if candidates:
-        # Guard the live collision: the Directory holds both `Johnson, Dolce`
-        # (Terminated) and `Johnson, Dolce J` (Active). Now that the status
-        # filter is cleared, a substring match would silently pick the wrong
-        # person, and a wrong wage rate is worse than a missing one.
-        profile_name = select_directory_match(
-            candidates, search_name, accepted_names=accepted_names
+    if not candidates:
+        raise LookupError(
+            f"{search_name!r} not in Directory "
+            f"(status badges={_directory_status_badges(page)})"
         )
+    # Guard the live collision: the Directory holds both `Johnson, Dolce`
+    # (Terminated) and `Johnson, Dolce J` (Active). Now that the status
+    # filter is cleared, a substring match would silently pick the wrong
+    # person, and a wrong wage rate is worse than a missing one.
+    profile_name = select_directory_match(
+        candidates, search_name, accepted_names=accepted_names
+    )
 
     mpi = page.get_by_text("Manage pay info", exact=False)
     if mpi.count():
@@ -468,12 +656,19 @@ def scrape_one_pay_info(
             )
         page.wait_for_timeout(5000)
     else:
-        link = page.get_by_role("link", name=re.compile(re.escape(profile_name), re.I))
-        if link.count() == 0:
-            link = page.get_by_text(re.compile(re.escape(profile_name), re.I))
-        _click_through_modals(link.first, page=page, timeout=10_000)
-        page.wait_for_timeout(4000)
+        row = page.locator(f'[aria-label="Go to the profile page for {profile_name}"]')
+        _click_through_modals(row.first, page=page, timeout=10_000)
+        page.wait_for_timeout(2500)
+    return profile_name
 
+
+def _read_payroll_info(page, *, budget_s: float = _PAYROLL_READY_BUDGET_S) -> dict:
+    """Open the Payroll info tab and poll until a pay-rate card shows its rate.
+
+    "Ready" is a non-empty ``current-pay-rate``, not a card being present: a
+    card can render for ~0.5 s before its rate text (Pascone, 2026-10-01).
+    Returns ``{"cards", "heading_undefined", "text", "inputs"}``.
+    """
     page.evaluate(
         """() => {
           const a = document.getElementById('EMPLOYEE_PAYROLL');
@@ -483,12 +678,24 @@ def scrape_one_pay_info(
           if (hit) hit.click();
         }"""
     )
-    page.wait_for_timeout(4000)
+    deadline = time.time() + budget_s
+    state = {"cards": [], "heading_undefined": False}
+    while True:
+        state = page.evaluate(_PAYROLL_CARDS_JS) or state
+        if parse_pay_rate_cards(state["cards"]) or time.time() >= deadline:
+            break
+        if dismiss_blocking_modals(page):
+            print("[pay_info] dismissed Session Timeout modal while awaiting Payroll info")
+        page.wait_for_timeout(500)
     try:
-        page.mouse.wheel(0, 900)
+        page.evaluate(
+            """() => {
+              const l = document.querySelector('[data-test-id="pay-rates-list"]');
+              if (l) l.scrollIntoView();
+            }"""
+        )
     except Exception:  # noqa: BLE001
         pass
-    page.wait_for_timeout(800)
 
     inputs = page.evaluate(
         """() => {
@@ -510,7 +717,7 @@ def scrape_one_pay_info(
           for (const el of document.querySelectorAll('input, sdf-input')) pushEl(el);
           return out;
         }"""
-    )
+    ) or []
     text = page.evaluate(
         """() => {
           const chunks = [];
@@ -527,15 +734,8 @@ def scrape_one_pay_info(
           walk(document.body);
           return chunks.join(' ').replace(/\\s+/g, ' ').trim();
         }"""
-    )
-    parsed = parse_hourly_pay_rate(text, input_values=inputs)
-    return {
-        "employee_name": canonical_name,
-        "search_name": profile_name,
-        **parsed,
-        "body_excerpt": text[:500],
-        "inputs": inputs[:20],
-    }
+    ) or ""
+    return {**state, "text": text, "inputs": inputs}
 
 
 def _capture_pay_info_failure(page, name: str) -> list[str]:
@@ -588,7 +788,8 @@ def scrape_pay_info_rates(
             )
             print(
                 f"[pay_info] OK {name} → ${raw['wage_rate_dollars']:.4f}"
-                f" (added_on={raw.get('added_on')})"
+                f" (added_on={raw.get('added_on')}"
+                f" rate_layout={raw.get('rate_layout')})"
             )
         except Exception as exc:  # noqa: BLE001
             errors[name] = f"{type(exc).__name__}: {exc}"
@@ -780,13 +981,22 @@ def puncher_names_from_session_files(
     timecard_xlsx: Optional[pathlib.Path],
     employee_aliases: Optional[dict] = None,
 ) -> list[str]:
-    """Canonical names on tonight's timecard (if present)."""
+    """Canonical names on tonight's timecard (if present).
+
+    A hire not yet in the alias table comes out of the timecard raw
+    (``Huang Wing``); alias onboarding runs later in the same night and keys
+    them ``Huang, Wing``. ``derive_canonical`` applies the same rule here, so a
+    first-night rate is not written under a key no shift ever joins on.
+    """
     from skills.adp_run_automation import shift_backend as sb  # noqa: PLC0415
+    from skills.adp_run_automation.employee_aliases import derive_canonical  # noqa: PLC0415
 
     if not timecard_xlsx or not timecard_xlsx.exists():
         return []
     punches = sb.parse_xlsx(timecard_xlsx, employee_aliases=employee_aliases)
-    return sorted({p["employee_name"] for p in punches if p.get("employee_name")})
+    return sorted({
+        derive_canonical(p["employee_name"]) for p in punches if p.get("employee_name")
+    })
 
 
 def gap_names_from_session_files(
@@ -924,6 +1134,136 @@ def report_pay_info_issues(
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[pay_info] Slack wage-rate warning failed: {type(exc).__name__}: {exc}")
+
+
+BLIND_STREAK_NIGHTS = 3
+_BLIND_STATE_KEY = "pay_info_blind_streak"
+
+
+def outcome_rows(payload: dict) -> list[dict]:
+    """One ``adp_pay_info_outcomes`` row per attempted name in a PayInfoRates payload."""
+    scraped_at = payload.get("scraped_at_utc")
+    if not scraped_at:
+        return []
+    ok_names = {r.get("employee_name") for r in payload.get("rates") or []}
+    errors = payload.get("errors") or {}
+    rows = []
+    for name in payload.get("attempted") or []:
+        if name in ok_names:
+            rows.append({"employee_id": name, "scraped_at_utc": scraped_at,
+                         "ok": True, "error": None})
+        elif name in errors:
+            rows.append({"employee_id": name, "scraped_at_utc": scraped_at,
+                         "ok": False, "error": str(errors[name])[:300]})
+    return rows
+
+
+def record_pay_info_outcomes(payload: dict) -> int:
+    """MERGE tonight's per-name outcomes (re-loading the same JSON is a no-op)."""
+    os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+    from core.datastore import ensure_schema, load_rows  # noqa: PLC0415
+
+    rows = outcome_rows(payload)
+    if not rows:
+        return 0
+    ensure_schema()
+    return load_rows(
+        "adp_pay_info_outcomes",
+        rows,
+        merge_keys=["employee_id", "scraped_at_utc"],
+        column_bq_types={"scraped_at_utc": "TIMESTAMP", "error": "STRING"},
+    )
+
+
+def blind_streaks(rows: list[dict]) -> dict[str, int]:
+    """Consecutive most-recent attempted nights with no successful scrape, per name.
+
+    ``rows``: ``{"employee_id", "night", "ok"}``, one per name × night with
+    ``ok`` true if any attempt that night succeeded. A night with no attempt
+    neither extends nor breaks a streak. Names currently OK are omitted.
+    """
+    by_name: dict[str, list[tuple]] = {}
+    for r in rows:
+        by_name.setdefault(r["employee_id"], []).append((r["night"], bool(r["ok"])))
+    out: dict[str, int] = {}
+    for name, nights in by_name.items():
+        streak = 0
+        for _, ok in sorted(nights, reverse=True):
+            if ok:
+                break
+            streak += 1
+        if streak:
+            out[name] = streak
+    return out
+
+
+def pay_info_streak_rows_bq(*, nights: int = 14) -> list[dict]:
+    """Per name × CT night: did any pay_info attempt succeed?"""
+    os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+    from google.cloud import bigquery  # noqa: PLC0415
+
+    from core.datastore import fq, get_client  # noqa: PLC0415
+
+    client = get_client()
+    if client is None:
+        raise RuntimeError("BigQuery client unavailable — cannot read pay_info outcomes")
+    sql = f"""
+      SELECT employee_id, DATE(scraped_at_utc, 'America/Chicago') AS night,
+             LOGICAL_OR(ok) AS ok
+      FROM {fq("adp_pay_info_outcomes")}
+      WHERE scraped_at_utc >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @n DAY)
+      GROUP BY 1, 2
+    """
+    job = client.query(
+        sql,
+        job_config=bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("n", "INT64", nights)]
+        ),
+    )
+    return [dict(row.items()) for row in job.result()]
+
+
+def report_blind_streaks(
+    *, date: str, streaks: dict[str, int], errors: Optional[dict[str, str]] = None,
+) -> list[str]:
+    """Breadcrumb every night; Slack once per streak when a name reaches 3 nights.
+
+    ``report_pay_info_issues`` deliberately stays quiet while earnings still
+    supplies a rate. That left 2026-09-29/30 — every scrape failing, 0 of 16 —
+    without a single alert, while any raise stayed invisible until the next
+    paycheck. This alerts on that sustained blindness, once: the remembered
+    set is tonight's blind names, so a name alerts again only after it
+    recovers and goes blind anew.
+    """
+    blind = sorted(n for n, s in streaks.items() if s >= BLIND_STREAK_NIGHTS)
+    print(
+        f"[pay_info] BREADCRUMB pay_info_blind_streak date={date} "
+        f"blind={blind} streaks={dict(sorted(streaks.items()))}"
+    )
+    already: list[str] = []
+    try:
+        from skills.bhaga_config.state_adapter import get_notify_state  # noqa: PLC0415
+
+        already = get_notify_state(_BLIND_STATE_KEY)
+    except Exception:  # noqa: BLE001
+        already = []
+    from agents.bhaga.notify import (  # noqa: PLC0415
+        partition_anomalies,
+        pay_info_blind_alert,
+    )
+
+    new, _ = partition_anomalies(blind, already)
+    try:
+        from skills.bhaga_config.state_adapter import set_notify_state  # noqa: PLC0415
+
+        set_notify_state(_BLIND_STATE_KEY, blind)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[pay_info] blind-streak state write failed: {type(exc).__name__}: {exc}")
+    if new:
+        pay_info_blind_alert(
+            date=date, names=new, streaks=streaks, errors=errors or {},
+        )
+    return new
 
 
 def assert_no_missing_puncher_rates(*, days: int = 60) -> list[str]:

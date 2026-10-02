@@ -885,23 +885,51 @@ Multiple dates are comma-separated: `Retry-Dates: 2026-06-12, 2026-06-13`.
 
 **Smart mode selection per date** (via `scripts/trigger_dated_refresh.py`):
 - If the date is covered by **both** `square_daily_rollup` (Square) **and** `adp_shifts` (ADP) in
-  BQ → **recompute-only**: sets `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1` so
+  BQ — and both actually hold rows for that day, not merely a later max date → **recompute-only**: sets `BHAGA_SKIP_SQUARE=1`, `BHAGA_SKIP_ADP=1`, `BHAGA_SKIP_KDS=1` so
   no browser/OTP; only the model is rebuilt from updated human inputs (`training_shifts`,
   `store_config`). Both sources must be present: a date where ADP failed (e.g. a sorry.adp.com
   throttle night) has Square coverage but missing ADP — that date triggers a full scrape even though
   Square is already in BQ.
 - If either source is missing, or BQ probes fail (fail-open) → **full refresh**: normal scrape + OTP
-  flow.
+  flow, with `BHAGA_FORCE_RESCRAPE=1` so the date's done scrape markers cannot skip the portals.
 
 The rerun uses Cloud Run v2 per-execution env overrides (`RunJobRequest.Overrides`) so the job
 definition is **never mutated** (a persisted `REFRESH_DATE` would corrupt future nightlies). The
 step is best-effort: a failure never fails the deploy and logs a `::warning::`.
+
+**Detected gaps, no trailer needed (Issue #348).** The same step also runs
+`scripts/detect_gap_dates.py`, which plans every repair over the last 14 CT days and prints one
+`trigger_dated_refresh.py` argument line per run:
+- **Raw holes** — a past day missing Square or ADP rows, even behind a later max date (the
+  nightly only scrapes forward from `data_window_end + 1`, so it never refills these). All holes
+  share **one** windowed full scrape (`--force-scrape --window-from <first hole> --date <last
+  hole>`), so a deploy costs at most one OTP prompt. Days the store was shut go in the
+  store profile's optional `closed_dates: [YYYY-MM-DD, …]` so they are not chased.
+- **Model-code change** — when the merged PR touched any file the model build imports (AST
+  closure of `materialize_model_bq.py`, plus store profiles; tests ignored), one recompute of
+  yesterday with `--model-scope-from <last closed pay-period start>` rebuilds that history on the
+  new code. It covers every later gap, so those are not rerun separately.
+- **Failed / never-ran / no `model_daily` row** — the remaining nights rerun recompute-only
+  (`--force-recompute`, max 7, newest first).
+
+Grep the deploy log for `[detect_gap_dates] gaps=[…] raw_holes=[…] model_rebuild_from=… runs=N`
+(`gap_scan_failed` = BQ error; the deploy carries on). Dry check (read-only):
+`python3 scripts/detect_gap_dates.py --changed-files <file with one path per line>`.
+
+**Rate corrections reach past days (Issue #348).** The nightly rebuilds the whole open pay period
+anyway. When tonight writes a wage-history row dated earlier (ADP "Added on" in the last closed
+period, or the paid period of an earnings rate), it widens the rebuild back to that date — clamped to
+the last closed period — and logs `[materialize_model_bq] BREADCRUMB rate_change_scope from=…`
+(`rate_change_scope_failed` = BQ probe error; scope stays as before). A `Retry-Dates` rerun cannot
+do this: it runs at deploy, before the nightly has scraped the corrected rate.
 
 Manual one-off rerun (using the same smart logic):
 ```bash
 python3 scripts/trigger_dated_refresh.py --date 2026-06-13 --dry-run   # check mode
 python3 scripts/trigger_dated_refresh.py --date 2026-06-13              # trigger
 python3 scripts/trigger_dated_refresh.py --date 2026-06-14 --force-scrape  # force full scrape
+python3 scripts/trigger_dated_refresh.py --date 2026-09-29 --force-scrape --window-from 2026-09-27  # refill holes
+python3 scripts/trigger_dated_refresh.py --date 2026-10-01 --force-recompute --model-scope-from 2026-09-07  # rebuild history
 ```
 
 IAM: the WIF SA needs `run.jobs.run`. `roles/run.admin` on `bhaga-orchestrator` covers this.
@@ -1739,7 +1767,7 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 
 - **BQ dataset:** `jarvis-bhaga-prod.bhaga`
 - **Raw tables:** `square_transactions`, `adp_shifts`, `adp_punches`, `adp_wage_rates`, `square_daily_rollup`
-- **Wage rates (Issue #213 / #251 / #267):** Earnings Regular (`rate_source=earnings`) plus nightly People → Payroll info refresh for **all recent punchers** (`rate_source=pay_info`; updates raises; preserves OT). **Refuse** MERGE when the new hourly is `< 0.5 ×` the existing rate (`BREADCRUMB refused_rate_drop` — ADP token hourlies on salaried/excluded people). Also grep `wage_rate_gap` / `wage_rate_change` / `wage_rate_flow_issue`. Failures Slack a `:warning:` (tips still run). Manual: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-punchers --write-bq`.
+- **Wage rates (Issue #213 / #251 / #267):** Earnings Regular (`rate_source=earnings`) plus nightly People → Payroll info refresh for **all recent punchers** (`rate_source=pay_info`; updates raises; preserves OT). **Refuse** MERGE when the new hourly is `< 0.5 ×` the existing rate (`BREADCRUMB refused_rate_drop` — ADP token hourlies on salaried/excluded people). Also grep `wage_rate_gap` / `wage_rate_change` / `wage_rate_flow_issue`. Failures Slack a `:warning:` (tips still run). **Issue #348 (ADP Pay rates card redesign, 2026-09-29):** the rate is read from `[data-test-id="pay-rate-card-N"]` — the card labelled *Default rate* (`added_on` from "Added on" / "Last changed on"); a blank pane is retried by reopening the profile from the Directory (3 attempts, never `page.reload`). Breadcrumbs: `payroll_info_blank` (pane never rendered), `pay_rate_card_no_default` (multi-card, no label → lowest rate), `directory_status_filter_unchanged` (Terminated/Leave filter ticks didn't take), `directory_active_wins` (exact+alias collision resolved to the single Active record). Per-employee outcomes land in BQ `adp_pay_info_outcomes`; anyone with no `ok` row for **≥3 consecutive CT nights** gets one Slack "blind streak" DM per streak (state key `pay_info_blind_streak`; grep `BREADCRUMB pay_info_blind_streak`, failures `pay_info_blind_streak_failed`). Manual: `python3 -m skills.adp_run_automation.pay_info_backend --from-bq-punchers --write-bq`.
 - **ADP payroll draft (Issue #251):** After the biweek **Sunday** is in BQ (from `bhaga-nightly` 21:30 CT), **Monday 07:00 CT** `bhaga-payroll-draft` runs **headless** Start→Preview and **leaves the draft**. Never Approve/Save. `/payroll`: hide ADP chrome on the **open** biweek; closed unpaid is **Run ADP Preview** XOR **Preview done** (hours + total pay vs last Preview Gross — **no Preview URL**, those hashes 404); paid history is **Open ADP payroll** (`#xfm-Payroll Detail`). Operator logs in as themselves. `bhaga-nightly` does **not** Start payroll. Cloud Run Job **default env has no `BHAGA_ADP_PAYROLL_DRAFT`** (verified 2026-08-24 `gcloud run jobs describe bhaga-daily-refresh`); only the Monday scheduler override sets it. Visible Chromium only with `BHAGA_ADP_HEADED=1`. Next auto: **Mon Sep 7 07:00 CT**. Manual: `python3 -m skills.adp_run_automation.payroll_draft_backend --store palmetto --period-start YYYY-MM-DD --period-end YYYY-MM-DD --no-dry-run --allow-prod-draft --allow-start`.
 - **Curated views:** `vw_daily_sales`, `vw_tips_by_hour`, `vw_labor_daily`, `vw_labor_weekly`, `vw_sales_labor_daily`, `vw_employee_hours_summary`
 - **Model tables:** `model_daily`, `model_labor_daily`, `model_labor_weekly`, `model_labor_period`, `model_tip_alloc_period`, `model_tip_alloc_daily`, `model_period_summary`, `model_forecast_daily`, `model_solo_hours_daily`

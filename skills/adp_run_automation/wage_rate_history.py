@@ -219,6 +219,23 @@ def latest_history_bq() -> dict[str, dict]:
     return {r["employee_id"]: r for r in rows}
 
 
+def earliest_change_since(since_utc: datetime.datetime) -> Optional[datetime.date]:
+    """Earliest effective date among history rows written at/after ``since_utc``.
+
+    Seed rows (a first observation) price every shift the same as before, so
+    they never widen a rebuild.
+    """
+    from core.datastore import fq, read_query  # noqa: PLC0415
+
+    rows = read_query(
+        f"SELECT MIN(effective_date) AS d FROM {fq(TABLE)} "
+        f"WHERE observed_at_utc >= TIMESTAMP('{since_utc.isoformat()}') "
+        f"AND effective_date > DATE '{SEED_DATE.isoformat()}'"
+    )
+    d = rows[0].get("d") if rows else None
+    return datetime.date.fromisoformat(str(d)) if d else None
+
+
 def write_history_rows(rows: list[dict], *, dry_run: bool = False) -> int:
     from core.datastore import load_rows  # noqa: PLC0415
 

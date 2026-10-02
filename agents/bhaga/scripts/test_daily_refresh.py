@@ -1610,6 +1610,25 @@ class TestForceModelRecomputeMarkerClear(unittest.TestCase):
         self.assertEqual(cleared, [], "no markers must be cleared when env var is absent")
         self.assertEqual(result, [])
 
+    def test_force_rescrape_clears_scrape_markers(self):
+        dr = self._import_dr()
+        cleared: list = []
+        with mock.patch.object(dr, "clear_step_done",
+                               side_effect=lambda d, s: cleared.append(s)), \
+             mock.patch.dict(os.environ, {"BHAGA_FORCE_RESCRAPE": "1"}):
+            result = dr.apply_force_rescrape(datetime.date(2026, 9, 27))
+        self.assertEqual(cleared, ["square_transactions", "square_kds", "adp_reports"])
+        self.assertEqual(result, cleared)
+
+    def test_force_rescrape_not_set_is_noop(self):
+        dr = self._import_dr()
+        cleared: list = []
+        with mock.patch.object(dr, "clear_step_done",
+                               side_effect=lambda d, s: cleared.append(s)), \
+             mock.patch.dict(os.environ, {"BHAGA_FORCE_RESCRAPE": ""}):
+            self.assertEqual(dr.apply_force_rescrape(datetime.date(2026, 9, 27)), [])
+        self.assertEqual(cleared, [])
+
     def test_force_recompute_uses_state_adapter_not_direct_fs(self):
         """clear_step_done delegates to _adapter_clear_step (state_adapter.clear_step),
         NOT a direct pathlib.Path.unlink — proves backend-agnosticism.

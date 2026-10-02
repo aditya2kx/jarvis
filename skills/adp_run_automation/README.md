@@ -34,7 +34,24 @@ and `... wage_rate_history show --employee "Last, First"`.
 middle initial the canonical name lacks (`Johnson, Dolce J` for `Johnson, Dolce`).
 `select_directory_match(..., accepted_names=...)` accepts a single row whose name
 is an `employee_aliases` spelling of the same person; ≥2 candidates, or an exact
-plus an alias row, still raise `AmbiguousEmployeeError` (never guess a rate).
+plus an alias row, still raise `AmbiguousEmployeeError` (never guess a rate) — unless
+exactly one of them is **Active** (Directory Status column), which wins
+(`BREADCRUMB directory_active_wins`; Issue #348). A lone exact match that is not Active
+beside an Active longer-named lookalike with no alias link is refused.
+
+**Pay rates cards (ADP redesign 2026-09-29, Issue #348).** Payroll info renders
+`[data-test-id="pay-rates-list"]` > `pay-rate-card-N`, each with `current-pay-rate`,
+optional `default-rate-label` ("Default rate") and `default-rate-date-message`
+("Added on" / "Last changed on"). `parse_pay_rate_cards` takes the Default card (else
+the lowest rate, `BREADCRUMB pay_rate_card_no_default`); the legacy input/text parser
+is the fallback (`rate_layout=cards|legacy` in the OK log). A blank pane (only the
+heading `data-test-id="undefined"`) is retried up to 3× by **reopening the profile from
+the Directory** — reload lands on the SPA root and doesn't help
+(`BREADCRUMB payroll_info_blank`). The status filter is driven by real clicks on
+`sdf-checkbox[data-test-id="aeed-filter-checkbox-<Status>"]` reading `aria-checked`,
+verified via the `aeed-filter-badge-*` badges. Fixtures:
+`testdata/pay_info_cards_*.html`. Outcomes → `adp_pay_info_outcomes`; ≥3 blind nights
+→ `notify.pay_info_blind_alert` (once per streak).
 
 **Timecard Notes.** `shift_backend.parse_xlsx` keeps the optional "Notes" cell as
 `note` (→ `adp_punches.note`); materialize uses it for admin-punch tip exemptions.
@@ -66,9 +83,9 @@ throughout, and an alert that is wrong nightly is one you stop reading.
   identical to `canonical_name`; the Directory DOM exposes only
   `aria-label="Go to the profile page for <Name>"`. With the status filter cleared,
   `Johnson, Dolce` (Terminated) and `Johnson, Dolce J` (Active) both appear, so
-  `select_directory_match()` requires an **exact** name match and raises
-  `AmbiguousEmployeeError` rather than guessing — a missing rate is recoverable from
-  earnings, a wrong rate is silently wrong pay. Capturing ADP's associate ID from the
+  `select_directory_match()` picks the single **Active** record when they are linked by
+  `employee_aliases` and otherwise raises `AmbiguousEmployeeError` rather than guessing —
+  a missing rate is recoverable from earnings, a wrong rate is silently wrong pay. Capturing ADP's associate ID from the
   profile page is a follow-up.
 - **Failure evidence goes to GCS.** `_capture_pay_info_failure` routes through
   `_browser_runtime._capture_failure_evidence` (`gs://<cache>/<date>/evidence/`). It

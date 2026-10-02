@@ -111,3 +111,26 @@ class TestWageRateFlowAlert:
         assert "Perales, Elizabeth" in text
         assert "FAILED" not in text
         assert "2026-08-18" in text
+
+
+class TestPayInfoBlindAlert:
+    def test_names_streaks_and_consequence(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(notify, "_safe_send",
+                            lambda text: captured.setdefault("text", text))
+        notify.pay_info_blind_alert(
+            date="2026-10-01",
+            names=["Garcia, Jacob", "Krause, Lindsay"],
+            streaks={"Garcia, Jacob": 3, "Krause, Lindsay": 4},
+            errors={"Garcia, Jacob": "ValueError: Payroll info blank after 3 attempts"},
+        )
+        text = captured["text"]
+        assert "`Garcia, Jacob` — 3 nights" in text
+        assert "`Krause, Lindsay` — 4 nights" in text
+        assert "Payroll info blank" in text
+        assert "next check" in text
+        assert "pay_info_blind_streak" in text
+
+    def test_no_names_sends_nothing(self, monkeypatch):
+        monkeypatch.setattr(notify, "_safe_send", lambda text: 1 / 0)
+        assert notify.pay_info_blind_alert(date="d", names=[], streaks={}) is None

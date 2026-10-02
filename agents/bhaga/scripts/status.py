@@ -253,6 +253,10 @@ GRAFANA_VIEWS: list[Target] = [
     # have no freshness cadence — same class as store_config. 075 republishes
     # vw_model_payroll_period / vw_labor_*_live, already covered as views.
     # adp_punches.note is a new column on an existing target.
+    # migration 082 (Issue #348): adp_pay_info_outcomes is a per-attempt scrape
+    # log read only by the 3-night blind alert; its health signal is that alert
+    # (BREADCRUMB pay_info_blind_streak), not a freshness date. 083 deletes
+    # raw-alias-keyed wage rows — data cleanup, no new object. No new targets.
     # migration 035/036 (Issues #156/#164, operator console): vw_inventory_base_runway
     # is the Base runway table on /inventory (burn-down days left; dual Restock 1/2
     # from Actuals-only dates; Status Risky if restock empty or stockout < restock;

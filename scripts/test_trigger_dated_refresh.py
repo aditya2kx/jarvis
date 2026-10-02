@@ -48,6 +48,12 @@ def test_scrape_env_starts_inline_no_force_request():
 def test_recompute_env_has_no_force_flag():
     env = dict(t._build_env_overrides("2026-06-13", recompute_only=True))
     assert "BHAGA_OTP_FORCE_REQUEST" not in env
+    assert "BHAGA_FORCE_RESCRAPE" not in env
+
+
+def test_scrape_env_forces_rescrape():
+    env = dict(t._build_env_overrides("2026-06-14", recompute_only=False))
+    assert env["BHAGA_FORCE_RESCRAPE"] == "1"
 
 
 def test_decide_force_flags_win():
@@ -91,6 +97,39 @@ def _make_covered_client(monkeypatch, sq_max, adp_max):
         return None
 
     monkeypatch.setattr(t, "_max_date_in_table", fake_max)
+    monkeypatch.setattr(t, "_has_rows", lambda client, table, col, d: True)
+
+
+def test_hole_behind_latest_date_is_full_scrape(monkeypatch):
+    """MAX(date) covers the day but the day itself has no ADP rows → scrape."""
+    import datetime
+    import unittest.mock as mock
+
+    _make_covered_client(monkeypatch, sq_max=datetime.date(2026, 6, 30),
+                         adp_max=datetime.date(2026, 6, 30))
+    monkeypatch.setattr(t, "_has_rows", lambda client, table, col, d: table != "adp_shifts")
+
+    class _FakeBQModule:
+        class Client:
+            def __init__(self, **kw): pass
+
+    with mock.patch.dict("sys.modules", {"google.cloud.bigquery": _FakeBQModule}):
+        assert t._date_is_covered("2026-06-28") is False
+
+
+def test_window_and_model_scope_env():
+    env = dict(t._build_env_overrides("2026-09-30", recompute_only=False,
+                                      window_from="2026-09-27"))
+    assert env["BHAGA_WINDOW_FROM"] == "2026-09-27"
+    assert env["BHAGA_WINDOW_TO"] == "2026-09-30"
+    env = dict(t._build_env_overrides("2026-10-01", recompute_only=True,
+                                      model_scope_from="2026-09-07"))
+    assert env["BHAGA_MODEL_SCOPE_FROM"] == "2026-09-07"
+    assert "BHAGA_WINDOW_FROM" not in env
+
+
+def test_main_rejects_bad_window_date():
+    assert t.main(["--date", "2026-09-30", "--window-from", "bad", "--dry-run"]) == 2
 
 
 def test_both_covered_is_recompute_only(monkeypatch):

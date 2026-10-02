@@ -37,6 +37,17 @@ def _max_date_in_table(client, table: str, date_col: str):
         return None
 
 
+def _has_rows(client, table: str, date_col: str, date_str: str) -> bool:
+    """True if ``table`` has a row ON ``date_str`` (False on any error)."""
+    sql = (f"SELECT COUNT(*) AS n FROM `{_PROJECT}.{_DATASET}.{table}` "
+           f"WHERE {date_col} = DATE '{date_str}'")
+    try:
+        rows = list(client.query(sql).result())
+        return bool(rows and rows[0]["n"])
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _date_is_covered(date_str: str) -> bool:
     """True if both Square and ADP raw data cover date_str (=> recompute-only).
 
@@ -59,7 +70,12 @@ def _date_is_covered(date_str: str) -> bool:
 
     sq_covered = sq_max is not None and target <= sq_max
     adp_covered = adp_max is not None and target <= adp_max
-    return sq_covered and adp_covered
+    if not (sq_covered and adp_covered):
+        return False
+    # A hole behind the latest date (one night's load failed, later nights
+    # landed) passes the MAX test but has no rows: it needs a scrape.
+    return (_has_rows(client, "square_daily_rollup", "date_local", date_str)
+            and _has_rows(client, "adp_shifts", "date", date_str))
 
 
 def _decide_recompute(date_str: str, *, force_recompute: bool, force_scrape: bool) -> bool:
@@ -70,9 +86,19 @@ def _decide_recompute(date_str: str, *, force_recompute: bool, force_scrape: boo
     return _date_is_covered(date_str)
 
 
-def _build_env_overrides(date_str: str, recompute_only: bool) -> list[tuple[str, str]]:
+def _build_env_overrides(
+    date_str: str,
+    recompute_only: bool,
+    *,
+    window_from: str | None = None,
+    model_scope_from: str | None = None,
+) -> list[tuple[str, str]]:
     """Return the per-execution env overrides as (name, value) tuples."""
     env = [("REFRESH_DATE", date_str)]
+    if window_from:
+        env += [("BHAGA_WINDOW_FROM", window_from), ("BHAGA_WINDOW_TO", date_str)]
+    if model_scope_from:
+        env.append(("BHAGA_MODEL_SCOPE_FROM", model_scope_from))
     if recompute_only:
         env += [
             ("BHAGA_SKIP_SQUARE", "1"),
@@ -84,6 +110,10 @@ def _build_env_overrides(date_str: str, recompute_only: bool) -> list[tuple[str,
             # across Cloud Run invocations and the recompute is a silent no-op.
             ("BHAGA_FORCE_MODEL_RECOMPUTE", "1"),
         ]
+    else:
+        # A scrape rerun exists to land missing raw rows; done scrape markers
+        # for the date would otherwise skip both portals.
+        env.append(("BHAGA_FORCE_RESCRAPE", "1"))
     # Full-scrape reruns start inline (no READY handshake) in the default gate
     # mode. BHAGA_OTP_FORCE_REQUEST was only meaningful under the legacy
     # BHAGA_OTP_REQUIRE_READY=1 mode and is no longer injected here.
@@ -93,10 +123,11 @@ def _build_env_overrides(date_str: str, recompute_only: bool) -> list[tuple[str,
     return env
 
 
-def _trigger(date_str: str, recompute_only: bool) -> None:
+def _trigger(date_str: str, recompute_only: bool, **scope) -> None:
     from google.cloud import run_v2  # noqa: PLC0415
 
-    env = [run_v2.EnvVar(name=n, value=v) for n, v in _build_env_overrides(date_str, recompute_only)]
+    env = [run_v2.EnvVar(name=n, value=v)
+           for n, v in _build_env_overrides(date_str, recompute_only, **scope)]
     client = run_v2.JobsClient()
     client.run_job(
         request=run_v2.RunJobRequest(
@@ -118,25 +149,37 @@ def main(argv: list[str] | None = None) -> int:
                       help="Force recompute-only (skip the BQ coverage probe).")
     mode.add_argument("--force-scrape", action="store_true",
                       help="Force a full scrape (skip the BQ coverage probe).")
+    ap.add_argument("--window-from", default=None,
+                    help="Scrape window start (YYYY-MM-DD); the window ends at --date. "
+                         "One execution — one portal login — for a run of missing days.")
+    ap.add_argument("--model-scope-from", default=None,
+                    help="Rebuild model rows back to this date (YYYY-MM-DD).")
     ap.add_argument("--dry-run", action="store_true",
                     help="Print the decision only; do not trigger an execution.")
     args = ap.parse_args(argv)
 
-    try:
-        datetime.date.fromisoformat(args.date)
-    except ValueError:
-        print(f"ERROR: invalid --date {args.date!r} (want YYYY-MM-DD)", file=sys.stderr)
-        return 2
+    for flag, value in (("--date", args.date), ("--window-from", args.window_from),
+                        ("--model-scope-from", args.model_scope_from)):
+        if value is None:
+            continue
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError:
+            print(f"ERROR: invalid {flag} {value!r} (want YYYY-MM-DD)", file=sys.stderr)
+            return 2
 
     recompute_only = _decide_recompute(
         args.date, force_recompute=args.force_recompute, force_scrape=args.force_scrape
     )
     mode_str = "recompute-only (no portal login)" if recompute_only else "full refresh (scrape + OTP)"
-    print(f"[trigger_dated_refresh] date={args.date} mode={mode_str} job={_JOB_RESOURCE}")
+    print(f"[trigger_dated_refresh] date={args.date} mode={mode_str} "
+          f"window_from={args.window_from} model_scope_from={args.model_scope_from} "
+          f"job={_JOB_RESOURCE}")
     if args.dry_run:
         print("[trigger_dated_refresh] --dry-run: not triggering.")
         return 0
-    _trigger(args.date, recompute_only)
+    _trigger(args.date, recompute_only,
+             window_from=args.window_from, model_scope_from=args.model_scope_from)
     print(f"[trigger_dated_refresh] execution queued for {args.date}.")
     return 0
 

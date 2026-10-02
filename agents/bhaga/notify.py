@@ -380,6 +380,39 @@ def wage_rate_flow_alert(
     return _safe_send(text)
 
 
+def pay_info_blind_alert(
+    *,
+    date: str,
+    names: list[str],
+    streaks: dict[str, int],
+    errors: Optional[dict[str, str]] = None,
+) -> Optional[dict]:
+    """Warn once when employees have had no live ADP pay rate for N nights.
+
+    Their rate still comes from the last paycheck, so tips and labor keep
+    running — but a raise stays invisible until the next check.
+    """
+    if not names:
+        return None
+    errors = errors or {}
+    lines = [
+        f"• `{n}` — {streaks.get(n, '?')} nights"
+        + (f": `{errors[n][:160]}`" if n in errors else "")
+        for n in names[:20]
+    ]
+    if len(names) > 20:
+        lines.append(f"• … +{len(names) - 20} more")
+    text = (
+        f":warning: *BHAGA: no live ADP pay rate for {len(names)} employee(s)* "
+        f"as of refresh *{date}* on {_host_tag()}\n"
+        + "\n".join(lines)
+        + "\nRates still come from the last paycheck, so a raise will not land "
+        f"until that person's next check.\n"
+        f"_Grep Cloud Run: `BREADCRUMB pay_info_blind_streak` / `[pay_info] FAIL`._"
+    )
+    return _safe_send(text)
+
+
 def new_employee_alert(
     new_pairs: list[tuple[str, str]],
     *,

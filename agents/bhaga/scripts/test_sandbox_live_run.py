@@ -67,11 +67,13 @@ class TestBuildSandboxEnv:
         assert env["BHAGA_WINDOW_FROM"] == "2026-05-04"
         assert env["BHAGA_WINDOW_TO"] == "2026-05-31"
         assert env["BHAGA_IGNORE_HALT"] == "1"
+        assert env["BHAGA_FORCE_RESCRAPE"] == "1"
 
     def test_no_window_no_ignore_halt(self):
         """When no window is set, BHAGA_IGNORE_HALT and window vars must be absent."""
         env = _good_env()  # no window_from / window_to
         assert "BHAGA_IGNORE_HALT" not in env
+        assert "BHAGA_FORCE_RESCRAPE" not in env
         assert "BHAGA_WINDOW_FROM" not in env
         assert "BHAGA_WINDOW_TO" not in env
 

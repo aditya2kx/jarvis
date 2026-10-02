@@ -268,6 +268,57 @@ def open_pay_period_start(profile: dict, refresh_date: datetime.date) -> datetim
     return closed_end + datetime.timedelta(days=1)
 
 
+def rate_change_window_start(
+    earliest_change: datetime.date | None, closed_period_start: datetime.date | None,
+) -> datetime.date | None:
+    """How far back tonight's rate changes reach the model (None = not at all).
+
+    The model prices every date at today's rate, and the open-period rebuild
+    stops at the open period. A correction ADP dates into the last closed period
+    (pay_info "Added on", or the paid period an earnings rate came from) would
+    otherwise leave that period's labor $ and solo-premium eligibility stale.
+    Clamped to the last closed period: wage history never back-dates further.
+    """
+    if earliest_change is None:
+        return None
+    if closed_period_start is not None and earliest_change < closed_period_start:
+        return closed_period_start
+    return earliest_change
+
+
+def model_scope_from_env() -> datetime.date | None:
+    """``BHAGA_MODEL_SCOPE_FROM`` — set by a deploy whose PR changed model code,
+    so days built by the old code are rebuilt (scripts/detect_gap_dates.py)."""
+    raw = os.environ.get("BHAGA_MODEL_SCOPE_FROM", "").strip()
+    return datetime.date.fromisoformat(raw) if raw else None
+
+
+def _rate_change_floor(
+    profile: dict, refresh_date: datetime.date, since_utc: datetime.datetime,
+) -> datetime.date | None:
+    try:
+        from skills.adp_run_automation.wage_rate_history import earliest_change_since  # noqa: PLC0415
+        from agents.bhaga.scripts import update_model_sheet  # noqa: PLC0415
+
+        earliest = earliest_change_since(since_utc)
+        adp = profile.get("adp_run", {})
+        closed_start = None
+        if adp.get("pay_periods_anchor_end_date"):
+            closed_start, _ = update_model_sheet.most_recent_closed_period(
+                anchor_end_date=adp["pay_periods_anchor_end_date"],
+                pay_frequency=adp.get("pay_frequency", ""), today=refresh_date,
+            )
+        floor = rate_change_window_start(earliest, closed_start)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[materialize_model_bq] BREADCRUMB rate_change_scope_failed "
+              f"err={type(exc).__name__}: {exc}")
+        return None
+    if floor is not None:
+        print(f"[materialize_model_bq] BREADCRUMB rate_change_scope from={floor} "
+              f"earliest_change={earliest}")
+    return floor
+
+
 def compute_gap_window(
     prev_end: datetime.date | None,
     cell_was_empty: bool,
@@ -805,6 +856,27 @@ def apply_force_model_recompute(refresh_date: datetime.date) -> list[str]:
         print(f"    cleared: {step}")
         cleared.append(step)
     return cleared
+
+
+_SCRAPE_STEPS = ("square_transactions", "square_kds", "adp_reports")
+
+
+def apply_force_rescrape(refresh_date: datetime.date) -> list[str]:
+    """Clear the portal scrape markers when BHAGA_FORCE_RESCRAPE is set.
+
+    A deploy-time hole repair targets a date whose nightly may have marked its
+    scrapes done (and left an ADP load receipt) while a day in the window still
+    landed no rows; without clearing, the rerun would skip both portals and
+    repair nothing. The re-scrape upserts by natural key, and
+    _recover_stale_downstream_markers re-runs the load and model on success.
+    """
+    if not os.environ.get("BHAGA_FORCE_RESCRAPE"):
+        return []
+    print(f"  [force-rescrape] BHAGA_FORCE_RESCRAPE set — clearing scrape "
+          f"markers for {refresh_date.isoformat()}")
+    for step in _SCRAPE_STEPS:
+        clear_step_done(refresh_date, step)
+    return list(_SCRAPE_STEPS)
 
 
 # Downstream steps whose markers must be invalidated when a previously-failed
@@ -2535,6 +2607,7 @@ def main() -> int:
 
 
 def _run_refresh(run_id: str) -> int:
+    run_started = datetime.datetime.now(datetime.timezone.utc)
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--store", default="palmetto")
     cli.add_argument("--date", default=None,
@@ -3074,6 +3147,7 @@ def _run_refresh(run_id: str) -> int:
     # ── Force-recompute marker clear (BHAGA_FORCE_MODEL_RECOMPUTE=1) ──────────
     # When trigger_dated_refresh runs in recompute-only mode it injects this env.
     apply_force_model_recompute(refresh_date)
+    apply_force_rescrape(refresh_date)
 
     t_start = time.monotonic()
     info_ping(
@@ -3457,6 +3531,8 @@ def _run_refresh(run_id: str) -> int:
                 (square_from, square_to),
                 (adp_window_from, adp_window_to),
                 (open_pay_period_start(profile, refresh_date), None),
+                (_rate_change_floor(profile, refresh_date, run_started), None),
+                (model_scope_from_env(), None),
             ),
         )
         print(f"[materialize_model_bq] scope: {len(model_dates)} date(s) "

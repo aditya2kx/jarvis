@@ -853,6 +853,55 @@ class TestDriftCheck(PhaseStateTestBase):
         self.assertEqual(rc, 0)
         self.assertIn("--to implement", out)
 
+    def test_operator_gate_nudges_once_then_silent(self):
+        """Blocked on jam: the idle hook must not re-send the same nudge every turn."""
+        data = ps._load_cache("feat/awaiting-op")
+        data["done"] = ["specify", "setup"]
+        ps._save_cache("feat/awaiting-op", data)
+        with patch.object(ps, "OBSERVABLE_FLOOR", [("plan", lambda: True)]):
+            _, first = self._run("feat/awaiting-op")
+            _, second = self._run("feat/awaiting-op")
+        self.assertIn("PHASE DRIFT", first)
+        self.assertEqual(second.strip(), "")
+
+    def test_operator_gate_nudge_rearms_when_pending_set_changes(self):
+        data = ps._load_cache("feat/rearm")
+        data["done"] = ["specify", "setup"]
+        ps._save_cache("feat/rearm", data)
+        with patch.object(ps, "OBSERVABLE_FLOOR", [("plan", lambda: True)]):
+            self._run("feat/rearm")
+            data = ps._load_cache("feat/rearm")
+            data["done"].append("jam")
+            ps._save_cache("feat/rearm", data)
+            _, out = self._run("feat/rearm")
+        self.assertIn("--to define-evidence", out)
+
+    def test_agent_step_nudges_once_then_silent(self):
+        """A false 'implement' read (any non-doc commit) must not loop either."""
+        data = ps._load_cache("feat/agent-step")
+        data["done"] = ["specify", "setup", "jam", "define-evidence", "plan"]
+        ps._save_cache("feat/agent-step", data)
+        with patch.object(ps, "OBSERVABLE_FLOOR", [("implement", lambda: True)]):
+            _, first = self._run("feat/agent-step")
+            _, second = self._run("feat/agent-step")
+        self.assertIn("--to implement", first)
+        self.assertEqual(second.strip(), "")
+
+    def test_nudge_rearms_after_drift_resolves(self):
+        """Same pending set, resolved and later re-broken, must nudge again."""
+        branch = "feat/resolve-rebreak"
+        observed = {"on": True}
+        data = ps._load_cache(branch)
+        data["done"] = ["specify", "setup", "jam", "define-evidence", "plan"]
+        ps._save_cache(branch, data)
+        with patch.object(ps, "OBSERVABLE_FLOOR", [("implement", lambda: observed["on"])]):
+            self._run(branch)
+            observed["on"] = False
+            self._run(branch)
+            observed["on"] = True
+            _, out = self._run(branch)
+        self.assertIn("--to implement", out)
+
 
 class TestCheckPlanReadinessPhasePrecheck(PhaseStateTestBase):
     """Tests for the phase gate integration in check_plan_readiness.py."""

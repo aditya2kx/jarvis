@@ -876,6 +876,16 @@ def cmd_drift_check(args) -> int:
     if not missing:
         return 0
 
+    # The idle hook re-fires this every turn. When the agent cannot act on it
+    # (an operator gate) or the detector over-reads (any non-doc commit looks
+    # like 'implement'), repeating it floods the chat. Nudge once per pending
+    # set; a new gap or a recorded step re-arms it.
+    fingerprint = ",".join(s.name for s in missing)
+    if data.get("drift_nudged") == fingerprint:
+        return 0
+    data["drift_nudged"] = fingerprint
+    _save_cache(branch, data)
+
     print(
         f"PHASE DRIFT — branch {branch!r}: observable work reached "
         f"'{observed_name}' but these substep(s) are not recorded yet. "

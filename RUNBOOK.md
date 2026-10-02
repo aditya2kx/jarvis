@@ -897,6 +897,21 @@ The rerun uses Cloud Run v2 per-execution env overrides (`RunJobRequest.Override
 definition is **never mutated** (a persisted `REFRESH_DATE` would corrupt future nightlies). The
 step is best-effort: a failure never fails the deploy and logs a `::warning::`.
 
+**Detected gaps, no trailer needed (Issue #348).** The same step also runs
+`scripts/detect_gap_dates.py`: any night in the last 14 CT days whose latest run failed, never ran,
+or has no `model_daily` row is rerun **recompute-only** (`--force-recompute`, max 7). Only dates whose
+raw data is already in BQ qualify, so a deploy never fires an OTP on its own; a night with no raw
+data is left to the next nightly's gap window (it re-scrapes from `data_window_end + 1`). Grep the
+deploy log for `[detect_gap_dates] gaps=[…] recompute=[…] left_to_nightly=[…]`. Dry check:
+`python3 scripts/detect_gap_dates.py` (read-only; prints the dates it would rerun).
+
+**Rate corrections reach past days (Issue #348).** The nightly rebuilds the whole open pay period
+anyway. When tonight writes a wage-history row dated earlier (ADP "Added on" in the last closed
+period, or the paid period of an earnings rate), it widens the rebuild back to that date — clamped to
+the last closed period — and logs `[materialize_model_bq] BREADCRUMB rate_change_scope from=…`
+(`rate_change_scope_failed` = BQ probe error; scope stays as before). A `Retry-Dates` rerun cannot
+do this: it runs at deploy, before the nightly has scraped the corrected rate.
+
 Manual one-off rerun (using the same smart logic):
 ```bash
 python3 scripts/trigger_dated_refresh.py --date 2026-06-13 --dry-run   # check mode

@@ -268,6 +268,50 @@ def open_pay_period_start(profile: dict, refresh_date: datetime.date) -> datetim
     return closed_end + datetime.timedelta(days=1)
 
 
+def rate_change_window_start(
+    earliest_change: datetime.date | None, closed_period_start: datetime.date | None,
+) -> datetime.date | None:
+    """How far back tonight's rate changes reach the model (None = not at all).
+
+    The model prices every date at today's rate, and the open-period rebuild
+    stops at the open period. A correction ADP dates into the last closed period
+    (pay_info "Added on", or the paid period an earnings rate came from) would
+    otherwise leave that period's labor $ and solo-premium eligibility stale.
+    Clamped to the last closed period: wage history never back-dates further.
+    """
+    if earliest_change is None:
+        return None
+    if closed_period_start is not None and earliest_change < closed_period_start:
+        return closed_period_start
+    return earliest_change
+
+
+def _rate_change_floor(
+    profile: dict, refresh_date: datetime.date, since_utc: datetime.datetime,
+) -> datetime.date | None:
+    try:
+        from skills.adp_run_automation.wage_rate_history import earliest_change_since  # noqa: PLC0415
+        from agents.bhaga.scripts import update_model_sheet  # noqa: PLC0415
+
+        earliest = earliest_change_since(since_utc)
+        adp = profile.get("adp_run", {})
+        closed_start = None
+        if adp.get("pay_periods_anchor_end_date"):
+            closed_start, _ = update_model_sheet.most_recent_closed_period(
+                anchor_end_date=adp["pay_periods_anchor_end_date"],
+                pay_frequency=adp.get("pay_frequency", ""), today=refresh_date,
+            )
+        floor = rate_change_window_start(earliest, closed_start)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[materialize_model_bq] BREADCRUMB rate_change_scope_failed "
+              f"err={type(exc).__name__}: {exc}")
+        return None
+    if floor is not None:
+        print(f"[materialize_model_bq] BREADCRUMB rate_change_scope from={floor} "
+              f"earliest_change={earliest}")
+    return floor
+
+
 def compute_gap_window(
     prev_end: datetime.date | None,
     cell_was_empty: bool,
@@ -2535,6 +2579,7 @@ def main() -> int:
 
 
 def _run_refresh(run_id: str) -> int:
+    run_started = datetime.datetime.now(datetime.timezone.utc)
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--store", default="palmetto")
     cli.add_argument("--date", default=None,
@@ -3457,6 +3502,7 @@ def _run_refresh(run_id: str) -> int:
                 (square_from, square_to),
                 (adp_window_from, adp_window_to),
                 (open_pay_period_start(profile, refresh_date), None),
+                (_rate_change_floor(profile, refresh_date, run_started), None),
             ),
         )
         print(f"[materialize_model_bq] scope: {len(model_dates)} date(s) "

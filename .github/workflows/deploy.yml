@@ -181,9 +181,12 @@ jobs:
       # SMART (scripts/trigger_dated_refresh.py): already-covered dates are
       # recompute-only (no portal login/OTP); uncovered dates do a full scrape.
       # Per-execution env overrides only — the job definition is never mutated.
+      # Nights nobody listed (latest run failed / never ran / no model_daily row
+      # in the last 14 days) are found by scripts/detect_gap_dates.py and rerun
+      # recompute-only — never a scrape, so a deploy never fires an OTP on its own.
       # Best-effort: a failure here never fails the deploy (operator can retrigger).
       # IAM: the WIF SA needs run.jobs.run (roles/run.developer covers this).
-      - name: Auto-rerun fixed dates (Retry-Dates trailer)
+      - name: Auto-rerun fixed dates (Retry-Dates trailer + detected gaps)
         if: ${{ !inputs.rollback_sha }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -197,13 +200,21 @@ jobs:
                    | sed -n 's/^[[:space:]]*[Rr]etry-[Dd]ates:[[:space:]]*//p' \
                    | tr ',' '\n' | tr -d ' ' \
                    | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || true)"
-          if [ -z "$DATES" ]; then
-            echo "No Retry-Dates trailer found — nothing to rerun."
+          GAPS="$(python3 scripts/detect_gap_dates.py || true)"
+          if [ -z "$DATES" ] && [ -z "$GAPS" ]; then
+            echo "No Retry-Dates trailer and no detected gaps — nothing to rerun."
             exit 0
           fi
           for d in $DATES; do
-            echo "::group::Rerun $d"
+            echo "::group::Rerun $d (Retry-Dates)"
             python3 scripts/trigger_dated_refresh.py --date "$d" \
+              || echo "::warning::trigger_dated_refresh failed for $d (non-fatal)"
+            echo "::endgroup::"
+          done
+          for d in $GAPS; do
+            if printf '%s\n' $DATES | grep -qx "$d"; then continue; fi
+            echo "::group::Rerun $d (detected gap)"
+            python3 scripts/trigger_dated_refresh.py --date "$d" --force-recompute \
               || echo "::warning::trigger_dated_refresh failed for $d (non-fatal)"
             echo "::endgroup::"
           done

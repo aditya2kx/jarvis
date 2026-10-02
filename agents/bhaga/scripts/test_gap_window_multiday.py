@@ -220,6 +220,49 @@ class GapWindowMultiDayTest(unittest.TestCase):
         self.assertEqual(dates[0], "2026-09-21")
         self.assertEqual(dates[-1], "2026-09-24")
 
+    def test_rate_change_widens_scope_into_last_closed_period(self):
+        """Pascone's $15.25 is dated 09/08 by ADP: the closed 09/07-09/20 period
+        must rebuild from there, not only the open period (Issue #348)."""
+        from agents.bhaga.scripts.daily_refresh import ingested_dates, rate_change_window_start
+
+        closed_start = datetime.date(2026, 9, 7)
+        floor = rate_change_window_start(datetime.date(2026, 9, 8), closed_start)
+        self.assertEqual(floor, datetime.date(2026, 9, 8))
+        refresh = datetime.date(2026, 10, 2)
+        dates = ingested_dates(refresh, refresh, extra_windows=(
+            (datetime.date(2026, 9, 21), None), (floor, None)))
+        self.assertEqual(dates[0], "2026-09-08")
+        self.assertEqual(dates[-1], "2026-10-02")
+
+    def test_rate_change_scope_is_clamped_and_optional(self):
+        from agents.bhaga.scripts.daily_refresh import rate_change_window_start
+
+        closed_start = datetime.date(2026, 9, 7)
+        self.assertIsNone(rate_change_window_start(None, closed_start))
+        self.assertEqual(rate_change_window_start(datetime.date(2026, 8, 1), closed_start),
+                         closed_start)
+        self.assertEqual(rate_change_window_start(datetime.date(2026, 8, 1), None),
+                         datetime.date(2026, 8, 1))
+
+    def test_rate_change_floor_fails_open(self):
+        """A BQ error must never widen or break the model step."""
+        from unittest import mock
+
+        from agents.bhaga.scripts import daily_refresh as dr
+
+        with mock.patch(
+            "skills.adp_run_automation.wage_rate_history.earliest_change_since",
+            side_effect=RuntimeError("bq down"),
+        ):
+            self.assertIsNone(dr._rate_change_floor(
+                {}, datetime.date(2026, 10, 2), datetime.datetime.now(datetime.timezone.utc)))
+
+    def test_rate_change_floor_is_wired_into_model_scope(self):
+        from agents.bhaga.scripts import daily_refresh as dr
+
+        src = inspect.getsource(dr._run_refresh)
+        self.assertIn("_rate_change_floor(profile, refresh_date, run_started)", src)
+
 
 if __name__ == "__main__":
     unittest.main()

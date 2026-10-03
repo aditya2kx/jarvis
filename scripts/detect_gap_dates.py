@@ -126,8 +126,10 @@ def plan(
     elif refresh_rates:
         runs.append(["--date", yesterday, "--force-scrape"])
     # Executions run concurrently, so a rebuild rides on the scrape rather than
-    # racing it with a second materialize.
+    # racing it with a second materialize. The model scope ends at --date, so the
+    # scrape must then run through yesterday.
     if rebuild_from and runs:
+        runs[0][1] = yesterday
         runs[0] += ["--model-scope-from", rebuild_from]
     elif rebuild_from:
         runs.append(["--date", yesterday, "--force-recompute",

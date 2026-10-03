@@ -116,8 +116,15 @@ def test_main_prints_plan_lines(capsys, tmp_path):
     changed.write_text("skills/bhaga_labor/solo_shift.py\n")
     _run_main({"adp": set(WEEK) - {"2026-09-30"}}, ["--changed-files", str(changed)])
     assert capsys.readouterr().out.splitlines() == [
-        "--date 2026-09-30 --force-scrape --window-from 2026-09-30 --model-scope-from 2026-09-07",
+        "--date 2026-10-01 --force-scrape --window-from 2026-09-30 --model-scope-from 2026-09-07",
     ]
+
+
+def test_plan_folded_rebuild_runs_through_yesterday():
+    runs = g.plan(gaps=[], holes=["2026-09-25", "2026-09-27"], rebuild_from="2026-09-07",
+                  yesterday="2026-10-01")
+    assert runs == [["--date", "2026-10-01", "--force-scrape", "--window-from", "2026-09-25",
+                     "--model-scope-from", "2026-09-07"]]
 
 
 def test_main_new_hire_without_rate_triggers_scrape(capsys):

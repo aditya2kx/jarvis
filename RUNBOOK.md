@@ -909,13 +909,16 @@ step is best-effort: a failure never fails the deploy and logs a `::warning::`.
   closure of `materialize_model_bq.py`, plus store profiles; tests ignored), one recompute of
   yesterday with `--model-scope-from <last closed pay-period start>` rebuilds that history on the
   new code. It covers every later gap, so those are not rerun separately. If a scrape is also
-  planned, the rebuild scope rides on that scrape (`--model-scope-from`) instead of a second
-  execution, because executions run concurrently and two materializes would race.
+  planned, the rebuild scope rides on that scrape (`--model-scope-from`, with `--date` moved to
+  yesterday so the scope reaches it) instead of a second execution, because executions run
+  concurrently and two materializes would race.
 - **Rate refresh** — someone who punched in the lookback has no wage rate (a hire added mid-week,
   or a rate the scraper lost; permanent exclusions ignored), or the PR changed
   `pay_info_backend.py` / `wage_rate_history.py`: one `--force-scrape` of yesterday. Every scrape
   re-reads all punchers' Payroll info rates, so the rates land at deploy rather than at the next
-  nightly. A hole scrape already does this, so it is not added twice. The nightly itself also
+  nightly. A hole scrape already does this, so it is not added twice. Anyone who punches but
+  legitimately has no hourly rate must be in the permanent exclusions, or every deploy will plan
+  this scrape (one portal login each). The nightly itself also
   re-reads every puncher's rate, so a new hire is picked up the night of their first punch.
 - **Failed / never-ran / no `model_daily` row** — the remaining nights rerun recompute-only
   (`--force-recompute`, max 7, newest first).

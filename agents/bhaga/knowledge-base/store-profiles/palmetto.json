@@ -95,6 +95,7 @@
     "iid": "30109821",
     "pay_frequency": "Biweekly",
     "pay_periods_anchor_end_date": "2026-05-17",
+    "check_date_lag_days": 5,
     "wage_rate_report_name": "Earnings and Hours V1",
     "_doc": "wage_rate_report_name is the saved custom report under Reports > My saved custom reports. compensation_backend uses this to find the right report row to click."
   },

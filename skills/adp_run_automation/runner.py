@@ -833,6 +833,33 @@ def _xlsx_fresh_for_target(
 EARNINGS_CHECK_DATE_LOOKAHEAD_DAYS = 14
 
 
+class NoPayrollInWindow(RuntimeError):
+    """The earnings range holds no regular check date, so an empty grid is expected."""
+
+
+def regular_check_dates(
+    adp_run: dict, start: datetime.date, end: datetime.date,
+) -> Optional[list[datetime.date]]:
+    """Regular biweekly check dates in [start, end], or None if the schedule is unknown.
+
+    Check date = period end + ``check_date_lag_days`` (store profile). Off-cycle
+    checks are not predicted; they only matter when the grid is empty, and an
+    off-cycle check in range would have filled it.
+    """
+    lag = adp_run.get("check_date_lag_days")
+    anchor = adp_run.get("pay_periods_anchor_end_date")
+    if lag is None or not anchor or str(adp_run.get("pay_frequency", "")).lower() != "biweekly":
+        return None
+    anchor_end = datetime.date.fromisoformat(anchor)
+    first = -(-((start - datetime.timedelta(days=lag)) - anchor_end).days // 14)
+    out = []
+    check = anchor_end + datetime.timedelta(days=14 * first + lag)
+    while check <= end:
+        out.append(check)
+        check += datetime.timedelta(days=14)
+    return out
+
+
 def _earnings_report_date_window(
     *,
     today: datetime.date,
@@ -1604,6 +1631,10 @@ def _earnings_within_session(
     except Exception:  # noqa: BLE001
         grid_text = ""
     if "No Rows To Show" in grid_text:
+        if use_custom_range and regular_check_dates(profile["adp_run"], start, end) == []:
+            raise NoPayrollInWindow(
+                f"no regular check date in {start}..{end} (the payroll is still open)"
+            )
         raise RuntimeError(
             "Earnings preview grid shows 'No Rows To Show' even with "
             "'Last payroll' filter — the most recent payroll appears empty "
@@ -2427,6 +2458,8 @@ def download_adp_bundle(
                     note=f"window={window_start.isoformat()}..{window_end.isoformat()}",
                 )
                 print(f"[adp_bundle] earnings OK → {path}")
+            except NoPayrollInWindow as exc:
+                print(f"[adp_bundle] earnings SKIPPED: {exc}")
             except Exception as exc:  # noqa: BLE001
                 result["errors"]["adp_earnings"] = f"{type(exc).__name__}: {exc}"
                 print(f"[adp_bundle] earnings FAILED: {type(exc).__name__}: {exc}")

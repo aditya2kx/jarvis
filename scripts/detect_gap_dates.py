@@ -11,6 +11,10 @@ rest, over the last ``--lookback`` CT days (through yesterday):
   (``model_sources``) or a store profile: one recompute-only execution that
   rebuilds from the last closed pay period's start, so days built by the old
   code are rebuilt.
+- **Rate refresh** — a recent puncher has no wage rate (a new hire, or a rate
+  the scraper lost), or the merged PR changed the rate scraper: one full scrape
+  of yesterday, since every scrape re-reads all punchers' Payroll info rates.
+  A hole scrape already does this, so it is not added twice.
 - **Gap nights** — latest run failed, never ran, or no ``model_daily`` row,
   with raw data present: recompute-only, unless the rebuild already covers it.
 
@@ -35,6 +39,10 @@ LOOKBACK_DAYS = 14
 MAX_RECOMPUTES = 7
 MODEL_ENTRY = "agents/bhaga/scripts/materialize_model_bq.py"
 STORE_PROFILES = "agents/bhaga/knowledge-base/store-profiles/"
+RATE_SCRAPER = frozenset({
+    "skills/adp_run_automation/pay_info_backend.py",
+    "skills/adp_run_automation/wage_rate_history.py",
+})
 _PROJECT = os.environ.get("GCP_PROJECT", "jarvis-bhaga-prod")
 _DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
 
@@ -109,12 +117,21 @@ def plan(
     rebuild_from: str | None,
     yesterday: str,
     exclude: set[str] = frozenset(),
+    refresh_rates: bool = False,
 ) -> list[list[str]]:
     """``trigger_dated_refresh.py`` argument lists, one per execution."""
     runs: list[list[str]] = []
     if holes:
         runs.append(["--date", max(holes), "--force-scrape", "--window-from", min(holes)])
-    if rebuild_from:
+    elif refresh_rates:
+        runs.append(["--date", yesterday, "--force-scrape"])
+    # Executions run concurrently, so a rebuild rides on the scrape rather than
+    # racing it with a second materialize. The model scope ends at --date, so the
+    # scrape must then run through yesterday.
+    if rebuild_from and runs:
+        runs[0][1] = yesterday
+        runs[0] += ["--model-scope-from", rebuild_from]
+    elif rebuild_from:
         runs.append(["--date", yesterday, "--force-recompute",
                      "--model-scope-from", rebuild_from])
     recompute = [d for d in gaps
@@ -141,11 +158,19 @@ def _fetch(lookback: int, today: datetime.date) -> dict[str, object]:
         f"WHERE run_date >= '{since}' "
         f"QUALIFY ROW_NUMBER() OVER (PARTITION BY run_date ORDER BY started_at_utc DESC) = 1"
     ).result()
+    unrated = client.query(
+        f"WITH p AS (SELECT DISTINCT COALESCE(NULLIF(TRIM(canonical_name), ''), employee_id) n "
+        f"FROM {t}.adp_punches` WHERE date >= '{since}') "
+        f"SELECT p.n FROM p LEFT JOIN {t}.adp_wage_rates` r "
+        f"ON p.n = r.employee_id OR p.n = r.canonical_name "
+        f"WHERE p.n IS NOT NULL AND r.wage_rate_dollars IS NULL ORDER BY 1"
+    ).result()
     return {
         "status": {r["d"]: r["status"] for r in runs},
         "model": days("model_daily", "date"),
         "square": days("square_daily_rollup", "date_local"),
         "adp": days("adp_shifts", "date"),
+        "unrated": [r["n"] for r in unrated],
     }
 
 
@@ -180,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
                    if args.changed_files else [])
         rebuild_from = (closed_period_start(profile, today)
                         if touches_model(changed, model_sources()) else None)
+        from skills.store_profile import load_exclusions  # noqa: PLC0415
+        excluded = set(load_exclusions(args.store).get("permanent") or [])
     except Exception as exc:  # noqa: BLE001
         print(f"[detect_gap_dates] BREADCRUMB gap_scan_failed err={type(exc).__name__}: {exc}",
               file=sys.stderr)
@@ -190,10 +217,14 @@ def main(argv: list[str] | None = None) -> int:
                       lookback=args.lookback,
                       closed=frozenset(profile.get("closed_dates") or []))
     exclude = set(args.exclude.replace(",", " ").split())
+    unrated = [n for n in data["unrated"] if n not in excluded]
+    scraper_changed = bool(RATE_SCRAPER & set(changed))
     runs = plan(gaps=gaps, holes=holes, rebuild_from=rebuild_from,
-                yesterday=yesterday, exclude=exclude)
+                yesterday=yesterday, exclude=exclude,
+                refresh_rates=bool(unrated) or scraper_changed)
     print(f"[detect_gap_dates] gaps={gaps} raw_holes={holes} "
-          f"model_rebuild_from={rebuild_from} runs={len(runs)}", file=sys.stderr)
+          f"model_rebuild_from={rebuild_from} unrated={unrated} "
+          f"rate_scraper_changed={scraper_changed} runs={len(runs)}", file=sys.stderr)
     for r in runs:
         print(" ".join(r))
     return 0

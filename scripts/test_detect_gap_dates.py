@@ -90,21 +90,63 @@ def test_closed_period_start_is_the_period_before_today():
     assert g.closed_period_start({}, TODAY) is None
 
 
-def test_main_prints_plan_lines(capsys, tmp_path):
-    changed = tmp_path / "files.txt"
-    changed.write_text("skills/bhaga_labor/solo_shift.py\n")
-    data = {"status": {d: "success" for d in WEEK}, "model": set(WEEK),
-            "square": set(WEEK), "adp": set(WEEK) - {"2026-09-30"}}
-    with mock.patch.object(g, "_fetch", return_value=data), \
+def test_plan_rate_refresh_scrapes_yesterday_once():
+    assert g.plan(gaps=[], holes=[], rebuild_from=None, yesterday="2026-10-01",
+                  refresh_rates=True) == [["--date", "2026-10-01", "--force-scrape"]]
+    runs = g.plan(gaps=[], holes=["2026-09-30"], rebuild_from=None,
+                  yesterday="2026-10-01", refresh_rates=True)
+    assert runs == [["--date", "2026-09-30", "--force-scrape", "--window-from", "2026-09-30"]]
+
+
+def _run_main(data, argv, excluded=()):
+    healthy = {"status": {d: "success" for d in WEEK}, "model": set(WEEK),
+               "square": set(WEEK), "adp": set(WEEK), "unrated": []}
+    with mock.patch.object(g, "_fetch", return_value={**healthy, **data}), \
+         mock.patch("skills.store_profile.load_exclusions",
+                    return_value={"permanent": list(excluded)}), \
          mock.patch.object(g, "datetime") as dt:
         dt.datetime.now.return_value = datetime.datetime(2026, 10, 2, 14, 0)
         dt.timedelta = datetime.timedelta
         dt.date = datetime.date
-        assert g.main(["--lookback", "7", "--changed-files", str(changed)]) == 0
+        assert g.main(["--lookback", "7", *argv]) == 0
+
+
+def test_main_prints_plan_lines(capsys, tmp_path):
+    changed = tmp_path / "files.txt"
+    changed.write_text("skills/bhaga_labor/solo_shift.py\n")
+    _run_main({"adp": set(WEEK) - {"2026-09-30"}}, ["--changed-files", str(changed)])
     assert capsys.readouterr().out.splitlines() == [
-        "--date 2026-09-30 --force-scrape --window-from 2026-09-30",
-        "--date 2026-10-01 --force-recompute --model-scope-from 2026-09-07",
+        "--date 2026-10-01 --force-scrape --window-from 2026-09-30 --model-scope-from 2026-09-07",
     ]
+
+
+def test_plan_folded_rebuild_runs_through_yesterday():
+    runs = g.plan(gaps=[], holes=["2026-09-25", "2026-09-27"], rebuild_from="2026-09-07",
+                  yesterday="2026-10-01")
+    assert runs == [["--date", "2026-10-01", "--force-scrape", "--window-from", "2026-09-25",
+                     "--model-scope-from", "2026-09-07"]]
+
+
+def test_main_new_hire_without_rate_triggers_scrape(capsys):
+    _run_main({"unrated": ["New, Hire"]}, [])
+    out = capsys.readouterr()
+    assert out.out.splitlines() == ["--date 2026-10-01 --force-scrape"]
+    assert "unrated=['New, Hire']" in out.err
+
+
+def test_main_excluded_unrated_is_ignored(capsys):
+    _run_main({"unrated": ["Owner, Salaried"]}, [], excluded=["Owner, Salaried"])
+    assert capsys.readouterr().out == ""
+
+
+def test_main_rate_scraper_change_triggers_scrape(capsys, tmp_path):
+    changed = tmp_path / "files.txt"
+    changed.write_text("skills/adp_run_automation/pay_info_backend.py\n")
+    _run_main({}, ["--changed-files", str(changed)])
+    out = capsys.readouterr()
+    assert out.out.splitlines() == [
+        "--date 2026-10-01 --force-scrape --model-scope-from 2026-09-07"]
+    assert "rate_scraper_changed=True" in out.err
 
 
 def test_bq_error_prints_nothing_and_exits_zero(capsys):

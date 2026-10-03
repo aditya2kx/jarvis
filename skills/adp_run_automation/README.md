@@ -10,7 +10,7 @@ All three run in **one browser session / one login / one OTP** via
 | Function | Source | Output | Parser |
 |---|---|---|---|
 | `download_timecard` | Reports → Time → Timecard | `Timecard-<date>.xlsx` (per-punch) | `shift_backend.py` |
-| `download_earnings` | Reports → saved "Earnings and Hours V1" | `Earnings-…-<date>.xlsx` (wage rates + CC-tips). From/To is **check date**, not period dates. | `compensation_backend.py` |
+| `download_earnings` | Reports → saved "Earnings and Hours V1" | `Earnings-…-<date>.xlsx` (wage rates + CC-tips). From/To is **check date**, not period dates. An empty grid on a range holding no regular check (period end + store-profile `check_date_lag_days`) is skipped as `NoPayrollInWindow`, not an error; any other empty grid still fails. | `compensation_backend.py` |
 | `download_schedule` | Home → **Team Schedule** ("Manage Schedules") | `Schedule-<date>.json` (per-day scheduled hours, current + next week) | `schedule_backend.py` |
 | pay_info rate refresh (in bundle) | People → Payroll info → Hourly pay rate | `PayInfoRates-<date>.json` | `pay_info_backend.py` |
 | `payroll_draft_backend.run_draft` | Payroll Home → Start (flagged) | In-progress worksheet **left for operator** | Headless by default; stores Preview hours + Gross in `payroll_draft_runs` (no Preview URL); never Approve/Save; Monday 07:00 + `/payroll` **Run ADP Preview** |

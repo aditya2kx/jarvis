@@ -25,7 +25,12 @@ from skills.adp_run_automation.runner import (
     _earnings_report_date_window,
     _is_current_pay_period_label,
     _parse_pay_period_range,
+    regular_check_dates,
 )
+
+_ADP_RUN = {"pay_frequency": "Biweekly", "pay_periods_anchor_end_date": "2026-05-17",
+            "check_date_lag_days": 5}
+_D = datetime.date
 
 
 def _matches(text: str) -> bool:
@@ -147,6 +152,30 @@ class EarningsCheckDateWindowTests(unittest.TestCase):
         )
         self.assertEqual(end, datetime.date(2026, 8, 17))
         self.assertEqual(start, datetime.date(2026, 5, 19))
+
+
+class TestRegularCheckDates(unittest.TestCase):
+    def test_open_payroll_window_has_no_check(self):
+        # 2026-10-01 rerun: last check 9/25 (period 9/07–9/20), next 10/09.
+        self.assertEqual(regular_check_dates(_ADP_RUN, _D(2026, 10, 1), _D(2026, 10, 2)), [])
+
+    def test_window_holding_a_check(self):
+        self.assertEqual(regular_check_dates(_ADP_RUN, _D(2026, 9, 25), _D(2026, 9, 25)),
+                         [_D(2026, 9, 25)])
+        self.assertEqual(regular_check_dates(_ADP_RUN, _D(2026, 9, 1), _D(2026, 10, 9)),
+                         [_D(2026, 9, 11), _D(2026, 9, 25), _D(2026, 10, 9)])
+
+    def test_unknown_schedule_returns_none(self):
+        no_lag = {k: v for k, v in _ADP_RUN.items() if k != "check_date_lag_days"}
+        self.assertIsNone(regular_check_dates(no_lag, _D(2026, 10, 1), _D(2026, 10, 2)))
+        weekly = {**_ADP_RUN, "pay_frequency": "Weekly"}
+        self.assertIsNone(regular_check_dates(weekly, _D(2026, 10, 1), _D(2026, 10, 2)))
+
+    def test_matches_observed_checks(self):
+        # First and last lag-5 checks in prod adp_earnings bound the schedule.
+        got = regular_check_dates(_ADP_RUN, _D(2026, 3, 27), _D(2026, 9, 25))
+        self.assertEqual(len(got), 14)
+        self.assertEqual((got[0], got[-1]), (_D(2026, 3, 27), _D(2026, 9, 25)))
 
 
 if __name__ == "__main__":

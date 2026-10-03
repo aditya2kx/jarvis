@@ -4,6 +4,8 @@
 
 **Key changes:** `scripts/detect_gap_dates.py` plans one `--force-scrape` of yesterday when someone who punched in the lookback has no wage rate (permanent exclusions ignored), or when the merged PR changed `pay_info_backend.py` / `wage_rate_history.py`. A hole scrape already covers it. When a scrape is planned, the model rebuild rides on it (`--model-scope-from`) instead of a second concurrent execution that would race it.
 
+**Earnings false alarm:** a rerun aimed inside the open pay period forces the earnings report, whose check-date range then holds no payroll; ADP shows "No Rows To Show" and the run failed and paged. Now the earnings step skips (`NoPayrollInWindow`) when the range holds no regular check date (period end + `check_date_lag_days`, 5 for Palmetto). An empty grid when a check is expected still fails.
+
 ## 2026-10-01 — ADP redesigned Payroll info, and pay_info went blind for everyone (Issue #348, PR #353)
 
 **Scope:** Issue #348 reported 6 of 15 nightly pay_info scrapes failing; re-checked on 2026-10-01, ADP's 2026-09-29 Pay rates redesign had broken the parser for every employee. Rates kept flowing only through the earnings fallback, which lags raises until the next check, and nothing alerted when a person went blind for days.

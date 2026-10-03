@@ -908,11 +908,19 @@ step is best-effort: a failure never fails the deploy and logs a `::warning::`.
 - **Model-code change** — when the merged PR touched any file the model build imports (AST
   closure of `materialize_model_bq.py`, plus store profiles; tests ignored), one recompute of
   yesterday with `--model-scope-from <last closed pay-period start>` rebuilds that history on the
-  new code. It covers every later gap, so those are not rerun separately.
+  new code. It covers every later gap, so those are not rerun separately. If a scrape is also
+  planned, the rebuild scope rides on that scrape (`--model-scope-from`) instead of a second
+  execution, because executions run concurrently and two materializes would race.
+- **Rate refresh** — someone who punched in the lookback has no wage rate (a hire added mid-week,
+  or a rate the scraper lost; permanent exclusions ignored), or the PR changed
+  `pay_info_backend.py` / `wage_rate_history.py`: one `--force-scrape` of yesterday. Every scrape
+  re-reads all punchers' Payroll info rates, so the rates land at deploy rather than at the next
+  nightly. A hole scrape already does this, so it is not added twice. The nightly itself also
+  re-reads every puncher's rate, so a new hire is picked up the night of their first punch.
 - **Failed / never-ran / no `model_daily` row** — the remaining nights rerun recompute-only
   (`--force-recompute`, max 7, newest first).
 
-Grep the deploy log for `[detect_gap_dates] gaps=[…] raw_holes=[…] model_rebuild_from=… runs=N`
+Grep the deploy log for `[detect_gap_dates] gaps=[…] raw_holes=[…] model_rebuild_from=… unrated=[…] rate_scraper_changed=… runs=N`
 (`gap_scan_failed` = BQ error; the deploy carries on). Dry check (read-only):
 `python3 scripts/detect_gap_dates.py --changed-files <file with one path per line>`.
 

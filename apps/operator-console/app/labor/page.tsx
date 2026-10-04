@@ -25,7 +25,8 @@ import { dateSortKey, formatCents } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { FEATURES } from "@/lib/config/features";
 import type { DemandCell } from "@/lib/labor/staffing-need";
-import { BarChartCard } from "@/components/charts/BarChartCard";
+import { HoursPerPersonCard } from "@/components/labor/HoursPerPersonCard";
+import { weekStartOf } from "@/lib/labor/week-options";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
 import { SuggestedHoursProvider } from "@/components/labor/SuggestedHoursContext";
 import { LaborWeeklyHoursGoal } from "@/components/labor/LaborWeeklyHoursGoal";
@@ -180,6 +181,8 @@ export default async function LaborPage({
   let goalLaborHoursWeek: number | undefined;
   let personActualDays: PersonDayHours[] = [];
   let personScheduledDays: PersonDayHours[] = [];
+  let weeklyActualDays: PersonDayHours[] = [];
+  let weeklyScheduledDays: PersonDayHours[] = [];
   let hoursScrapedAt: string | null = null;
   let coverageActuals: LaborActualShiftDayRow[] = [];
   let coverageScheduled: LaborScheduledShiftDayRow[] = [];
@@ -211,6 +214,17 @@ export default async function LaborPage({
     punchWin = actualPunchWindow(win, boundaryIso);
     chartWin = laborChartWindow(win, todayIso, scheduleHorizonEnd);
     const schedWin = scheduledShiftWindow(win, boundaryIso, scheduleHorizonEnd, todayIso);
+    // Hours per person has its own week picker: last 8 weeks through the schedule horizon.
+    const weeklyHorizon =
+      scheduleHorizonEnd ?? forwardHorizonEnd(todayIso, await adpScheduleHorizonEnd().catch(() => null));
+    const weeklyWin: DateWindow = {
+      start: weekStartOf(shiftCalendarDate(todayIso, "day", -7 * 8)),
+      end: weeklyHorizon,
+      label: "Hours per person",
+      preset: "custom",
+    };
+    const weeklyPunchWin = actualPunchWindow(weeklyWin, boundaryIso);
+    const weeklySchedWin = scheduledShiftWindow(weeklyWin, boundaryIso, weeklyHorizon, todayIso);
     // Charts: Hour grain omits schedule stacks (#227). Coverage is day-level —
     // show ADP schedule whenever the schedule window is non-null (any Aggregation;
     // future-only Periods included) — Issue #243.
@@ -252,6 +266,8 @@ export default async function LaborPage({
       unavailRows,
       scheduleRead,
       upcomingRows,
+      weeklyActual,
+      weeklySched,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -301,7 +317,18 @@ export default async function LaborPage({
         { start: todayIso, end: shiftCalendarDate(todayIso, "day", 56), label: "Next 8 weeks", preset: "custom" },
         { store: DEFAULT_STORE, excludePto: true },
       ).catch(() => []),
+      weeklyPunchWin ? laborHoursPerPersonDaily(weeklyPunchWin).catch(() => []) : Promise.resolve([]),
+      weeklySchedWin
+        ? laborScheduledShiftDays(weeklySchedWin, { store: DEFAULT_STORE, excludePto }).catch(() => [])
+        : Promise.resolve([]),
     ]);
+    weeklyActualDays = weeklyActual;
+    weeklyScheduledDays = weeklySched.map((r) => ({
+      date: r.date,
+      employee: r.employee,
+      labor_bucket: r.labor_bucket,
+      hours: r.scheduled_hours,
+    }));
     punchGaps = mergePunchDays(buildPunchGaps(gapRows, gapCoworkers), punchDays, gapCoworkers);
     rulesHistory = rulesVersions;
     unavailability = unavailRows;
@@ -444,7 +471,6 @@ export default async function LaborPage({
     laborTypes,
     win.end,
   );
-  const perPersonHasSchedule = perPersonChart.series.some((s) => s.key.endsWith("_sched"));
   // Picker lists whoever has hours under the current filters; a stale or
   // missing `person` falls back to the top of the per-person chart.
   const personOptions = perPersonChart.rows.map((r) => ({
@@ -767,27 +793,12 @@ export default async function LaborPage({
             todayIso={chicagoTodayIso()}
           />
 
-          <div data-testid="labor-hours-per-person" className="flex flex-col gap-2">
-            <BarChartCard
-              title={`Hours per person — ${win.start} → ${win.end}`}
-              subtitle={
-                perPersonHasSchedule
-                  ? "Clocked hours + ADP scheduled for days not yet ingested"
-                  : undefined
-              }
-              data={perPersonChart.rows}
-              xKey="employee"
-              series={perPersonChart.series}
-              stacked
-              valueFormat="number"
-              height={Math.min(420, Math.max(220, perPersonChart.rows.length * 28))}
-            />
-            {!perPersonChart.rows.length ? (
-              <p className="text-sm text-muted-foreground">
-                No clocked or scheduled hours in this Period.
-              </p>
-            ) : null}
-          </div>
+          <HoursPerPersonCard
+            actual={weeklyActualDays}
+            scheduled={weeklyScheduledDays}
+            laborTypes={laborTypes}
+            todayIso={chicagoTodayIso()}
+          />
 
           {selectedPerson ? (
             <div data-testid="labor-hours-one-person" className="flex flex-col gap-2">

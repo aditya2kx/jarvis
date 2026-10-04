@@ -109,7 +109,7 @@ function SortedBarTooltip({
       className="rounded-md border border-border px-2.5 py-2 text-xs shadow-md"
       style={{ background: "var(--popover)", color: "var(--popover-foreground)" }}
     >
-      <p className="mb-1.5 font-medium">{String(label ?? "").replace(/\n/g, " · ")}</p>
+      <p className="mb-1.5 font-medium">{String(label ?? "").replace(/,\n/g, ", ").replace(/\n/g, " · ")}</p>
       <ul className="flex flex-col gap-1">
         {useCustom
           ? entryList.map((row) => (

@@ -18,8 +18,10 @@ import {
 import {
   ALL_DAYS,
   DAY_NAMES,
+  dayRuleConflicts,
   daysLabel,
   minToTime,
+  uncoveredWindows,
   timeToMin,
   type DayRule,
   type DeliveryMode,
@@ -37,12 +39,6 @@ const DELIVERY: { value: DeliveryMode; label: string }[] = [
   { value: "only", label: "Only delivery days" },
 ];
 
-const DAY_PRESETS: { label: string; days: number[] }[] = [
-  { label: "Every day", days: [...ALL_DAYS] },
-  { label: "Weekdays", days: [0, 1, 2, 3, 4] },
-  { label: "Weekends", days: [5, 6] },
-];
-
 const chip = (on: boolean) =>
   cn(
     "h-7 rounded-md border text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -52,10 +48,20 @@ const chip = (on: boolean) =>
   );
 
 /** Toggle any set of weekdays; the last selected day can't be turned off. */
-function DayPicker({ days, onChange }: { days: number[]; onChange: (days: number[]) => void }) {
+function DayPicker({
+  days,
+  onChange,
+}: {
+  days: number[];
+  onChange: (days: number[]) => void;
+}) {
   const label = daysLabel(days);
   return (
-    <div className="flex items-center gap-1" role="group" aria-label={`Days: ${label}`}>
+    <div
+      className="flex items-center gap-1"
+      role="group"
+      aria-label={`Days: ${label}`}
+    >
       {DAY_NAMES.map((name, d) => {
         const on = days.includes(d);
         return (
@@ -64,7 +70,9 @@ function DayPicker({ days, onChange }: { days: number[]; onChange: (days: number
             type="button"
             aria-pressed={on}
             aria-label={name}
-            title={on && days.length === 1 ? "A rule needs at least one day" : name}
+            title={
+              on && days.length === 1 ? "A rule needs at least one day" : name
+            }
             onClick={() => {
               if (on && days.length === 1) return;
               onChange(on ? days.filter((x) => x !== d) : [...days, d].sort());
@@ -75,32 +83,26 @@ function DayPicker({ days, onChange }: { days: number[]; onChange: (days: number
           </button>
         );
       })}
-      <Select
-        value={DAY_PRESETS.find((p) => p.label === label)?.label ?? null}
-        onValueChange={(v) => {
-          const preset = DAY_PRESETS.find((p) => p.label === v);
-          if (preset) onChange(preset.days);
-        }}
-      >
-        <SelectTrigger className="h-7 w-28 text-xs" aria-label="Quick pick days">
-          <SelectValue placeholder="Custom" />
-        </SelectTrigger>
-        <SelectContent>
-          {DAY_PRESETS.map((p) => (
-            <SelectItem key={p.label} value={p.label}>
-              {p.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
     </div>
   );
 }
 
 const KINDS: { value: StaffRuleKind; label: string; unit: string }[] = [
-  { value: "target_week_hours", label: "About … hours / week", unit: "h / week" },
-  { value: "max_shifts_per_period", label: "At most … shifts / pay period", unit: "shifts / pay period" },
-  { value: "last_day", label: "Last working day", unit: "not drafted after this day" },
+  {
+    value: "target_week_hours",
+    label: "About … hours / week",
+    unit: "h / week",
+  },
+  {
+    value: "max_shifts_per_period",
+    label: "At most … shifts / pay period",
+    unit: "shifts / pay period",
+  },
+  {
+    value: "last_day",
+    label: "Last working day",
+    unit: "not drafted after this day",
+  },
 ];
 
 function dayLabel(iso: string): string {
@@ -141,7 +143,9 @@ function staffingSummary(s: StaffingBasics): string {
 
 function rulesSummary(v: RulesVersion): string {
   const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
-  const staffing = v.savedStaffing ? staffingSummary(v.rules.staffing) : "before staffing basics";
+  const staffing = v.savedStaffing
+    ? staffingSummary(v.rules.staffing)
+    : "before staffing basics";
   return `${staffing} · ${n(v.rules.staffRules.length, "staff rule")} · ${n(v.rules.dayRules.length, "day rule")}`;
 }
 
@@ -181,7 +185,15 @@ function NumberField({
   );
 }
 
-function Section({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
+function Section({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border/80 bg-card/60 p-3">
       <div>
@@ -216,7 +228,13 @@ function TimeInput({
   );
 }
 
-function RemoveButton({ label, onClick }: { label: string; onClick: () => void }) {
+function RemoveButton({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
   return (
     <Button size="icon-xs" variant="ghost" aria-label={label} onClick={onClick}>
       <X />
@@ -255,20 +273,36 @@ export function ScheduleInputsPanel({
   const [note, setNote] = useState("");
   const live = history[0];
   const save = async () => {
-    const ack = await run(() => saveScheduleRulesAction(rules, savedVersion, note), { saving: "Saving rules…" });
+    const ack = await run(
+      () => saveScheduleRulesAction(rules, savedVersion, note),
+      { saving: "Saving rules…" },
+    );
     if (ack.ok) {
       setNote("");
       router.refresh();
     }
   };
+  const conflicts = dayRuleConflicts(rules.dayRules);
+  const uncovered = uncoveredWindows(rules.dayRules, rules.staffing);
   const setDayRule = (id: string, patch: Partial<DayRule>) =>
-    onChange({ ...rules, dayRules: rules.dayRules.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
+    onChange({
+      ...rules,
+      dayRules: rules.dayRules.map((r) =>
+        r.id === id ? { ...r, ...patch } : r,
+      ),
+    });
   const setStaffRule = (id: string, patch: Partial<StaffRule>) =>
-    onChange({ ...rules, staffRules: rules.staffRules.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
+    onChange({
+      ...rules,
+      staffRules: rules.staffRules.map((r) =>
+        r.id === id ? { ...r, ...patch } : r,
+      ),
+    });
   const setStaffing = (patch: Partial<StaffingBasics>) =>
     onChange({ ...rules, staffing: { ...rules.staffing, ...patch } });
 
-  const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+  const plural = (n: number, one: string, many = `${one}s`) =>
+    `${n} ${n === 1 ? one : many}`;
   const summary = [
     `${rules.staffing.ordersPerPerson} orders/person`,
     goalHoursWeek != null ? `${goalHoursWeek}h/week cap` : null,
@@ -278,7 +312,10 @@ export function ScheduleInputsPanel({
   ].filter(Boolean);
 
   return (
-    <div data-testid="schedule-inputs" className="rounded-lg border border-border">
+    <div
+      data-testid="schedule-inputs"
+      className="rounded-lg border border-border"
+    >
       <button
         type="button"
         aria-expanded={open}
@@ -293,15 +330,25 @@ export function ScheduleInputsPanel({
                 Unsaved changes
               </Badge>
             ) : (
-              <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">
-                {live ? `v${live.version} · ${whoSaved(live.createdBy)}, ${savedAt(live.createdAt)}` : "Defaults — not saved yet"}
+              <Badge
+                variant="outline"
+                className="h-4 px-1.5 text-[10px] font-normal"
+              >
+                {live
+                  ? `v${live.version} · ${whoSaved(live.createdBy)}, ${savedAt(live.createdAt)}`
+                  : "Defaults — not saved yet"}
               </Badge>
             )}
           </span>
-          <span className="truncate text-xs text-muted-foreground">{summary.join(" · ")}</span>
+          <span className="truncate text-xs text-muted-foreground">
+            {summary.join(" · ")}
+          </span>
         </span>
         <ChevronDown
-          className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
+          className={cn(
+            "size-4 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
         />
       </button>
 
@@ -329,7 +376,9 @@ export function ScheduleInputsPanel({
                   onChange={(v) => setStaffing({ minPeople: Math.round(v) })}
                 />
                 <div className="flex flex-col gap-1">
-                  <span className="text-[11px] text-muted-foreground">Staffed hours (incl. open/close duties)</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    Staffed hours (incl. open/close duties)
+                  </span>
                   <span className="flex items-center gap-1.5">
                     <TimeInput
                       value={rules.staffing.openMin}
@@ -350,7 +399,9 @@ export function ScheduleInputsPanel({
                   step={0.5}
                   min={1}
                   value={rules.staffing.minShiftMin / 60}
-                  onChange={(v) => setStaffing({ minShiftMin: Math.round(v * 60) })}
+                  onChange={(v) =>
+                    setStaffing({ minShiftMin: Math.round(v * 60) })
+                  }
                 />
               </div>
             </Section>
@@ -378,7 +429,9 @@ export function ScheduleInputsPanel({
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">No upcoming deliveries scheduled.</p>
+              <p className="text-xs text-muted-foreground">
+                No upcoming deliveries scheduled.
+              </p>
             )}
           </Section>
 
@@ -392,9 +445,14 @@ export function ScheduleInputsPanel({
                   <div key={r.id} className="flex flex-wrap items-center gap-2">
                     <Select
                       value={r.employee || null}
-                      onValueChange={(v) => v && setStaffRule(r.id, { employee: String(v) })}
+                      onValueChange={(v) =>
+                        v && setStaffRule(r.id, { employee: String(v) })
+                      }
                     >
-                      <SelectTrigger className="h-7 w-48 text-xs" aria-label="Employee">
+                      <SelectTrigger
+                        className="h-7 w-48 text-xs"
+                        aria-label="Employee"
+                      >
                         <SelectValue placeholder="Pick a person" />
                       </SelectTrigger>
                       <SelectContent>
@@ -407,10 +465,19 @@ export function ScheduleInputsPanel({
                     </Select>
                     <Select
                       value={r.kind}
-                      onValueChange={(v) => v && setStaffRule(r.id, { kind: v as StaffRuleKind })}
+                      onValueChange={(v) =>
+                        v && setStaffRule(r.id, { kind: v as StaffRuleKind })
+                      }
                     >
-                      <SelectTrigger className="h-7 w-56 text-xs" aria-label="Rule">
-                        <SelectValue>{(v: StaffRuleKind) => KINDS.find((k) => k.value === v)?.label}</SelectValue>
+                      <SelectTrigger
+                        className="h-7 w-56 text-xs"
+                        aria-label="Rule"
+                      >
+                        <SelectValue>
+                          {(v: StaffRuleKind) =>
+                            KINDS.find((k) => k.value === v)?.label
+                          }
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         {KINDS.map((k) => (
@@ -424,7 +491,9 @@ export function ScheduleInputsPanel({
                       <Input
                         type="date"
                         value={r.date ?? ""}
-                        onChange={(e) => setStaffRule(r.id, { date: e.target.value })}
+                        onChange={(e) =>
+                          setStaffRule(r.id, { date: e.target.value })
+                        }
                         className="h-7 w-36 text-xs tabular-nums"
                         aria-label="Last working day"
                       />
@@ -433,7 +502,11 @@ export function ScheduleInputsPanel({
                         type="number"
                         min={0}
                         value={r.value}
-                        onChange={(e) => setStaffRule(r.id, { value: Math.max(0, Number(e.target.value)) })}
+                        onChange={(e) =>
+                          setStaffRule(r.id, {
+                            value: Math.max(0, Number(e.target.value)),
+                          })
+                        }
                         className="h-7 w-16 text-xs tabular-nums"
                         aria-label="Value"
                       />
@@ -444,7 +517,12 @@ export function ScheduleInputsPanel({
                     <RemoveButton
                       label="Remove staff rule"
                       onClick={() =>
-                        onChange({ ...rules, staffRules: rules.staffRules.filter((x) => x.id !== r.id) })
+                        onChange({
+                          ...rules,
+                          staffRules: rules.staffRules.filter(
+                            (x) => x.id !== r.id,
+                          ),
+                        })
                       }
                     />
                   </div>
@@ -458,7 +536,12 @@ export function ScheduleInputsPanel({
                       ...rules,
                       staffRules: [
                         ...rules.staffRules,
-                        { id: `${Date.now()}`, employee: "", kind: "target_week_hours", value: 40 },
+                        {
+                          id: `${Date.now()}`,
+                          employee: "",
+                          kind: "target_week_hours",
+                          value: 40,
+                        },
                       ],
                     })
                   }
@@ -472,45 +555,151 @@ export function ScheduleInputsPanel({
           <div className="md:col-span-2">
             <Section
               title="Day & time rules"
-              hint="Exactly how many people you want in a window — e.g. opening or closing duties. Replaces the minimum and order-based need there; later rules win."
+              hint="Exactly how many people you want in a window — e.g. opening or closing duties. Replaces the minimum and order-based need there. Each day and time can have only one rule."
             >
               <div className="flex flex-col gap-1.5">
-                {rules.dayRules.map((r) => (
-                  <div key={r.id} className="flex flex-wrap items-center gap-2">
-                    <DayPicker days={r.days} onChange={(days) => setDayRule(r.id, { days })} />
-                    <Select
-                      value={r.delivery}
-                      onValueChange={(v) => v && setDayRule(r.id, { delivery: v as DeliveryMode })}
+                {rules.dayRules.map((r, i) => {
+                  const clashes = conflicts.filter(
+                    (c) => c.a === r.id || c.b === r.id,
+                  );
+                  return (
+                    <div
+                      key={r.id}
+                      className={cn(
+                        "flex flex-col gap-1 rounded-md",
+                        clashes.length &&
+                          "border border-destructive/50 bg-destructive/5 px-2 py-1.5",
+                      )}
                     >
-                      <SelectTrigger className="h-7 w-44 text-xs" aria-label="Delivery days">
-                        <SelectValue>{(v: DeliveryMode) => DELIVERY.find((d) => d.value === v)?.label}</SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {DELIVERY.map((d) => (
-                          <SelectItem key={d.value} value={d.value}>
-                            {d.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <TimeInput value={r.fromMin} onChange={(v) => setDayRule(r.id, { fromMin: v })} label="From" />
-                    <span className="text-xs text-muted-foreground">to</span>
-                    <TimeInput value={r.toMin} onChange={(v) => setDayRule(r.id, { toMin: v })} label="To" />
-                    <Input
-                      type="number"
-                      min={0}
-                      value={r.people}
-                      onChange={(e) => setDayRule(r.id, { people: Math.max(0, Number(e.target.value)) })}
-                      className="h-7 w-16 text-xs tabular-nums"
-                      aria-label="People"
-                    />
-                    <span className="text-xs text-muted-foreground">people</span>
-                    <RemoveButton
-                      label="Remove day rule"
-                      onClick={() => onChange({ ...rules, dayRules: rules.dayRules.filter((x) => x.id !== r.id) })}
-                    />
-                  </div>
-                ))}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="w-5 text-right text-xs tabular-nums text-muted-foreground">
+                          {i + 1}.
+                        </span>
+                        <DayPicker
+                          days={r.days}
+                          onChange={(days) => setDayRule(r.id, { days })}
+                        />
+                        <Select
+                          value={r.delivery}
+                          onValueChange={(v) =>
+                            v &&
+                            setDayRule(r.id, { delivery: v as DeliveryMode })
+                          }
+                        >
+                          <SelectTrigger
+                            className="h-7 w-44 text-xs"
+                            aria-label="Delivery days"
+                          >
+                            <SelectValue>
+                              {(v: DeliveryMode) =>
+                                DELIVERY.find((d) => d.value === v)?.label
+                              }
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            {DELIVERY.map((d) => (
+                              <SelectItem key={d.value} value={d.value}>
+                                {d.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <TimeInput
+                          value={r.fromMin}
+                          onChange={(v) => setDayRule(r.id, { fromMin: v })}
+                          label="From"
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          to
+                        </span>
+                        <TimeInput
+                          value={r.toMin}
+                          onChange={(v) => setDayRule(r.id, { toMin: v })}
+                          label="To"
+                        />
+                        <Input
+                          type="number"
+                          min={0}
+                          value={r.people}
+                          onChange={(e) =>
+                            setDayRule(r.id, {
+                              people: Math.max(0, Number(e.target.value)),
+                            })
+                          }
+                          className="h-7 w-16 text-xs tabular-nums"
+                          aria-label="People"
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          people
+                        </span>
+                        <RemoveButton
+                          label="Remove day rule"
+                          onClick={() =>
+                            onChange({
+                              ...rules,
+                              dayRules: rules.dayRules.filter(
+                                (x) => x.id !== r.id,
+                              ),
+                            })
+                          }
+                        />
+                      </div>
+                      {clashes.map((c) => {
+                        const other =
+                          rules.dayRules.findIndex(
+                            (x) => x.id === (c.a === r.id ? c.b : c.a),
+                          ) + 1;
+                        return (
+                          <p
+                            key={`${c.a}-${c.b}`}
+                            className="pl-7 text-xs text-destructive"
+                          >
+                            Overlaps rule {other} on {daysLabel(c.days)},{" "}
+                            {clock(c.fromMin)}–{clock(c.toMin)} — change the
+                            days or times so only one rule applies.
+                          </p>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+                <div className="flex flex-col gap-0.5 rounded-md border border-dashed border-border px-2 py-1.5 text-xs">
+                  <span className="font-medium text-foreground">
+                    Everything else
+                  </span>
+                  {uncovered.map((u) => (
+                    <div
+                      key={String(u.deliveryDays)}
+                      className="flex flex-col gap-0.5"
+                    >
+                      {uncovered.length > 1 ? (
+                        <span className="text-muted-foreground">
+                          {u.deliveryDays ? "Delivery days" : "Other days"}
+                        </span>
+                      ) : null}
+                      {u.groups.map((g) => (
+                        <span
+                          key={g.days.join("")}
+                          className="tabular-nums text-muted-foreground"
+                        >
+                          <span className="text-foreground">
+                            {daysLabel(g.days)}:
+                          </span>{" "}
+                          {g.windows.length
+                            ? g.windows
+                                .map(([a, b]) => `${clock(a)}–${clock(b)}`)
+                                .join(", ")
+                            : "covered by rules all day"}
+                        </span>
+                      ))}
+                    </div>
+                  ))}
+                  <span className="text-muted-foreground">
+                    Need follows typical orders (
+                    {rules.staffing.ordersPerPerson} per person), at least{" "}
+                    {rules.staffing.minPeople} on the floor.
+                  </span>
+                </div>
                 <Button
                   size="xs"
                   variant="outline"
@@ -549,16 +738,31 @@ export function ScheduleInputsPanel({
                   className="h-7 min-w-48 flex-1 text-xs"
                   aria-label="Change note"
                 />
-                <Button size="xs" variant="ghost" onClick={onDiscard} disabled={isPending}>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={onDiscard}
+                  disabled={isPending}
+                >
                   Discard
                 </Button>
-                <Button size="xs" onClick={save} disabled={isPending}>
+                {conflicts.length ? (
+                  <span className="text-xs text-destructive">
+                    Fix overlapping day rules to save
+                  </span>
+                ) : null}
+                <Button
+                  size="xs"
+                  onClick={save}
+                  disabled={isPending || conflicts.length > 0}
+                >
                   {isPending ? "Saving…" : "Save rules"}
                 </Button>
               </>
             ) : (
               <span className="flex-1 text-xs text-muted-foreground">
-                Edits preview in the draft right away; save to keep them for every future week.
+                Edits preview in the draft right away; save to keep them for
+                every future week.
               </span>
             )}
             <Button
@@ -575,18 +779,30 @@ export function ScheduleInputsPanel({
           {showHistory && history.length ? (
             <ol className="flex flex-col divide-y divide-border rounded-lg border border-border md:col-span-2">
               {history.map((v, i) => (
-                <li key={v.version} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs">
-                  <span className="font-medium tabular-nums text-foreground">v{v.version}</span>
+                <li
+                  key={v.version}
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs"
+                >
+                  <span className="font-medium tabular-nums text-foreground">
+                    v{v.version}
+                  </span>
                   {i === 0 ? (
-                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                    <Badge
+                      variant="secondary"
+                      className="h-4 px-1.5 text-[10px]"
+                    >
                       Live
                     </Badge>
                   ) : null}
                   <span className="text-muted-foreground">
                     {whoSaved(v.createdBy)} · {savedAt(v.createdAt)}
                   </span>
-                  <span className="text-muted-foreground">{rulesSummary(v)}</span>
-                  {v.note ? <span className="italic text-foreground">“{v.note}”</span> : null}
+                  <span className="text-muted-foreground">
+                    {rulesSummary(v)}
+                  </span>
+                  {v.note ? (
+                    <span className="italic text-foreground">“{v.note}”</span>
+                  ) : null}
                   {i > 0 ? (
                     <Button
                       size="xs"

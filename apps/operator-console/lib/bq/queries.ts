@@ -995,6 +995,8 @@ export function adpUnavailability(store: string): Promise<UnavailabilityRow[]> {
      LEFT JOIN ${fq("employee_aliases")} al
        ON al.store = @store AND al.raw_name = TRIM(u.raw_employee_name)
      WHERE COALESCE(u.repeat_until, u.first_date) >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 28 DAY)
+       -- ADP drops a pending request once it expires unapproved.
+       AND NOT (u.status = 'pending' AND u.expires_at_ct <= CURRENT_DATETIME('America/Chicago'))
      ORDER BY employee, first_date`,
     { store },
   );

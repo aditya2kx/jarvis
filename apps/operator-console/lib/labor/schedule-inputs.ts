@@ -92,6 +92,67 @@ export function dayRuleApplies(rule: DayRule, iso: string, deliveryDates: Readon
   return rule.days.includes(isoWeekdayMon0(day));
 }
 
+export type DayRuleConflict = { a: string; b: string; days: number[]; fromMin: number; toMin: number };
+
+/** Pairs of day rules that would both claim the same day and minute (an "only" and a "skip" delivery rule never share a day). */
+export function dayRuleConflicts(rules: readonly DayRule[]): DayRuleConflict[] {
+  const out: DayRuleConflict[] = [];
+  rules.forEach((a, i) => {
+    for (const b of rules.slice(i + 1)) {
+      const modes = new Set([a.delivery, b.delivery]);
+      if (modes.has("only") && modes.has("skip")) continue;
+      const days = a.days.filter((d) => b.days.includes(d));
+      const fromMin = Math.max(a.fromMin, b.fromMin);
+      const toMin = Math.min(a.toMin, b.toMin);
+      if (days.length && fromMin < toMin) out.push({ a: a.id, b: b.id, days, fromMin, toMin });
+    }
+  });
+  return out;
+}
+
+export type UncoveredGroup = { days: number[]; windows: [number, number][] };
+export type UncoveredWindows = { deliveryDays: boolean; groups: UncoveredGroup[] };
+
+/**
+ * Staffed time no day rule covers (the order-based need applies there), weekdays
+ * with identical gaps grouped. Delivery days get their own list only when a rule
+ * treats them differently.
+ */
+export function uncoveredWindows(rules: readonly DayRule[], staffing: StaffingBasics): UncoveredWindows[] {
+  const forKind = (deliveryDays: boolean): UncoveredGroup[] => {
+    const skip: DeliveryMode = deliveryDays ? "skip" : "only";
+    const groups = new Map<string, UncoveredGroup>();
+    for (const d of ALL_DAYS) {
+      const covering = rules.filter((r) => r.delivery !== skip && r.days.includes(d));
+      let gaps: [number, number][] = [[staffing.openMin, staffing.closeMin]];
+      for (const r of covering) {
+        gaps = gaps.flatMap(([s, e]): [number, number][] =>
+          r.toMin <= s || r.fromMin >= e
+            ? [[s, e]]
+            : [
+                ...(r.fromMin > s ? [[s, r.fromMin] as [number, number]] : []),
+                ...(r.toMin < e ? [[r.toMin, e] as [number, number]] : []),
+              ],
+        );
+      }
+      const key = JSON.stringify(gaps);
+      const g = groups.get(key) ?? groups.set(key, { days: [], windows: gaps }).get(key)!;
+      g.days.push(d);
+    }
+    return [...groups.values()];
+  };
+  const regular = forKind(false);
+  if (!rules.some((r) => r.delivery !== "any")) return [{ deliveryDays: false, groups: regular }];
+  const delivery = forKind(true);
+  const same = JSON.stringify(delivery) === JSON.stringify(regular);
+  return same
+    ? [{ deliveryDays: false, groups: regular }]
+    : [
+        { deliveryDays: false, groups: regular },
+        { deliveryDays: true, groups: delivery },
+      ];
+}
+
 /** "Every day", "Weekdays", "Weekends" or "Mon, Wed, Fri". */
 export function daysLabel(days: readonly number[]): string {
   const key = [...days].sort().join("");

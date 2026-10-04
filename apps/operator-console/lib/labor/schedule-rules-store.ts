@@ -2,6 +2,7 @@ import "server-only";
 import { fq, intParam, mutate, q } from "@/lib/bq/client";
 import {
   DEFAULT_RULES,
+  dayRuleConflicts,
   parseScheduleRules,
   type RulesVersion,
   type ScheduleRules,
@@ -52,6 +53,9 @@ export async function saveScheduleRules(
   note?: string,
 ): Promise<number> {
   const parsed = parseScheduleRules(rules);
+  if (dayRuleConflicts(parsed.dayRules).length) {
+    throw new Error("Two day & time rules overlap — change their days or times so each window has one rule.");
+  }
   const { version } = await currentScheduleRules(store);
   if (version !== baseVersion) {
     throw new Error(`Rules changed since you loaded them (now version ${version}). Reload and re-apply your edit.`);

@@ -39,7 +39,6 @@ function when(r: UnavailabilityRow): string {
 function expiryLabel(r: UnavailabilityRow): { text: string; urgent: boolean } | null {
   if (r.hours_left == null || !r.expires_at_ct) return null;
   const h = r.hours_left;
-  if (h <= 0) return { text: "expired — never reaches the schedule", urgent: true };
   const text = h < 48 ? `expires in ${Math.max(1, Math.round(h))}h` : `expires ${dayLabel(r.expires_at_ct)}`;
   return { text, urgent: h < 48 };
 }

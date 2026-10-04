@@ -3,6 +3,7 @@ import {
   applyDayRules,
   dayRuleConflicts,
   daysLabel,
+  moveItem,
   uncoveredWindows,
   DEFAULT_RULES,
   DEFAULT_STAFFING,
@@ -322,5 +323,14 @@ describe("uncoveredWindows", () => {
     const out = uncoveredWindows([closing, deliveryOnly], DEFAULT_STAFFING);
     expect(out.map((u) => u.deliveryDays)).toEqual([false, true]);
     expect(out[1]!.groups[0]).toEqual({ days: [0], windows: [[480, 1170]] });
+  });
+});
+
+describe("moveItem", () => {
+  it("moves an item up or down and clamps the target", () => {
+    expect(moveItem(["a", "b", "c"], 0, 2)).toEqual(["b", "c", "a"]);
+    expect(moveItem(["a", "b", "c"], 2, 0)).toEqual(["c", "a", "b"]);
+    expect(moveItem(["a", "b", "c"], 1, 9)).toEqual(["a", "c", "b"]);
+    expect(moveItem(["a", "b"], 1, 1)).toEqual(["a", "b"]);
   });
 });

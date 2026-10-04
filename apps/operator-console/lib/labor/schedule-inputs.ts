@@ -300,3 +300,13 @@ export function minToTime(min: number | null): string {
   if (min == null) return "";
   return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
 }
+
+/** `list` with the item at `from` moved to `to` (indices clamped; same list when nothing moves). */
+export function moveItem<T>(list: readonly T[], from: number, to: number): T[] {
+  const t = Math.max(0, Math.min(list.length - 1, to));
+  if (from === t || from < 0 || from >= list.length) return [...list];
+  const out = [...list];
+  const [item] = out.splice(from, 1);
+  out.splice(t, 0, item!);
+  return out;
+}

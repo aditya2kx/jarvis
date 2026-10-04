@@ -2,7 +2,14 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, History, Plus, RotateCcw, X } from "lucide-react";
+import {
+  ChevronDown,
+  GripVertical,
+  History,
+  Plus,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import { saveScheduleRulesAction } from "@/app/labor/actions";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +28,7 @@ import {
   dayRuleConflicts,
   daysLabel,
   minToTime,
+  moveItem,
   uncoveredWindows,
   timeToMin,
   type DayRule,
@@ -69,6 +77,69 @@ function elseRows(dayRules: DayRule[], staffing: StaffingBasics): RowRule[] {
   );
 }
 
+/** Drag (grip) or ↑/↓ on the focused grip to reorder a list of rows. */
+function useReorder<T>(items: T[], onReorder: (next: T[]) => void) {
+  const [drag, setDrag] = useState<number | null>(null);
+  const [over, setOver] = useState<number | null>(null);
+  const end = () => {
+    setDrag(null);
+    setOver(null);
+  };
+  const move = (from: number, to: number) => {
+    if (to >= 0 && to < items.length && from !== to)
+      onReorder(moveItem(items, from, to));
+  };
+  return {
+    isDropTarget: (i: number) => drag != null && over === i && drag !== i,
+    handle: (i: number) => ({
+      draggable: true,
+      onDragStart: (e: React.DragEvent<HTMLElement>) => {
+        setDrag(i);
+        e.dataTransfer.effectAllowed = "move";
+        const row = e.currentTarget.closest("[data-reorder-row]");
+        if (row) e.dataTransfer.setDragImage(row, 12, 14);
+      },
+      onDragEnd: end,
+      onKeyDown: (e: React.KeyboardEvent) => {
+        if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+        e.preventDefault();
+        move(i, i + (e.key === "ArrowUp" ? -1 : 1));
+      },
+    }),
+    row: (i: number) => ({
+      "data-reorder-row": "",
+      onDragOver: (e: React.DragEvent) => {
+        if (drag == null) return;
+        e.preventDefault();
+        setOver(i);
+      },
+      onDrop: (e: React.DragEvent) => {
+        if (drag == null) return;
+        e.preventDefault();
+        move(drag, i);
+        end();
+      },
+    }),
+  };
+}
+
+function DragHandle({
+  label,
+  ...props
+}: { label: string } & React.ComponentProps<"button">) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title="Drag to reorder — or focus and press ↑ / ↓"
+      className="flex h-7 w-5 shrink-0 cursor-grab items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+      {...props}
+    >
+      <GripVertical className="size-3.5" />
+    </button>
+  );
+}
+
 function DayRuleRow({
   rule: r,
   label,
@@ -76,8 +147,14 @@ function DayRuleRow({
   autoHint,
   onPatch,
   onRemove,
+  handle,
+  rowProps,
+  dropTarget,
   children,
 }: {
+  handle?: React.ReactNode;
+  rowProps?: Record<string, unknown>;
+  dropTarget?: boolean;
   rule: RowRule;
   label: string;
   ghost: boolean;
@@ -91,13 +168,16 @@ function DayRuleRow({
   );
   return (
     <div
+      {...rowProps}
       className={cn(
-        "flex flex-col gap-1 rounded-md",
+        "flex flex-col gap-1 rounded-md transition-shadow",
         clashing && "border border-destructive/50 bg-destructive/5 px-2 py-1.5",
         ghost && "border border-dashed border-border px-2 py-1.5",
+        dropTarget && "ring-2 ring-primary/50",
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
+        {handle ?? <span className="w-5 shrink-0" aria-hidden />}
         <span
           className={cn(
             "w-8 text-right text-xs tabular-nums",
@@ -400,6 +480,12 @@ export function ScheduleInputsPanel({
   };
   const conflicts = dayRuleConflicts(rules.dayRules);
   const ghosts = elseRows(rules.dayRules, rules.staffing);
+  const dayOrder = useReorder(rules.dayRules, (dayRules) =>
+    onChange({ ...rules, dayRules }),
+  );
+  const staffOrder = useReorder(rules.staffRules, (staffRules) =>
+    onChange({ ...rules, staffRules }),
+  );
   const setDayRule = (id: string, patch: Partial<DayRule>) =>
     onChange({
       ...rules,
@@ -557,8 +643,19 @@ export function ScheduleInputsPanel({
               hint="Hour targets get first pick of draft shifts until they reach the target (never past it). Pay periods are biweekly. A last working day stops someone being drafted or suggested after it."
             >
               <div className="flex flex-col gap-1.5">
-                {rules.staffRules.map((r) => (
-                  <div key={r.id} className="flex flex-wrap items-center gap-2">
+                {rules.staffRules.map((r, i) => (
+                  <div
+                    key={r.id}
+                    {...staffOrder.row(i)}
+                    className={cn(
+                      "flex flex-wrap items-center gap-2 rounded-md transition-shadow",
+                      staffOrder.isDropTarget(i) && "ring-2 ring-primary/50",
+                    )}
+                  >
+                    <DragHandle
+                      label={`Move staff rule ${i + 1}`}
+                      {...staffOrder.handle(i)}
+                    />
                     <Select
                       value={r.employee || null}
                       onValueChange={(v) =>
@@ -684,13 +781,24 @@ export function ScheduleInputsPanel({
                   const clashes = ghost
                     ? []
                     : conflicts.filter((c) => c.a === r.id || c.b === r.id);
-                  const n = rules.dayRules.findIndex((x) => x.id === r.id) + 1;
+                  const idx = rules.dayRules.findIndex((x) => x.id === r.id);
+                  const n = idx + 1;
                   return (
                     <DayRuleRow
                       key={r.id}
                       rule={r}
                       label={ghost ? "Else" : `${n}.`}
                       ghost={ghost}
+                      handle={
+                        ghost ? undefined : (
+                          <DragHandle
+                            label={`Move rule ${n}`}
+                            {...dayOrder.handle(idx)}
+                          />
+                        )
+                      }
+                      rowProps={ghost ? undefined : dayOrder.row(idx)}
+                      dropTarget={!ghost && dayOrder.isDropTarget(idx)}
                       autoHint={`Auto: typical orders ÷ ${rules.staffing.ordersPerPerson} per person, at least ${rules.staffing.minPeople}. Change anything here to make it a rule.`}
                       onPatch={(patch) =>
                         ghost

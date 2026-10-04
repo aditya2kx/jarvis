@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  Check,
   ChevronDown,
   GripVertical,
   History,
@@ -547,6 +548,12 @@ export function ScheduleInputsPanel({
       router.refresh();
     }
   };
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
   const conflicts = dayRuleConflicts(rules.dayRules);
   const ghosts = elseRows(rules.dayRules, rules.staffing);
   const dayOrder = useReorder(rules.dayRules, (dayRules) =>
@@ -981,9 +988,16 @@ export function ScheduleInputsPanel({
                 </Button>
               </>
             ) : (
-              <span className="flex-1 text-xs text-muted-foreground">
-                Edits preview in the draft right away; save to keep them for
-                every future week.
+              <span className="flex flex-1 items-center gap-1.5 text-xs text-muted-foreground" data-testid="rules-saved">
+                {live ? (
+                  <>
+                    <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden />
+                    Saved as v{live.version} · {savedAt(live.createdAt)}. Draft shifts are rebuilt
+                    from v{live.version} on every load, in any browser.
+                  </>
+                ) : (
+                  "Edits preview in the draft right away; save to keep them for every future week."
+                )}
               </span>
             )}
             <Button

@@ -44,7 +44,7 @@ import {
   type DemandCell,
 } from "@/lib/labor/staffing-need";
 import { addDay, emptyBreakdown, requiredByRule } from "@/lib/labor/draft-breakdown";
-import { adpRoster, availableCount, draftDay, fillOpenShift, type DraftShift } from "@/lib/labor/shift-draft";
+import { adpRoster, availableCount, canWorkDay, draftDay, fillOpenShift, type DraftShift } from "@/lib/labor/shift-draft";
 import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
 import {
   applyDayRules,
@@ -971,8 +971,20 @@ export function LaborCoveragePanel({
           });
         }
       };
+      const done = new Set<string>();
+      const daysLeft = (employee: string) => {
+        const a = roster.find((x) => x.employee === employee);
+        if (!a) return 0;
+        return state.filter(
+          (d) =>
+            !done.has(d.iso) &&
+            !d.busy.has(employee) &&
+            canWorkDay(a, d.iso, blocksOn(unavailability, d.iso).get(employee), r.staffing.minShiftMin),
+        ).length;
+      };
       const run = (d: (typeof state)[number], need: number[], maxShifts?: number) =>
         draftDay({
+          daysLeft,
           iso: d.iso,
           mins: d.mins,
           onFloor: d.cover,
@@ -1027,8 +1039,10 @@ export function LaborCoveragePanel({
         });
         const drafted = run(d, d.floorNeed);
         add(d, drafted);
+        done.add(d.iso);
         addDay(breakdown, split, drafted.reduce((a, s) => a + s.hours, 0));
       }
+      done.clear();
       // Pass 2: spend what's left of the goal on the largest order-driven gaps.
       let budget =
         goalHoursWeek != null

@@ -22,10 +22,10 @@ export type Availability = {
   employee: string;
   maxWeekHours: number;
   windows: ([number, number] | null)[];
-  /** Operator rule: aim for about this many hours a week (also the cap unless `ownMaxWeekHours`). */
+  /** Operator rule: aim for about this many hours a week (also the cap). */
   targetWeekHours?: number;
-  /** Operator rule: this person's own weekly cap — wins over the target and the store-wide cap. */
-  ownMaxWeekHours?: number;
+  /** Operator rule: this person's longest shift (minutes) — longer or shorter than the store's. */
+  maxShiftMin?: number;
   /** Operator rule: at most this many shifts per pay period. */
   maxShiftsPerPeriod?: number;
   /** Operator rule: final working day (YYYY-MM-DD). */
@@ -34,7 +34,7 @@ export type Availability = {
 
 const worksOn = (a: Availability, iso: string) => a.lastDay == null || iso <= a.lastDay;
 
-export const weekCap = (a: Availability) => a.ownMaxWeekHours ?? a.targetWeekHours ?? a.maxWeekHours;
+export const weekCap = (a: Availability) => a.targetWeekHours ?? a.maxWeekHours;
 
 /** Draft order: hour targets by deficit, then most hours left under the cap, then name. */
 function byPriority(weekOf: (a: Availability) => number) {
@@ -46,6 +46,14 @@ function byPriority(weekOf: (a: Availability) => number) {
     x.employee.localeCompare(y.employee);
 }
 
+/** Could this person work a minimum shift on `iso` (weekday window, last day, ADP unavailability)? */
+export function canWorkDay(a: Availability, iso: string, blocks: readonly Block[] | undefined, minShiftMin: number): boolean {
+  const w = a.windows[isoWeekdayMon0(iso)];
+  if (!w || !worksOn(a, iso)) return false;
+  const [s, e] = freeSegment(w[0], w[1], blocks);
+  return e - s >= minShiftMin;
+}
+
 /** How many people could work a minimum shift on `iso` — the draft staffs the scarcest days first. */
 export function availableCount(args: {
   iso: string;
@@ -53,13 +61,7 @@ export function availableCount(args: {
   unavailable?: Map<string, Block[]>;
   minShiftMin: number;
 }): number {
-  const dow = isoWeekdayMon0(args.iso);
-  return args.roster.filter((a) => {
-    const w = a.windows[dow];
-    if (!w || !worksOn(a, args.iso)) return false;
-    const [s, e] = freeSegment(w[0], w[1], args.unavailable?.get(a.employee));
-    return e - s >= args.minShiftMin;
-  }).length;
+  return args.roster.filter((a) => canWorkDay(a, args.iso, args.unavailable?.get(a.employee), args.minShiftMin)).length;
 }
 
 export type DraftShift = {
@@ -129,6 +131,8 @@ export function draftDay(args: {
   handoverOverlapMin?: number;
   shiftTimes?: ShiftTimes;
   maxShifts?: number;
+  /** Days left this week (including this one) the person could still be drafted — paces hour targets. */
+  daysLeft?: (employee: string) => number;
 }): DraftShift[] {
   const dow = isoWeekdayMon0(args.iso);
   const templates = args.templates ?? HISTORICAL_TEMPLATES[dow]!;
@@ -206,16 +210,36 @@ export function draftDay(args: {
       if (j > 0 && cover[j]! > cover[j - 1]!) blockEnd = Math.min(dayEnd, blockEnd + overlap);
     }
 
+    // A person with a longer own longest shift may stay on through the rest of the short run.
+    let runEnd = firstIdx;
+    while (runEnd + 1 < short.length && short[runEnd + 1]! > 0) runEnd++;
+    const reach = Math.min(dayEnd, Math.max(blockEnd, args.mins[runEnd]! + step));
+
     const eligible = args.roster
       .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
       .map((a) => {
         const [ws, we] = a.windows[dow]!;
-        const [s, e] = freeSegment(
-          Math.max(ws, blockStart),
-          Math.min(we, blockEnd),
-          args.unavailable?.get(a.employee),
-        );
-        return { a, s, e, len: e - s, gain: gain(short, args.mins, s, e) };
+        const lo = Math.max(ws, blockStart);
+        let hi = Math.min(we, blockEnd);
+        const own = a.maxShiftMin;
+        if (own != null) {
+          hi = own > blockEnd - blockStart ? Math.min(we, Math.min(reach, blockStart + own)) : Math.min(hi, lo + own);
+        }
+        const [s, free] = freeSegment(lo, hi, args.unavailable?.get(a.employee));
+        let e = own != null ? Math.min(free, s + own) : free;
+        // Spread an hour target evenly over as few days as their longest shift allows
+        // (40 h at 9 h → 5 days of 8 h; at 7 h → 6 days of 6.75 h), never more days than are left.
+        const left = a.targetWeekHours != null && args.daysLeft ? args.daysLeft(a.employee) : 0;
+        if (left > 0) {
+          const remaining = (a.targetWeekHours! - weekOf(a)) * 60;
+          const days = Math.max(1, Math.min(left, Math.ceil(remaining / (own ?? maxLen))));
+          e = Math.min(e, s + Math.max(minLen, Math.ceil(remaining / days / step) * step));
+        }
+        // A last shift may end early to land on the weekly cap instead of being skipped.
+        e = Math.min(e, s + Math.floor(((weekCap(a) - weekOf(a)) * 60) / step) * step);
+        // "Trimmed" = cut short by their availability, not by pacing or their own longest shift.
+        const trimmed = s > lo || free < hi || lo > blockStart || (own == null && hi < blockEnd);
+        return { a, s, e, len: e - s, gain: gain(short, args.mins, s, e), trimmed };
       })
       .filter(
         ({ a, len, gain }) =>
@@ -241,7 +265,7 @@ export function draftDay(args: {
       endMin: e,
       hours: (e - s) / 60,
       employee: pick?.a.employee ?? null,
-      trimmed: !!pick && (s !== blockStart || e !== blockEnd),
+      trimmed: !!pick && pick.trimmed,
     });
     if (pick) {
       busy.add(pick.a.employee);
@@ -285,6 +309,7 @@ export function fillOpenShift(args: {
       return (
         fs === s &&
         fe === e &&
+        (a.maxShiftMin == null || e - s <= a.maxShiftMin) &&
         weekOf(a) + hours <= weekCap(a) &&
         (a.maxShiftsPerPeriod == null ||
           (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod)

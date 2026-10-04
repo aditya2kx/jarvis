@@ -284,32 +284,29 @@ function DayPicker({
   );
 }
 
-const KINDS: { value: StaffRuleKind; label: string; unit: string; group: string }[] = [
-  {
-    value: "target_week_hours",
-    label: "About … hours / week",
-    unit: "h / week",
-    group: "Hours per week",
-  },
-  {
-    value: "max_week_hours",
-    label: "At most … hours / week",
-    unit: "h / week · replaces the cap for this person",
-    group: "Hours per week",
-  },
-  {
-    value: "max_shifts_per_period",
-    label: "At most … shifts / pay period",
-    unit: "shifts / pay period",
-    group: "Shifts per pay period",
-  },
-  {
-    value: "last_day",
-    label: "Last working day",
-    unit: "not drafted after this day",
-    group: "Last working day",
-  },
+const KINDS: { value: StaffRuleKind; label: string; unit: string; initial: number }[] = [
+  { value: "target_week_hours", label: "About … hours / week", unit: "h / week", initial: 30 },
+  { value: "max_day_hours", label: "At most … hours / day", unit: "h / day · longest shift for this person", initial: 9 },
+  { value: "max_shifts_per_period", label: "At most … shifts / pay period", unit: "shifts / pay period", initial: 1 },
+  { value: "last_day", label: "Last working day", unit: "not drafted after this day", initial: 0 },
 ];
+const kindOrder = (k: StaffRuleKind) => KINDS.findIndex((x) => x.value === k);
+
+/** Staff rules per person (A–Z, rule types in a fixed order); each unassigned rule on its own. */
+function staffGroups(rules: StaffRule[]): [string, StaffRule[]][] {
+  const named = new Map<string, StaffRule[]>();
+  const blank: [string, StaffRule[]][] = [];
+  for (const r of rules) {
+    if (!r.employee) blank.push(["", [r]]);
+    else named.set(r.employee, [...(named.get(r.employee) ?? []), r]);
+  }
+  return [
+    ...[...named.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([n, list]): [string, StaffRule[]] => [n, list.sort((x, y) => kindOrder(x.kind) - kindOrder(y.kind))]),
+    ...blank,
+  ];
+}
 
 function dayLabel(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
@@ -795,81 +792,95 @@ export function ScheduleInputsPanel({
           <div className="md:col-span-2">
             <Section
               title="Staff rules"
-              hint="Everyone is capped at the weekly hours below; “At most … hours / week” replaces that cap for one person. Hour targets get first pick of draft shifts until they reach the target, and stop there unless the person has their own “At most”. Everyone else is drafted to keep the most people available all week (most hours left first) for full coverage. Pay periods are biweekly. A last working day stops someone being drafted or suggested after it."
+              hint="Everyone is capped at the weekly hours below. Per person: an hour target gets first pick of draft shifts until it is reached (never past it, and it replaces the cap); “At most … hours / day” sets that person's longest shift, longer or shorter than the store's. Everyone else is drafted to keep the most people available all week (most hours left first) for full coverage. Pay periods are biweekly. A last working day stops someone being drafted or suggested after it."
             >
               <div className="flex flex-col gap-1.5">
-                {KINDS.filter((k, i) => KINDS.findIndex((x) => x.group === k.group) === i).map((k) => {
-                  const group = rules.staffRules
-                    .filter((r) => KINDS.find((x) => x.value === r.kind)?.group === k.group)
-                    .sort((x, y) => (x.employee || "\uffff").localeCompare(y.employee || "\uffff"));
-                  const everyone = k.value === "target_week_hours";
-                  if (!group.length && !everyone) return null;
-                  return (
-                    <div key={k.value} className="flex flex-col gap-1.5">
-                      <span className="text-xs font-medium text-muted-foreground">{k.group}</span>
-                      {everyone ? (
-                        <div className="flex flex-wrap items-center gap-2" data-testid="staff-rule-everyone">
-                          <span className="flex h-7 w-48 items-center rounded-md border border-dashed border-border px-2.5 text-xs font-medium">
-                            Everyone
-                          </span>
-                          <span className="flex h-7 w-56 items-center px-1 text-xs text-muted-foreground">
-                            At most … hours / week
-                          </span>
-                          <Input
-                            type="number"
-                            min={1}
-                            max={80}
-                            value={rules.staffing.maxWeekHours}
-                            onChange={(e) =>
-                              setStaffing({
-                                maxWeekHours: Math.min(80, Math.max(1, Math.round(Number(e.target.value) || 1))),
-                              })
-                            }
-                            className="h-7 w-16 text-xs tabular-nums"
-                            aria-label="Most hours per person per week"
-                          />
-                          <span className="text-xs text-muted-foreground">
-                            h / week · ADP scheduled + draft, unless a person&apos;s own rule below says otherwise
-                          </span>
-                        </div>
+                <div className="flex flex-wrap items-center gap-2" data-testid="staff-rule-everyone">
+                  <span className="flex h-7 w-48 items-center rounded-md border border-dashed border-border px-2.5 text-xs font-medium">
+                    Everyone
+                  </span>
+                  <span className="flex h-7 w-56 items-center px-1 text-xs text-muted-foreground">
+                    At most … hours / week
+                  </span>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={80}
+                    value={rules.staffing.maxWeekHours}
+                    onChange={(e) =>
+                      setStaffing({
+                        maxWeekHours: Math.min(80, Math.max(1, Math.round(Number(e.target.value) || 1))),
+                      })
+                    }
+                    className="h-7 w-16 text-xs tabular-nums"
+                    aria-label="Most hours per person per week"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    h / week · ADP scheduled + draft, unless a person&apos;s hour target below says otherwise
+                  </span>
+                </div>
+                {staffGroups(rules.staffRules).map(([name, list]) => (
+                  <div
+                    key={name || list[0]!.id}
+                    data-testid="staff-rules-person"
+                    className="flex flex-col gap-1.5 rounded-md border border-border/70 bg-muted/20 px-2.5 py-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      {name ? (
+                        <span className="text-sm font-medium text-foreground">{name}</span>
+                      ) : (
+                        <Select
+                          value={null}
+                          onValueChange={(v) => v && setStaffRule(list[0]!.id, { employee: String(v) })}
+                        >
+                          <SelectTrigger className="h-7 w-48 text-xs" aria-label="Employee">
+                            <SelectValue placeholder="Pick a person" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {employees.map((n) => (
+                              <SelectItem key={n} value={n}>
+                                {n}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                      {name && list.length < KINDS.length ? (
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          className="ml-auto text-muted-foreground"
+                          onClick={() => {
+                            const k = KINDS.find((x) => !list.some((r) => r.kind === x.value))!;
+                            onChange({
+                              ...rules,
+                              staffRules: [
+                                ...rules.staffRules,
+                                {
+                                  id: `${Date.now()}`,
+                                  employee: name,
+                                  kind: k.value,
+                                  value: k.initial,
+                                  ...(k.value === "last_day" ? { date: new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" }) } : {}),
+                                },
+                              ],
+                            });
+                          }}
+                        >
+                          <Plus /> Add rule
+                        </Button>
                       ) : null}
-                      {group.map((r) => (
+                    </div>
+                    {list.map((r) => {
+                      const kind = KINDS.find((k) => k.value === r.kind);
+                      return (
                         <div key={r.id} className="flex flex-wrap items-center gap-2">
                           <Select
-                            value={r.employee || null}
-                            onValueChange={(v) =>
-                              v && setStaffRule(r.id, { employee: String(v) })
-                            }
-                          >
-                            <SelectTrigger
-                              className="h-7 w-48 text-xs"
-                              aria-label="Employee"
-                            >
-                              <SelectValue placeholder="Pick a person" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {employees.map((name) => (
-                                <SelectItem key={name} value={name}>
-                                  {name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <Select
                             value={r.kind}
-                            onValueChange={(v) =>
-                              v && setStaffRule(r.id, { kind: v as StaffRuleKind })
-                            }
+                            onValueChange={(v) => v && setStaffRule(r.id, { kind: v as StaffRuleKind })}
                           >
-                            <SelectTrigger
-                              className="h-7 w-56 text-xs"
-                              aria-label="Rule"
-                            >
-                              <SelectValue>
-                                {(v: StaffRuleKind) =>
-                                  KINDS.find((k) => k.value === v)?.label
-                                }
-                              </SelectValue>
+                            <SelectTrigger className="h-7 w-56 text-xs" aria-label="Rule">
+                              <SelectValue>{(v: StaffRuleKind) => KINDS.find((k) => k.value === v)?.label}</SelectValue>
                             </SelectTrigger>
                             <SelectContent>
                               {KINDS.map((k) => (
@@ -883,9 +894,7 @@ export function ScheduleInputsPanel({
                             <Input
                               type="date"
                               value={r.date ?? ""}
-                              onChange={(e) =>
-                                setStaffRule(r.id, { date: e.target.value })
-                              }
+                              onChange={(e) => setStaffRule(r.id, { date: e.target.value })}
                               className="h-7 w-36 text-xs tabular-nums"
                               aria-label="Last working day"
                             />
@@ -893,35 +902,30 @@ export function ScheduleInputsPanel({
                             <Input
                               type="number"
                               min={0}
+                              max={r.kind === "max_day_hours" ? 16 : undefined}
+                              step={r.kind === "max_day_hours" ? 0.5 : 1}
                               value={r.value}
                               onChange={(e) =>
                                 setStaffRule(r.id, {
-                                  value: Math.max(0, Number(e.target.value)),
+                                  value: Math.min(r.kind === "max_day_hours" ? 16 : 80, Math.max(0, Number(e.target.value))),
                                 })
                               }
                               className="h-7 w-16 text-xs tabular-nums"
                               aria-label="Value"
                             />
                           )}
-                          <span className="text-xs text-muted-foreground">
-                            {KINDS.find((k) => k.value === r.kind)?.unit}
-                          </span>
+                          <span className="text-xs text-muted-foreground">{kind?.unit}</span>
                           <RemoveButton
                             label="Remove staff rule"
                             onClick={() =>
-                              onChange({
-                                ...rules,
-                                staffRules: rules.staffRules.filter(
-                                  (x) => x.id !== r.id,
-                                ),
-                              })
+                              onChange({ ...rules, staffRules: rules.staffRules.filter((x) => x.id !== r.id) })
                             }
                           />
                         </div>
-                      ))}
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                  </div>
+                ))}
                 <Button
                   size="xs"
                   variant="outline"
@@ -931,17 +935,12 @@ export function ScheduleInputsPanel({
                       ...rules,
                       staffRules: [
                         ...rules.staffRules,
-                        {
-                          id: `${Date.now()}`,
-                          employee: "",
-                          kind: "target_week_hours",
-                          value: 40,
-                        },
+                        { id: `${Date.now()}`, employee: "", kind: "target_week_hours", value: 30 },
                       ],
                     })
                   }
                 >
-                  <Plus /> Add staff rule
+                  <Plus /> Add person
                 </Button>
               </div>
             </Section>

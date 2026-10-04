@@ -113,6 +113,26 @@ class TestGridUnavailability(unittest.TestCase):
     def test_shift_cells_are_not_unavailability(self):
         self.assertEqual(sb.build_grid_unavailability_records(self._weeks("1:30 PM - 8:30 PM")), [])
 
+    def test_two_blocks_one_day(self):
+        # Live 2026-10-04 grid: a shift between two windows on the same Saturday.
+        weeks = self._weeks("Unavailability 6:00 AM - 10:00 AM 10:00 AM - 4:00 PM Unavailability 6:0")
+        weeks[0]["employee_rows"][0]["days"][0]["unavail_blocks"] = [
+            "Unavailability 6:00 AM - 10:00 AM", "Unavailability 6:00 PM - 9:00 PM",
+        ]
+        rows = sb.build_grid_unavailability_records(weeks)
+        self.assertEqual([(r["from_time"], r["to_time"]) for r in rows], [("06:00", "10:00"), ("18:00", "21:00")])
+
+    def test_all_day_block_list(self):
+        weeks = self._weeks("ignored")
+        weeks[0]["employee_rows"][0]["days"][0]["unavail_blocks"] = ["Unavailability All day"]
+        rows = sb.build_grid_unavailability_records(weeks)
+        self.assertEqual((rows[0]["all_day"], rows[0]["hours"]), (True, 24.0))
+
+    def test_empty_block_list_ignores_cell_text(self):
+        weeks = self._weeks("Unavailability All day")
+        weeks[0]["employee_rows"][0]["days"][0]["unavail_blocks"] = []
+        self.assertEqual(sb.build_grid_unavailability_records(weeks), [])
+
 
 if __name__ == "__main__":
     unittest.main()

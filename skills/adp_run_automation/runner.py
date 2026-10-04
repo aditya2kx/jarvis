@@ -1972,41 +1972,6 @@ def _ensure_show_unavailability(page, frame) -> None:
             pass
 
 
-_UNAVAIL_PROBE_JS = r"""
-() => {
-  const out = [];
-  const walk = (root) => {
-    for (const el of root.querySelectorAll('*')) {
-      const attrs = [el.className && String(el.className), el.getAttribute('aria-label'), el.getAttribute('title')].join(' ');
-      if (/unavail/i.test(attrs) || (/unavail/i.test(el.textContent || '') && !el.children.length)) {
-        out.push({ tag: el.tagName.toLowerCase(), attrs: attrs.slice(0, 160), text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160) });
-      }
-      if (el.shadowRoot) walk(el.shadowRoot);
-      if (out.length >= 40) return;
-    }
-  };
-  walk(document);
-  return out;
-}
-"""
-
-
-def _dump_grid(page, frame, label: str) -> None:
-    """Debug (BHAGA_ADP_DUMP_GRID=1): log unavailability-ish nodes, upload HTML + PNG."""
-    from skills._browser_runtime import runtime as rt
-
-    try:
-        for hit in frame.evaluate(_UNAVAIL_PROBE_JS):
-            print(f"[adp_schedule] probe {label}: {hit}")
-        base = pathlib.Path("/tmp") / f"grid-{label}"
-        base.with_suffix(".html").write_text(frame.content())
-        page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
-        for p in (base.with_suffix(".html"), base.with_suffix(".png")):
-            print(f"[adp_schedule] dump {label}: {rt._upload_evidence_to_gcs(p)}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[adp_schedule] WARN: grid dump failed: {type(exc).__name__}: {exc}"[:300])
-
-
 def _scrape_schedule_requests(page, frame) -> dict:
     """Read Team Schedule › Pending requests: per-type counts + unavailability cards (Issue #337).
 
@@ -2121,11 +2086,8 @@ def _schedule_within_session(page, *, weeks: int = None) -> tuple[list[dict], di
     # Read on the opening week, before the chevrons move the grid.
     requests = _scrape_schedule_requests(page, frame)
     _ensure_show_unavailability(page, frame)
-    dump = os.environ.get("BHAGA_ADP_DUMP_GRID") == "1"
     payloads: list[dict] = []
     for i in range(weeks):
-        if dump and i < 2:
-            _dump_grid(page, frame, f"week{i}")
         payloads.append(_scrape_one_week(page, frame))
         if i >= weeks - 1:
             break

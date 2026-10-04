@@ -124,6 +124,8 @@ SCHEDULE_EMPLOYEE_EXTRACT_JS = r"""
         header_index: best ? best.i : null,
         header_text: best ? best.text : null,
         ranges,
+        unavail_blocks: [...cell.querySelectorAll('work-availability-calendar .detail-section')]
+          .map(norm).filter(Boolean),
         cell_text: norm(cell).slice(0, 120),
       });
     }
@@ -177,6 +179,8 @@ SCHEDULE_EMPLOYEE_EXTRACT_ONE_JS = r"""
       header_index: best ? best.i : null,
       header_text: best ? best.text : null,
       ranges,
+      unavail_blocks: [...cell.querySelectorAll('work-availability-calendar .detail-section')]
+        .map(norm).filter(Boolean),
       cell_text: norm(cell).slice(0, 120),
     });
   }
@@ -850,11 +854,13 @@ _GRID_UNAVAIL_RE = re.compile(r"unavailab", re.IGNORECASE)
 
 
 def build_grid_unavailability_records(weeks: list[dict]) -> list[dict]:
-    """Approved unavailability blocks read from employee day-cell text.
+    """Approved unavailability blocks drawn in the grid, one row per block.
 
-    Unverified against a live approved block (none existed at the 2026-09-27
-    spike): any cell whose text mentions "unavailab" counts; a time range in the
-    same text narrows it, otherwise it is all day.
+    The grid draws them only with Filter › Display › Show Unavailability on
+    (``runner._ensure_show_unavailability``). Each block reads
+    "Unavailability All day" or "Unavailability 6:00 AM - 10:00 AM";
+    ``unavail_blocks`` holds one entry per block, while older payloads only
+    carry the (truncated) ``cell_text``.
     """
     out: list[dict] = []
     for wk in weeks:
@@ -864,25 +870,35 @@ def build_grid_unavailability_records(weeks: list[dict]) -> list[dict]:
         for emp in wk.get("employee_rows") or []:
             raw = (emp.get("name") or "").strip()
             for day in emp.get("days") or []:
-                text = day.get("cell_text") or ""
                 idx = day.get("header_index")
-                if not raw or not _GRID_UNAVAIL_RE.search(text) or not isinstance(idx, int) or not 0 <= idx <= 6:
+                if not raw or not isinstance(idx, int) or not 0 <= idx <= 6:
                     continue
-                after = text[_GRID_UNAVAIL_RE.search(text).start():]
-                rng = _CARD_RANGE_RE.search(after)
-                out.append({
-                    "raw_employee_name": raw,
-                    "status": "approved",
-                    "first_date": (week_start + datetime.timedelta(days=idx)).isoformat(),
-                    "from_time": _hm(*rng.group(1, 2, 3)) if rng else None,
-                    "to_time": _hm(*rng.group(4, 5, 6)) if rng else None,
-                    "all_day": rng is None,
-                    "hours": parse_shift_range_hours(rng.group(0)) if rng else 24.0,
-                    "repeat_weekday": None,
-                    "repeat_until": None,
-                    "expires_at_ct": None,
-                })
+                blocks = day.get("unavail_blocks")
+                if blocks is None:
+                    text = day.get("cell_text") or ""
+                    m = _GRID_UNAVAIL_RE.search(text)
+                    blocks = [text[m.start():]] if m else []
+                for block in blocks:
+                    if not _GRID_UNAVAIL_RE.search(block):
+                        continue
+                    out.append(_grid_block_record(raw, week_start + datetime.timedelta(days=idx), block))
     return out
+
+
+def _grid_block_record(raw: str, date: datetime.date, block: str) -> dict:
+    rng = _CARD_RANGE_RE.search(block)
+    return {
+        "raw_employee_name": raw,
+        "status": "approved",
+        "first_date": date.isoformat(),
+        "from_time": _hm(*rng.group(1, 2, 3)) if rng else None,
+        "to_time": _hm(*rng.group(4, 5, 6)) if rng else None,
+        "all_day": rng is None,
+        "hours": parse_shift_range_hours(rng.group(0)) if rng else 24.0,
+        "repeat_weekday": None,
+        "repeat_until": None,
+        "expires_at_ct": None,
+    }
 
 
 def _newest_schedule_json(downloads_dir: pathlib.Path = DOWNLOADS_DIR) -> Optional[pathlib.Path]:

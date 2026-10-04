@@ -1,13 +1,15 @@
 /**
  * Draft open shifts for a day (Issue #337).
- * Greedy: repeatedly add the historical shift block (open / mid / close) that
- * covers the most short 15-min steps, give it to the best available person
+ * Greedy: repeatedly add a shift at the first short 15-min step — the historical
+ * open / mid / close block, or (shift times "need") the short run itself, split
+ * evenly past the longest shift — and give it to the best available person
  * (furthest below their target weekly hours first, then whoever already has the
  * most hours — fewer people overall), trimmed around their ADP unavailability.
  * No one fits → unassigned.
  */
 
 import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
+import type { ShiftTimes } from "@/lib/labor/schedule-inputs";
 import { freeSegment, type Block } from "@/lib/labor/unavailability";
 
 export type ShiftKind = "open" | "mid" | "close";
@@ -89,11 +91,15 @@ export function draftDay(args: {
   unavailable?: Map<string, Block[]>;
   templates?: ShiftTemplate[];
   minShiftMin?: number;
+  /** Longest shift ("need" shift times). */
+  maxShiftMin?: number;
+  shiftTimes?: ShiftTimes;
   maxShifts?: number;
 }): DraftShift[] {
   const dow = isoWeekdayMon0(args.iso);
   const templates = args.templates ?? HISTORICAL_TEMPLATES[dow]!;
   const minLen = args.minShiftMin ?? 240;
+  const maxLen = Math.max(minLen, args.maxShiftMin ?? 8 * 60);
   const cover = [...args.onFloor];
   const busy = new Set(args.busy);
   const out: DraftShift[] = [];
@@ -101,11 +107,13 @@ export function draftDay(args: {
   const deficit = (a: Availability) =>
     a.targetWeekHours == null ? 0 : Math.max(0, a.targetWeekHours - weekOf(a));
 
-  for (let n = 0; n < (args.maxShifts ?? 8); n++) {
-    const short = args.need.map((x, i) => x - cover[i]!);
-    const firstIdx = short.findIndex((x) => x > 0);
-    if (firstIdx < 0) break;
-    const t0 = args.mins[firstIdx]!;
+  const step = args.mins.length > 1 ? args.mins[1]! - args.mins[0]! : 15;
+  const needIdx = args.need.flatMap((x, i) => (x > 0 ? [i] : []));
+  const dayStart = needIdx.length ? args.mins[needIdx[0]!]! : 0;
+  const dayEnd = needIdx.length ? args.mins[needIdx[needIdx.length - 1]!]! + step : 24 * 60;
+
+  /** "history": the template block covering the first short step, trimmed to the short span. */
+  const templateBlock = (short: number[], t0: number) => {
     // Interval-cover sweep: earliest short step, block that reaches furthest.
     const best =
       templates
@@ -119,19 +127,41 @@ export function draftDay(args: {
             : acc,
         null,
       );
-    if (!best) break;
+    if (!best) return null;
     const mustCover = best.startMin <= t0 && t0 < best.endMin ? t0 : null;
     // Start when someone is first short (e.g. a day rule's 8:00), not at the
     // template's earlier start — but never shorter than the minimum shift.
-    const blockStart =
+    const start =
       mustCover == null ? best.startMin : Math.max(best.startMin, Math.min(t0, best.endMin - minLen));
     // Likewise end after the last short step (e.g. staffed until 8:30, not the template's 8:45).
-    const step = args.mins.length > 1 ? args.mins[1]! - args.mins[0]! : 15;
     const lastShort = args.mins.reduce(
-      (acc, t, i) => (t >= blockStart && t < best!.endMin && short[i]! > 0 ? t + step : acc),
-      blockStart,
+      (acc, t, i) => (t >= start && t < best.endMin && short[i]! > 0 ? t + step : acc),
+      start,
     );
-    const blockEnd = Math.min(best.endMin, Math.max(lastShort, blockStart + minLen));
+    return { kind: best.kind, start, end: Math.min(best.endMin, Math.max(lastShort, start + minLen)), mustCover };
+  };
+
+  /** "need": the unbroken short run from the first short step, split evenly past the longest shift. */
+  const needBlock = (short: number[], firstIdx: number) => {
+    let j = firstIdx;
+    while (j + 1 < short.length && short[j + 1]! > 0) j++;
+    const t0 = args.mins[firstIdx]!;
+    const run = args.mins[j]! + step - t0;
+    const parts = Math.ceil(run / maxLen);
+    const len = Math.max(minLen, Math.ceil(run / parts / step) * step);
+    const end = Math.min(dayEnd, t0 + len);
+    const start = Math.max(dayStart, Math.min(t0, end - len));
+    const kind: ShiftKind = start <= dayStart ? "open" : end >= dayEnd ? "close" : "mid";
+    return { kind, start, end, mustCover: t0 };
+  };
+
+  for (let n = 0; n < (args.maxShifts ?? 8); n++) {
+    const short = args.need.map((x, i) => x - cover[i]!);
+    const firstIdx = short.findIndex((x) => x > 0);
+    if (firstIdx < 0) break;
+    const block = args.shiftTimes === "need" ? needBlock(short, firstIdx) : templateBlock(short, args.mins[firstIdx]!);
+    if (!block) break;
+    const { start: blockStart, end: blockEnd, mustCover } = block;
 
     const candidates = args.roster
       .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
@@ -164,7 +194,7 @@ export function draftDay(args: {
     const e = pick ? pick.e : blockEnd;
     out.push({
       date: args.iso,
-      kind: best.kind,
+      kind: block.kind,
       startMin: s,
       endMin: e,
       hours: (e - s) / 60,

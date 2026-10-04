@@ -216,6 +216,14 @@ describe("parseScheduleRules", () => {
     expect(() => parseScheduleRules(withStaffing({ minShiftMin: 30 }))).toThrow(
       /Shortest shift/,
     );
+    expect(() => parseScheduleRules(withStaffing({ maxShiftMin: 240 }))).toThrow(/Longest shift/);
+    expect(() => parseScheduleRules(withStaffing({ shiftTimes: "random" }))).toThrow(/Shift times/);
+  });
+
+  it("loads staffing saved before shift times existed with history + 8 h", () => {
+    const { maxShiftMin: _m, shiftTimes: _s, ...v7 } = DEFAULT_STAFFING;
+    const staffing = parseScheduleRules({ dayRules: [], staffRules: [], staffing: v7 }).staffing;
+    expect([staffing.shiftTimes, staffing.maxShiftMin]).toEqual(["history", 480]);
   });
 });
 

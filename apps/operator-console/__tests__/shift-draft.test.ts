@@ -117,6 +117,31 @@ describe("draftDay", () => {
     expect([s!.startMin, s!.endMin]).toEqual([840, 1230]);
   });
 
+  it("follow the need: one shift per short run, split evenly past the longest shift", () => {
+    // 1 person 6:30–20:30 (14 h) → two 7 h shifts; a 2nd person 8:00–13:00 → one 5 h shift.
+    const need = mins.map((t) => (t < 390 || t >= 1230 ? 0 : t >= 480 && t < 780 ? 2 : 1));
+    const out = draftDay({
+      iso: "2026-10-12", mins, onFloor: zeros, need, roster: [], weekHours: new Map(), busy: new Set(),
+      minShiftMin: 270, maxShiftMin: 480, shiftTimes: "need",
+    });
+    expect(out.map((s) => [s.kind, s.startMin, s.endMin])).toEqual([
+      ["open", 390, 810],
+      ["mid", 480, 780],
+      ["close", 810, 1230],
+    ]);
+  });
+
+  it("follow the need: pads a short run to the shortest shift inside staffed hours", () => {
+    // Short 19:30–20:30 only, staffed until 20:30 → 16:00–20:30 (4.5 h).
+    const need = mins.map((t) => (t < 390 || t >= 1230 ? 0 : 1));
+    const onFloor = mins.map((t) => (t < 1170 ? 1 : 0));
+    const [s] = draftDay({
+      iso: "2026-10-12", mins, onFloor, need, roster: [], weekHours: new Map(), busy: new Set(),
+      minShiftMin: 270, shiftTimes: "need",
+    });
+    expect([s!.startMin, s!.endMin]).toEqual([960, 1230]);
+  });
+
   it("adds nothing when the day already meets need", () => {
     const out = draftDay({
       iso: "2026-09-28", mins, onFloor: floorNeed, need: floorNeed,

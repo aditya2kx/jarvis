@@ -45,7 +45,17 @@ export type StaffingBasics = {
   closeMin: number;
   /** Shortest shift the draft proposes. */
   minShiftMin: number;
+  /** Longest shift the draft proposes ("need" shift times only). */
+  maxShiftMin: number;
+  /**
+   * "history": shifts fit past ADP open/mid/close blocks (handover ~2 PM).
+   * "need": shifts start when someone is first short and run until the need
+   * ends, split evenly when longer than `maxShiftMin`.
+   */
+  shiftTimes: ShiftTimes;
 };
+
+export type ShiftTimes = "history" | "need";
 
 export type ScheduleRules = { staffing: StaffingBasics; dayRules: DayRule[]; staffRules: StaffRule[] };
 
@@ -67,6 +77,8 @@ export const DEFAULT_STAFFING: StaffingBasics = {
   openMin: 6 * 60 + 30,
   closeMin: 20 * 60 + 30,
   minShiftMin: 270,
+  maxShiftMin: 8 * 60,
+  shiftTimes: "history",
 };
 
 export const DEFAULT_RULES: ScheduleRules = {
@@ -281,12 +293,21 @@ function parseStaffing(raw: unknown): StaffingBasics {
   if (!Number.isInteger(s.minShiftMin) || s.minShiftMin! < 60 || s.minShiftMin! > 12 * 60) {
     throw new Error("Shortest shift must be 1–12 hours");
   }
+  // Both arrived after v7; older versions load the defaults.
+  const maxShiftMin = s.maxShiftMin ?? DEFAULT_STAFFING.maxShiftMin;
+  if (!Number.isInteger(maxShiftMin) || maxShiftMin < s.minShiftMin! || maxShiftMin > 16 * 60) {
+    throw new Error("Longest shift must be at least the shortest shift and at most 16 hours");
+  }
+  const shiftTimes = s.shiftTimes ?? DEFAULT_STAFFING.shiftTimes;
+  if (shiftTimes !== "history" && shiftTimes !== "need") throw new Error("Shift times must be history or need");
   return {
     ordersPerPerson: opp,
     minPeople: s.minPeople!,
     openMin: s.openMin,
     closeMin: s.closeMin,
     minShiftMin: s.minShiftMin!,
+    maxShiftMin,
+    shiftTimes,
   };
 }
 

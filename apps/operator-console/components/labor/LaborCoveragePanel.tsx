@@ -984,6 +984,8 @@ export function LaborCoveragePanel({
           periodShifts: shiftsInPeriod(d.iso),
           unavailable: blocksOn(unavailability, d.iso),
           minShiftMin: r.staffing.minShiftMin,
+          maxShiftMin: r.staffing.maxShiftMin,
+          shiftTimes: r.staffing.shiftTimes,
           maxShifts,
         });
 

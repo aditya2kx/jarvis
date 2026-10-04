@@ -335,7 +335,7 @@ function clock(min: number): string {
 }
 
 function staffingSummary(s: StaffingBasics): string {
-  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}h+ shifts`;
+  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts${s.shiftTimes === "need" ? " · follow the need" : ""}`;
 }
 
 function rulesSummary(v: RulesVersion): string {
@@ -696,7 +696,52 @@ export function ScheduleInputsPanel({
                     setStaffing({ minShiftMin: Math.round(v * 60) })
                   }
                 />
+                <NumberField
+                  label="Longest shift"
+                  unit="hours"
+                  step={0.5}
+                  min={rules.staffing.minShiftMin / 60}
+                  value={rules.staffing.maxShiftMin / 60}
+                  onChange={(v) =>
+                    setStaffing({ maxShiftMin: Math.round(v * 60) })
+                  }
+                />
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] text-muted-foreground">Shift times</span>
+                  <div
+                    role="group"
+                    aria-label="Shift times"
+                    className="flex items-center gap-1 rounded-lg border border-border p-0.5"
+                  >
+                    {(
+                      [
+                        ["history", "Usual handover"],
+                        ["need", "Follow the need"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={rules.staffing.shiftTimes === value}
+                        onClick={() => setStaffing({ shiftTimes: value })}
+                        className={cn(
+                          "h-6 rounded-md px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                          rules.staffing.shiftTimes === value
+                            ? "bg-muted text-foreground"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
+              <p className="text-xs text-muted-foreground">
+                {rules.staffing.shiftTimes === "need"
+                  ? `Each shift starts when someone is first needed and runs until the need ends; stretches longer than ${rules.staffing.maxShiftMin / 60}h split into equal shifts.`
+                  : "Openers, mids and closers fit the usual ADP blocks (handover about 2 PM), trimmed to when someone is needed. Longest shift applies to Follow the need."}
+              </p>
             </Section>
           </div>
 

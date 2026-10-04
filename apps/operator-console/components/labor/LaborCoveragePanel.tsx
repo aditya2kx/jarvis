@@ -898,8 +898,15 @@ export function LaborCoveragePanel({
   // shifts are already under way). Each week
   // has its own hours budget; weekly hours are shared within a week so hour
   // targets and caps span it. Shift counts carry across weeks per pay period.
-  const drafts = useMemo(() => {
+  const buildDrafts = useCallback((r: ScheduleRules) => {
     if (!demand?.length) return null;
+    const inputs: NeedCtx = {
+      staffing: r.staffing,
+      dayRules: r.dayRules,
+      deliveries: new Set(deliveryDates ?? []),
+    };
+    const limits = staffLimits(r.staffRules);
+    const roster = baseRoster.map((a) => ({ ...a, ...limits.get(a.employee) }));
     const weekStarts = [
       ...new Set(
         strip
@@ -976,7 +983,7 @@ export function LaborCoveragePanel({
           busy: d.busy,
           periodShifts: shiftsInPeriod(d.iso),
           unavailable: blocksOn(unavailability, d.iso),
-          minShiftMin: rules.staffing.minShiftMin,
+          minShiftMin: r.staffing.minShiftMin,
           maxShifts,
         });
 
@@ -1060,12 +1067,28 @@ export function LaborCoveragePanel({
     actuals,
     scheduledForCoverage,
     laborTypes,
-    inputs,
-    roster,
+    deliveryDates,
+    baseRoster,
     goalHoursWeek,
     unavailability,
-    rules.staffing.minShiftMin,
   ]);
+  const drafts = useMemo(() => buildDrafts(rules), [buildDrafts, rules]);
+  const savedDrafts = useMemo(
+    () => (editedRules ? buildDrafts(savedRules) : drafts),
+    [buildDrafts, editedRules, savedRules, drafts],
+  );
+  const weekForecast = useMemo(
+    () =>
+      [...(drafts?.weeks.values() ?? [])].map((w) => {
+        const before = savedDrafts?.weeks.get(w.weekStart);
+        return {
+          weekStart: w.weekStart,
+          before: before ? before.existingHours + before.draftHours : null,
+          after: w.existingHours + w.draftHours,
+        };
+      }),
+    [drafts, savedDrafts],
+  );
 
   const { setByDay: publishSuggested } = useSuggestedHours();
   useEffect(() => {
@@ -1141,6 +1164,7 @@ export function LaborCoveragePanel({
             employees={baseRoster.map((a) => a.employee).sort()}
             deliveryDates={deliveryDates ?? []}
             goalHoursWeek={goalHoursWeek}
+            forecast={weekForecast}
           />
         ) : null}
 

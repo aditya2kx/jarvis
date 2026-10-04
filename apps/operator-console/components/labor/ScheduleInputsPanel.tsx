@@ -438,6 +438,72 @@ function RemoveButton({
   );
 }
 
+export type WeekForecast = { weekStart: string; before: number | null; after: number };
+
+function weekLabel(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y!, m! - 1, d!).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/** "Wk of Oct 12  ~~243~~ → 221h  +11 vs goal" per future week — edits preview before saving. */
+function HoursImpact({
+  forecast,
+  goal,
+  dirty,
+}: {
+  forecast: WeekForecast[];
+  goal?: number;
+  dirty: boolean;
+}) {
+  if (!forecast.length) return null;
+  const r = (n: number) => Math.round(n);
+  return (
+    <div data-testid="hours-impact" className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
+      <span className="text-muted-foreground">
+        {dirty ? "Drafted hours — saved → with your edits" : "Drafted hours per week"}
+        {goal != null ? ` (goal ${goal}h)` : ""}
+      </span>
+      {forecast.map((f) => {
+        const changed = dirty && f.before != null && r(f.before) !== r(f.after);
+        const delta = f.before != null ? r(f.after) - r(f.before) : 0;
+        const vsGoal = goal != null ? r(f.after) - goal : null;
+        return (
+          <span key={f.weekStart} className="inline-flex items-baseline gap-1 tabular-nums">
+            <span className="text-muted-foreground">Wk of {weekLabel(f.weekStart)}</span>
+            {changed ? (
+              <>
+                <span className="text-muted-foreground line-through">{r(f.before!)}</span>
+                <span className="text-muted-foreground">→</span>
+              </>
+            ) : null}
+            <span className="font-medium text-foreground">{r(f.after)}h</span>
+            {changed ? (
+              <span className={delta < 0 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}>
+                ({delta > 0 ? "+" : "−"}
+                {Math.abs(delta)})
+              </span>
+            ) : null}
+            {vsGoal != null ? (
+              <span
+                className={cn(
+                  "rounded px-1 text-[10px]",
+                  Math.abs(vsGoal) <= 2
+                    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                    : vsGoal > 0
+                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                      : "bg-muted text-muted-foreground",
+                )}
+              >
+                {Math.abs(vsGoal) <= 2 ? "at goal" : vsGoal > 0 ? `${vsGoal}h over` : `${-vsGoal}h under`}
+              </span>
+            ) : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ScheduleInputsPanel({
   rules,
   onChange,
@@ -448,6 +514,7 @@ export function ScheduleInputsPanel({
   onDiscard,
   savedVersion,
   history,
+  forecast = [],
 }: {
   rules: ScheduleRules;
   onChange: (next: ScheduleRules) => void;
@@ -461,6 +528,8 @@ export function ScheduleInputsPanel({
   savedVersion: number;
   /** Saved versions, newest (live) first. */
   history: RulesVersion[];
+  /** Drafted hours per future week: saved rules (before) vs these rules (after). */
+  forecast?: WeekForecast[];
 }) {
   const router = useRouter();
   const { run, isPending } = useConsoleAction();
@@ -877,7 +946,9 @@ export function ScheduleInputsPanel({
             </Section>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 md:col-span-2">
+          <div className="sticky bottom-0 z-10 -mx-3 -mb-3 flex flex-col gap-2 rounded-b-lg border-t border-border bg-card px-3 py-2.5 md:col-span-2">
+          <HoursImpact forecast={forecast} goal={goalHoursWeek} dirty={dirty} />
+          <div className="flex flex-wrap items-center gap-2">
             {dirty ? (
               <>
                 <Input
@@ -924,6 +995,7 @@ export function ScheduleInputsPanel({
             >
               <History /> History ({history.length})
             </Button>
+          </div>
           </div>
 
           {showHistory && history.length ? (

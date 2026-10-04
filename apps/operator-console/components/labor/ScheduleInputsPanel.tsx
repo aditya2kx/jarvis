@@ -411,11 +411,17 @@ function TimeInput({
   onChange: (min: number) => void;
   label: string;
 }) {
+  // While focused, mirror what the browser reports: mid-entry it reports "",
+  // and forcing the saved time back would wipe the half-typed segments.
+  const [typing, setTyping] = useState<string | null>(null);
   return (
     <Input
       type="time"
-      value={minToTime(value)}
+      value={typing ?? minToTime(value)}
+      onFocus={() => setTyping(minToTime(value))}
+      onBlur={() => setTyping(null)}
       onChange={(e) => {
+        setTyping(e.target.value);
         const v = timeToMin(e.target.value);
         if (v != null) onChange(v);
       }}
@@ -458,7 +464,9 @@ function HoursImpact({
 }) {
   if (!forecast.length) return null;
   const r = (n: number) => Math.round(n);
+  const noEffect = dirty && forecast.every((f) => f.before == null || r(f.before) === r(f.after));
   return (
+    <div className="flex flex-col gap-1">
     <div data-testid="hours-impact" className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
       <span className="text-muted-foreground">
         {dirty ? "Drafted hours — saved → with your edits" : "Drafted hours per week"}
@@ -501,6 +509,13 @@ function HoursImpact({
           </span>
         );
       })}
+    </div>
+    {noEffect ? (
+      <p data-testid="hours-impact-none" className="text-xs text-muted-foreground">
+        These edits don&apos;t change drafted hours yet — outside a rule, typical orders already need that many
+        people, or nobody available can take the extra time.
+      </p>
+    ) : null}
     </div>
   );
 }

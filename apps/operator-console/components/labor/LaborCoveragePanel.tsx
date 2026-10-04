@@ -1119,19 +1119,25 @@ export function LaborCoveragePanel({
   useEffect(() => {
     const byDay = new Map<string, number>();
     const concurrent = new Map<string, number>();
+    const perPerson = new Map<string, Map<string, number>>();
     if (showDraft && drafts) {
       const inStrip = new Set(strip);
       for (const [iso, shifts] of drafts.byDay) {
-        const h = newShifts(shifts).reduce((a, s) => a + s.hours, 0);
-        if (h > 0 && inStrip.has(iso)) {
+        if (!inStrip.has(iso)) continue;
+        const added = newShifts(shifts);
+        const h = added.reduce((a, s) => a + s.hours, 0);
+        if (h > 0) {
           byDay.set(iso, h);
           concurrent.set(iso, h / staffedHours);
+          const people = new Map<string, number>();
+          for (const s of added) people.set(s.employee ?? "", (people.get(s.employee ?? "") ?? 0) + s.hours);
+          perPerson.set(iso, people);
         }
       }
     }
-    publishSuggested(byDay, concurrent);
+    publishSuggested(byDay, concurrent, perPerson);
   }, [showDraft, drafts, strip, staffedHours, publishSuggested]);
-  useEffect(() => () => publishSuggested(new Map(), new Map()), [publishSuggested]);
+  useEffect(() => () => publishSuggested(new Map(), new Map(), new Map()), [publishSuggested]);
 
   const weekDraft =
     drafts && activeDay && activeDay > todayIso

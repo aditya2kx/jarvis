@@ -183,6 +183,8 @@ export default async function LaborPage({
   let personScheduledDays: PersonDayHours[] = [];
   let weeklyActualDays: PersonDayHours[] = [];
   let weeklyScheduledDays: PersonDayHours[] = [];
+  let weeklyOpenDays: { date: string; hours: number }[] = [];
+  let weeklyRange = { start: "", end: "" };
   let hoursScrapedAt: string | null = null;
   let coverageActuals: LaborActualShiftDayRow[] = [];
   let coverageScheduled: LaborScheduledShiftDayRow[] = [];
@@ -214,15 +216,17 @@ export default async function LaborPage({
     punchWin = actualPunchWindow(win, boundaryIso);
     chartWin = laborChartWindow(win, todayIso, scheduleHorizonEnd);
     const schedWin = scheduledShiftWindow(win, boundaryIso, scheduleHorizonEnd, todayIso);
-    // Hours per person has its own week picker: last 8 weeks through the schedule horizon.
-    const weeklyHorizon =
+    // Hours per person has its own week picker: last 8 weeks through the later of the charts' end and the forward horizon.
+    const forward =
       scheduleHorizonEnd ?? forwardHorizonEnd(todayIso, await adpScheduleHorizonEnd().catch(() => null));
+    const weeklyHorizon = chartWin.end > forward ? chartWin.end : forward;
     const weeklyWin: DateWindow = {
       start: weekStartOf(shiftCalendarDate(todayIso, "day", -7 * 8)),
       end: weeklyHorizon,
       label: "Hours per person",
       preset: "custom",
     };
+    weeklyRange = { start: weeklyWin.start, end: weeklyWin.end };
     const weeklyPunchWin = actualPunchWindow(weeklyWin, boundaryIso);
     const weeklySchedWin = scheduledShiftWindow(weeklyWin, boundaryIso, weeklyHorizon, todayIso);
     // Charts: Hour grain omits schedule stacks (#227). Coverage is day-level —
@@ -268,6 +272,7 @@ export default async function LaborPage({
       upcomingRows,
       weeklyActual,
       weeklySched,
+      weeklyOpen,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -321,7 +326,9 @@ export default async function LaborPage({
       weeklySchedWin
         ? laborScheduledShiftDays(weeklySchedWin, { store: DEFAULT_STORE, excludePto }).catch(() => [])
         : Promise.resolve([]),
+      weeklySchedWin ? laborOpenShiftDays(weeklySchedWin).catch(() => []) : Promise.resolve([]),
     ]);
+    weeklyOpenDays = weeklyOpen.map((r) => ({ date: r.date, hours: Number(r.scheduled_hours) || 0 }));
     weeklyActualDays = weeklyActual;
     weeklyScheduledDays = weeklySched.map((r) => ({
       date: r.date,
@@ -801,8 +808,10 @@ export default async function LaborPage({
           <HoursPerPersonCard
             actual={weeklyActualDays}
             scheduled={weeklyScheduledDays}
+            open={weeklyOpenDays}
             laborTypes={laborTypes}
             todayIso={chicagoTodayIso()}
+            range={weeklyRange}
           />
 
           {selectedPerson ? (

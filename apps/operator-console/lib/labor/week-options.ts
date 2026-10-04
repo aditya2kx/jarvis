@@ -21,11 +21,19 @@ export function weekRange(start: string): string {
   return a.m === b.m ? `${a.m} ${a.d}–${b.d}` : `${a.m} ${a.d}–${b.m} ${b.d}`;
 }
 
-/** Every week touched by `dates` plus this week, newest first. */
-export function weekOptions(dates: string[], todayIso: string): WeekOption[] {
+/** Every week touched by `dates` or `range`, plus this week, newest first. */
+export function weekOptions(
+  dates: string[],
+  todayIso: string,
+  range?: { start: string; end: string },
+): WeekOption[] {
   const current = weekStartOf(todayIso);
   const next = shiftCalendarDate(current, "day", 7);
-  const starts = [...new Set([...dates.map(weekStartOf), current])].sort().reverse();
+  const spanned: string[] = [];
+  if (range) {
+    for (let w = weekStartOf(range.start); w <= range.end; w = shiftCalendarDate(w, "day", 7)) spanned.push(w);
+  }
+  const starts = [...new Set([...dates.map(weekStartOf), ...spanned, current])].sort().reverse();
   return starts.map((start) => {
     const range = weekRange(start);
     const tag = start === current ? "This week · " : start === next ? "Next week · " : "";

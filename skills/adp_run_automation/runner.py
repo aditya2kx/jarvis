@@ -1944,6 +1944,69 @@ def _open_unavailability_requests(page, frame):
     return pane, list_text, unavail_text
 
 
+def _ensure_show_unavailability(page, frame) -> None:
+    """Turn on Filter › Display › Show Unavailability (off by default).
+
+    A per-manager view preference — without it the grid never draws approved
+    unavailability. Never raises: the schedule read proceeds either way.
+    """
+    import re as _re
+
+    try:
+        frame.get_by_text("Filter", exact=True).first.click(timeout=8_000)
+        page.wait_for_timeout(1_200)
+        box = frame.locator("[data-id=team-schedule-display-preferences-show-unavailability]").first
+        if box.get_attribute("aria-checked", timeout=5_000) == "true":
+            print("[adp_schedule] Show Unavailability already on")
+            page.keyboard.press("Escape")
+        else:
+            box.click(timeout=5_000)
+            frame.get_by_role("button", name=_re.compile(r"^\s*Apply\s*$")).first.click(timeout=5_000)
+            print("[adp_schedule] turned on Show Unavailability")
+        page.wait_for_timeout(2_500)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_schedule] WARN: could not turn on Show Unavailability: {type(exc).__name__}: {exc}"[:300])
+        try:
+            page.keyboard.press("Escape")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+_UNAVAIL_PROBE_JS = r"""
+() => {
+  const out = [];
+  const walk = (root) => {
+    for (const el of root.querySelectorAll('*')) {
+      const attrs = [el.className && String(el.className), el.getAttribute('aria-label'), el.getAttribute('title')].join(' ');
+      if (/unavail/i.test(attrs) || (/unavail/i.test(el.textContent || '') && !el.children.length)) {
+        out.push({ tag: el.tagName.toLowerCase(), attrs: attrs.slice(0, 160), text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160) });
+      }
+      if (el.shadowRoot) walk(el.shadowRoot);
+      if (out.length >= 40) return;
+    }
+  };
+  walk(document);
+  return out;
+}
+"""
+
+
+def _dump_grid(page, frame, label: str) -> None:
+    """Debug (BHAGA_ADP_DUMP_GRID=1): log unavailability-ish nodes, upload HTML + PNG."""
+    from skills._browser_runtime import runtime as rt
+
+    try:
+        for hit in frame.evaluate(_UNAVAIL_PROBE_JS):
+            print(f"[adp_schedule] probe {label}: {hit}")
+        base = pathlib.Path("/tmp") / f"grid-{label}"
+        base.with_suffix(".html").write_text(frame.content())
+        page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
+        for p in (base.with_suffix(".html"), base.with_suffix(".png")):
+            print(f"[adp_schedule] dump {label}: {rt._upload_evidence_to_gcs(p)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_schedule] WARN: grid dump failed: {type(exc).__name__}: {exc}"[:300])
+
+
 def _scrape_schedule_requests(page, frame) -> dict:
     """Read Team Schedule › Pending requests: per-type counts + unavailability cards (Issue #337).
 
@@ -2057,8 +2120,12 @@ def _schedule_within_session(page, *, weeks: int = None) -> tuple[list[dict], di
     frame = _open_team_schedule(page)
     # Read on the opening week, before the chevrons move the grid.
     requests = _scrape_schedule_requests(page, frame)
+    _ensure_show_unavailability(page, frame)
+    dump = os.environ.get("BHAGA_ADP_DUMP_GRID") == "1"
     payloads: list[dict] = []
     for i in range(weeks):
+        if dump and i < 2:
+            _dump_grid(page, frame, f"week{i}")
         payloads.append(_scrape_one_week(page, frame))
         if i >= weeks - 1:
             break

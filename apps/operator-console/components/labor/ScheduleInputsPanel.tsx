@@ -47,6 +47,122 @@ const chip = (on: boolean) =>
       : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground",
   );
 
+type RowRule = Omit<DayRule, "people"> & { people: number | null };
+
+/** One "else" row per uncovered window: what the order-based need covers today, shaped like a rule. */
+function elseRows(dayRules: DayRule[], staffing: StaffingBasics): RowRule[] {
+  const ids = new Set(dayRules.map((r) => r.id));
+  const out = uncoveredWindows(dayRules, staffing);
+  return out.flatMap((u) =>
+    u.groups.flatMap((g) =>
+      g.windows.map(([fromMin, toMin]): RowRule => {
+        const delivery: DeliveryMode = u.deliveryDays
+          ? "only"
+          : out.length > 1
+            ? "skip"
+            : "any";
+        let id = `else-${delivery}-${g.days.join("")}-${fromMin}-${toMin}`;
+        while (ids.has(id)) id += "~";
+        return { id, days: g.days, delivery, fromMin, toMin, people: null };
+      }),
+    ),
+  );
+}
+
+function DayRuleRow({
+  rule: r,
+  label,
+  ghost,
+  autoHint,
+  onPatch,
+  onRemove,
+  children,
+}: {
+  rule: RowRule;
+  label: string;
+  ghost: boolean;
+  autoHint: string;
+  onPatch: (patch: Partial<DayRule>) => void;
+  onRemove?: () => void;
+  children?: React.ReactNode;
+}) {
+  const clashing = Boolean(
+    children && (Array.isArray(children) ? children.length : true),
+  );
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-1 rounded-md",
+        clashing && "border border-destructive/50 bg-destructive/5 px-2 py-1.5",
+        ghost && "border border-dashed border-border px-2 py-1.5",
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          className={cn(
+            "w-8 text-right text-xs tabular-nums",
+            ghost ? "font-medium text-foreground" : "text-muted-foreground",
+          )}
+        >
+          {label}
+        </span>
+        <DayPicker days={r.days} onChange={(days) => onPatch({ days })} />
+        <Select
+          value={r.delivery}
+          onValueChange={(v) => v && onPatch({ delivery: v as DeliveryMode })}
+        >
+          <SelectTrigger
+            className="h-7 w-44 text-xs"
+            aria-label="Delivery days"
+          >
+            <SelectValue>
+              {(v: DeliveryMode) => DELIVERY.find((d) => d.value === v)?.label}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {DELIVERY.map((d) => (
+              <SelectItem key={d.value} value={d.value}>
+                {d.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <TimeInput
+          value={r.fromMin}
+          onChange={(v) => onPatch({ fromMin: v })}
+          label="From"
+        />
+        <span className="text-xs text-muted-foreground">to</span>
+        <TimeInput
+          value={r.toMin}
+          onChange={(v) => onPatch({ toMin: v })}
+          label="To"
+        />
+        <Input
+          type="number"
+          min={0}
+          value={r.people ?? ""}
+          placeholder="auto"
+          title={r.people == null ? autoHint : undefined}
+          onChange={(e) =>
+            e.target.value !== "" &&
+            onPatch({ people: Math.max(0, Number(e.target.value)) })
+          }
+          className="h-7 w-16 text-xs tabular-nums"
+          aria-label="People"
+        />
+        <span className="text-xs text-muted-foreground">people</span>
+        {onRemove ? (
+          <RemoveButton label="Remove day rule" onClick={onRemove} />
+        ) : (
+          <span className="w-7" aria-hidden />
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 /** Toggle any set of weekdays; the last selected day can't be turned off. */
 function DayPicker({
   days,
@@ -283,7 +399,7 @@ export function ScheduleInputsPanel({
     }
   };
   const conflicts = dayRuleConflicts(rules.dayRules);
-  const uncovered = uncoveredWindows(rules.dayRules, rules.staffing);
+  const ghosts = elseRows(rules.dayRules, rules.staffing);
   const setDayRule = (id: string, patch: Partial<DayRule>) =>
     onChange({
       ...rules,
@@ -555,95 +671,58 @@ export function ScheduleInputsPanel({
           <div className="md:col-span-2">
             <Section
               title="Day & time rules"
-              hint="Exactly how many people you want in a window — e.g. opening or closing duties. Replaces the minimum and order-based need there. Each day and time can have only one rule."
+              hint="Exactly how many people you want in a window — e.g. opening or closing duties. Each day and time can have only one rule. Else rows are the staffed time no rule covers: people is auto (from typical orders) until you change anything in the row."
             >
               <div className="flex flex-col gap-1.5">
-                {rules.dayRules.map((r, i) => {
-                  const clashes = conflicts.filter(
-                    (c) => c.a === r.id || c.b === r.id,
-                  );
+                {[
+                  ...rules.dayRules.map((r) => ({
+                    rule: r as RowRule,
+                    ghost: false,
+                  })),
+                  ...ghosts.map((g) => ({ rule: g, ghost: true })),
+                ].map(({ rule: r, ghost }) => {
+                  const clashes = ghost
+                    ? []
+                    : conflicts.filter((c) => c.a === r.id || c.b === r.id);
+                  const n = rules.dayRules.findIndex((x) => x.id === r.id) + 1;
                   return (
-                    <div
+                    <DayRuleRow
                       key={r.id}
-                      className={cn(
-                        "flex flex-col gap-1 rounded-md",
-                        clashes.length &&
-                          "border border-destructive/50 bg-destructive/5 px-2 py-1.5",
-                      )}
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="w-5 text-right text-xs tabular-nums text-muted-foreground">
-                          {i + 1}.
-                        </span>
-                        <DayPicker
-                          days={r.days}
-                          onChange={(days) => setDayRule(r.id, { days })}
-                        />
-                        <Select
-                          value={r.delivery}
-                          onValueChange={(v) =>
-                            v &&
-                            setDayRule(r.id, { delivery: v as DeliveryMode })
-                          }
-                        >
-                          <SelectTrigger
-                            className="h-7 w-44 text-xs"
-                            aria-label="Delivery days"
-                          >
-                            <SelectValue>
-                              {(v: DeliveryMode) =>
-                                DELIVERY.find((d) => d.value === v)?.label
-                              }
-                            </SelectValue>
-                          </SelectTrigger>
-                          <SelectContent>
-                            {DELIVERY.map((d) => (
-                              <SelectItem key={d.value} value={d.value}>
-                                {d.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <TimeInput
-                          value={r.fromMin}
-                          onChange={(v) => setDayRule(r.id, { fromMin: v })}
-                          label="From"
-                        />
-                        <span className="text-xs text-muted-foreground">
-                          to
-                        </span>
-                        <TimeInput
-                          value={r.toMin}
-                          onChange={(v) => setDayRule(r.id, { toMin: v })}
-                          label="To"
-                        />
-                        <Input
-                          type="number"
-                          min={0}
-                          value={r.people}
-                          onChange={(e) =>
-                            setDayRule(r.id, {
-                              people: Math.max(0, Number(e.target.value)),
-                            })
-                          }
-                          className="h-7 w-16 text-xs tabular-nums"
-                          aria-label="People"
-                        />
-                        <span className="text-xs text-muted-foreground">
-                          people
-                        </span>
-                        <RemoveButton
-                          label="Remove day rule"
-                          onClick={() =>
-                            onChange({
+                      rule={r}
+                      label={ghost ? "Else" : `${n}.`}
+                      ghost={ghost}
+                      autoHint={`Auto: typical orders ÷ ${rules.staffing.ordersPerPerson} per person, at least ${rules.staffing.minPeople}. Change anything here to make it a rule.`}
+                      onPatch={(patch) =>
+                        ghost
+                          ? onChange({
                               ...rules,
-                              dayRules: rules.dayRules.filter(
-                                (x) => x.id !== r.id,
-                              ),
+                              dayRules: [
+                                ...rules.dayRules,
+                                {
+                                  id: r.id,
+                                  days: r.days,
+                                  delivery: r.delivery,
+                                  fromMin: r.fromMin,
+                                  toMin: r.toMin,
+                                  people: rules.staffing.minPeople,
+                                  ...patch,
+                                },
+                              ],
                             })
-                          }
-                        />
-                      </div>
+                          : setDayRule(r.id, patch)
+                      }
+                      onRemove={
+                        ghost
+                          ? undefined
+                          : () =>
+                              onChange({
+                                ...rules,
+                                dayRules: rules.dayRules.filter(
+                                  (x) => x.id !== r.id,
+                                ),
+                              })
+                      }
+                    >
                       {clashes.map((c) => {
                         const other =
                           rules.dayRules.findIndex(
@@ -652,7 +731,7 @@ export function ScheduleInputsPanel({
                         return (
                           <p
                             key={`${c.a}-${c.b}`}
-                            className="pl-7 text-xs text-destructive"
+                            className="pl-12 text-xs text-destructive"
                           >
                             Overlaps rule {other} on {daysLabel(c.days)},{" "}
                             {clock(c.fromMin)}–{clock(c.toMin)} — change the
@@ -660,46 +739,9 @@ export function ScheduleInputsPanel({
                           </p>
                         );
                       })}
-                    </div>
+                    </DayRuleRow>
                   );
                 })}
-                <div className="flex flex-col gap-0.5 rounded-md border border-dashed border-border px-2 py-1.5 text-xs">
-                  <span className="font-medium text-foreground">
-                    Everything else
-                  </span>
-                  {uncovered.map((u) => (
-                    <div
-                      key={String(u.deliveryDays)}
-                      className="flex flex-col gap-0.5"
-                    >
-                      {uncovered.length > 1 ? (
-                        <span className="text-muted-foreground">
-                          {u.deliveryDays ? "Delivery days" : "Other days"}
-                        </span>
-                      ) : null}
-                      {u.groups.map((g) => (
-                        <span
-                          key={g.days.join("")}
-                          className="tabular-nums text-muted-foreground"
-                        >
-                          <span className="text-foreground">
-                            {daysLabel(g.days)}:
-                          </span>{" "}
-                          {g.windows.length
-                            ? g.windows
-                                .map(([a, b]) => `${clock(a)}–${clock(b)}`)
-                                .join(", ")
-                            : "covered by rules all day"}
-                        </span>
-                      ))}
-                    </div>
-                  ))}
-                  <span className="text-muted-foreground">
-                    Need follows typical orders (
-                    {rules.staffing.ordersPerPerson} per person), at least{" "}
-                    {rules.staffing.minPeople} on the floor.
-                  </span>
-                </div>
                 <Button
                   size="xs"
                   variant="outline"

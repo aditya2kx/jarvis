@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { adpRoster, availableCount, draftDay, fillOpenShift, type Availability } from "@/lib/labor/shift-draft";
+import {
+  adpRoster,
+  availableCount,
+  draftDay,
+  fillOpenShift,
+  type Availability,
+  type DraftPreference,
+} from "@/lib/labor/shift-draft";
 
 const mins: number[] = [];
 for (let t = 6 * 60; t < 21 * 60; t += 15) mins.push(t);
@@ -165,17 +172,52 @@ describe("draftDay", () => {
     expect([s!.startMin, s!.endMin]).toEqual([390, 900]);
   });
 
-  it("spreads hours: most hours left under the cap goes first", () => {
-    const roster: Availability[] = [
-      { employee: "Heavy", maxWeekHours: 30, windows: all([360, 1260]) },
-      { employee: "Light", maxWeekHours: 30, windows: all([360, 1260]) },
-    ];
+  describe("who gets a spare shift", () => {
     const need = mins.map((t) => (t >= 390 && t < 810 ? 1 : 0));
-    const [s] = draftDay({
-      iso: "2026-10-12", mins, onFloor: zeros, need, roster,
-      weekHours: new Map([["Heavy", 20], ["Light", 7]]), busy: new Set(),
+    const pick = (
+      roster: Availability[],
+      weekHours: [string, number][],
+      weekShifts?: [string, number][],
+      prefer: DraftPreference = "regulars",
+    ) =>
+      draftDay({
+        iso: "2026-10-12", mins, onFloor: zeros, need, roster, prefer,
+        weekHours: new Map(weekHours), weekShifts: weekShifts && new Map(weekShifts), busy: new Set(),
+      })[0]!.employee;
+    const regular: Availability = { employee: "Regular", maxWeekHours: 30, recentHours: 60, windows: all([360, 1260]) };
+    const newer: Availability = { employee: "Newer", maxWeekHours: 30, recentHours: 12, windows: all([360, 1260]) };
+
+    it("regulars (most recent hours) first, up to their weekly cap", () => {
+      expect(pick([newer, regular], [["Regular", 20], ["Newer", 6]])).toBe("Regular");
+      expect(pick([newer, regular], [["Regular", 28], ["Newer", 6]])).toBe("Newer");
     });
-    expect(s!.employee).toBe("Light");
+
+    it("required shifts keep caps lasting the week (most hours left), regulars break ties", () => {
+      expect(pick([newer, regular], [["Regular", 20], ["Newer", 6]], undefined, "coverage")).toBe("Newer");
+      expect(pick([newer, regular], [["Regular", 6], ["Newer", 6]], undefined, "coverage")).toBe("Regular");
+    });
+
+    it("anyone under the weekly minimum shifts goes before regulars", () => {
+      const min = (a: Availability) => ({ ...a, minWeekShifts: 2 });
+      const roster = [min(newer), min(regular)];
+      expect(pick(roster, [["Regular", 20], ["Newer", 6]], [["Regular", 3], ["Newer", 1]])).toBe("Newer");
+      expect(pick(roster, [["Regular", 20], ["Newer", 12]], [["Regular", 3], ["Newer", 2]])).toBe("Regular");
+    });
+
+    it("an hour target still comes first", () => {
+      const target: Availability = { employee: "Target", maxWeekHours: 30, targetWeekHours: 40, windows: all([360, 1260]) };
+      const roster = [{ ...newer, minWeekShifts: 3 }, regular, target];
+      expect(pick(roster, [["Target", 30]], [["Newer", 0]])).toBe("Target");
+    });
+
+    it("counts the shifts it drafts toward the minimum", () => {
+      const weekShifts = new Map<string, number>();
+      draftDay({
+        iso: "2026-10-12", mins, onFloor: zeros, need, roster: [{ ...newer, minWeekShifts: 2 }],
+        weekHours: new Map(), weekShifts, busy: new Set(),
+      });
+      expect(weekShifts.get("Newer")).toBe(1);
+    });
   });
 
   it("lets someone free for only part of a gap take that part", () => {

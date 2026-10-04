@@ -3,9 +3,8 @@
  * Greedy: repeatedly add a shift at the first short 15-min step — the historical
  * open / mid / close block, or (shift times "need") the short run itself, split
  * evenly past the longest shift — and give it to the best available person
- * (furthest below their target weekly hours first, then whoever has the most
- * hours left under their weekly cap — so caps last the whole week and coverage
- * stays as full as possible), trimmed around their ADP unavailability. When
+ * (see `byPriority`: required shifts keep caps lasting all week for coverage,
+ * spare shifts favour regulars), trimmed around their ADP unavailability. When
  * nobody can start the gap, someone free for part of it takes that part.
  * No one fits → unassigned.
  */
@@ -26,6 +25,10 @@ export type Availability = {
   targetWeekHours?: number;
   /** Operator rule: this person's longest shift (minutes) — longer or shorter than the store's. */
   maxShiftMin?: number;
+  /** Operator rule: at least this many shifts a week before regulars take more. */
+  minWeekShifts?: number;
+  /** Hours worked + scheduled in the recent window — regulars (most) get spare shifts first. */
+  recentHours?: number;
   /** Operator rule: at most this many shifts per pay period. */
   maxShiftsPerPeriod?: number;
   /** Operator rule: final working day (YYYY-MM-DD). */
@@ -36,13 +39,28 @@ const worksOn = (a: Availability, iso: string) => a.lastDay == null || iso <= a.
 
 export const weekCap = (a: Availability) => a.targetWeekHours ?? a.maxWeekHours;
 
-/** Draft order: hour targets by deficit, then most hours left under the cap, then name. */
-function byPriority(weekOf: (a: Availability) => number) {
+/**
+ * "coverage" (required shifts): hour targets by deficit, anyone under their weekly minimum shifts,
+ * then most hours left under the cap — so the few people free on scarce days aren't capped out
+ * early — then regulars (most recent hours). "regulars" (spare busy-time shifts) skips the
+ * hours-left step so regulars take them up to their cap.
+ */
+export type DraftPreference = "coverage" | "regulars";
+
+function byPriority(
+  weekOf: (a: Availability) => number,
+  shiftsOf: (a: Availability) => number,
+  prefer: DraftPreference = "coverage",
+) {
   const deficit = (a: Availability) =>
     a.targetWeekHours == null ? 0 : Math.max(0, a.targetWeekHours - weekOf(a));
+  const belowMin = (a: Availability) => Math.max(0, (a.minWeekShifts ?? 0) - shiftsOf(a));
+  const left = (a: Availability) => (prefer === "coverage" ? weekCap(a) - weekOf(a) : 0);
   return (x: Availability, y: Availability) =>
     deficit(y) - deficit(x) ||
-    weekCap(y) - weekOf(y) - (weekCap(x) - weekOf(x)) ||
+    belowMin(y) - belowMin(x) ||
+    left(y) - left(x) ||
+    (y.recentHours ?? 0) - (x.recentHours ?? 0) ||
     x.employee.localeCompare(y.employee);
 }
 
@@ -117,6 +135,8 @@ export function draftDay(args: {
   roster: Availability[];
   /** Hours already committed this week, per employee (mutated). */
   weekHours: Map<string, number>;
+  /** Shifts already this week, per employee (mutated) — for the weekly minimum. */
+  weekShifts?: Map<string, number>;
   /** Employees already working this day. */
   busy: Set<string>;
   /** Shifts already in this day's pay period, per employee (mutated). */
@@ -133,6 +153,7 @@ export function draftDay(args: {
   maxShifts?: number;
   /** Days left this week (including this one) the person could still be drafted — paces hour targets. */
   daysLeft?: (employee: string) => number;
+  prefer?: DraftPreference;
 }): DraftShift[] {
   const dow = isoWeekdayMon0(args.iso);
   const templates = args.templates ?? HISTORICAL_TEMPLATES[dow]!;
@@ -143,7 +164,7 @@ export function draftDay(args: {
   const busy = new Set(args.busy);
   const out: DraftShift[] = [];
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
-  const priority = byPriority(weekOf);
+  const priority = byPriority(weekOf, (a) => args.weekShifts?.get(a.employee) ?? 0, args.prefer);
 
   const step = args.mins.length > 1 ? args.mins[1]! - args.mins[0]! : 15;
   const needIdx = args.need.flatMap((x, i) => (x > 0 ? [i] : []));
@@ -270,6 +291,7 @@ export function draftDay(args: {
     if (pick) {
       busy.add(pick.a.employee);
       args.weekHours.set(pick.a.employee, (args.weekHours.get(pick.a.employee) ?? 0) + (e - s) / 60);
+      args.weekShifts?.set(pick.a.employee, (args.weekShifts.get(pick.a.employee) ?? 0) + 1);
       args.periodShifts?.set(pick.a.employee, (args.periodShifts.get(pick.a.employee) ?? 0) + 1);
     }
     args.mins.forEach((t, i) => {
@@ -291,6 +313,8 @@ export function fillOpenShift(args: {
   roster: Availability[];
   /** Mutated on a pick. */
   weekHours: Map<string, number>;
+  /** Mutated on a pick. */
+  weekShifts?: Map<string, number>;
   /** Mutated on a pick. */
   busy: Set<string>;
   /** Mutated on a pick. */
@@ -315,10 +339,11 @@ export function fillOpenShift(args: {
           (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod)
       );
     })
-    .sort(byPriority(weekOf))[0];
+    .sort(byPriority(weekOf, (a) => args.weekShifts?.get(a.employee) ?? 0))[0];
   if (!pick) return null;
   args.busy.add(pick.employee);
   args.weekHours.set(pick.employee, weekOf(pick) + hours);
+  args.weekShifts?.set(pick.employee, (args.weekShifts.get(pick.employee) ?? 0) + 1);
   args.periodShifts?.set(pick.employee, (args.periodShifts.get(pick.employee) ?? 0) + 1);
   const kind: ShiftKind = s <= hm(7, 30) ? "open" : e >= hm(20) ? "close" : "mid";
   return { date: args.iso, kind, startMin: s, endMin: e, hours, employee: pick.employee, trimmed: false, fillsOpen: true };
@@ -333,5 +358,10 @@ const STORE_HOURS: [number, number] = [hm(6), hm(21)];
 export function adpRoster(hoursByEmployee: Map<string, number>): Availability[] {
   return [...hoursByEmployee.keys()]
     .sort((a, b) => (hoursByEmployee.get(b) ?? 0) - (hoursByEmployee.get(a) ?? 0) || a.localeCompare(b))
-    .map((employee) => ({ employee, maxWeekHours: 40, windows: Array(7).fill(STORE_HOURS) }));
+    .map((employee) => ({
+      employee,
+      maxWeekHours: 40,
+      windows: Array(7).fill(STORE_HOURS),
+      recentHours: hoursByEmployee.get(employee) ?? 0,
+    }));
 }

@@ -21,7 +21,12 @@ export type DayRule = {
   people: number;
 };
 
-export type StaffRuleKind = "target_week_hours" | "max_day_hours" | "max_shifts_per_period" | "last_day";
+export type StaffRuleKind =
+  | "target_week_hours"
+  | "max_day_hours"
+  | "min_shifts_per_week"
+  | "max_shifts_per_period"
+  | "last_day";
 
 export type StaffRule = {
   id: string;
@@ -36,6 +41,8 @@ export type StaffLimits = {
   targetWeekHours?: number;
   /** This person's longest shift in minutes (replaces the store-wide longest shift). */
   maxShiftMin?: number;
+  /** Fewest shifts a week before regulars take more (replaces the store-wide minimum). */
+  minWeekShifts?: number;
   maxShiftsPerPeriod?: number;
   lastDay?: string;
 };
@@ -63,6 +70,8 @@ export type StaffingBasics = {
   handoverOverlapMin: number;
   /** Most hours anyone is drafted to in a week (scheduled + draft); a person's target rule overrides it. */
   maxWeekHours: number;
+  /** Everyone available gets at least this many shifts a week before regulars take more (0 = off). */
+  minWeekShifts: number;
 };
 
 export type ShiftTimes = "history" | "need";
@@ -91,6 +100,7 @@ export const DEFAULT_STAFFING: StaffingBasics = {
   shiftTimes: "history",
   handoverOverlapMin: 0,
   maxWeekHours: 40,
+  minWeekShifts: 0,
 };
 
 export const DEFAULT_RULES: ScheduleRules = {
@@ -237,6 +247,7 @@ export function staffLimits(rules: StaffRule[]): Map<string, StaffLimits> {
     } else if (!(r.value >= 0)) continue;
     else if (r.kind === "target_week_hours") cur.targetWeekHours = r.value;
     else if (r.kind === "max_day_hours") cur.maxShiftMin = Math.round(r.value * 60);
+    else if (r.kind === "min_shifts_per_week") cur.minWeekShifts = r.value;
     else cur.maxShiftsPerPeriod = r.value;
     out.set(r.employee, cur);
   }
@@ -244,7 +255,7 @@ export function staffLimits(rules: StaffRule[]): Map<string, StaffLimits> {
 }
 
 const DELIVERY_MODES = new Set<string>(["any", "only", "skip"]);
-const KINDS = new Set<string>(["target_week_hours", "max_day_hours", "max_shifts_per_period", "last_day"]);
+const KINDS = new Set<string>(["target_week_hours", "max_day_hours", "min_shifts_per_week", "max_shifts_per_period", "last_day"]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const isMin = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 24 * 60;
 
@@ -319,6 +330,10 @@ function parseStaffing(raw: unknown): StaffingBasics {
   }
   const maxWeekHours = s.maxWeekHours ?? DEFAULT_STAFFING.maxWeekHours;
   if (!(maxWeekHours >= 1 && maxWeekHours <= 80)) throw new Error("Most hours per person must be 1–80");
+  const minWeekShifts = s.minWeekShifts ?? DEFAULT_STAFFING.minWeekShifts;
+  if (!Number.isInteger(minWeekShifts) || minWeekShifts < 0 || minWeekShifts > 7) {
+    throw new Error("Fewest shifts per person must be a whole number 0–7");
+  }
   return {
     ordersPerPerson: opp,
     minPeople: s.minPeople!,
@@ -329,6 +344,7 @@ function parseStaffing(raw: unknown): StaffingBasics {
     shiftTimes,
     handoverOverlapMin,
     maxWeekHours,
+    minWeekShifts,
   };
 }
 

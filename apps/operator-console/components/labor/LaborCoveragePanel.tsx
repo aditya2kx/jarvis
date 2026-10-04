@@ -44,7 +44,15 @@ import {
   type DemandCell,
 } from "@/lib/labor/staffing-need";
 import { addDay, emptyBreakdown, requiredByRule } from "@/lib/labor/draft-breakdown";
-import { adpRoster, availableCount, canWorkDay, draftDay, fillOpenShift, type DraftShift } from "@/lib/labor/shift-draft";
+import {
+  adpRoster,
+  availableCount,
+  canWorkDay,
+  draftDay,
+  fillOpenShift,
+  type DraftPreference,
+  type DraftShift,
+} from "@/lib/labor/shift-draft";
 import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
 import {
   applyDayRules,
@@ -852,7 +860,12 @@ export function LaborCoveragePanel({
   );
   const roster = useMemo(() => {
     const limits = staffLimits(rules.staffRules);
-    return baseRoster.map((a) => ({ ...a, maxWeekHours: rules.staffing.maxWeekHours, ...limits.get(a.employee) }));
+    return baseRoster.map((a) => ({
+      ...a,
+      maxWeekHours: rules.staffing.maxWeekHours,
+      minWeekShifts: rules.staffing.minWeekShifts,
+      ...limits.get(a.employee),
+    }));
   }, [baseRoster, rules.staffRules, rules.staffing.maxWeekHours]);
 
   const { chips, shortHours } = useMemo(() => {
@@ -909,7 +922,12 @@ export function LaborCoveragePanel({
       deliveries: new Set(deliveryDates ?? []),
     };
     const limits = staffLimits(r.staffRules);
-    const roster = baseRoster.map((a) => ({ ...a, maxWeekHours: r.staffing.maxWeekHours, ...limits.get(a.employee) }));
+    const roster = baseRoster.map((a) => ({
+      ...a,
+      maxWeekHours: r.staffing.maxWeekHours,
+      minWeekShifts: r.staffing.minWeekShifts,
+      ...limits.get(a.employee),
+    }));
     const weekStarts = [
       ...new Set(
         strip
@@ -936,12 +954,15 @@ export function LaborCoveragePanel({
       const days = Array.from({ length: 7 }, (_, i) => shiftCalendarDate(weekStart, "day", i));
       const peopleByDay = new Map(days.map((iso) => [iso, lanesFor(iso)]));
       const weekHours = new Map<string, number>();
+      const weekShifts = new Map<string, number>();
       let existingHours = 0;
       for (const dayPeople of peopleByDay.values()) {
         for (const p of dayPeople) {
           const h = personDayHours(p);
           existingHours += h;
-          if (!isOpenLane(p)) weekHours.set(p.employee, (weekHours.get(p.employee) ?? 0) + h);
+          if (isOpenLane(p)) continue;
+          weekHours.set(p.employee, (weekHours.get(p.employee) ?? 0) + h);
+          weekShifts.set(p.employee, (weekShifts.get(p.employee) ?? 0) + 1);
         }
       }
       const state = days
@@ -982,8 +1003,9 @@ export function LaborCoveragePanel({
             canWorkDay(a, d.iso, blocksOn(unavailability, d.iso).get(employee), r.staffing.minShiftMin),
         ).length;
       };
-      const run = (d: (typeof state)[number], need: number[], maxShifts?: number) =>
+      const run = (d: (typeof state)[number], need: number[], maxShifts?: number, prefer?: DraftPreference) =>
         draftDay({
+          prefer,
           daysLeft,
           iso: d.iso,
           mins: d.mins,
@@ -991,6 +1013,7 @@ export function LaborCoveragePanel({
           need,
           roster,
           weekHours,
+          weekShifts,
           busy: d.busy,
           periodShifts: shiftsInPeriod(d.iso),
           unavailable: blocksOn(unavailability, d.iso),
@@ -1011,6 +1034,7 @@ export function LaborCoveragePanel({
             endMin: slot.endMin,
             roster,
             weekHours,
+            weekShifts,
             busy: d.busy,
             periodShifts: shiftsInPeriod(d.iso),
             unavailable: blocksOn(unavailability, d.iso),
@@ -1063,7 +1087,7 @@ export function LaborCoveragePanel({
         // Biggest gap first; if its shift doesn't fit the goal, a smaller gap's might.
         let placed = false;
         for (const g of gaps) {
-          const next = run(g.d, g.d.need, 1)[0];
+          const next = run(g.d, g.d.need, 1, "regulars")[0];
           if (next && next.hours <= budget) {
             add(g.d, [next]);
             budget -= next.hours;
@@ -1073,6 +1097,7 @@ export function LaborCoveragePanel({
           }
           if (next?.employee) {
             weekHours.set(next.employee, (weekHours.get(next.employee) ?? 0) - next.hours);
+            weekShifts.set(next.employee, (weekShifts.get(next.employee) ?? 1) - 1);
             const counts = shiftsInPeriod(next.date);
             counts.set(next.employee, (counts.get(next.employee) ?? 1) - 1);
           }

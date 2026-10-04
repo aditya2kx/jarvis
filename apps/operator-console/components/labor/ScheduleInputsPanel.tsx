@@ -287,10 +287,12 @@ function DayPicker({
 const KINDS: { value: StaffRuleKind; label: string; unit: string; initial: number }[] = [
   { value: "target_week_hours", label: "About … hours / week", unit: "h / week", initial: 30 },
   { value: "max_day_hours", label: "At most … hours / day", unit: "h / day · longest shift for this person", initial: 9 },
+  { value: "min_shifts_per_week", label: "At least … shifts / week", unit: "shifts / week · replaces Everyone", initial: 2 },
   { value: "max_shifts_per_period", label: "At most … shifts / pay period", unit: "shifts / pay period", initial: 1 },
   { value: "last_day", label: "Last working day", unit: "not drafted after this day", initial: 0 },
 ];
 const kindOrder = (k: StaffRuleKind) => KINDS.findIndex((x) => x.value === k);
+const valueMax = (k: StaffRuleKind) => (k === "max_day_hours" ? 16 : k === "min_shifts_per_week" ? 7 : 80);
 
 /** Staff rules per person (A–Z, rule types in a fixed order); each unassigned rule on its own. */
 function staffGroups(rules: StaffRule[]): [string, StaffRule[]][] {
@@ -341,7 +343,7 @@ function clock(min: number): string {
 }
 
 function staffingSummary(s: StaffingBasics): string {
-  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.shiftTimes === "need" ? " · follow the need" : ""}`;
+  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}`;
 }
 
 function rulesSummary(v: RulesVersion): string {
@@ -792,7 +794,7 @@ export function ScheduleInputsPanel({
           <div className="md:col-span-2">
             <Section
               title="Staff rules"
-              hint="Everyone is capped at the weekly hours below. Per person: an hour target gets first pick of draft shifts until it is reached (never past it, and it replaces the cap); “At most … hours / day” sets that person's longest shift, longer or shorter than the store's. Everyone else is drafted to keep the most people available all week (most hours left first) for full coverage. Pay periods are biweekly. A last working day stops someone being drafted or suggested after it."
+              hint="Coverage comes first: every needed shift goes to someone if anyone can take it. Who gets it: an hour target first (until it is reached — never past it, and it replaces the cap), then anyone below the weekly minimum shifts, then regulars (most recent hours) up to the weekly cap. “At most … hours / day” sets that person's longest shift, longer or shorter than the store's. Pay periods are biweekly. A last working day stops someone being drafted or suggested after it."
             >
               <div className="flex flex-col gap-1.5">
                 <div className="flex flex-wrap items-center gap-2" data-testid="staff-rule-everyone">
@@ -817,6 +819,30 @@ export function ScheduleInputsPanel({
                   />
                   <span className="text-xs text-muted-foreground">
                     h / week · ADP scheduled + draft, unless a person&apos;s hour target below says otherwise
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2" data-testid="staff-rule-everyone-min">
+                  <span className="flex h-7 w-48 items-center rounded-md border border-dashed border-border px-2.5 text-xs font-medium">
+                    Everyone
+                  </span>
+                  <span className="flex h-7 w-56 items-center px-1 text-xs text-muted-foreground">
+                    At least … shifts / week
+                  </span>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={7}
+                    value={rules.staffing.minWeekShifts}
+                    onChange={(e) =>
+                      setStaffing({
+                        minWeekShifts: Math.min(7, Math.max(0, Math.round(Number(e.target.value) || 0))),
+                      })
+                    }
+                    className="h-7 w-16 text-xs tabular-nums"
+                    aria-label="Fewest shifts per person per week"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    shifts / week · before regulars take more, when they&apos;re available · 0 = off
                   </span>
                 </div>
                 {staffGroups(rules.staffRules).map(([name, list]) => (
@@ -902,12 +928,12 @@ export function ScheduleInputsPanel({
                             <Input
                               type="number"
                               min={0}
-                              max={r.kind === "max_day_hours" ? 16 : undefined}
+                              max={valueMax(r.kind)}
                               step={r.kind === "max_day_hours" ? 0.5 : 1}
                               value={r.value}
                               onChange={(e) =>
                                 setStaffRule(r.id, {
-                                  value: Math.min(r.kind === "max_day_hours" ? 16 : 80, Math.max(0, Number(e.target.value))),
+                                  value: Math.min(valueMax(r.kind), Math.max(0, Number(e.target.value))),
                                 })
                               }
                               className="h-7 w-16 text-xs tabular-nums"

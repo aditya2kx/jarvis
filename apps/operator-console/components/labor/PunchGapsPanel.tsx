@@ -69,6 +69,7 @@ const KIND_BADGE: Record<PunchGapKind, string> = {
   in_progress: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
   no_entry: "bg-zinc-500/15 text-zinc-700 dark:text-zinc-300",
   missing_in: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  ok: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
 };
 
 const LONG_SHIFT_HOURS = 10;
@@ -130,10 +131,13 @@ function DecisionBadge({ gap }: { gap: PunchGap }) {
     tone: "text-muted-foreground",
   };
   return (
-    <span className="flex flex-col items-start gap-0.5">
+    <span className="flex flex-col items-end gap-0.5">
       <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
-        {verb} · {decisionTimes(d)}
+        {verb}
       </Badge>
+      <span className="whitespace-nowrap text-[11px] tabular-nums text-foreground/80">
+        {decisionTimes(d)}
+      </span>
       <span
         className={cn("text-[10px]", line.tone)}
         title={d.error ?? undefined}
@@ -200,6 +204,10 @@ function GapActions({ gap, onDone }: { gap: PunchGap; onDone: () => void }) {
         )}
       </div>
     );
+  }
+
+  if (gap.kind === "ok") {
+    return <span className="block text-right text-xs text-muted-foreground/60">—</span>;
   }
 
   if (reviewOnly) {
@@ -326,6 +334,14 @@ function GapActions({ gap, onDone }: { gap: PunchGap; onDone: () => void }) {
 }
 
 function SuggestionCell({ gap }: { gap: PunchGap }) {
+  if (gap.kind === "ok") {
+    const worked = gap.entries.reduce((s, e) => s + e.hours, 0);
+    return (
+      <span className="text-xs tabular-nums text-muted-foreground">
+        {worked.toFixed(2)} h worked
+      </span>
+    );
+  }
   if (gap.kind === "no_entry" && !gap.suggestedIn) {
     return (
       <span className="text-xs text-muted-foreground">
@@ -398,7 +414,7 @@ function ContextLine({ gap }: { gap: PunchGap }) {
 
 /** Rows a bulk action may touch: not on shift and not already written / being written to ADP. */
 function selectable(gap: PunchGap): boolean {
-  if (gap.kind === "in_progress") return false;
+  if (gap.kind === "in_progress" || gap.kind === "ok") return false;
   const status = gap.decision?.status;
   return status !== "applying" && status !== "applied";
 }
@@ -621,7 +637,9 @@ export function PunchGapsPanel({
   periodLabel: string;
 }) {
   const router = useRouter();
-  const [view, setView] = useState<"open" | "all">("open");
+  const [view, setView] = useState<"open" | "all">(() =>
+    gaps.some(isOpenGap) ? "open" : "all",
+  );
   const summary = useMemo(() => summarizePunchGaps(gaps), [gaps]);
   const bounds = useMemo(() => timelineBounds(gaps), [gaps]);
   const [sort, setSort] = useState<PunchGapSort>({
@@ -682,7 +700,7 @@ export function PunchGapsPanel({
       <CardHeader className="gap-1">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-sm font-medium text-muted-foreground">
-            Missing punches — {periodLabel}
+            Punches — {periodLabel}
           </CardTitle>
           <div className="flex items-center gap-2">
             {FEATURES.punchFixWriteback ? (
@@ -691,7 +709,7 @@ export function PunchGapsPanel({
             <div className="flex items-center gap-1 rounded-lg border border-border p-0.5">
               {(
                 [
-                  ["open", `Open · ${gaps.filter(isOpenGap).length}`],
+                  ["open", `Needs review · ${gaps.filter(isOpenGap).length}`],
                   ["all", `All · ${gaps.length}`],
                 ] as const
               ).map(([value, label]) => (
@@ -714,13 +732,15 @@ export function PunchGapsPanel({
           </div>
         </div>
         <CardDescription>
-          Entries ADP&apos;s Timecards page still shows open — the timecard
-          export drops them, so these hours are missing from every chart above
-          until fixed. The suggestion closes the open entry at the end of the
-          scheduled shift, or later if a late clock-in would otherwise pay less
-          than the scheduled hours, and never changes a completed punch. A
-          scheduled day with no punch suggests the scheduled shift — dismiss it
-          if they didn&apos;t work.
+          Every clocked day in the Period, from ADP. Filter Issue to
+          &ldquo;No issue&rdquo; for the clean days. Issues come from ADP&apos;s
+          Timecards page, which still shows an open entry the timecard export
+          drops — those hours are missing from every chart above until fixed.
+          A missing clock-out is closed at the end of the scheduled shift, or
+          later if a late clock-in would otherwise pay less than the scheduled
+          hours; a completed punch is never changed. A scheduled day with no
+          punch suggests the scheduled shift — dismiss it if they didn&apos;t
+          work.
           {summary.undecided > 0 && summary.suggestedHours > 0 ? (
             <>
               {" "}
@@ -782,7 +802,7 @@ export function PunchGapsPanel({
                   </TableHead>
                   <TableHead
                     aria-sort={ariaSort("day")}
-                    className="w-[8rem] align-top"
+                    className="w-[7rem] align-top"
                   >
                     <ColumnHeader
                       column="day"
@@ -794,7 +814,7 @@ export function PunchGapsPanel({
                   </TableHead>
                   <TableHead
                     aria-sort={ariaSort("employee")}
-                    className="w-[11rem] align-top"
+                    className="w-[10rem] align-top"
                   >
                     <ColumnHeader
                       column="employee"
@@ -806,7 +826,7 @@ export function PunchGapsPanel({
                   </TableHead>
                   <TableHead
                     aria-sort={ariaSort("issue")}
-                    className="w-[10rem] align-top"
+                    className="w-[8.5rem] align-top"
                   >
                     <ColumnHeader
                       column="issue"
@@ -821,7 +841,7 @@ export function PunchGapsPanel({
                   </TableHead>
                   <TableHead
                     aria-sort={ariaSort("suggestion")}
-                    className="w-[9rem] align-top"
+                    className="w-[8rem] align-top"
                   >
                     <ColumnHeader
                       column="suggestion"
@@ -880,7 +900,7 @@ export function PunchGapsPanel({
                         ) : null}
                       </span>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="whitespace-normal">
                       <div className="flex flex-col gap-1.5">
                         <PunchGapTimeline gap={gap} bounds={bounds} />
                         <ContextLine gap={gap} />
@@ -917,8 +937,8 @@ export function PunchGapsPanel({
         ) : (
           <p className="text-sm text-muted-foreground">
             {gaps.length
-              ? "Every open punch in this Period has a decision."
-              : "No open punches in this Period — every ADP timecard entry has both punches."}
+              ? "Nothing needs review — every issue in this Period has a decision. Switch to All for every punch."
+              : "No punches in this Period yet."}
           </p>
         )}
       </CardContent>

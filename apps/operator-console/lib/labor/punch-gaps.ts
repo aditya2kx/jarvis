@@ -1,14 +1,19 @@
-// Pure model for the /labor "Missing punches" review table (Issue #356).
-// Rows come from adp_timecard_gaps (ADP Timecards month view, which still shows
-// an open entry the Timecard XLSX drops) joined with the latest
-// punch_gap_decisions row. Kinds mirror skills/bhaga_labor/punch_gaps.py.
+// Pure model for the /labor "Punches" table (Issue #356). Every clocked
+// person-day in the Period (adp_punches) is a row; days with an issue come from
+// adp_timecard_gaps (ADP Timecards month view, which still shows an open entry
+// the Timecard XLSX drops) and replace the plain row. Both carry the latest
+// punch_gap_decisions row. Kinds mirror skills/bhaga_labor/punch_gaps.py, plus
+// `ok` for a day with nothing to fix.
+
+import { parseShiftRangesJson } from "@/lib/labor/shift-ranges";
 
 export type PunchGapKind =
   | "missing_out"
   | "missing_out_after_break"
   | "in_progress"
   | "no_entry"
-  | "missing_in";
+  | "missing_in"
+  | "ok";
 
 export type PunchGapAction = "accept" | "edit" | "reject";
 
@@ -90,6 +95,7 @@ export const KIND_LABEL: Record<PunchGapKind, string> = {
   in_progress: "Still on shift",
   no_entry: "Scheduled, no punch",
   missing_in: "Missing clock-in",
+  ok: "No issue",
 };
 
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -121,9 +127,99 @@ function parseJson<T>(raw: string | null, fallback: T): T {
   }
 }
 
+type DecisionColumns = Pick<
+  PunchGapRow,
+  | "decision_id"
+  | "decision_action"
+  | "decision_in_time"
+  | "decision_out_time"
+  | "decision_status"
+  | "decision_error"
+  | "decided_by"
+  | "decided_at"
+>;
+
+type CoworkerShift = { date: string; employee: string; in_time: string | null; out_time: string | null };
+
+function toDecision(r: DecisionColumns): PunchGap["decision"] {
+  return r.decision_action && r.decision_status
+    ? {
+        id: r.decision_id ?? null,
+        action: r.decision_action,
+        inTime: r.decision_in_time,
+        outTime: r.decision_out_time,
+        status: r.decision_status,
+        error: r.decision_error,
+        by: r.decided_by,
+        at: r.decided_at,
+      }
+    : null;
+}
+
+function coworkersOn(shifts: CoworkerShift[], date: string, employee: string): PunchGapCoworker[] {
+  return shifts
+    .filter((s) => s.date.slice(0, 10) === date && s.employee !== employee)
+    .map((s) => ({ employee: s.employee, in_time: s.in_time, out_time: s.out_time }));
+}
+
+function byDayThenEmployee(a: PunchGap, b: PunchGap): number {
+  return b.date.localeCompare(a.date) || a.employee.localeCompare(b.employee);
+}
+
+/** Wire shape from lib/bq/queries.ts::laborPunchDays — one clocked person-day. */
+export interface PunchDayRow extends DecisionColumns {
+  date: string;
+  employee: string;
+  entries_json: string | null;
+  /** ADP Team Schedule strings, e.g. ["1:30 PM - 8:30 PM"]. */
+  shift_ranges_json: string | null;
+  [key: string]: unknown;
+}
+
+function hhmm(min: number): string {
+  const m = ((min % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+/**
+ * Every clocked day as an `ok` row, then replaced by its gap row when ADP
+ * flags the same person-day — one row per person per day.
+ */
+export function mergePunchDays(
+  gaps: PunchGap[],
+  days: PunchDayRow[],
+  coworkerShifts: CoworkerShift[],
+): PunchGap[] {
+  const flagged = new Set(gaps.map((g) => g.key));
+  const plain = days
+    .map((r): PunchGap => {
+      const date = r.date.slice(0, 10);
+      return {
+        key: gapKey(date, r.employee),
+        date,
+        employee: r.employee,
+        kind: "ok",
+        entries: parseJson<PunchEntry[]>(r.entries_json, []),
+        scheduled: parseShiftRangesJson(r.shift_ranges_json).map(
+          (x) => [hhmm(x.startMin), hhmm(x.endMin)] as [string, string],
+        ),
+        openIndex: null,
+        suggestedIn: null,
+        suggestedOut: null,
+        suggestedHours: null,
+        rule: null,
+        adpFlagged: false,
+        coworkers: coworkersOn(coworkerShifts, date, r.employee),
+        decision: toDecision(r),
+      };
+    })
+    .filter((g) => !flagged.has(g.key));
+  return [...gaps, ...plain].sort(byDayThenEmployee);
+}
+
 export function buildPunchGaps(
   rows: PunchGapRow[],
-  coworkerShifts: { date: string; employee: string; in_time: string | null; out_time: string | null }[],
+  coworkerShifts: CoworkerShift[],
 ): PunchGap[] {
   return rows
     .map((r) => {
@@ -141,25 +237,11 @@ export function buildPunchGaps(
         suggestedHours: r.suggested_hours != null ? Number(r.suggested_hours) : null,
         rule: r.rule,
         adpFlagged: Boolean(r.adp_error_flag),
-        coworkers: coworkerShifts
-          .filter((s) => s.date.slice(0, 10) === date && s.employee !== r.employee_id)
-          .map((s) => ({ employee: s.employee, in_time: s.in_time, out_time: s.out_time })),
-        decision:
-          r.decision_action && r.decision_status
-            ? {
-                id: r.decision_id ?? null,
-                action: r.decision_action,
-                inTime: r.decision_in_time,
-                outTime: r.decision_out_time,
-                status: r.decision_status,
-                error: r.decision_error,
-                by: r.decided_by,
-                at: r.decided_at,
-              }
-            : null,
+        coworkers: coworkersOn(coworkerShifts, date, r.employee_id),
+        decision: toDecision(r),
       } satisfies PunchGap;
     })
-    .sort((a, b) => b.date.localeCompare(a.date) || a.employee.localeCompare(b.employee));
+    .sort(byDayThenEmployee);
 }
 
 /** The clock-in being closed (open entry), or null for no_entry / missing_in. */
@@ -229,6 +311,7 @@ export interface PunchGapSummary {
  * row is dismissed — so an accepted row stays visible and revertible until then.
  */
 export function isOpenGap(gap: PunchGap): boolean {
+  if (gap.kind === "ok") return false;
   const d = gap.decision;
   if (!d) return true;
   if (d.action === "reject") return false;
@@ -236,7 +319,7 @@ export function isOpenGap(gap: PunchGap): boolean {
 }
 
 export function summarizePunchGaps(gaps: PunchGap[]): PunchGapSummary {
-  const actionable = gaps.filter((g) => g.kind !== "in_progress");
+  const actionable = gaps.filter((g) => g.kind !== "in_progress" && g.kind !== "ok");
   return {
     total: actionable.length,
     undecided: actionable.filter((g) => !g.decision).length,
@@ -249,14 +332,14 @@ export function summarizePunchGaps(gaps: PunchGap[]): PunchGapSummary {
   };
 }
 
-/** Filterable / sortable columns of the Missing punches table. */
+/** Filterable / sortable columns of the Punches table. */
 export type PunchGapColumn = "day" | "employee" | "issue" | "suggestion" | "decision";
 export type PunchGapSort = { column: PunchGapColumn; desc: boolean };
 export type PunchGapFilters = Partial<Record<Exclude<PunchGapColumn, "suggestion">, string[]>>;
 
 export function decisionLabel(gap: PunchGap): string {
   const d = gap.decision;
-  if (!d) return "Needs decision";
+  if (!d) return gap.kind === "ok" ? "Nothing to decide" : "Needs decision";
   if (d.action === "reject") return "Dismissed";
   if (d.status === "applied") return "Written to ADP";
   if (d.status === "already_resolved") return "Already fixed in ADP";

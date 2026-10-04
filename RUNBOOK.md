@@ -395,7 +395,7 @@ soft-fail: a Timecards UI error drops `adp_timecard_gaps` from the load and neve
 | `in_progress` | open entry, day not over yet (CT) | none |
 | `no_entry` | scheduled, nothing punched | the scheduled shift — first scheduled start, scheduled hours clipped at close (`scheduled_shift`) |
 
-**Console** `/labor` → **Missing punches**: select rows → **Accept N** / **Dismiss N**, or Edit a
+**Console** `/labor` → **Punches** (just above Solo vs team): every clocked person-day in the Period from `adp_punches`; a day ADP flags replaces its row with the gap kind, and Issue → **No issue** lists the clean days. **Needs review** shows only undecided / not-yet-written gaps. Select rows → **Accept N** / **Dismiss N**, or Edit a
 time per row; each choice is a `punch_gap_decisions` row (latest `decided_at` per gap wins).
 **Write N to ADP** (flag `PUNCH_FIX_WRITEBACK`, `docs/FEATURE_FLAGS.md`) flips the rows to
 `applying` and starts the ADP job on **Cloud Run** — never in the operator's browser — with

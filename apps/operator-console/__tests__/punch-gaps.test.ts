@@ -13,6 +13,8 @@ import {
   summarizePunchGaps,
   timelineBounds,
   validateDecision,
+  mergePunchDays,
+  type PunchDayRow,
   type PunchGapRow,
 } from "@/lib/labor/punch-gaps";
 
@@ -256,5 +258,53 @@ describe("decisionTimes", () => {
   it("shows a range for a new entry and the clock-out otherwise", () => {
     expect(decisionTimes({ inTime: "11:30", outTime: "20:30" })).toBe("11:30 AM – 8:30 PM");
     expect(decisionTimes({ inTime: null, outTime: "20:30" })).toBe("out 8:30 PM");
+  });
+});
+
+describe("mergePunchDays", () => {
+  function day(over: Partial<PunchDayRow> = {}): PunchDayRow {
+    return {
+      date: "2026-09-30",
+      employee: "Roe, Sam",
+      entries_json: JSON.stringify([{ in: "15:57", out: "20:03", hours: 4.1 }]),
+      shift_ranges_json: JSON.stringify(["4:00 PM - 8:30 PM"]),
+      decision_id: null,
+      decision_action: null,
+      decision_in_time: null,
+      decision_out_time: null,
+      decision_status: null,
+      decision_error: null,
+      decided_by: null,
+      decided_at: null,
+      ...over,
+    };
+  }
+
+  it("adds a No issue row per clocked day and lets the gap row win the same person-day", () => {
+    const merged = mergePunchDays(
+      buildPunchGaps([row()], coworkers),
+      [day(), day({ employee: "Doe, Jane" })],
+      coworkers,
+    );
+    expect(merged.map((g) => [g.employee, g.kind])).toEqual([
+      ["Doe, Jane", "missing_out_after_break"],
+      ["Roe, Sam", "ok"],
+    ]);
+    const ok = merged[1]!;
+    expect(ok.scheduled).toEqual([["16:00", "20:30"]]);
+    expect(ok.coworkers.map((c) => c.employee)).toEqual(["Doe, Jane"]);
+    expect(isOpenGap(ok)).toBe(false);
+    expect(decisionLabel(ok)).toBe("Nothing to decide");
+    expect(filterPunchGaps(merged, { issue: ["No issue"] })).toEqual([ok]);
+    expect(summarizePunchGaps(merged).total).toBe(1);
+    expect(writableToAdp(merged)).toEqual([]);
+  });
+
+  it("keeps the decision on a day whose gap was fixed in ADP", () => {
+    const [ok] = mergePunchDays([], [day({
+      decision_id: "d1", decision_action: "accept", decision_out_time: "20:03",
+      decision_status: "applied",
+    })], []);
+    expect(decisionLabel(ok!)).toBe("Written to ADP");
   });
 });

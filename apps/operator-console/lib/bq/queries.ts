@@ -5,7 +5,7 @@ import {
   computeLaborForwardSummary,
   type LaborForwardSummary,
 } from "@/lib/kpi/labor-forward";
-import type { PunchGapRow } from "@/lib/labor/punch-gaps";
+import type { PunchDayRow, PunchGapRow } from "@/lib/labor/punch-gaps";
 
 export type { LaborForwardSummary };
 
@@ -826,6 +826,65 @@ export function laborPunchGaps(win: DateWindow, store: string): Promise<PunchGap
        ON l.date = g.date AND l.employee_id = g.employee_id
      WHERE g.store = @store AND g.date BETWEEN @start AND @end
      ORDER BY date DESC, employee_id`,
+    { store, start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/**
+ * Every clocked person-day in the Period with its punches, the day's schedule and
+ * the latest punch decision (which survives after the gap itself is fixed).
+ */
+export function laborPunchDays(win: DateWindow, store: string): Promise<PunchDayRow[]> {
+  return q<PunchDayRow>(
+    `WITH p AS (
+       SELECT
+         date,
+         COALESCE(NULLIF(TRIM(canonical_name), ''), employee_id) AS employee,
+         TO_JSON_STRING(ARRAY_AGG(
+           STRUCT(in_time AS \`in\`, out_time AS \`out\`, ROUND(IFNULL(total_hours, 0), 2) AS hours)
+           ORDER BY punch_index
+         )) AS entries_json
+       FROM ${fq("adp_punches")}
+       WHERE date BETWEEN @start AND @end
+       GROUP BY date, employee
+     ),
+     s AS (
+       SELECT
+         s.date,
+         COALESCE(al.canonical_name, NULLIF(TRIM(s.employee_name), ''), s.employee_id) AS employee,
+         ANY_VALUE(s.shift_ranges_json) AS shift_ranges_json
+       FROM ${fq("adp_scheduled_shifts")} s
+       LEFT JOIN ${fq("employee_aliases")} al
+         ON al.store = @store AND al.raw_name = TRIM(s.employee_name)
+       WHERE s.date BETWEEN @start AND @end
+       GROUP BY date, employee
+     ),
+     latest AS (
+       SELECT * EXCEPT (rn) FROM (
+         SELECT d.*, ROW_NUMBER() OVER (
+           PARTITION BY d.store, d.date, d.employee_id ORDER BY d.decided_at DESC
+         ) AS rn
+         FROM ${fq("punch_gap_decisions")} d
+         WHERE d.store = @store AND d.date BETWEEN @start AND @end
+       ) WHERE rn = 1
+     )
+     SELECT
+       CAST(p.date AS STRING) AS date,
+       p.employee,
+       p.entries_json,
+       s.shift_ranges_json,
+       l.decision_id,
+       l.action AS decision_action,
+       l.in_time AS decision_in_time,
+       l.out_time AS decision_out_time,
+       l.status AS decision_status,
+       l.error AS decision_error,
+       l.decided_by,
+       CAST(l.decided_at AS STRING) AS decided_at
+     FROM p
+     LEFT JOIN s ON s.date = p.date AND s.employee = p.employee
+     LEFT JOIN latest l ON l.date = p.date AND l.employee_id = p.employee
+     ORDER BY date DESC, employee`,
     { store, start: dateParam(win.start), end: dateParam(win.end) },
   );
 }

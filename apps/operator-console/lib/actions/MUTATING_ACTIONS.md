@@ -21,9 +21,9 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Payroll | Training quick-add (flag off) | `addTrainingShiftAction` | — |
 | Payroll | Add reimbursement | `addEmployeePerkAction` | — |
 | Payroll / Labor | Sync clocked hours | `syncClockedHoursAction` / `pollClockedHoursSyncAction` | Headless `adp-timecard` (local laptop when BYPASS_IAP); Timecard + BQ shifts/punches, not pay_info |
-| Labor | Missing punches Accept / Edit / Dismiss | `decidePunchGapAction` | — (appends `punch_gap_decisions`; nothing reaches ADP) |
-| Labor | Missing punches bulk Accept / Dismiss (selected rows) | `acceptPunchGapsAction`, `dismissPunchGapsAction` | — (one decision per selected row; nothing reaches ADP) |
-| Labor | Missing punches Write to ADP | `writePunchGapsToAdpAction` / `pollPunchGapWriteAction` | Headless `adp-punch-fix` on Cloud Run (`bhaga-daily-refresh`; local dev needs `BHAGA_ADP_PREVIEW_JOB`): fills approved Out Times / adds missing entries in ADP Timecards, then timecard resync. Flag `punchFixWriteback` |
+| Labor | Punches Accept / Edit / Dismiss | `decidePunchGapAction` | — (appends `punch_gap_decisions`; nothing reaches ADP) |
+| Labor | Punches bulk Accept / Dismiss (selected rows) | `acceptPunchGapsAction`, `dismissPunchGapsAction` | — (one decision per selected row; nothing reaches ADP) |
+| Labor | Punches Write to ADP | `writePunchGapsToAdpAction` / `pollPunchGapWriteAction` | Headless `adp-punch-fix` on Cloud Run (`bhaga-daily-refresh`; local dev needs `BHAGA_ADP_PREVIEW_JOB`): fills approved Out Times / adds missing entries in ADP Timecards, then timecard resync. Flag `punchFixWriteback` |
 | Labor | Sync scheduled shifts | `syncScheduledShiftsAction` / `pollScheduledShiftsSyncAction` | Headless `adp-schedule` |
 | Accounting | Link / Relink | `createPlaidLinkTokenAction`, `exchangePlaidPublicTokenAction` | Plaid sync (in-request, staged UX) |
 | Accounting | Sync now | `syncPlaidNowAction` | Plaid sync |

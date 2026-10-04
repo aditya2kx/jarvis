@@ -5,9 +5,12 @@ import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
 import type { Grain } from "@/lib/filters/range";
 import { showsFullTime, showsPartTime } from "@/lib/filters/labor-type";
+import { useSuggestedHours } from "@/components/labor/SuggestedHoursContext";
+import { bucketDaily } from "@/lib/labor/suggested-buckets";
 
 export type LaborConcurrentChartRow = {
   date: string;
+  bucket_iso?: string;
   parttime_concurrent: number | null;
   fulltime_concurrent: number | null;
   total_concurrent: number | null;
@@ -20,6 +23,7 @@ const PT = LABOR_CHART_COLORS.parttimeActual;
 const FT = LABOR_CHART_COLORS.fulltimeActual;
 const PT_S = LABOR_CHART_COLORS.parttimeScheduled;
 const FT_S = LABOR_CHART_COLORS.fulltimeScheduled;
+const DRAFT = LABOR_CHART_COLORS.draftShift;
 
 function formatConcurrent(n: number | null | undefined): string {
   if (n == null || Number.isNaN(Number(n))) return "—";
@@ -186,14 +190,31 @@ export function LaborConcurrentChart({
   grain,
   titlePrefix = "",
   subtitle,
+  stat,
+  period,
 }: {
   data: LaborConcurrentChartRow[];
   laborTypes: string[] | null;
   grain: Grain;
   titlePrefix?: string;
   subtitle?: string;
+  /** Average vs Total rollup (weekday / entire-period views) and the Period, for draft people. */
+  stat?: "avg" | "total";
+  period?: { start: string; end: string };
 }) {
+  const { concurrentByDay } = useSuggestedHours();
   const { chartData, series, title, stacked } = useMemo(() => {
+    // Concurrent is a per-day average, so every multi-day bucket averages its days.
+    const draftBy =
+      period && concurrentByDay.size
+        ? bucketDaily(
+            concurrentByDay,
+            new Set(data.map((r) => r.bucket_iso ?? "")),
+            grain,
+            grain !== "day" && !((grain === "weekday" || grain === "all") && stat === "total"),
+            period,
+          )
+        : new Map<string, number>();
     const pt = showsPartTime(laborTypes);
     const ft = showsFullTime(laborTypes);
     const neither = !pt && !ft;
@@ -215,7 +236,7 @@ export function LaborConcurrentChart({
       return s && !a;
     });
 
-    const series: { key: string; label: string; color: string }[] = [];
+    const series: { key: string; label: string; color: string; pattern?: "hatch" }[] = [];
     if (!neither) {
       if (hasAnyActual && pt) {
         series.push({ key: "parttime", label: "Part-time", color: PT });
@@ -237,6 +258,7 @@ export function LaborConcurrentChart({
           color: FT_S,
         });
       }
+      if (draftBy.size) series.push({ key: "suggested", label: "Suggested (draft)", color: DRAFT, pattern: "hatch" });
     }
 
     const chartData = data.map((r) => {
@@ -244,6 +266,7 @@ export function LaborConcurrentChart({
         (r.parttime_concurrent != null && r.parttime_concurrent > 0) ||
         (r.fulltime_concurrent != null && r.fulltime_concurrent > 0);
       const showSchedBar = !hasActual;
+      const draft = (pt || ft) && r.bucket_iso ? (draftBy.get(r.bucket_iso) ?? null) : null;
       return {
         date: r.date,
         parttime: pt ? r.parttime_concurrent : null,
@@ -252,7 +275,26 @@ export function LaborConcurrentChart({
           pt && showSchedBar ? (r.parttime_scheduled_concurrent ?? null) : null,
         fulltime_sched:
           ft && showSchedBar ? (r.fulltime_scheduled_concurrent ?? null) : null,
-        tooltipEntries: concurrentTooltipEntries(r, laborTypes),
+        suggested: draft != null ? Number(draft.toFixed(1)) : null,
+        tooltipEntries: [
+          ...concurrentTooltipEntries(r, laborTypes),
+          ...(draft != null
+            ? [
+                { label: "Suggested (draft)", value: formatConcurrent(draft), color: DRAFT },
+                {
+                  label: "Total with suggested",
+                  value: formatConcurrent(
+                    (stackOrScopedConcurrent(
+                      showSchedBar ? r.parttime_scheduled_concurrent : r.parttime_concurrent,
+                      showSchedBar ? r.fulltime_scheduled_concurrent : r.fulltime_concurrent,
+                      showSchedBar ? r.total_scheduled_concurrent : r.total_concurrent,
+                      laborTypes,
+                    ) ?? 0) + draft,
+                  ),
+                },
+              ]
+            : []),
+        ],
       };
     });
 
@@ -262,7 +304,9 @@ export function LaborConcurrentChart({
         : grain === "hour"
           ? "Concurrent on floor"
           : "Avg concurrent on floor / day";
-    const title = neither ? `${titlePrefix}${base}` : `${titlePrefix}${base} by ${grain}`;
+    // "Average Avg concurrent…" reads twice; the stat prefix already says it.
+    const noun = titlePrefix ? base.replace(/^Avg c/, "C") : base;
+    const title = neither ? `${titlePrefix}${noun}` : `${titlePrefix}${noun} by ${grain}`;
 
     return {
       chartData,
@@ -271,7 +315,7 @@ export function LaborConcurrentChart({
       // Stack PT+FT (actual and/or scheduled) so bar height = tooltip Total.
       stacked: series.length > 1,
     };
-  }, [data, grain, laborTypes, titlePrefix]);
+  }, [data, grain, laborTypes, titlePrefix, concurrentByDay, stat, period]);
 
   if (series.length === 0) return null;
 

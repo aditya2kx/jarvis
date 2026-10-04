@@ -44,7 +44,7 @@ function formatTick(value: number, format: BarValueFormat): string {
   if (format === "number") {
     const n = Number(value);
     if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
-    return `${Math.round(n)}`;
+    return Number.isInteger(n) ? `${n}` : n.toFixed(1);
   }
   const n = Number(value);
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;

@@ -456,6 +456,7 @@ export default async function LaborPage({
     const s = concurrentSchedByBucket.get(iso);
     return {
       date: formatBucket(iso, grain, grain === "day" ? { weekday: true } : undefined),
+      bucket_iso: iso,
       parttime_concurrent: a?.parttime_concurrent ?? null,
       fulltime_concurrent: a?.fulltime_concurrent ?? null,
       total_concurrent: a?.total_concurrent ?? null,
@@ -759,6 +760,8 @@ export default async function LaborPage({
             unit={chartUnit}
             titlePrefix={statPrefix}
             subtitle={statSubtitle}
+            stat={stat === "avg" ? "avg" : "total"}
+            period={{ start: chartWin.start, end: chartWin.end }}
           />
 
           <LaborConcurrentChart
@@ -767,6 +770,8 @@ export default async function LaborPage({
             grain={grain}
             titlePrefix={statPrefix}
             subtitle={statSubtitle}
+            stat={stat === "avg" ? "avg" : "total"}
+            period={{ start: chartWin.start, end: chartWin.end }}
           />
 
           <LaborCoveragePanel

@@ -9,6 +9,7 @@ import { showsFullTime, showsPartTime } from "@/lib/filters/labor-type";
 import type { LaborChartUnit } from "@/lib/filters/labor-chart-unit";
 import { grainDisplayLabel } from "@/lib/filters/range";
 import { useSuggestedHours } from "@/components/labor/SuggestedHoursContext";
+import { bucketDaily } from "@/lib/labor/suggested-buckets";
 
 export type LaborHoursChartRow = {
   date: string;
@@ -35,21 +36,16 @@ export type LaborHoursChartRow = {
   suggested_hours?: number | null;
 };
 
-/** Sum per-day suggested hours into each row's bucket (rows sorted by `bucket_iso`). */
+/** Roll per-day suggested hours into each row's bucket (averaged when the chart shows an average). */
 export function withSuggestedHours(
   rows: LaborHoursChartRow[],
   byDay: ReadonlyMap<string, number>,
+  grain: Grain = "week",
+  average = false,
+  win: { start: string; end: string } = { start: "", end: "" },
 ): LaborHoursChartRow[] {
   if (!byDay.size || !rows.length) return rows;
-  const sums = new Map<string, number>();
-  for (const [iso, hours] of byDay) {
-    let bucket: string | null = null;
-    for (const r of rows) {
-      if (r.bucket_iso > iso) break;
-      bucket = r.bucket_iso;
-    }
-    if (bucket) sums.set(bucket, (sums.get(bucket) ?? 0) + hours);
-  }
+  const sums = bucketDaily(byDay, new Set(rows.map((r) => r.bucket_iso)), grain, average, win);
   if (!sums.size) return rows;
   return rows.map((r) => {
     const h = sums.get(r.bucket_iso);
@@ -374,6 +370,8 @@ export function LaborHoursChart({
   subtitle,
   person,
   headerRight,
+  stat,
+  period,
 }: {
   data: LaborHoursChartRow[];
   laborTypes: string[] | null;
@@ -385,10 +383,22 @@ export function LaborHoursChart({
   /** Single-person view: titled by name, no store-level sales hints (pass no goal). */
   person?: string;
   headerRight?: ReactNode;
+  /** Average vs Total rollup (weekday / entire-period views) and the Period, for suggested hours. */
+  stat?: "avg" | "total";
+  period?: { start: string; end: string };
 }) {
   const { byDay: suggestedByDay } = useSuggestedHours();
   const { chartData, series, title, stacked, goal, goalLabel, valueFormat } = useMemo(() => {
-    const data = person || unit === "pct" ? rawData : withSuggestedHours(rawData, suggestedByDay);
+    const data =
+      person || unit === "pct"
+        ? rawData
+        : withSuggestedHours(
+            rawData,
+            suggestedByDay,
+            grain,
+            stat === "avg" && (grain === "weekday" || grain === "all"),
+            period,
+          );
     const pt = showsPartTime(laborTypes);
     const ft = showsFullTime(laborTypes);
     const neither = !pt && !ft;
@@ -528,7 +538,7 @@ export function LaborHoursChart({
       goalLabel: showGoal ? `Goal ${Number(goalLaborHoursWeek)} hrs` : undefined,
       valueFormat: pctMode ? ("percent" as const) : ("number" as const),
     };
-  }, [rawData, suggestedByDay, grain, goalLaborHoursWeek, laborTypes, person, titlePrefix, unit]);
+  }, [rawData, suggestedByDay, grain, goalLaborHoursWeek, laborTypes, person, titlePrefix, unit, stat, period]);
 
   if (series.length === 0) {
     return (

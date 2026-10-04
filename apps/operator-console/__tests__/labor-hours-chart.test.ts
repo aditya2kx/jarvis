@@ -320,3 +320,27 @@ describe("withSuggestedHours", () => {
     expect(tip.lines).toContain("Goal 230 hrs (49.1% of goal)");
   });
 });
+
+describe("suggested hours by weekday", () => {
+  it("puts each day in its own weekday and averages over the Period's days", async () => {
+    const { bucketDaily } = await import("@/lib/labor/suggested-buckets");
+    const { enumerateBucketStarts, truncateToGrain } = await import("@/lib/filters/range");
+    const win = { start: "2026-10-05", end: "2026-10-18", label: "", preset: "custom" as const };
+    const buckets = new Set(enumerateBucketStarts(win, "weekday"));
+    const out = bucketDaily(
+      new Map([
+        ["2026-10-12", 28],
+        ["2026-10-18", 42],
+        ["2026-10-11", 9],
+      ]),
+      buckets,
+      "weekday",
+      true,
+      win,
+    );
+    // Two Mondays and two Sundays in the Period → averages, not everything piled on Sunday.
+    expect(out.get(truncateToGrain("2026-10-12", "weekday"))).toBe(14);
+    expect(out.get(truncateToGrain("2026-10-18", "weekday"))).toBe(25.5);
+    expect(bucketDaily(new Map([["2026-10-12", 4]]), buckets, "hour", false, win).size).toBe(0);
+  });
+});

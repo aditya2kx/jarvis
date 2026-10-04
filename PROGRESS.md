@@ -1,3 +1,11 @@
+## 2026-10-04 — Missing punches: ADP's export hid open punches, now /labor shows them and writes the fix back (Issue #356, PR #357)
+
+**Scope:** ADP's Timecard export drops entries with no clock-out and scheduled days with no punch, so those hours never reached `/labor` or payroll prep. The operator was closing them by hand in ADP.
+
+**Key changes:** every Timecard login also reads the Timecards month view into `adp_timecard_gaps` (migration 084) with a suggestion: a clock-out that pays at least the scheduled hours (capped at close), or the scheduled shift for a no-punch day. `/labor` → Missing punches lets the operator accept, edit or dismiss rows, one at a time or in bulk. **Write N to ADP** (flag `PUNCH_FIX_WRITEBACK`) runs on Cloud Run, never in the operator's browser: re-read, fill, comment naming the approver, Save once, read back, no automatic retry. Sync clocked hours moved to Cloud Run too. A pre-existing OTP-gate test that drove the real loaders against prod from a laptop with ADC is now stubbed.
+
+**Evidence:** operator wrote 12 fixes from the console on 2026-10-04 (7 clock-outs, 5 new entries): 12/12 `applied`; the next read left only the dismissed row.
+
 ## 2026-10-02 — Deploy now fetches missing wage rates instead of waiting for the nightly
 
 **Scope:** After PR #353 merged, the deploy rebuilt history with the rates prod already had. Pascone stayed at $16.25, and Wing and Sadaqat had no rate, until someone triggered a scrape by hand. The operator wants missing rate info fetched as soon as it's found, because hires are added throughout the week.

@@ -14,6 +14,7 @@ from skills.adp_run_automation.pay_info_backend import (
     AmbiguousEmployeeError,
     accepted_directory_names,
     directory_search_name,
+    directory_status,
     dismiss_blocking_modals,
     parse_hourly_pay_rate,
     parse_pay_rate_cards,
@@ -296,7 +297,7 @@ class TestPayrollPaneRetry(unittest.TestCase):
 
     def _scrape(self, panes):
         page = mock.Mock()
-        with mock.patch.object(pib, "_open_profile", return_value="Huynh, Hillary") as op, \
+        with mock.patch.object(pib, "_open_profile", return_value=("Huynh, Hillary", "Active")) as op, \
                 mock.patch.object(pib, "_read_payroll_info", side_effect=panes):
             try:
                 return pib.scrape_one_pay_info(page, "Huynh, Hillary", dashboard_url="u"), op, page
@@ -564,3 +565,34 @@ class TestReportBlindStreaks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEmploymentStatus(unittest.TestCase):
+    """The draft roster reads ADP status off the Directory row the scrape opens."""
+
+    def test_status_of_picked_row(self):
+        rows = [
+            {"name": "Johnson, Dolce", "status": "Terminated"},
+            {"name": "Johnson, Dolce J", "status": "Active"},
+        ]
+        self.assertEqual(directory_status(rows, "Johnson, Dolce J"), "Active")
+        self.assertEqual(directory_status(rows, "johnson,  dolce"), "Terminated")
+        self.assertIsNone(directory_status(rows, "Garcia, Jacob"))
+        self.assertIsNone(directory_status([{"name": "Garcia, Jacob", "status": ""}], "Garcia, Jacob"))
+
+    def test_rate_record_always_carries_status_column(self):
+        self.assertEqual(
+            rate_record("Flores, Juan", wage_rate_dollars=15.0, employment_status="Terminated")["employment_status"],
+            "Terminated",
+        )
+        self.assertIn("employment_status", rate_record("Flores, Juan", wage_rate_dollars=15.0))
+
+    def test_mapper_only_writes_status_when_scraped(self):
+        from agents.bhaga.scripts.backfill_bigquery import map_adp_wage_rate
+
+        scraped = map_adp_wage_rate(
+            rate_record("Flores, Juan", wage_rate_dollars=15.0, employment_status="Terminated"), {}
+        )
+        self.assertEqual(scraped["employment_status"], "Terminated")
+        earnings = map_adp_wage_rate({"employee_id": "x", "employee_name": "Flores, Juan"}, {})
+        self.assertNotIn("employment_status", earnings)

@@ -3,8 +3,10 @@
  * Greedy: repeatedly add a shift at the first short 15-min step — the historical
  * open / mid / close block, or (shift times "need") the short run itself, split
  * evenly past the longest shift — and give it to the best available person
- * (furthest below their target weekly hours first, then whoever already has the
- * most hours — fewer people overall), trimmed around their ADP unavailability.
+ * (furthest below their target weekly hours first, then whoever has the most
+ * hours left under their weekly cap — so caps last the whole week and coverage
+ * stays as full as possible), trimmed around their ADP unavailability. When
+ * nobody can start the gap, someone free for part of it takes that part.
  * No one fits → unassigned.
  */
 
@@ -20,8 +22,10 @@ export type Availability = {
   employee: string;
   maxWeekHours: number;
   windows: ([number, number] | null)[];
-  /** Operator rule: aim for about this many hours a week (also the cap). */
+  /** Operator rule: aim for about this many hours a week (also the cap unless `ownMaxWeekHours`). */
   targetWeekHours?: number;
+  /** Operator rule: this person's own weekly cap — wins over the target and the store-wide cap. */
+  ownMaxWeekHours?: number;
   /** Operator rule: at most this many shifts per pay period. */
   maxShiftsPerPeriod?: number;
   /** Operator rule: final working day (YYYY-MM-DD). */
@@ -29,6 +33,34 @@ export type Availability = {
 };
 
 const worksOn = (a: Availability, iso: string) => a.lastDay == null || iso <= a.lastDay;
+
+export const weekCap = (a: Availability) => a.ownMaxWeekHours ?? a.targetWeekHours ?? a.maxWeekHours;
+
+/** Draft order: hour targets by deficit, then most hours left under the cap, then name. */
+function byPriority(weekOf: (a: Availability) => number) {
+  const deficit = (a: Availability) =>
+    a.targetWeekHours == null ? 0 : Math.max(0, a.targetWeekHours - weekOf(a));
+  return (x: Availability, y: Availability) =>
+    deficit(y) - deficit(x) ||
+    weekCap(y) - weekOf(y) - (weekCap(x) - weekOf(x)) ||
+    x.employee.localeCompare(y.employee);
+}
+
+/** How many people could work a minimum shift on `iso` — the draft staffs the scarcest days first. */
+export function availableCount(args: {
+  iso: string;
+  roster: Availability[];
+  unavailable?: Map<string, Block[]>;
+  minShiftMin: number;
+}): number {
+  const dow = isoWeekdayMon0(args.iso);
+  return args.roster.filter((a) => {
+    const w = a.windows[dow];
+    if (!w || !worksOn(a, args.iso)) return false;
+    const [s, e] = freeSegment(w[0], w[1], args.unavailable?.get(a.employee));
+    return e - s >= args.minShiftMin;
+  }).length;
+}
 
 export type DraftShift = {
   date: string;
@@ -107,8 +139,7 @@ export function draftDay(args: {
   const busy = new Set(args.busy);
   const out: DraftShift[] = [];
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
-  const deficit = (a: Availability) =>
-    a.targetWeekHours == null ? 0 : Math.max(0, a.targetWeekHours - weekOf(a));
+  const priority = byPriority(weekOf);
 
   const step = args.mins.length > 1 ? args.mins[1]! - args.mins[0]! : 15;
   const needIdx = args.need.flatMap((x, i) => (x > 0 ? [i] : []));
@@ -175,7 +206,7 @@ export function draftDay(args: {
       if (j > 0 && cover[j]! > cover[j - 1]!) blockEnd = Math.min(dayEnd, blockEnd + overlap);
     }
 
-    const candidates = args.roster
+    const eligible = args.roster
       .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
       .map((a) => {
         const [ws, we] = a.windows[dow]!;
@@ -184,24 +215,23 @@ export function draftDay(args: {
           Math.min(we, blockEnd),
           args.unavailable?.get(a.employee),
         );
-        return { a, s, e, len: e - s };
+        return { a, s, e, len: e - s, gain: gain(short, args.mins, s, e) };
       })
       .filter(
-        ({ a, s, e, len }) =>
+        ({ a, len, gain }) =>
           len >= minLen &&
-          weekOf(a) + len / 60 <= (a.targetWeekHours ?? a.maxWeekHours) &&
+          gain > 0 &&
+          weekOf(a) + len / 60 <= weekCap(a) &&
           (a.maxShiftsPerPeriod == null ||
-            (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod) &&
-          (mustCover == null ? gain(short, args.mins, s, e) > 0 : s <= mustCover && mustCover < e),
-      )
-      .sort(
-        (x, y) =>
-          deficit(y.a) - deficit(x.a) ||
-          weekOf(y.a) - weekOf(x.a) ||
-          x.a.employee.localeCompare(y.a.employee),
+            (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod),
       );
-
-    const pick = candidates[0];
+    const starts = eligible
+      .filter(({ s, e }) => mustCover == null || (s <= mustCover && mustCover < e))
+      .sort((x, y) => priority(x.a, y.a));
+    // Nobody can start the gap: whoever covers the most of it takes their part.
+    const pick =
+      starts[0] ??
+      eligible.sort((x, y) => y.gain - x.gain || priority(x.a, y.a))[0];
     const s = pick ? pick.s : blockStart;
     const e = pick ? pick.e : blockEnd;
     out.push({
@@ -247,8 +277,6 @@ export function fillOpenShift(args: {
   const dow = isoWeekdayMon0(args.iso);
   const hours = (e - s) / 60;
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
-  const deficit = (a: Availability) =>
-    a.targetWeekHours == null ? 0 : Math.max(0, a.targetWeekHours - weekOf(a));
   const pick = args.roster
     .filter((a) => {
       const w = a.windows[dow];
@@ -257,14 +285,12 @@ export function fillOpenShift(args: {
       return (
         fs === s &&
         fe === e &&
-        weekOf(a) + hours <= (a.targetWeekHours ?? a.maxWeekHours) &&
+        weekOf(a) + hours <= weekCap(a) &&
         (a.maxShiftsPerPeriod == null ||
           (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod)
       );
     })
-    .sort(
-      (x, y) => deficit(y) - deficit(x) || weekOf(y) - weekOf(x) || x.employee.localeCompare(y.employee),
-    )[0];
+    .sort(byPriority(weekOf))[0];
   if (!pick) return null;
   args.busy.add(pick.employee);
   args.weekHours.set(pick.employee, weekOf(pick) + hours);

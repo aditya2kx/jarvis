@@ -183,6 +183,7 @@ def rate_record(
     wage_rate_dollars: float,
     added_on: Optional[str] = None,
     excluded: bool = False,
+    employment_status: Optional[str] = None,
 ) -> dict:
     now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     history = []
@@ -202,6 +203,7 @@ def rate_record(
         "rate_source": "pay_info",
         "added_on": added_on,
         "scraped_at_utc": now,
+        "employment_status": employment_status,
     }
 
 
@@ -404,6 +406,14 @@ def _name_key(name: str) -> str:
     return " ".join(name.split()).casefold()
 
 
+def directory_status(candidates: list, name: str) -> Optional[str]:
+    """ADP status (``Active`` / ``Terminated`` / ``Leave of absence``) of the picked row."""
+    for c in candidates:
+        if isinstance(c, dict) and _name_key(c.get("name") or "") == _name_key(name):
+            return (c.get("status") or "").strip() or None
+    return None
+
+
 def _only_active(rows: list[tuple[str, str]]) -> Optional[str]:
     active = [n for n, status in rows if status.casefold() == "active"]
     return active[0] if len(active) == 1 else None
@@ -571,7 +581,7 @@ def scrape_one_pay_info(
     Directory recovered it every time. So each attempt starts from the Directory.
     """
     for attempt in range(1, PAYROLL_INFO_ATTEMPTS + 1):
-        profile_name = _open_profile(
+        profile_name, status = _open_profile(
             page, canonical_name, dashboard_url=dashboard_url, accepted_names=accepted_names,
         )
         pane = _read_payroll_info(page)
@@ -596,6 +606,7 @@ def scrape_one_pay_info(
     return {
         "employee_name": canonical_name,
         "search_name": profile_name,
+        "employment_status": status,
         **parsed,
         "body_excerpt": pane["text"][:500],
         "inputs": pane["inputs"][:20],
@@ -608,8 +619,8 @@ def _open_profile(
     *,
     dashboard_url: str,
     accepted_names: Iterable[str] = (),
-) -> str:
-    """Dashboard → Directory → search → the one matching profile. Returns its name."""
+) -> tuple[str, Optional[str]]:
+    """Dashboard → Directory → search → the one matching profile. Returns its name and ADP status."""
     search_name = directory_search_name(canonical_name)
     profile_name = search_name
     last_name = search_name.split(",")[0].strip()
@@ -659,7 +670,7 @@ def _open_profile(
         row = page.locator(f'[aria-label="Go to the profile page for {profile_name}"]')
         _click_through_modals(row.first, page=page, timeout=10_000)
         page.wait_for_timeout(2500)
-    return profile_name
+    return profile_name, directory_status(candidates, profile_name)
 
 
 def _read_payroll_info(page, *, budget_s: float = _PAYROLL_READY_BUDGET_S) -> dict:
@@ -784,12 +795,14 @@ def scrape_pay_info_rates(
                     wage_rate_dollars=raw["wage_rate_dollars"],
                     added_on=raw.get("added_on"),
                     excluded=name in excluded,
+                    employment_status=raw.get("employment_status"),
                 )
             )
             print(
                 f"[pay_info] OK {name} → ${raw['wage_rate_dollars']:.4f}"
                 f" (added_on={raw.get('added_on')}"
-                f" rate_layout={raw.get('rate_layout')})"
+                f" rate_layout={raw.get('rate_layout')}"
+                f" status={raw.get('employment_status')})"
             )
         except Exception as exc:  # noqa: BLE001
             errors[name] = f"{type(exc).__name__}: {exc}"

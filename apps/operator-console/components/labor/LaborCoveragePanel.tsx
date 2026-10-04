@@ -44,7 +44,7 @@ import {
   type DemandCell,
 } from "@/lib/labor/staffing-need";
 import { addDay, emptyBreakdown, requiredByRule } from "@/lib/labor/draft-breakdown";
-import { adpRoster, draftDay, fillOpenShift, type DraftShift } from "@/lib/labor/shift-draft";
+import { adpRoster, availableCount, draftDay, fillOpenShift, type DraftShift } from "@/lib/labor/shift-draft";
 import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
 import {
   applyDayRules,
@@ -1006,9 +1006,17 @@ export function LaborCoveragePanel({
           if (fill) d.shifts.push(fill);
         }
       }
-      // Pass 1: labor floor + day rules are mandatory regardless of the goal.
+      // Pass 1: labor floor + day rules are mandatory regardless of the goal. Days with the
+      // fewest people free (vs. headcount needed) go first so their few people aren't capped out.
       const breakdown = emptyBreakdown(existingHours, r.dayRules.map((x) => x.id));
-      for (const d of state) {
+      const slack = new Map(
+        state.map((d) => [
+          d.iso,
+          availableCount({ iso: d.iso, roster, unavailable: blocksOn(unavailability, d.iso), minShiftMin: r.staffing.minShiftMin }) -
+            Math.max(0, ...d.floorNeed),
+        ]),
+      );
+      for (const d of [...state].sort((a, b) => slack.get(a.iso)! - slack.get(b.iso)! || a.iso.localeCompare(b.iso))) {
         const split = requiredByRule({
           iso: d.iso,
           mins: d.mins,

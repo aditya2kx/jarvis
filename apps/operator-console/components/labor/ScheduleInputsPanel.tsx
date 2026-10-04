@@ -292,6 +292,12 @@ const KINDS: { value: StaffRuleKind; label: string; unit: string; group: string 
     group: "Hours per week",
   },
   {
+    value: "max_week_hours",
+    label: "At most … hours / week",
+    unit: "h / week · replaces the cap for this person",
+    group: "Hours per week",
+  },
+  {
     value: "max_shifts_per_period",
     label: "At most … shifts / pay period",
     unit: "shifts / pay period",
@@ -708,7 +714,7 @@ export function ScheduleInputsPanel({
                 />
                 <NumberField
                   label="Handover overlap"
-                  unit="min"
+                  unit="min · on top of longest"
                   step={15}
                   min={0}
                   value={rules.staffing.handoverOverlapMin}
@@ -789,12 +795,12 @@ export function ScheduleInputsPanel({
           <div className="md:col-span-2">
             <Section
               title="Staff rules"
-              hint="Everyone is capped at the weekly hours below. Hour targets get first pick of draft shifts until they reach the target (never past it) and replace the cap for that person. Pay periods are biweekly. A last working day stops someone being drafted or suggested after it."
+              hint="Everyone is capped at the weekly hours below; “At most … hours / week” replaces that cap for one person. Hour targets get first pick of draft shifts until they reach the target, and stop there unless the person has their own “At most”. Everyone else is drafted to keep the most people available all week (most hours left first) for full coverage. Pay periods are biweekly. A last working day stops someone being drafted or suggested after it."
             >
               <div className="flex flex-col gap-1.5">
-                {KINDS.map((k) => {
+                {KINDS.filter((k, i) => KINDS.findIndex((x) => x.group === k.group) === i).map((k) => {
                   const group = rules.staffRules
-                    .filter((r) => r.kind === k.value)
+                    .filter((r) => KINDS.find((x) => x.value === r.kind)?.group === k.group)
                     .sort((x, y) => (x.employee || "\uffff").localeCompare(y.employee || "\uffff"));
                   const everyone = k.value === "target_week_hours";
                   if (!group.length && !everyone) return null;

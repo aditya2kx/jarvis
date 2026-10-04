@@ -21,7 +21,7 @@ export type DayRule = {
   people: number;
 };
 
-export type StaffRuleKind = "target_week_hours" | "max_shifts_per_period" | "last_day";
+export type StaffRuleKind = "target_week_hours" | "max_week_hours" | "max_shifts_per_period" | "last_day";
 
 export type StaffRule = {
   id: string;
@@ -32,7 +32,13 @@ export type StaffRule = {
   date?: string;
 };
 
-export type StaffLimits = { targetWeekHours?: number; maxShiftsPerPeriod?: number; lastDay?: string };
+export type StaffLimits = {
+  targetWeekHours?: number;
+  /** Replaces the store-wide weekly cap (and an hour target's cap) for this person. */
+  ownMaxWeekHours?: number;
+  maxShiftsPerPeriod?: number;
+  lastDay?: string;
+};
 
 /** Store-wide basics behind the needed headcount and the draft. */
 export type StaffingBasics = {
@@ -230,6 +236,7 @@ export function staffLimits(rules: StaffRule[]): Map<string, StaffLimits> {
       if (r.date && ISO_DATE.test(r.date)) cur.lastDay = r.date;
     } else if (!(r.value >= 0)) continue;
     else if (r.kind === "target_week_hours") cur.targetWeekHours = r.value;
+    else if (r.kind === "max_week_hours") cur.ownMaxWeekHours = r.value;
     else cur.maxShiftsPerPeriod = r.value;
     out.set(r.employee, cur);
   }
@@ -237,7 +244,7 @@ export function staffLimits(rules: StaffRule[]): Map<string, StaffLimits> {
 }
 
 const DELIVERY_MODES = new Set<string>(["any", "only", "skip"]);
-const KINDS = new Set<string>(["target_week_hours", "max_shifts_per_period", "last_day"]);
+const KINDS = new Set<string>(["target_week_hours", "max_week_hours", "max_shifts_per_period", "last_day"]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const isMin = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 24 * 60;
 

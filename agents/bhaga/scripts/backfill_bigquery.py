@@ -257,7 +257,10 @@ def map_adp_wage_rate(rec: dict, profile: dict) -> dict:
     else:
         earnings = str(earnings)
 
+    # Only pay_info knows ADP employment status; other loads must not null it.
+    status = {"employment_status": rec["employment_status"]} if "employment_status" in rec else {}
     return {
+        **status,
         "employee_id": str(rec.get("employee_id", "")),
         "canonical_name": canonical,
         "wage_rate_dollars": _parse_float(rec.get("wage_rate_dollars")),

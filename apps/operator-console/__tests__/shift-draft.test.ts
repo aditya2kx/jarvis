@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adpRoster, draftDay, fillOpenShift, type Availability } from "@/lib/labor/shift-draft";
+import { adpRoster, availableCount, draftDay, fillOpenShift, type Availability } from "@/lib/labor/shift-draft";
 
 const mins: number[] = [];
 for (let t = 6 * 60; t < 21 * 60; t += 15) mins.push(t);
@@ -165,12 +165,62 @@ describe("draftDay", () => {
     expect([s!.startMin, s!.endMin]).toEqual([390, 900]);
   });
 
+  it("spreads hours: most hours left under the cap goes first", () => {
+    const roster: Availability[] = [
+      { employee: "Heavy", maxWeekHours: 30, windows: all([360, 1260]) },
+      { employee: "Light", maxWeekHours: 30, windows: all([360, 1260]) },
+    ];
+    const need = mins.map((t) => (t >= 390 && t < 810 ? 1 : 0));
+    const [s] = draftDay({
+      iso: "2026-10-12", mins, onFloor: zeros, need, roster,
+      weekHours: new Map([["Heavy", 20], ["Light", 7]]), busy: new Set(),
+    });
+    expect(s!.employee).toBe("Light");
+  });
+
+  it("lets someone free for only part of a gap take that part", () => {
+    // Close needed 12:30–20:30; the only person is free from 16:00 → they take 16:00–20:30.
+    const roster: Availability[] = [{ employee: "Late", maxWeekHours: 30, windows: all([960, 1260]) }];
+    const need = mins.map((t) => (t >= 750 && t < 1230 ? 1 : 0));
+    const out = draftDay({
+      iso: "2026-10-13", mins, onFloor: zeros, need, roster, weekHours: new Map(), busy: new Set(),
+      minShiftMin: 270, maxShiftMin: 480, shiftTimes: "need",
+    });
+    const late = out.find((x) => x.employee === "Late")!;
+    expect([late.startMin, late.endMin]).toEqual([960, 1230]);
+    expect(out.some((x) => x.employee === null && x.startMin === 750)).toBe(true);
+  });
+
+  it("an own weekly cap replaces the hour target's cap", () => {
+    const roster: Availability[] = [
+      { employee: "Dolce", maxWeekHours: 30, targetWeekHours: 40, ownMaxWeekHours: 45, windows: all([360, 1260]) },
+    ];
+    const need = mins.map((t) => (t >= 390 && t < 810 ? 1 : 0));
+    const [s] = draftDay({
+      iso: "2026-10-12", mins, onFloor: zeros, need, roster,
+      weekHours: new Map([["Dolce", 37]]), busy: new Set(),
+    });
+    expect(s!.employee).toBe("Dolce");
+  });
+
   it("adds nothing when the day already meets need", () => {
     const out = draftDay({
       iso: "2026-09-28", mins, onFloor: floorNeed, need: floorNeed,
       roster: [], weekHours: new Map(), busy: new Set(),
     });
     expect(out).toEqual([]);
+  });
+});
+
+describe("availableCount", () => {
+  it("counts people free for a minimum shift that day", () => {
+    const roster: Availability[] = [
+      { employee: "A", maxWeekHours: 30, windows: all([360, 1260]) },
+      { employee: "B", maxWeekHours: 30, windows: all([360, 1260]) },
+      { employee: "C", maxWeekHours: 30, windows: all([360, 1260]), lastDay: "2026-10-10" },
+    ];
+    const unavailable = new Map([["B", [{ fromMin: 0, toMin: 1440, status: "approved" as const }]]]);
+    expect(availableCount({ iso: "2026-10-13", roster, unavailable, minShiftMin: 270 })).toBe(1);
   });
 });
 

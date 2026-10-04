@@ -1,6 +1,7 @@
 import {
   adpHoursScrapedAt,
   adpUnavailability,
+  adpHourlyRoster,
   adpScheduleScrapedAt,
   adpScheduleHorizonEnd,
   laborActualShiftDays,
@@ -105,6 +106,7 @@ import {
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/tables/DataTable";
 import type {
+  AdpRosterRow,
   LaborActualShiftDayRow,
   LaborConcurrentRow,
   LaborDailyRow,
@@ -200,6 +202,7 @@ export default async function LaborPage({
   let unavailability: UnavailabilityRow[] = [];
   let scheduleReadAt: string | null = null;
   let upcomingShifts: ScheduledShift[] = [];
+  let adpRosterRows: AdpRosterRow[] = [];
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
@@ -275,6 +278,7 @@ export default async function LaborPage({
       weeklyActual,
       weeklySched,
       weeklyOpen,
+      hourlyRoster,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -329,7 +333,9 @@ export default async function LaborPage({
         ? laborScheduledShiftDays(weeklySchedWin, { store: DEFAULT_STORE, excludePto }).catch(() => [])
         : Promise.resolve([]),
       weeklySchedWin ? laborOpenShiftDays(weeklySchedWin).catch(() => []) : Promise.resolve([]),
+      adpHourlyRoster().catch(() => []),
     ]);
+    adpRosterRows = hourlyRoster;
     weeklyOpenDays = weeklyOpen.map((r) => ({ date: r.date, hours: Number(r.scheduled_hours) || 0 }));
     weeklyActualDays = weeklyActual;
     weeklyScheduledDays = weeklySched.map((r) => ({
@@ -558,10 +564,14 @@ export default async function LaborPage({
       : showStat
         ? "Sum across Period"
         : undefined;
-  // Empty means the schedule read failed or nothing is posted yet — keep the unfiltered roster then.
-  const activeStaff = upcomingShifts.length
-    ? [...new Set(upcomingShifts.map((s) => s.employee))]
-    : undefined;
+  // Anyone scheduled in ADP or on its hourly roster, unless ADP says Terminated. Empty means
+  // both reads failed — keep the unfiltered roster then.
+  const terminated = new Set(
+    adpRosterRows.filter((r) => r.employment_status?.toLowerCase() === "terminated").map((r) => r.employee),
+  );
+  const staffNames = [...new Set([...upcomingShifts.map((s) => s.employee), ...adpRosterRows.map((r) => r.employee)])]
+    .filter((name) => !terminated.has(name));
+  const activeStaff = staffNames.length ? staffNames : undefined;
 
   return (
     <div className="flex flex-col gap-4">

@@ -977,6 +977,27 @@ export type UnavailabilityRow = {
   scraped_at: string | null;
 };
 
+export type AdpRosterRow = { employee: string; employment_status: string | null };
+
+/**
+ * Hourly staff on ADP's pay-info roster (refreshed nightly for everyone who punched in the
+ * last 60 days) with their ADP status — NULL until the scrape has read it (migration 085).
+ */
+export async function adpHourlyRoster(): Promise<AdpRosterRow[]> {
+  const sql = (status: string) =>
+    `SELECT canonical_name AS employee, ${status} AS employment_status
+     FROM ${fq("adp_wage_rates")}
+     WHERE canonical_name IS NOT NULL
+       AND NOT IFNULL(is_salaried, FALSE)
+       AND NOT IFNULL(excluded_from_labor_pct, FALSE)
+     ORDER BY employee`;
+  try {
+    return await q<AdpRosterRow>(sql("employment_status"));
+  } catch {
+    return q<AdpRosterRow>(sql("CAST(NULL AS STRING)"));
+  }
+}
+
 /** ADP unavailability (pending requests + approved blocks), names resolved like the schedule. */
 export function adpUnavailability(store: string): Promise<UnavailabilityRow[]> {
   return q<UnavailabilityRow>(

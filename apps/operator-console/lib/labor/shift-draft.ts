@@ -121,13 +121,17 @@ export function draftDay(args: {
       );
     if (!best) break;
     const mustCover = best.startMin <= t0 && t0 < best.endMin ? t0 : null;
+    // Start when someone is first short (e.g. a day rule's 8:00), not at the
+    // template's earlier start — but never shorter than the minimum shift.
+    const blockStart =
+      mustCover == null ? best.startMin : Math.max(best.startMin, Math.min(t0, best.endMin - minLen));
 
     const candidates = args.roster
       .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
       .map((a) => {
         const [ws, we] = a.windows[dow]!;
         const [s, e] = freeSegment(
-          Math.max(ws, best!.startMin),
+          Math.max(ws, blockStart),
           Math.min(we, best!.endMin),
           args.unavailable?.get(a.employee),
         );
@@ -149,7 +153,7 @@ export function draftDay(args: {
       );
 
     const pick = candidates[0];
-    const s = pick ? pick.s : best.startMin;
+    const s = pick ? pick.s : blockStart;
     const e = pick ? pick.e : best.endMin;
     out.push({
       date: args.iso,
@@ -158,7 +162,7 @@ export function draftDay(args: {
       endMin: e,
       hours: (e - s) / 60,
       employee: pick?.a.employee ?? null,
-      trimmed: !!pick && (s !== best.startMin || e !== best.endMin),
+      trimmed: !!pick && (s !== blockStart || e !== best.endMin),
     });
     if (pick) {
       busy.add(pick.a.employee);

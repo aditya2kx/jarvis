@@ -89,6 +89,25 @@ describe("draftDay", () => {
     expect(out.some((s) => s.employee)).toBe(false);
   });
 
+  it("starts a shift when someone is first short, not at the template's earlier start", () => {
+    // Day rules: 1 person 6:30–8:00, 2 from 8:00 — the second opener starts at 8:00, not 7:30.
+    const need = mins.map((t) => (t < 390 ? 0 : t < 480 ? 1 : t < 1230 ? 2 : 0));
+    const out = draftDay({
+      iso: "2026-10-12", mins, onFloor: zeros, need, roster: [], weekHours: new Map(), busy: new Set(),
+    });
+    expect(out.filter((s) => s.kind === "open").map((s) => s.startMin)).toEqual([390, 480]);
+  });
+
+  it("keeps a late-starting shift at least the shortest-shift length", () => {
+    // Short only 13:00–14:00: the Monday mid (10:00–17:00) from 13:00 is 4 h, so it starts at 12:30 (4.5 h).
+    const need = mins.map((t) => (t >= 780 && t < 840 ? 1 : 0));
+    const [s] = draftDay({
+      iso: "2026-10-12", mins, onFloor: zeros, need, roster: [], weekHours: new Map(), busy: new Set(),
+      minShiftMin: 270,
+    });
+    expect([s!.startMin, s!.endMin]).toEqual([750, 1020]);
+  });
+
   it("adds nothing when the day already meets need", () => {
     const out = draftDay({
       iso: "2026-09-28", mins, onFloor: floorNeed, need: floorNeed,

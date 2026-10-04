@@ -32,6 +32,7 @@ import json
 import os
 import pathlib
 import sys
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
@@ -212,7 +213,8 @@ def main() -> int:
     cli.add_argument("--end", default=None)
     cli.add_argument(
         "--skip", default=[], action="append",
-        choices=["square", "adp_shifts", "adp_punches", "adp_rates", "adp_schedule", "adp_liability", "square_rollup"],
+        choices=["square", "adp_shifts", "adp_punches", "adp_rates", "adp_schedule",
+                 "adp_liability", "adp_timecard_gaps", "square_rollup"],
         help="Skip a specific write. Can pass multiple times.",
     )
     cli.add_argument("--dry-run", action="store_true",
@@ -509,6 +511,70 @@ def main() -> int:
     if "adp_schedule" not in args.skip:
         _isolated("adp_schedule", _load_adp_schedule)
 
+    # ── ADP open punches (Timecards month view, Issue #356) ──────
+    def _load_adp_timecard_gaps() -> None:
+        from skills.adp_run_automation import timecard_ui_backend as tub  # noqa: PLC0415
+
+        gaps_json = _newest(tub.DOWNLOADS_GLOB)
+        if not gaps_json:
+            print("WARN: no TimecardsUI-*.json found — skipping timecard gaps")
+            return
+        print(f"# parsing ADP timecards UI: {gaps_json.name}")
+        payload = json.loads(gaps_json.read_text())
+        scraped_at = payload.get("scraped_at_utc")
+        now_ct = datetime.datetime.now(ZoneInfo(shop_tz)).replace(tzinfo=None)
+        rows, periods = tub.build_gap_records(
+            payload.get("employees") or [],
+            store=args.store,
+            aliases=aliases,
+            shop_close=(profile.get("shop_hours") or {}).get("close_local_time", "21:00"),
+            now_ct=now_ct,
+        )
+        now_utc = datetime.datetime.utcnow().isoformat() + "Z"
+        rows = [{**r, "scraped_at_utc": scraped_at, "materialized_at_utc": now_utc} for r in rows]
+        print(f"  parsed: {len(rows)} gaps across pay periods {[p.isoformat() for p in periods]}")
+        if args.dry_run:
+            for r in rows:
+                print(f"  DRY gap {r['date']} {r['employee_id']}: {r['kind']} → {r['suggested_out']}")
+            return
+        from core.datastore import fq, get_client  # noqa: PLC0415
+        client = get_client()
+        # A partial capture (an employee page failed) must not erase that
+        # employee's still-open gaps: purge only the employees captured, so
+        # gaps fixed in ADP drop off for them and the rest stay as they were.
+        if client is not None and periods:
+            from google.cloud import bigquery  # noqa: PLC0415
+            period_list = ", ".join(f"DATE '{p.isoformat()}'" for p in periods)
+            partial = bool(payload.get("errors"))
+            names = sorted({tub.parse_month_view(e["aria"]).employee_name
+                            for e in payload.get("employees") or []})
+            client.query(
+                f"DELETE FROM {fq('adp_timecard_gaps')} "
+                f"WHERE store = '{args.store}' AND pay_period_start IN ({period_list})"
+                + (" AND raw_employee_name IN UNNEST(@names)" if partial else ""),
+                job_config=bigquery.QueryJobConfig(query_parameters=[
+                    bigquery.ArrayQueryParameter("names", "STRING", names)]) if partial else None,
+            ).result()
+            print(f"  purged adp_timecard_gaps for pay periods {period_list}"
+                  + (f" (captured employees only: {len(names)})" if partial else ""))
+        n = 0
+        if rows:
+            n = load_rows(
+                "adp_timecard_gaps", rows,
+                merge_keys=["store", "date", "employee_id"],
+                column_bq_types={
+                    "date": "DATE", "pay_period_start": "DATE",
+                    "open_entry_index": "INT64", "suggested_hours": "FLOAT64",
+                    "adp_error_flag": "BOOL",
+                    "scraped_at_utc": "TIMESTAMP", "materialized_at_utc": "TIMESTAMP",
+                },
+            )
+        print(f"  adp_timecard_gaps (BQ): {n} rows upserted")
+        summaries.append({"table": "adp_timecard_gaps", "rows": n})
+
+    if "adp_timecard_gaps" not in args.skip:
+        _isolated("adp_timecard_gaps", _load_adp_timecard_gaps)
+
     # ── ADP Payroll Liability (employer burden calibration) ───────
     def _load_adp_liability() -> None:
         liability_json = _newest("PayrollLiability-*.json")
@@ -692,8 +758,6 @@ def main() -> int:
                         except Exception as exc:  # noqa: BLE001
                             print(f"WARN: pay_info Slack warn failed: {type(exc).__name__}: {exc}")
                     try:
-                        from zoneinfo import ZoneInfo  # noqa: PLC0415
-
                         from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
                             blind_streaks,
                             pay_info_streak_rows_bq,

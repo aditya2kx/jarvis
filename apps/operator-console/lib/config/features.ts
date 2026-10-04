@@ -31,6 +31,12 @@ export const FEATURES = {
    * Changes avg/day + order reco; flag-off = read-only chips.
    */
   writeInventoryDayOverrides: true,
+  /**
+   * Issue #356 — "Write to ADP" on the /labor Punches table: fills the approved Out Time
+   * of an open ADP timecard entry (+ comment), Save once, read-back verify.
+   * Off = Accept/Edit/Dismiss still record decisions; nothing reaches ADP.
+   */
+  punchFixWriteback: true,
   /** Issue #158 — Plaid Link + sync write path. */
   writePlaidLink: true,
 } as const;

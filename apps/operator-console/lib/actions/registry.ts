@@ -36,6 +36,11 @@ export const MUTATING_ACTIONS = [
   { name: "pollScheduledShiftsSyncAction", page: "labor", heavy: null },
   { name: "syncClockedHoursAction", page: "labor", heavy: "adp-timecard" },
   { name: "pollClockedHoursSyncAction", page: "labor", heavy: null },
+  { name: "decidePunchGapAction", page: "labor", heavy: null },
+  { name: "acceptPunchGapsAction", page: "labor", heavy: null },
+  { name: "dismissPunchGapsAction", page: "labor", heavy: null },
+  { name: "writePunchGapsToAdpAction", page: "labor", heavy: "adp-punch-fix" },
+  { name: "pollPunchGapWriteAction", page: "labor", heavy: null },
   // Accounting
   { name: "createPlaidLinkTokenAction", page: "accounting", heavy: null },
   { name: "exchangePlaidPublicTokenAction", page: "accounting", heavy: "plaid-sync" },

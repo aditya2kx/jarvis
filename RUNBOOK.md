@@ -379,6 +379,50 @@ rate through the selector, never by reading the cell.
 > yet compute — tracked in issue #315. ADP itself computes the real paycheck, so this affects the
 > estimate/guardrail comparison, not what people are paid.
 
+### Missing punches — review and write back to ADP (Issue #356)
+
+ADP's Timecard export drops open punches (clock-in with no clock-out), so those days were invisible.
+Every ADP login that pulls the Timecard (nightly, **Sync clocked hours**, the write-back resync) now
+also reads the Timecards month view (`runner._timecard_gaps_within_session`, iframe
+`timePartnerFrame`) and loads `adp_timecard_gaps` (migration `084_adp_punch_gaps.sql`; a full read
+purges the pay period, a partial read purges only the employees it captured). The read is
+soft-fail: a Timecards UI error drops `adp_timecard_gaps` from the load and never blocks
+`adp_shifts` / `adp_punches`.
+
+| Kind | Meaning | Suggestion (`rule`) |
+|---|---|---|
+| `missing_out` / `missing_out_after_break` | an entry with no clock-out (first / later entry) | clock-out that pays at least the day's scheduled hours, capped at shop close (`pay_scheduled_hours`) |
+| `in_progress` | open entry, day not over yet (CT) | none |
+| `no_entry` | scheduled, nothing punched | the scheduled shift — first scheduled start, scheduled hours clipped at close (`scheduled_shift`) |
+
+**Console** `/labor` → **Punches** (just above Solo vs team): every clocked person-day in the Period from `adp_punches`; a day ADP flags replaces its row with the gap kind, and Issue → **No issue** lists the clean days. **Needs review** shows only undecided / not-yet-written gaps. Select rows → **Accept N** / **Dismiss N**, or Edit a
+time per row; each choice is a `punch_gap_decisions` row (latest `decided_at` per gap wins).
+**Write N to ADP** (flag `PUNCH_FIX_WRITEBACK`, `docs/FEATURE_FLAGS.md`) flips the rows to
+`applying` and starts the ADP job on **Cloud Run** — never in the operator's browser — with
+`BHAGA_PUNCH_FIX_APPLY_ONLY=1`, `BHAGA_PUNCH_FIX_WRITEBACK=1`,
+`BHAGA_PUNCH_FIX_DECISION_IDS=<ids>` (`agents/bhaga/scripts/punch_fix_apply.py`). Per row it
+re-reads the day, fills the Out Time (or adds the whole entry for `no_entry`) with a comment
+naming the approver, Saves **once**, and reads it back. Then the same run does the timecard-only
+resync (Team Schedule skipped) so `adp_punches` and the gaps table catch up. Roughly 2 min to
+start, ~15 s per row, ~2 min resync; closing the tab is safe and the panel polls while any row is
+`applying`.
+
+Statuses: `applied` (ADP shows the value), `already_resolved` (ADP already closed it — no write),
+`failed` (breadcrumb `[punch-fix] FAIL date=… emp=… step=… evidence=…`, screenshot under
+`gs://bhaga-scrape-cache/<date>/evidence/`). **A failed row is never retried automatically** — a
+Save may have half-landed; open the day in ADP, then re-accept and write it again from the console.
+
+**Local dev:** the console writes only through Cloud Run. With `BYPASS_IAP_EMAIL` set it refuses
+unless `BHAGA_ADP_PREVIEW_JOB=<job>` names a branch-built job (a copy of `bhaga-daily-refresh`
+with a branch image); without it, prod uses `bhaga-daily-refresh`.
+
+Re-read only the gaps (read-only, no write):
+
+```bash
+gcloud run jobs execute bhaga-daily-refresh --project jarvis-bhaga-prod --region us-central1 --async \
+  --update-env-vars "BHAGA_ADP_TIMECARD_ONLY=1,BHAGA_IGNORE_HALT=1,BHAGA_SKIP_SQUARE=1,BHAGA_SKIP_KDS=1,BHAGA_STORE=palmetto,REFRESH_DATE=$(TZ=America/Chicago date +%F)"
+```
+
 ### Team pulse (Issue #216)
 
 Webhook image must include `agents/bhaga/scripts` + `skills/clickup_chat` + `core`

@@ -259,19 +259,23 @@ function filterIncludesString(
 }
 
 /** Compact trigger + floating checklist (Linear / Airtable faceted filter). */
-function MultiSelectFilter({
+export function MultiSelectFilter({
   columnId,
   label,
   options,
   value,
   onChange,
+  formatOption,
 }: {
   columnId: string;
   label: string;
   options: string[];
   value: string[];
   onChange: (next: string[]) => void;
+  /** Display text for an option value (filter keeps the raw value). */
+  formatOption?: (value: string) => string;
 }) {
+  const text = (opt: string) => (opt === "" ? "(blank)" : (formatOption?.(opt) ?? opt));
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const selected = new Set(value);
@@ -279,8 +283,7 @@ function MultiSelectFilter({
   const displayLabel = (() => {
     if (!active) return "All";
     if (selected.size === 1) {
-      const only = [...selected][0];
-      return only === "" ? "(blank)" : only;
+      return text([...selected][0]!);
     }
     return `${selected.size} selected`;
   })();
@@ -288,9 +291,10 @@ function MultiSelectFilter({
     const q = query.trim().toLowerCase();
     if (!q) return options;
     return options.filter((opt) =>
-      (opt || "(blank)").toLowerCase().includes(q),
+      text(opt).toLowerCase().includes(q),
     );
-  }, [options, query]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `text` derives from formatOption
+  }, [options, query, formatOption]);
   const showSearch = options.length > 6;
 
   function toggle(opt: string) {
@@ -371,7 +375,6 @@ function MultiSelectFilter({
               ) : (
                 filtered.map((opt) => {
                   const checked = selected.has(opt);
-                  const text = opt || "(blank)";
                   return (
                     <li key={`${columnId}-${opt || "(blank)"}`}>
                       <button
@@ -396,7 +399,7 @@ function MultiSelectFilter({
                           {checked ? <CheckIcon className="size-2.5" strokeWidth={3} /> : null}
                         </span>
                         <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">
-                          {text}
+                          {text(opt)}
                         </span>
                       </button>
                     </li>

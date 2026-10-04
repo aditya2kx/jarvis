@@ -2014,6 +2014,153 @@ def _write_schedule_json(payloads: list[dict], *, store: str) -> pathlib.Path:
     return path
 
 
+# ── Timecards month view scrape (open punches, Issue #356) ─────────
+
+
+def _timecards_snapshot(page) -> str:
+    from skills.adp_run_automation import timecard_ui_backend as tub
+
+    return page.frame_locator(f'iframe[name="{tub.TIMECARDS_FRAME_NAME}"]').locator(
+        "body"
+    ).aria_snapshot(timeout=10_000)
+
+
+def _wait_timecards_employee(page, name: str, *, timeout_ms: int = 30_000) -> str:
+    """Snapshot once the month view shows ``name`` and has stopped re-rendering.
+
+    The name button flips before the grid repaints, so a single read can pair
+    the new name with the previous employee's cells; two identical consecutive
+    snapshots is the settle signal.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    last = ""
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(700)
+        try:
+            snap = _timecards_snapshot(page)
+        except Exception:  # noqa: BLE001 — frame still navigating
+            continue
+        if f'- button "{name}"' in snap and "Pay Period" in snap and "- cell " in snap:
+            if snap == last:
+                return snap
+            last = snap
+    raise RuntimeError(f"Timecards month view never settled for {name!r}")
+
+
+def _open_timecards(page, *, timeout_ms: int = 30_000) -> str:
+    """From the v2 dashboard, open Time → Timecards; return the first snapshot.
+
+    Same hidden TEMPUS anchor pattern as Team Schedule (_open_team_schedule).
+    """
+    from skills.adp_run_automation import timecard_ui_backend as tub
+
+    print(f"[adp_timecards_ui] step=open-timecards (#{tub.TIMECARDS_ANCHOR_ID})")
+    page.evaluate(
+        """() => {
+          const t = document.querySelector('[data-test-id="Time-btn"]');
+          if (t) t.click();
+        }"""
+    )
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(500)
+        if page.evaluate(
+            "(id) => { const a=document.getElementById(id); if(a){a.click(); return true;} return false; }",
+            tub.TIMECARDS_ANCHOR_ID,
+        ):
+            break
+    else:
+        _raise_with_evidence(
+            page, store="palmetto",
+            reason=f"Timecards anchor #{tub.TIMECARDS_ANCHOR_ID} not found on dashboard.",
+        )
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(700)
+        try:
+            snap = _timecards_snapshot(page)
+        except Exception:  # noqa: BLE001
+            continue
+        if "Pay Period" in snap and "- cell " in snap:
+            return snap
+    _raise_with_evidence(
+        page, store="palmetto", reason="Timecards month view never rendered.",
+    )
+    return ""
+
+
+def _timecard_gaps_within_session(page) -> dict:
+    """Read every employee's current-pay-period month view. Strictly read-only.
+
+    Returns ``{"employees": [{"employee": name, "aria": snapshot}], "errors": [...]}``.
+    Parsing happens at load time (timecard_ui_backend) so the scrape stays a
+    dumb capture and the classifier can be re-run off the JSON. Never clicks
+    anything inside a day: only the employee menu and Escape.
+    """
+    from skills.adp_run_automation import timecard_ui_backend as tub
+
+    first = _open_timecards(page)
+    frame = page.frame_locator(f'iframe[name="{tub.TIMECARDS_FRAME_NAME}"]')
+    current = tub.parse_month_view(first).employee_name
+    frame.get_by_role("button", name=current, exact=True).click()
+    page.wait_for_timeout(1000)
+    names = tub.parse_employee_menu(_timecards_snapshot(page))
+    page.keyboard.press("Escape")
+    if not names:
+        raise RuntimeError("Timecards employee menu was empty")
+    print(f"[adp_timecards_ui] employees={len(names)}")
+
+    def switch_to(name: str) -> str:
+        if name != current:
+            frame.get_by_role("button", name=current, exact=True).click(timeout=15_000)
+            page.wait_for_timeout(600)
+            frame.get_by_role("menuitem", name=name, exact=True).click(timeout=15_000)
+        return _wait_timecards_employee(page, name)
+
+    out: dict = {"employees": [], "errors": []}
+    for name in names:
+        try:
+            try:
+                snap = switch_to(name)
+            except Exception as exc:  # noqa: BLE001 — read-only: reopen Timecards, try once more
+                try:
+                    state = _timecards_snapshot(page)[:1500]
+                except Exception:  # noqa: BLE001
+                    state = "<no snapshot>"
+                print(f"[adp_timecards_ui] retry employee={name!r} after "
+                      f"{type(exc).__name__}: {str(exc)[:200]} url={page.url} state={state!r}")
+                page.keyboard.press("Escape")
+                current = tub.parse_month_view(_open_timecards(page)).employee_name
+                snap = switch_to(name)
+            current = name
+            out["employees"].append({"employee": name, "aria": snap})
+        except Exception as exc:  # noqa: BLE001 — one employee must not cost the rest
+            out["errors"].append({"employee": name, "error": f"{type(exc).__name__}: {exc}"[:300]})
+            print(f"BREADCRUMB adp_timecards_ui_employee_failed employee={name!r} "
+                  f"error={type(exc).__name__}: {exc}")
+            page.keyboard.press("Escape")
+            try:
+                current = tub.parse_month_view(_timecards_snapshot(page)).employee_name
+            except Exception:  # noqa: BLE001
+                pass
+    print(f"[adp_timecards_ui] captured={len(out['employees'])} errors={len(out['errors'])}")
+    return out
+
+
+def _write_timecards_ui_json(payload: dict, *, store: str) -> pathlib.Path:
+    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    path = DOWNLOADS_DIR / f"TimecardsUI-{datetime.date.today().isoformat()}.json"
+    path.write_text(json.dumps(
+        {
+            "scraped_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
+            "store": store,
+            **payload,
+        },
+        indent=2,
+    ))
+    return path
+
+
 def download_schedule(
     *,
     store: str = "palmetto",
@@ -2242,6 +2389,7 @@ def download_adp_bundle(
     include_earnings: bool = True,
     include_schedule: bool = True,
     include_extras: bool = True,
+    include_timecard_gaps: bool = True,
     schedule_weeks: int = None,
     earnings_window_days: int = 90,
     earnings_start: Optional[datetime.date] = None,
@@ -2286,6 +2434,8 @@ def download_adp_bundle(
             this off Mon/Tue per `_should_run_rates`).
         include_extras: if False, skip the Payroll Liability report and the
             pay_info wage-rate refresh (console "Sync clocked hours").
+        include_timecard_gaps: read the Timecards month view for open punches
+            the XLSX omits (Issue #356). Best-effort, read-only.
         earnings_window_days: how far back the earnings scrape's "From"
             date should go (default 90). Nightly always uses custom range.
         earnings_start: explicit window start for historical backfill.
@@ -2306,6 +2456,7 @@ def download_adp_bundle(
     tc_expected = DOWNLOADS_DIR / f"Timecard-{today.isoformat()}.xlsx"
     er_expected = DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{today.isoformat()}.xlsx"
     sched_expected = DOWNLOADS_DIR / f"Schedule-{today.isoformat()}.json"
+    gaps_expected = DOWNLOADS_DIR / f"TimecardsUI-{today.isoformat()}.json"
 
     er_window_start, er_window_end = _earnings_report_date_window(
         today=today,
@@ -2337,18 +2488,24 @@ def download_adp_bundle(
         is_fresh_download(sched_expected, min_bytes=50) if include_schedule else False
     )
 
+    gaps_fresh = (
+        is_fresh_download(gaps_expected, min_bytes=50) if include_timecard_gaps else False
+    )
+
     result: dict = {
         "timecard_xlsx": tc_expected if tc_fresh else None,
         "earnings_xlsx": er_expected if (include_earnings and er_fresh) else None,
         "schedule_json": sched_expected if (include_schedule and sched_fresh) else None,
+        "timecards_ui_json": gaps_expected if (include_timecard_gaps and gaps_fresh) else None,
         "errors": {},
     }
 
     needs_timecard = not tc_fresh
     needs_earnings = include_earnings and not er_fresh
     needs_schedule = include_schedule and not sched_fresh
+    needs_gaps = include_timecard_gaps and not gaps_fresh
 
-    if not needs_timecard and not needs_earnings and not needs_schedule:
+    if not (needs_timecard or needs_earnings or needs_schedule or needs_gaps):
         print("[adp_bundle] SKIP browser — Layer A: required ADP files already fresh on disk.")
         if tc_fresh:
             _mark_run_step_done(
@@ -2510,6 +2667,21 @@ def download_adp_bundle(
                     )
                 except Exception:  # noqa: BLE001
                     pass
+
+        if needs_gaps:
+            try:
+                page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
+                if not POST_LOGIN_URL_RE.search(page.url):
+                    page.wait_for_url(POST_LOGIN_URL_RE, timeout=10_000)
+                page.wait_for_timeout(1500)
+                payload = _timecard_gaps_within_session(page)
+                path = _write_timecards_ui_json(payload, store=store)
+                result["timecards_ui_json"] = path
+                print(f"[adp_bundle] timecards_ui OK → {path}")
+            except Exception as exc:  # noqa: BLE001
+                result["errors"]["adp_timecard_gaps"] = f"{type(exc).__name__}: {exc}"
+                print(f"BREADCRUMB adp_timecard_gaps_failed refresh_date={target_date} "
+                      f"error={type(exc).__name__}: {exc}")
 
         if not include_extras:
             return result

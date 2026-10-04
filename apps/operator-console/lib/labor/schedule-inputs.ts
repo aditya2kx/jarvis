@@ -6,14 +6,16 @@
 
 import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
 
-/** "weekdays" | "weekends" | "all" | "delivery" | "0".."6" (Mon = 0). */
-export type DayScope = "weekdays" | "weekends" | "all" | "delivery" | `${0 | 1 | 2 | 3 | 4 | 5 | 6}`;
+/** How a day rule treats frozen delivery days. */
+export type DeliveryMode = "any" | "only" | "skip";
+
+export const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6] as const;
 
 export type DayRule = {
   id: string;
-  scope: DayScope;
-  /** Skip frozen delivery days (ignored when scope is "delivery"). */
-  exceptDelivery: boolean;
+  /** Weekdays the rule covers, Mon = 0 … Sun = 6 (sorted, at least one). */
+  days: number[];
+  delivery: DeliveryMode;
   fromMin: number;
   toMin: number;
   people: number;
@@ -72,8 +74,8 @@ export const DEFAULT_RULES: ScheduleRules = {
   dayRules: [
     {
       id: "closing-duties",
-      scope: "all",
-      exceptDelivery: false,
+      days: [...ALL_DAYS],
+      delivery: "any",
       fromMin: 19 * 60 + 30,
       toMin: 20 * 60 + 30,
       people: 2,
@@ -85,13 +87,43 @@ export const DEFAULT_RULES: ScheduleRules = {
 export function dayRuleApplies(rule: DayRule, iso: string, deliveryDates: ReadonlySet<string>): boolean {
   const day = iso.slice(0, 10);
   const isDelivery = deliveryDates.has(day);
-  if (rule.scope === "delivery") return isDelivery;
-  if (rule.exceptDelivery && isDelivery) return false;
-  const dow = isoWeekdayMon0(day);
-  if (rule.scope === "all") return true;
-  if (rule.scope === "weekdays") return dow < 5;
-  if (rule.scope === "weekends") return dow >= 5;
-  return Number(rule.scope) === dow;
+  if (rule.delivery === "only" && !isDelivery) return false;
+  if (rule.delivery === "skip" && isDelivery) return false;
+  return rule.days.includes(isoWeekdayMon0(day));
+}
+
+/** "Every day", "Weekdays", "Weekends" or "Mon, Wed, Fri". */
+export function daysLabel(days: readonly number[]): string {
+  const key = [...days].sort().join("");
+  if (key === "0123456") return "Every day";
+  if (key === "01234") return "Weekdays";
+  if (key === "56") return "Weekends";
+  return [...days].sort().map((d) => DAY_NAMES[d]).join(", ");
+}
+
+export const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+
+/** Versions saved before multi-day rules stored one `scope` + `exceptDelivery`. */
+const LEGACY_SCOPE_DAYS: Record<string, number[]> = {
+  all: [...ALL_DAYS],
+  delivery: [...ALL_DAYS],
+  weekdays: [0, 1, 2, 3, 4],
+  weekends: [5, 6],
+  ...Object.fromEntries(ALL_DAYS.map((d) => [String(d), [d]])),
+};
+
+function parseDays(r: { days?: unknown; scope?: unknown }): number[] | null {
+  if (Array.isArray(r.days)) {
+    const days = [...new Set(r.days)].filter((d): d is number => Number.isInteger(d) && d >= 0 && d <= 6);
+    return days.length && days.length === r.days.length ? days.sort() : null;
+  }
+  return LEGACY_SCOPE_DAYS[String(r.scope)] ?? null;
+}
+
+function parseDelivery(r: { delivery?: unknown; scope?: unknown; exceptDelivery?: unknown }): DeliveryMode | null {
+  if (r.delivery !== undefined) return DELIVERY_MODES.has(String(r.delivery)) ? (r.delivery as DeliveryMode) : null;
+  if (r.scope === "delivery") return "only";
+  return r.exceptDelivery ? "skip" : "any";
 }
 
 export function applyDayRules(
@@ -125,7 +157,7 @@ export function staffLimits(rules: StaffRule[]): Map<string, StaffLimits> {
   return out;
 }
 
-const SCOPES = new Set<string>(["weekdays", "weekends", "all", "delivery", "0", "1", "2", "3", "4", "5", "6"]);
+const DELIVERY_MODES = new Set<string>(["any", "only", "skip"]);
 const KINDS = new Set<string>(["target_week_hours", "max_shifts_per_period", "last_day"]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const isMin = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 24 * 60;
@@ -136,20 +168,24 @@ export function parseScheduleRules(raw: unknown): ScheduleRules {
   if (!obj || !Array.isArray(obj.dayRules) || !Array.isArray(obj.staffRules)) {
     throw new Error("Rules must have dayRules and staffRules lists");
   }
-  const dayRules = obj.dayRules.map((r, i): DayRule => {
-    if (!SCOPES.has(String(r?.scope)) || !isMin(r.fromMin) || !isMin(r.toMin) || r.toMin <= r.fromMin) {
-      throw new Error(`Day rule ${i + 1}: needs a valid day and a from time before the to time`);
+  const dayRules = (obj.dayRules as unknown[]).map((raw, i): DayRule => {
+    const r = (raw ?? {}) as Record<string, unknown> & Partial<DayRule>;
+    const days = parseDays(r);
+    const delivery = parseDelivery(r);
+    if (!days || !delivery) throw new Error(`Day rule ${i + 1}: pick at least one day`);
+    if (!isMin(r.fromMin) || !isMin(r.toMin) || r.toMin <= r.fromMin) {
+      throw new Error(`Day rule ${i + 1}: needs a from time before the to time`);
     }
-    if (!Number.isInteger(r.people) || r.people < 0 || r.people > 20) {
+    if (!Number.isInteger(r.people) || r.people! < 0 || r.people! > 20) {
       throw new Error(`Day rule ${i + 1}: people must be a whole number 0–20`);
     }
     return {
       id: String(r.id || `day-${i}`),
-      scope: r.scope,
-      exceptDelivery: Boolean(r.exceptDelivery),
+      days,
+      delivery,
       fromMin: r.fromMin,
       toMin: r.toMin,
-      people: r.people,
+      people: r.people!,
     };
   });
   const staffRules = obj.staffRules.map((r, i): StaffRule => {

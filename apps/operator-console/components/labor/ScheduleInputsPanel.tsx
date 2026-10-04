@@ -16,10 +16,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  ALL_DAYS,
+  DAY_NAMES,
+  daysLabel,
   minToTime,
   timeToMin,
   type DayRule,
-  type DayScope,
+  type DeliveryMode,
   type RulesVersion,
   type ScheduleRules,
   type StaffingBasics,
@@ -28,16 +31,71 @@ import {
 } from "@/lib/labor/schedule-inputs";
 import { cn } from "@/lib/utils";
 
-const SCOPES: { value: DayScope; label: string }[] = [
-  { value: "weekdays", label: "Weekdays (Mon–Fri)" },
-  { value: "weekends", label: "Weekends (Sat–Sun)" },
-  { value: "all", label: "Every day" },
-  { value: "delivery", label: "Frozen delivery days" },
-  ...["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label, i) => ({
-    value: String(i) as DayScope,
-    label: `Every ${label}`,
-  })),
+const DELIVERY: { value: DeliveryMode; label: string }[] = [
+  { value: "any", label: "Delivery days too" },
+  { value: "skip", label: "Except delivery days" },
+  { value: "only", label: "Only delivery days" },
 ];
+
+const DAY_PRESETS: { label: string; days: number[] }[] = [
+  { label: "Every day", days: [...ALL_DAYS] },
+  { label: "Weekdays", days: [0, 1, 2, 3, 4] },
+  { label: "Weekends", days: [5, 6] },
+];
+
+const chip = (on: boolean) =>
+  cn(
+    "h-7 rounded-md border text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    on
+      ? "border-primary bg-primary/15 text-foreground"
+      : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+  );
+
+/** Toggle any set of weekdays; the last selected day can't be turned off. */
+function DayPicker({ days, onChange }: { days: number[]; onChange: (days: number[]) => void }) {
+  const label = daysLabel(days);
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label={`Days: ${label}`}>
+      {DAY_NAMES.map((name, d) => {
+        const on = days.includes(d);
+        return (
+          <button
+            key={name}
+            type="button"
+            aria-pressed={on}
+            aria-label={name}
+            title={on && days.length === 1 ? "A rule needs at least one day" : name}
+            onClick={() => {
+              if (on && days.length === 1) return;
+              onChange(on ? days.filter((x) => x !== d) : [...days, d].sort());
+            }}
+            className={cn(chip(on), "w-9 px-0 tabular-nums")}
+          >
+            {name.slice(0, 2)}
+          </button>
+        );
+      })}
+      <Select
+        value={DAY_PRESETS.find((p) => p.label === label)?.label ?? null}
+        onValueChange={(v) => {
+          const preset = DAY_PRESETS.find((p) => p.label === v);
+          if (preset) onChange(preset.days);
+        }}
+      >
+        <SelectTrigger className="h-7 w-28 text-xs" aria-label="Quick pick days">
+          <SelectValue placeholder="Custom" />
+        </SelectTrigger>
+        <SelectContent>
+          {DAY_PRESETS.map((p) => (
+            <SelectItem key={p.label} value={p.label}>
+              {p.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
 
 const KINDS: { value: StaffRuleKind; label: string; unit: string }[] = [
   { value: "target_week_hours", label: "About … hours / week", unit: "h / week" },
@@ -419,36 +477,22 @@ export function ScheduleInputsPanel({
               <div className="flex flex-col gap-1.5">
                 {rules.dayRules.map((r) => (
                   <div key={r.id} className="flex flex-wrap items-center gap-2">
+                    <DayPicker days={r.days} onChange={(days) => setDayRule(r.id, { days })} />
                     <Select
-                      value={r.scope}
-                      onValueChange={(v) => v && setDayRule(r.id, { scope: v as DayScope })}
+                      value={r.delivery}
+                      onValueChange={(v) => v && setDayRule(r.id, { delivery: v as DeliveryMode })}
                     >
-                      <SelectTrigger className="h-7 w-48 text-xs" aria-label="Days">
-                        <SelectValue>{(v: DayScope) => SCOPES.find((s) => s.value === v)?.label}</SelectValue>
+                      <SelectTrigger className="h-7 w-44 text-xs" aria-label="Delivery days">
+                        <SelectValue>{(v: DeliveryMode) => DELIVERY.find((d) => d.value === v)?.label}</SelectValue>
                       </SelectTrigger>
                       <SelectContent>
-                        {SCOPES.map((s) => (
-                          <SelectItem key={s.value} value={s.value}>
-                            {s.label}
+                        {DELIVERY.map((d) => (
+                          <SelectItem key={d.value} value={d.value}>
+                            {d.label}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    {r.scope !== "delivery" ? (
-                      <button
-                        type="button"
-                        aria-pressed={r.exceptDelivery}
-                        onClick={() => setDayRule(r.id, { exceptDelivery: !r.exceptDelivery })}
-                        className={cn(
-                          "h-7 rounded-md border px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                          r.exceptDelivery
-                            ? "border-primary bg-primary/15 text-foreground"
-                            : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                        )}
-                      >
-                        except delivery days
-                      </button>
-                    ) : null}
                     <TimeInput value={r.fromMin} onChange={(v) => setDayRule(r.id, { fromMin: v })} label="From" />
                     <span className="text-xs text-muted-foreground">to</span>
                     <TimeInput value={r.toMin} onChange={(v) => setDayRule(r.id, { toMin: v })} label="To" />
@@ -478,8 +522,8 @@ export function ScheduleInputsPanel({
                         ...rules.dayRules,
                         {
                           id: `${Date.now()}`,
-                          scope: "all",
-                          exceptDelivery: false,
+                          days: [...ALL_DAYS],
+                          delivery: "any",
                           fromMin: 12 * 60,
                           toMin: 14 * 60,
                           people: 3,

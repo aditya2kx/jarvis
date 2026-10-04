@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyDayRules,
+  daysLabel,
   DEFAULT_RULES,
   DEFAULT_STAFFING,
   parseScheduleRules,
@@ -16,8 +17,8 @@ const need = [1, 1, 2, 2, 2];
 const deliveries = new Set(["2026-10-02"]);
 const weekdayOpen: DayRule = {
   id: "a",
-  scope: "weekdays",
-  exceptDelivery: true,
+  days: [0, 1, 2, 3, 4],
+  delivery: "skip",
   fromMin: 390,
   toMin: 510,
   people: 1,
@@ -31,9 +32,45 @@ describe("applyDayRules", () => {
   });
 
   it("targets delivery days and lets later rules win", () => {
-    const delivery: DayRule = { ...weekdayOpen, id: "b", scope: "delivery", people: 3 };
-    const fri: DayRule = { ...weekdayOpen, id: "c", scope: "4", exceptDelivery: false, fromMin: 450, people: 4 };
+    const delivery: DayRule = { ...weekdayOpen, id: "b", days: [0, 1, 2, 3, 4, 5, 6], delivery: "only", people: 3 };
+    const fri: DayRule = { ...weekdayOpen, id: "c", days: [4], delivery: "any", fromMin: 450, people: 4 };
     expect(applyDayRules("2026-10-02", mins, need, [delivery, fri], deliveries)).toEqual([3, 3, 4, 4, 2]);
+  });
+
+  it("covers any set of days with one rule", () => {
+    const tueThuSat: DayRule = { ...weekdayOpen, days: [1, 3, 5], delivery: "any", people: 5 };
+    expect(applyDayRules("2026-09-29", mins, need, [tueThuSat], deliveries)).toEqual([5, 5, 5, 5, 2]);
+    expect(applyDayRules("2026-09-30", mins, need, [tueThuSat], deliveries)).toEqual(need);
+    expect(applyDayRules("2026-10-03", mins, need, [tueThuSat], deliveries)).toEqual([5, 5, 5, 5, 2]);
+  });
+});
+
+describe("daysLabel", () => {
+  it("names common sets and lists the rest", () => {
+    expect(daysLabel([0, 1, 2, 3, 4, 5, 6])).toBe("Every day");
+    expect(daysLabel([4, 0, 1, 2, 3])).toBe("Weekdays");
+    expect(daysLabel([5, 6])).toBe("Weekends");
+    expect(daysLabel([3, 1])).toBe("Tue, Thu");
+  });
+});
+
+describe("parseScheduleRules day rules", () => {
+  const base = { fromMin: 1170, toMin: 1230, people: 2 };
+  const parse = (r: object) =>
+    parseScheduleRules({ dayRules: [{ id: "x", ...base, ...r }], staffRules: [] }).dayRules[0];
+
+  it("loads versions saved with a single scope", () => {
+    expect(parse({ scope: "all", exceptDelivery: false })).toMatchObject({ days: [0, 1, 2, 3, 4, 5, 6], delivery: "any" });
+    expect(parse({ scope: "weekdays", exceptDelivery: true })).toMatchObject({ days: [0, 1, 2, 3, 4], delivery: "skip" });
+    expect(parse({ scope: "delivery", exceptDelivery: false })).toMatchObject({ delivery: "only" });
+    expect(parse({ scope: "0", exceptDelivery: false })).toMatchObject({ days: [0] });
+  });
+
+  it("sorts days and rejects an empty or invalid set", () => {
+    expect(parse({ days: [5, 1], delivery: "any" })).toMatchObject({ days: [1, 5] });
+    expect(() => parse({ days: [], delivery: "any" })).toThrow(/at least one day/);
+    expect(() => parse({ days: [7], delivery: "any" })).toThrow(/at least one day/);
+    expect(() => parse({ days: [1], delivery: "sometimes" })).toThrow(/at least one day/);
   });
 });
 

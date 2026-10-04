@@ -108,6 +108,15 @@ describe("draftDay", () => {
     expect([s!.startMin, s!.endMin]).toEqual([750, 1020]);
   });
 
+  it("ends a shift after the last short step, not at the template's later end", () => {
+    // Tuesday's close template ends 20:45; need stops at 20:30.
+    const need = mins.map((t) => (t >= 840 && t < 1230 ? 1 : 0));
+    const [s] = draftDay({
+      iso: "2026-10-13", mins, onFloor: zeros, need, roster: [], weekHours: new Map(), busy: new Set(),
+    });
+    expect([s!.startMin, s!.endMin]).toEqual([840, 1230]);
+  });
+
   it("adds nothing when the day already meets need", () => {
     const out = draftDay({
       iso: "2026-09-28", mins, onFloor: floorNeed, need: floorNeed,

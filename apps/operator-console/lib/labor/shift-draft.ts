@@ -125,6 +125,13 @@ export function draftDay(args: {
     // template's earlier start — but never shorter than the minimum shift.
     const blockStart =
       mustCover == null ? best.startMin : Math.max(best.startMin, Math.min(t0, best.endMin - minLen));
+    // Likewise end after the last short step (e.g. staffed until 8:30, not the template's 8:45).
+    const step = args.mins.length > 1 ? args.mins[1]! - args.mins[0]! : 15;
+    const lastShort = args.mins.reduce(
+      (acc, t, i) => (t >= blockStart && t < best!.endMin && short[i]! > 0 ? t + step : acc),
+      blockStart,
+    );
+    const blockEnd = Math.min(best.endMin, Math.max(lastShort, blockStart + minLen));
 
     const candidates = args.roster
       .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
@@ -132,7 +139,7 @@ export function draftDay(args: {
         const [ws, we] = a.windows[dow]!;
         const [s, e] = freeSegment(
           Math.max(ws, blockStart),
-          Math.min(we, best!.endMin),
+          Math.min(we, blockEnd),
           args.unavailable?.get(a.employee),
         );
         return { a, s, e, len: e - s };
@@ -154,7 +161,7 @@ export function draftDay(args: {
 
     const pick = candidates[0];
     const s = pick ? pick.s : blockStart;
-    const e = pick ? pick.e : best.endMin;
+    const e = pick ? pick.e : blockEnd;
     out.push({
       date: args.iso,
       kind: best.kind,
@@ -162,7 +169,7 @@ export function draftDay(args: {
       endMin: e,
       hours: (e - s) / 60,
       employee: pick?.a.employee ?? null,
-      trimmed: !!pick && (s !== blockStart || e !== best.endMin),
+      trimmed: !!pick && (s !== blockStart || e !== blockEnd),
     });
     if (pick) {
       busy.add(pick.a.employee);

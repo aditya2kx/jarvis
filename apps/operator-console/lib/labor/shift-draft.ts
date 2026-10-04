@@ -93,6 +93,8 @@ export function draftDay(args: {
   minShiftMin?: number;
   /** Longest shift ("need" shift times). */
   maxShiftMin?: number;
+  /** Minutes an arriving person overlaps the one leaving (0 = back-to-back). */
+  handoverOverlapMin?: number;
   shiftTimes?: ShiftTimes;
   maxShifts?: number;
 }): DraftShift[] {
@@ -100,6 +102,7 @@ export function draftDay(args: {
   const templates = args.templates ?? HISTORICAL_TEMPLATES[dow]!;
   const minLen = args.minShiftMin ?? 240;
   const maxLen = Math.max(minLen, args.maxShiftMin ?? 8 * 60);
+  const overlap = args.handoverOverlapMin ?? 0;
   const cover = [...args.onFloor];
   const busy = new Set(args.busy);
   const out: DraftShift[] = [];
@@ -161,7 +164,16 @@ export function draftDay(args: {
     if (firstIdx < 0) break;
     const block = args.shiftTimes === "need" ? needBlock(short, firstIdx) : templateBlock(short, args.mins[firstIdx]!);
     if (!block) break;
-    const { start: blockStart, end: blockEnd, mustCover } = block;
+    let { start: blockStart, end: blockEnd } = block;
+    const { mustCover } = block;
+    // Nobody arrives the minute someone leaves: overlap the handover instead.
+    if (overlap > 0) {
+      const at = (t: number) => args.mins.indexOf(t);
+      const i = at(blockStart);
+      if (i > 0 && cover[i - 1]! > cover[i]!) blockStart = Math.max(dayStart, blockStart - overlap);
+      const j = at(blockEnd);
+      if (j > 0 && cover[j]! > cover[j - 1]!) blockEnd = Math.min(dayEnd, blockEnd + overlap);
+    }
 
     const candidates = args.roster
       .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))

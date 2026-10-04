@@ -706,6 +706,16 @@ export function ScheduleInputsPanel({
                     setStaffing({ maxShiftMin: Math.round(v * 60) })
                   }
                 />
+                <NumberField
+                  label="Handover overlap"
+                  unit="min"
+                  step={15}
+                  min={0}
+                  value={rules.staffing.handoverOverlapMin}
+                  onChange={(v) =>
+                    setStaffing({ handoverOverlapMin: Math.min(180, Math.round(v / 15) * 15) })
+                  }
+                />
                 <div className="flex flex-col gap-1">
                   <span className="text-[11px] text-muted-foreground">Shift times</span>
                   <div
@@ -741,6 +751,9 @@ export function ScheduleInputsPanel({
                 {rules.staffing.shiftTimes === "need"
                   ? `Each shift starts when someone is first needed and runs until the need ends; stretches longer than ${rules.staffing.maxShiftMin / 60}h split into equal shifts.`
                   : "Openers, mids and closers fit the usual ADP blocks (handover about 2 PM), trimmed to when someone is needed. Longest shift applies to Follow the need."}
+                {rules.staffing.handoverOverlapMin > 0
+                  ? ` When someone leaves as someone else arrives, the newcomer starts ${rules.staffing.handoverOverlapMin} min earlier so a late arrival never leaves the floor short.`
+                  : ""}
               </p>
             </Section>
           </div>

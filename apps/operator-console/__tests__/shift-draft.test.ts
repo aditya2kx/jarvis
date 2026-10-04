@@ -142,6 +142,29 @@ describe("draftDay", () => {
     expect([s!.startMin, s!.endMin]).toEqual([960, 1230]);
   });
 
+  it("staggers handovers by the overlap setting", () => {
+    // 1 person all day: opener 6:30–14:00, closer from 14:00 → with 60 min overlap the closer starts 13:00.
+    const need = mins.map((t) => (t < 390 || t >= 1230 ? 0 : 1));
+    const run = (handoverOverlapMin: number) =>
+      draftDay({
+        iso: "2026-10-12", mins, onFloor: zeros, need, roster: [], weekHours: new Map(), busy: new Set(),
+        handoverOverlapMin,
+      }).map((s) => [s.startMin, s.endMin]);
+    expect(run(0)).toEqual([[390, 840], [840, 1230]]);
+    expect(run(60)).toEqual([[390, 840], [780, 1230]]);
+  });
+
+  it("extends a shift that would end as an existing shift starts", () => {
+    // ADP already has someone 14:00–20:30; the drafted opener stays until 15:00.
+    const need = mins.map((t) => (t < 390 || t >= 1230 ? 0 : 1));
+    const onFloor = mins.map((t) => (t >= 840 && t < 1230 ? 1 : 0));
+    const [s] = draftDay({
+      iso: "2026-10-12", mins, onFloor, need, roster: [], weekHours: new Map(), busy: new Set(),
+      handoverOverlapMin: 60,
+    });
+    expect([s!.startMin, s!.endMin]).toEqual([390, 900]);
+  });
+
   it("adds nothing when the day already meets need", () => {
     const out = draftDay({
       iso: "2026-09-28", mins, onFloor: floorNeed, need: floorNeed,

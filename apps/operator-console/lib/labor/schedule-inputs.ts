@@ -53,6 +53,8 @@ export type StaffingBasics = {
    * ends, split evenly when longer than `maxShiftMin`.
    */
   shiftTimes: ShiftTimes;
+  /** Minutes someone arriving overlaps someone leaving, so handovers are staggered. */
+  handoverOverlapMin: number;
 };
 
 export type ShiftTimes = "history" | "need";
@@ -79,6 +81,7 @@ export const DEFAULT_STAFFING: StaffingBasics = {
   minShiftMin: 270,
   maxShiftMin: 8 * 60,
   shiftTimes: "history",
+  handoverOverlapMin: 0,
 };
 
 export const DEFAULT_RULES: ScheduleRules = {
@@ -300,6 +303,10 @@ function parseStaffing(raw: unknown): StaffingBasics {
   }
   const shiftTimes = s.shiftTimes ?? DEFAULT_STAFFING.shiftTimes;
   if (shiftTimes !== "history" && shiftTimes !== "need") throw new Error("Shift times must be history or need");
+  const handoverOverlapMin = s.handoverOverlapMin ?? DEFAULT_STAFFING.handoverOverlapMin;
+  if (!Number.isInteger(handoverOverlapMin) || handoverOverlapMin < 0 || handoverOverlapMin > 180 || handoverOverlapMin % 15) {
+    throw new Error("Handover overlap must be 0–3 hours in 15-minute steps");
+  }
   return {
     ordersPerPerson: opp,
     minPeople: s.minPeople!,
@@ -308,6 +315,7 @@ function parseStaffing(raw: unknown): StaffingBasics {
     minShiftMin: s.minShiftMin!,
     maxShiftMin,
     shiftTimes,
+    handoverOverlapMin,
   };
 }
 

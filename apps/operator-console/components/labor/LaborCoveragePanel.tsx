@@ -986,6 +986,7 @@ export function LaborCoveragePanel({
           minShiftMin: r.staffing.minShiftMin,
           maxShiftMin: r.staffing.maxShiftMin,
           shiftTimes: r.staffing.shiftTimes,
+          handoverOverlapMin: r.staffing.handoverOverlapMin,
           maxShifts,
         });
 

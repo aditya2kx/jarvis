@@ -43,6 +43,7 @@ import {
   shortWindows,
   type DemandCell,
 } from "@/lib/labor/staffing-need";
+import { addDay, emptyBreakdown, requiredByRule } from "@/lib/labor/draft-breakdown";
 import { adpRoster, draftDay, fillOpenShift, type DraftShift } from "@/lib/labor/shift-draft";
 import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
 import {
@@ -948,17 +949,13 @@ export function LaborCoveragePanel({
           const dayPeople = peopleByDay.get(iso)!;
           const cov = dayCoverage(iso, dayPeople, demand, inputs);
           const mins = cov.points.map((p) => p.min);
+          const floorOnly = needSeries(iso, cov.points, [], inputs.staffing.ordersPerPerson, floorOf(inputs.staffing));
           return {
             iso,
             mins,
             cover: cov.points.map(onFloor),
-            floorNeed: applyDayRules(
-              iso,
-              mins,
-              needSeries(iso, cov.points, [], inputs.staffing.ordersPerPerson, floorOf(inputs.staffing)),
-              inputs.dayRules,
-              inputs.deliveries,
-            ),
+            floorOnly,
+            floorNeed: applyDayRules(iso, mins, floorOnly, inputs.dayRules, inputs.deliveries),
             need: cov.need!,
             busy: new Set(dayPeople.filter((p) => !isOpenLane(p)).map((p) => p.employee)),
             shifts: [] as DraftShift[],
@@ -1009,7 +1006,20 @@ export function LaborCoveragePanel({
         }
       }
       // Pass 1: labor floor + day rules are mandatory regardless of the goal.
-      for (const d of state) add(d, run(d, d.floorNeed));
+      const breakdown = emptyBreakdown(existingHours, r.dayRules.map((x) => x.id));
+      for (const d of state) {
+        const split = requiredByRule({
+          iso: d.iso,
+          mins: d.mins,
+          floorOnly: d.floorOnly,
+          cover: [...d.cover],
+          dayRules: r.dayRules,
+          deliveries: inputs.deliveries,
+        });
+        const drafted = run(d, d.floorNeed);
+        add(d, drafted);
+        addDay(breakdown, split, drafted.reduce((a, s) => a + s.hours, 0));
+      }
       // Pass 2: spend what's left of the goal on the largest order-driven gaps.
       let budget =
         goalHoursWeek != null
@@ -1027,18 +1037,27 @@ export function LaborCoveragePanel({
           .filter((g) => g.short > 0)
           .sort((a, b) => b.short - a.short);
         if (!gaps.length) break;
-        const next = run(gaps[0]!.d, gaps[0]!.d.need, 1)[0];
-        if (!next || next.hours > budget) {
-          peakLeftHours = gaps.reduce((a, g) => a + g.short, 0);
+        // Biggest gap first; if its shift doesn't fit the goal, a smaller gap's might.
+        let placed = false;
+        for (const g of gaps) {
+          const next = run(g.d, g.d.need, 1)[0];
+          if (next && next.hours <= budget) {
+            add(g.d, [next]);
+            budget -= next.hours;
+            breakdown.peak += next.hours;
+            placed = true;
+            break;
+          }
           if (next?.employee) {
             weekHours.set(next.employee, (weekHours.get(next.employee) ?? 0) - next.hours);
             const counts = shiftsInPeriod(next.date);
             counts.set(next.employee, (counts.get(next.employee) ?? 1) - 1);
           }
+        }
+        if (!placed) {
+          peakLeftHours = gaps.reduce((a, g) => a + g.short, 0);
           break;
         }
-        add(gaps[0]!.d, [next]);
-        budget -= next.hours;
       }
 
       const byDay = new Map<string, DraftShift[]>();
@@ -1057,6 +1076,7 @@ export function LaborCoveragePanel({
         draftHours: all.reduce((a, s) => a + s.hours, 0),
         draftCount: all.length,
         peakLeftHours,
+        breakdown,
       };
     };
     const weeks = new Map(weekStarts.map((w) => [w, draftWeek(w)]));
@@ -1231,6 +1251,8 @@ export function LaborCoveragePanel({
             draftHours={weekDraft.draftHours}
             draftCount={weekDraft.draftCount}
             peakLeftHours={weekDraft.peakLeftHours}
+            breakdown={weekDraft.breakdown}
+            dayRules={rules.dayRules}
             goalHoursWeek={goalHoursWeek}
             weekShifts={weekShifts}
             adpWriteEnabled={adpWriteEnabled}

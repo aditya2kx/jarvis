@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/table";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
 import { formatClockMin } from "@/lib/labor/coverage-model";
+import type { HoursBreakdown } from "@/lib/labor/draft-breakdown";
+import { daysLabel, type DayRule } from "@/lib/labor/schedule-inputs";
 import type { PushShift } from "@/lib/labor/schedule-push";
 import type { Availability, DraftShift } from "@/lib/labor/shift-draft";
 import { cn } from "@/lib/utils";
@@ -26,6 +28,80 @@ function weekLabel(iso: string): string {
   return new Date(y!, m! - 1, d!).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+const fmtH = (h: number) => `${h < 0 ? "−" : ""}${Math.abs(h).toFixed(1)}h`;
+
+/** Where the week's hours come from, largest lever first after what's already in ADP. */
+function HoursBreakdownList({
+  breakdown: b,
+  dayRules,
+  goalHoursWeek,
+}: {
+  breakdown: HoursBreakdown;
+  dayRules: DayRule[];
+  goalHoursWeek?: number;
+}) {
+  const rules = dayRules
+    .map((r, i) => ({ r, i, hours: b.rules.find((x) => x.id === r.id)?.hours ?? 0 }))
+    .filter((x) => Math.abs(x.hours) >= 0.25);
+  const lines: { key: string; label: string; hint?: string; hours: number }[] = [
+    { key: "existing", label: "Already in ADP", hint: "clocked or scheduled", hours: b.existing },
+    { key: "floor", label: "Minimum on the floor", hint: "Staffing basics", hours: b.floor },
+    ...rules.map(({ r, i, hours }) => ({
+      key: r.id,
+      label: `Day rule ${i + 1} · ${daysLabel(r.days)} ${formatClockMin(r.fromMin)}–${formatClockMin(r.toMin)} · ${r.people} ${r.people === 1 ? "person" : "people"}`,
+      hint: hours < 0 ? "lowers need" : undefined,
+      hours,
+    })),
+    {
+      key: "shape",
+      label: "Shift length & handovers",
+      hint: "shortest shift, shift times, overlap",
+      hours: b.shape,
+    },
+    { key: "peak", label: "Busy-order shifts", hint: "only while under the goal", hours: b.peak },
+  ];
+  const total = lines.reduce((a, l) => a + l.hours, 0);
+  const max = Math.max(...lines.map((l) => Math.abs(l.hours)), 1);
+  const over = goalHoursWeek != null ? total - goalHoursWeek : 0;
+  return (
+    <div data-testid="hours-breakdown" className="flex flex-col gap-1.5 rounded-md border bg-background/60 px-3 py-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">Where the week&apos;s hours come from</span>
+        <span className="text-[11px] tabular-nums text-muted-foreground">
+          {total.toFixed(0)}h{goalHoursWeek != null ? ` of ${goalHoursWeek}h goal` : ""}
+        </span>
+      </div>
+      <ul className="flex flex-col gap-1">
+        {lines.map((l) => (
+          <li key={l.key} className="grid grid-cols-[minmax(0,1fr)_96px_48px] items-center gap-2 text-xs">
+            <span className="truncate" title={l.label}>
+              {l.label}
+              {l.hint ? <span className="text-[11px] text-muted-foreground"> · {l.hint}</span> : null}
+            </span>
+            <span className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <span
+                className="block h-full rounded-full"
+                style={{
+                  width: `${(Math.abs(l.hours) / max) * 100}%`,
+                  backgroundColor: l.key === "existing" ? "var(--muted-foreground)" : DRAFT_COLOR,
+                  opacity: l.hours < 0 ? 0.4 : 1,
+                }}
+              />
+            </span>
+            <span className="text-right tabular-nums">{fmtH(l.hours)}</span>
+          </li>
+        ))}
+      </ul>
+      {over > 0.5 ? (
+        <p className="text-[11px] text-muted-foreground">
+          {over.toFixed(0)}h over the goal. Loosen the biggest lines in Scheduling rules above — the
+          draft and this list update as you edit, before you save.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function ShiftDraftSummary({
   dayLabel,
   shifts,
@@ -35,6 +111,8 @@ export function ShiftDraftSummary({
   draftHours,
   draftCount,
   peakLeftHours,
+  breakdown,
+  dayRules,
   goalHoursWeek,
   weekShifts,
   adpWriteEnabled,
@@ -51,6 +129,8 @@ export function ShiftDraftSummary({
   draftCount: number;
   /** Order-driven person-hours left uncovered once the goal is spent. */
   peakLeftHours: number;
+  breakdown?: HoursBreakdown;
+  dayRules?: DayRule[];
   goalHoursWeek?: number;
 }) {
   const total = existingHours + draftHours;
@@ -94,6 +174,10 @@ export function ShiftDraftSummary({
         </div>
         <AdpScheduleFinalize weekStart={weekStart} shifts={weekShifts} enabled={adpWriteEnabled} />
       </div>
+
+      {breakdown ? (
+        <HoursBreakdownList breakdown={breakdown} dayRules={dayRules ?? []} goalHoursWeek={goalHoursWeek} />
+      ) : null}
 
       {shifts.length ? (
         <Table>

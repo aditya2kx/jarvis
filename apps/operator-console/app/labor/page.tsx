@@ -26,6 +26,7 @@ import { storeDisplayName } from "@/lib/config/stores";
 import { FEATURES } from "@/lib/config/features";
 import type { DemandCell } from "@/lib/labor/staffing-need";
 import { HoursPerPersonCard } from "@/components/labor/HoursPerPersonCard";
+import { OpenShiftsCard } from "@/components/labor/OpenShiftsCard";
 import { weekStartOf } from "@/lib/labor/week-options";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
 import { SuggestedHoursProvider } from "@/components/labor/SuggestedHoursContext";
@@ -813,6 +814,8 @@ export default async function LaborPage({
             todayIso={chicagoTodayIso()}
             range={weeklyRange}
           />
+
+          <OpenShiftsCard todayIso={chicagoTodayIso()} />
 
           {selectedPerson ? (
             <div data-testid="labor-hours-one-person" className="flex flex-col gap-2">

@@ -58,6 +58,7 @@ import {
 import { payPeriodStartFor } from "@/lib/payroll/openPeriod";
 import { DRAFT_COLOR, ShiftDraftSummary } from "@/components/labor/ShiftDraftSummary";
 import { useSuggestedHours } from "@/components/labor/SuggestedHoursContext";
+import type { OpenShift } from "@/lib/labor/open-shifts-insight";
 import { ScheduleInputsPanel } from "@/components/labor/ScheduleInputsPanel";
 import { Button } from "@/components/ui/button";
 import { chicagoTodayIso, shiftCalendarDate, type DateWindow } from "@/lib/filters/range";
@@ -1138,6 +1139,24 @@ export function LaborCoveragePanel({
     publishSuggested(byDay, concurrent, perPerson);
   }, [showDraft, drafts, strip, staffedHours, publishSuggested]);
   useEffect(() => () => publishSuggested(new Map(), new Map(), new Map()), [publishSuggested]);
+
+  const { publishOpen } = useSuggestedHours();
+  useEffect(() => {
+    const rows: OpenShift[] = [];
+    for (const iso of strip) {
+      if (iso <= todayIso) continue;
+      const day = drafts?.byDay.get(iso) ?? [];
+      for (const seg of lanesFor(iso).filter(isOpenLane).flatMap((p) => p.segments)) {
+        const taker = day.find((s) => s.fillsOpen && s.startMin === seg.startMin && s.endMin === seg.endMin);
+        rows.push({ date: iso, startMin: seg.startMin, endMin: seg.endMin, hours: seg.hours, source: "adp", suggested: taker?.employee ?? null });
+      }
+      if (!showDraft) continue;
+      for (const s of newShifts(day)) {
+        if (!s.employee) rows.push({ date: iso, startMin: s.startMin, endMin: s.endMin, hours: s.hours, source: "draft" });
+      }
+    }
+    publishOpen(rows, rules.staffing.maxWeekHours);
+  }, [strip, todayIso, drafts, lanesFor, showDraft, rules.staffing.maxWeekHours, publishOpen]);
 
   const weekDraft =
     drafts && activeDay && activeDay > todayIso

@@ -1,0 +1,115 @@
+- button
+- text: JD
+- button "Doe, Jane"
+- button
+- text: Pay Period
+- button "Pay Period Current Pay Period, 09/21/2026 - 10/04/2026": Current Pay Period, 09/21/2026 - 10/04/2026
+- button "Print timecard for this pay period": Print
+- heading "Pay Period Summary" [level=2]
+- text: 09/21/2026 - 10/04/2026 56:15 Total Hours
+- heading "Pay Code Summary" [level=2]
+- list:
+  - listitem: Regular 56:15HRS
+- heading "Weekly Summary" [level=2]
+- list:
+  - listitem: Week 1 09/21/2026 - 09/27/2026 39:02 HRS
+  - listitem: Week 2 09/28/2026 - 10/04/2026 17:13 HRS
+- heading "Day Summary" [level=2]
+- switch "Show breakdown" [checked]:
+  - img
+  - text: Show breakdown
+- switch "Show schedule" [checked]:
+  - img
+  - text: Show schedule
+- table:
+  - rowgroup:
+    - row "Monday Tuesday Wednesday Thursday Friday Saturday Sunday":
+      - columnheader "Monday"
+      - columnheader "Tuesday"
+      - columnheader "Wednesday"
+      - columnheader "Thursday"
+      - columnheader "Friday"
+      - columnheader "Saturday"
+      - columnheader "Sunday"
+  - rowgroup:
+    - row:
+      - cell "Monday, Sep 21st This day has a timecard entry. TOTAL TIME 7:50 Hours 7:50 hours Show details for Monday, September 21st Has 2 schedules. 06:30 AM - 01:30 PM 01:30 PM - 02:00 PM Time Entries":
+        - text: 21 This day has a timecard entry. TOTAL TIME 7:50 Hours
+        - button "7:50 hours Show details for Monday, September 21st"
+        - text: Has 2 schedules. 06:30 AM - 01:30 PM 01:30 PM - 02:00 PM
+        - list "Time Entries":
+          - listitem: 06:30 AM - 02:20 PM
+      - cell "Tuesday, Sep 22nd This day has 2 timecard entries. TOTAL TIME 10:42 Hours 10:42 hours Show details for Tuesday, September 22nd There are errors for this day Has a schedule. 10:00 AM - 08:30 PM Time Entries":
+        - text: 22 This day has 2 timecard entries. TOTAL TIME 10:42 Hours
+        - button "10:42 hours Show details for Tuesday, September 22nd"
+        - status "There are errors for this day"
+        - text: Has a schedule. 10:00 AM - 08:30 PM
+        - list "Time Entries":
+          - listitem: 08:55 AM - 09:22 AM
+          - listitem: 10:00 AM - 08:15 PM
+      - cell "Wednesday, Sep 23rd This day has a timecard entry. TOTAL TIME 2:16 Hours 2:16 hours Show details for Wednesday, September 23rd Has a schedule. 12:00 PM - 01:30 PM Time Entries":
+        - text: 23 This day has a timecard entry. TOTAL TIME 2:16 Hours
+        - button "2:16 hours Show details for Wednesday, September 23rd"
+        - text: Has a schedule. 12:00 PM - 01:30 PM
+        - list "Time Entries":
+          - listitem: 10:00 AM - 12:16 PM
+      - cell "Thursday, Sep 24th Add new entry for Thursday, Sep 24th Has 0 schedules.":
+        - text: "24"
+        - button "Add new entry for Thursday, Sep 24th"
+        - text: Has 0 schedules.
+      - cell "Friday, Sep 25th This day has a timecard entry. TOTAL TIME 0:36 Hours 0:36 hours Show details for Friday, September 25th Has 0 schedules. Time Entries":
+        - text: 25 This day has a timecard entry. TOTAL TIME 0:36 Hours
+        - button "0:36 hours Show details for Friday, September 25th"
+        - text: Has 0 schedules.
+        - list "Time Entries":
+          - listitem: 06:30 PM - 07:06 PM
+      - cell "Saturday, Sep 26th This day has 2 timecard entries. TOTAL TIME 8:25 Hours 8:25 hours Show details for Saturday, September 26th Has 2 schedules. 09:30 AM - 10:00 AM 10:30 AM - 04:00 PM Time Entries":
+        - text: 26 This day has 2 timecard entries. TOTAL TIME 8:25 Hours
+        - button "8:25 hours Show details for Saturday, September 26th"
+        - text: Has 2 schedules. 09:30 AM - 10:00 AM 10:30 AM - 04:00 PM
+        - list "Time Entries":
+          - listitem: 09:30 AM - 10:00 AM
+          - listitem: 10:20 AM - 06:15 PM
+      - cell "Sunday, Sep 27th This day has a timecard entry. TOTAL TIME 9:13 Hours 9:13 hours Show details for Sunday, September 27th Has a schedule. 11:00 AM - 08:30 PM Time Entries":
+        - text: 27 This day has a timecard entry. TOTAL TIME 9:13 Hours
+        - button "9:13 hours Show details for Sunday, September 27th"
+        - text: Has a schedule. 11:00 AM - 08:30 PM
+        - list "Time Entries":
+          - listitem: 11:10 AM - 08:23 PM
+    - row "Monday, Sep 28th This day has a timecard entry. TOTAL TIME 6:35 Hours 6:35 hours Show details for Monday, September 28th Has 2 schedules. 09:00 AM - 04:00 PM 05:30 PM - 06:30 PM Time Entries Tuesday, Sep 29th This day has a timecard entry. TOTAL TIME 10:23 Hours 10:23 hours Show details for Tuesday, September 29th Has a schedule. 10:00 AM - 08:30 PM Time Entries Wednesday, Sep 30th This day has 2 timecard entries. TOTAL TIME 0:15 Hours 0:15 hours Show details for Wednesday, September 30th Has 2 schedules. 11:30 AM - 01:30 PM 01:30 PM - 08:30 PM Time Entries Thursday, Oct 1st Add new entry for Thursday, Oct 1st Has 0 schedules. Friday, Oct 2nd Add new entry for Friday, Oct 2nd Has 0 schedules. Today, Saturday, Oct 3rd Add new entry for Saturday, Oct 3rd Has 0 schedules. Sunday, Oct 4th Add new entry for Sunday, Oct 4th Has 0 schedules.":
+      - cell "Monday, Sep 28th This day has a timecard entry. TOTAL TIME 6:35 Hours 6:35 hours Show details for Monday, September 28th Has 2 schedules. 09:00 AM - 04:00 PM 05:30 PM - 06:30 PM Time Entries":
+        - text: 28 This day has a timecard entry. TOTAL TIME 6:35 Hours
+        - button "6:35 hours Show details for Monday, September 28th"
+        - text: Has 2 schedules. 09:00 AM - 04:00 PM 05:30 PM - 06:30 PM
+        - list "Time Entries":
+          - listitem: 08:50 AM - 03:25 PM
+      - cell "Tuesday, Sep 29th This day has a timecard entry. TOTAL TIME 10:23 Hours 10:23 hours Show details for Tuesday, September 29th Has a schedule. 10:00 AM - 08:30 PM Time Entries":
+        - text: 29 This day has a timecard entry. TOTAL TIME 10:23 Hours
+        - button "10:23 hours Show details for Tuesday, September 29th"
+        - text: Has a schedule. 10:00 AM - 08:30 PM
+        - list "Time Entries":
+          - listitem: 10:00 AM - 08:23 PM
+      - cell "Wednesday, Sep 30th This day has 2 timecard entries. TOTAL TIME 0:15 Hours 0:15 hours Show details for Wednesday, September 30th Has 2 schedules. 11:30 AM - 01:30 PM 01:30 PM - 08:30 PM Time Entries":
+        - text: 30 This day has 2 timecard entries. TOTAL TIME 0:15 Hours
+        - button "0:15 hours Show details for Wednesday, September 30th"
+        - text: Has 2 schedules. 11:30 AM - 01:30 PM 01:30 PM - 08:30 PM
+        - list "Time Entries":
+          - listitem: 09:10 AM - 09:25 AM
+          - listitem: 11:10 AM - Blank
+      - cell "Thursday, Oct 1st Add new entry for Thursday, Oct 1st Has 0 schedules.":
+        - text: "1"
+        - button "Add new entry for Thursday, Oct 1st"
+        - text: Has 0 schedules.
+      - cell "Friday, Oct 2nd Add new entry for Friday, Oct 2nd Has 0 schedules.":
+        - text: "2"
+        - button "Add new entry for Friday, Oct 2nd"
+        - text: Has 0 schedules.
+      - cell "Today, Saturday, Oct 3rd Add new entry for Saturday, Oct 3rd Has 0 schedules.":
+        - text: "3"
+        - button "Add new entry for Saturday, Oct 3rd"
+        - text: Has 0 schedules.
+      - cell "Sunday, Oct 4th Add new entry for Sunday, Oct 4th Has 0 schedules.":
+        - text: "4"
+        - button "Add new entry for Sunday, Oct 4th"
+        - text: Has 0 schedules.
+- region

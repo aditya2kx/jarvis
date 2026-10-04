@@ -8,10 +8,16 @@ const PROJECT = process.env.BQ_PROJECT ?? "jarvis-bhaga-prod";
 const REGION = process.env.BHAGA_REGION ?? "us-central1";
 const JOB = process.env.CLOUD_RUN_JOB_NAME_SHORT ?? "bhaga-daily-refresh";
 const JOB_RESOURCE = `projects/${PROJECT}/locations/${REGION}/jobs/${JOB}`;
+/** Timecards sync + punch write-back; BHAGA_ADP_PREVIEW_JOB points them at a branch-built job before merge. */
+function adpJobResource(): string {
+  const preview = process.env.BHAGA_ADP_PREVIEW_JOB?.trim();
+  return preview ? `projects/${PROJECT}/locations/${REGION}/jobs/${preview}` : JOB_RESOURCE;
+}
 
 async function runJob(
   env: { name: string; value: string }[],
   label: string,
+  jobResource: string = JOB_RESOURCE,
 ): Promise<{ executionName: string }> {
   const auth = new GoogleAuth({
     scopes: ["https://www.googleapis.com/auth/cloud-platform"],
@@ -22,7 +28,7 @@ async function runJob(
     throw new Error(`${label}: failed to obtain ADC access token`);
   }
 
-  const url = `https://run.googleapis.com/v2/${JOB_RESOURCE}:run`;
+  const url = `https://run.googleapis.com/v2/${jobResource}:run`;
   const body = {
     overrides: {
       containerOverrides: [{ env }],
@@ -182,6 +188,31 @@ export async function triggerAdpTimecardSync(
   return runJob(
     adpTimecardOnlyEnv(store, targetDate),
     `triggerAdpTimecardSync(store=${store} date=${targetDate})`,
+    adpJobResource(),
+  );
+}
+
+/**
+ * Enqueue the missing-punch write-back (Issue #356): writes the claimed
+ * clock-outs into ADP Timecards, then resyncs clocked hours. Job short-circuits
+ * via BHAGA_PUNCH_FIX_APPLY_ONLY and refuses without BHAGA_PUNCH_FIX_WRITEBACK.
+ */
+export async function triggerPunchFixApply(
+  store: string,
+  decisionIds: string[],
+  targetDate: string,
+): Promise<{ executionName: string }> {
+  if (!store) throw new Error("triggerPunchFixApply: store is required");
+  if (!decisionIds.length) throw new Error("triggerPunchFixApply: nothing to write");
+  return runJob(
+    [
+      ...adpTimecardOnlyEnv(store, targetDate).filter((e) => e.name !== "BHAGA_ADP_TIMECARD_ONLY"),
+      { name: "BHAGA_PUNCH_FIX_APPLY_ONLY", value: "1" },
+      { name: "BHAGA_PUNCH_FIX_WRITEBACK", value: "1" },
+      { name: "BHAGA_PUNCH_FIX_DECISION_IDS", value: decisionIds.join(",") },
+    ],
+    `triggerPunchFixApply(store=${store} n=${decisionIds.length})`,
+    adpJobResource(),
   );
 }
 

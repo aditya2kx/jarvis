@@ -9,6 +9,7 @@ import {
   laborHoursPerPersonDaily,
   laborOpenShiftDays,
   laborOpenShiftHoursByGrain,
+  laborPunchGaps,
   laborScheduledHoursByGrain,
   laborScheduledShiftDays,
   laborSoloHoursPerPerson,
@@ -22,6 +23,8 @@ import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
 import { LaborWeeklyHoursGoal } from "@/components/labor/LaborWeeklyHoursGoal";
 import { LaborConcurrentChart } from "@/components/labor/LaborConcurrentChart";
 import { LaborCoveragePanel } from "@/components/labor/LaborCoveragePanel";
+import { PunchGapsPanel } from "@/components/labor/PunchGapsPanel";
+import { buildPunchGaps, type PunchGap } from "@/lib/labor/punch-gaps";
 import { SyncClockedHoursButton } from "@/components/labor/SyncClockedHoursButton";
 import { SyncScheduledShiftsButton } from "@/components/labor/SyncScheduledShiftsButton";
 import { PageHeader } from "@/components/shell/PageHeader";
@@ -171,6 +174,7 @@ export default async function LaborPage({
   let soloRows: LaborSoloHoursRow[] = [];
   let openHoursRows: LaborOpenShiftHoursRow[] = [];
   let coverageOpen: LaborOpenShiftDayRow[] = [];
+  let punchGaps: PunchGap[] = [];
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
@@ -222,6 +226,8 @@ export default async function LaborPage({
       solo,
       openHours,
       openDays,
+      gapRows,
+      gapCoworkers,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -258,7 +264,12 @@ export default async function LaborPage({
         ? laborOpenShiftHoursByGrain(schedWin, grain).catch(() => [])
         : Promise.resolve([]),
       laborOpenShiftDays(chartWin).catch(() => []),
+      // Gaps are keyed on the Period itself (not the chart/punch windows): a
+      // forgotten clock-out is a past-day fact regardless of schedule handoff.
+      laborPunchGaps(win, DEFAULT_STORE).catch(() => []),
+      laborActualShiftDays(win).catch(() => []),
     ]);
+    punchGaps = buildPunchGaps(gapRows, gapCoworkers);
     soloRows = solo;
     openHoursRows = openHours;
     coverageOpen = openDays;
@@ -675,6 +686,10 @@ export default async function LaborPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
+          {punchGaps.length ? (
+            <PunchGapsPanel gaps={punchGaps} periodLabel={`${win.start} → ${win.end}`} />
+          ) : null}
+
           <LaborHoursChart
             data={chartData}
             laborTypes={laborTypes}

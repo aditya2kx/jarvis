@@ -82,6 +82,12 @@ def _patched_main(
     p(mock.patch.object(daily_refresh, "_execute_pipelines", side_effect=execute_stub))
     p(mock.patch.object(daily_refresh, "info_ping"))
     p(mock.patch.object(daily_refresh, "success_heartbeat"))
+    # Past the gate main() reaches the real loaders; on a laptop with ADC they
+    # would write prod BQ / ClickUp / Plaid from whatever sits in extracted/downloads.
+    p(mock.patch.object(daily_refresh, "_run_backfill_from_downloads", return_value=[]))
+    p(mock.patch.object(daily_refresh.subprocess, "run"))
+    p(mock.patch("core.order_reco.refresh_order_reco"))
+    p(mock.patch.object(daily_refresh, "_plaid_sync_linked_items"))
     try:
         yield {
             "recorded": recorded,

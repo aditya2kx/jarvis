@@ -5,6 +5,7 @@ import {
   computeLaborForwardSummary,
   type LaborForwardSummary,
 } from "@/lib/kpi/labor-forward";
+import type { PunchGapRow } from "@/lib/labor/punch-gaps";
 
 export type { LaborForwardSummary };
 
@@ -782,6 +783,86 @@ export function laborOpenShiftDays(win: DateWindow): Promise<LaborOpenShiftDayRo
      ORDER BY date, slot_index`,
     { start: dateParam(win.start), end: dateParam(win.end) },
   );
+}
+
+/**
+ * Open punches from the ADP Timecards month view (Issue #356) + the operator's
+ * latest decision per (date, employee). Gaps disappear from adp_timecard_gaps
+ * once ADP is fixed and re-scraped; decisions stay as the audit trail.
+ */
+export function laborPunchGaps(win: DateWindow, store: string): Promise<PunchGapRow[]> {
+  return q<PunchGapRow>(
+    `WITH latest AS (
+       SELECT * EXCEPT (rn) FROM (
+         SELECT d.*, ROW_NUMBER() OVER (
+           PARTITION BY d.store, d.date, d.employee_id ORDER BY d.decided_at DESC
+         ) AS rn
+         FROM ${fq("punch_gap_decisions")} d
+         WHERE d.store = @store AND d.date BETWEEN @start AND @end
+       ) WHERE rn = 1
+     )
+     SELECT
+       CAST(g.date AS STRING) AS date,
+       g.employee_id,
+       g.kind,
+       g.entries_json,
+       g.scheduled_ranges_json,
+       g.open_entry_index,
+       g.suggested_in,
+       g.suggested_out,
+       g.suggested_hours,
+       g.rule,
+       g.adp_error_flag,
+       l.decision_id,
+       l.action AS decision_action,
+       l.in_time AS decision_in_time,
+       l.out_time AS decision_out_time,
+       l.status AS decision_status,
+       l.error AS decision_error,
+       l.decided_by,
+       CAST(l.decided_at AS STRING) AS decided_at
+     FROM ${fq("adp_timecard_gaps")} g
+     LEFT JOIN latest l
+       ON l.date = g.date AND l.employee_id = g.employee_id
+     WHERE g.store = @store AND g.date BETWEEN @start AND @end
+     ORDER BY date DESC, employee_id`,
+    { store, start: dateParam(win.start), end: dateParam(win.end) },
+  );
+}
+
+/** Write-back status of punch gap decisions (polled while "Write to ADP" runs). */
+export function punchGapDecisionStatuses(
+  store: string,
+  ids: string[],
+): Promise<{ decision_id: string; status: string; error: string | null }[]> {
+  if (!ids.length) return Promise.resolve([]);
+  return q(
+    `SELECT decision_id, status, error
+     FROM ${fq("punch_gap_decisions")}
+     WHERE store = @store AND decision_id IN UNNEST(@ids)`,
+    { store, ids },
+  );
+}
+
+/** One gap row (server-side validation before recording a decision). */
+export function punchGapFor(
+  store: string,
+  date: string,
+  employee: string,
+): Promise<PunchGapRow | null> {
+  return q<PunchGapRow>(
+    `SELECT CAST(g.date AS STRING) AS date, g.employee_id, g.kind, g.entries_json,
+            g.scheduled_ranges_json, g.open_entry_index, g.suggested_in, g.suggested_out,
+            g.suggested_hours, g.rule, g.adp_error_flag,
+            ARRAY_AGG(d.status IGNORE NULLS ORDER BY d.decided_at DESC LIMIT 1)[SAFE_OFFSET(0)]
+              AS decision_status
+     FROM ${fq("adp_timecard_gaps")} g
+     LEFT JOIN ${fq("punch_gap_decisions")} d
+       ON d.store = g.store AND d.date = g.date AND d.employee_id = g.employee_id
+     WHERE g.store = @store AND g.date = @date AND g.employee_id = @employee
+     GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11`,
+    { store, date: dateParam(date), employee },
+  ).then((rows) => rows[0] ?? null);
 }
 
 /** Day-level clocked shifts for coverage swimlanes (Issue #213). */

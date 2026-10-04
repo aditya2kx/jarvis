@@ -87,6 +87,9 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    never on `bhaga-nightly` job env). Headless by default (`BHAGA_ADP_HEADED=1` to watch).
    Jarvis never Approve/Save; operator submits in ADP. Console shows Preview
    done + hours/total-pay vs last Preview (no session URL).
+   Issue #356: the one timecard write is a flagged (`PUNCH_FIX_WRITEBACK`) Cloud Run fill of a
+   missing clock-out / scheduled entry the operator approved in the console — re-read first, Save
+   once, read back, never auto-retry (`RUNBOOK.md` § Missing punches).
 7. **Timezone = Central (Texas).** All date selection on Square / ADP / reviews and all report
    timestamps use `ZoneInfo("America/Chicago")`. A date is "today" only after the shop closes (the
    nightly fires 21:30 CT). Never let local/PST/UTC leak into a date boundary.

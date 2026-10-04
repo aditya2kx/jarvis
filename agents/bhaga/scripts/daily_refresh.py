@@ -1955,6 +1955,10 @@ def _adp_bundle_then_raise(
     sched_err = errs.pop("adp_schedule", None)
     if sched_err:
         print(f"[adp_bundle] WARN: schedule scrape failed (non-fatal): {sched_err}")
+    # adp_timecard_gaps — open-punch review list (Issue #356); hours never read it.
+    gaps_err = errs.pop("adp_timecard_gaps", None)
+    if gaps_err:
+        print(f"[adp_bundle] WARN: timecard gaps scrape failed (non-fatal): {gaps_err}")
     pay_info_err = errs.pop("adp_pay_info", None)
     if pay_info_err:
         print(f"[adp_bundle] WARN: pay_info scrape failed (non-fatal): {pay_info_err}")
@@ -2749,6 +2753,8 @@ def _run_refresh(run_id: str) -> int:
                 "adp_liability",
                 "--skip",
                 "square_rollup",
+                "--skip",
+                "adp_timecard_gaps",
                 "--refresh-date",
                 refresh_date.isoformat(),
             ],
@@ -2758,6 +2764,22 @@ def _run_refresh(run_id: str) -> int:
         )
         print("[adp-schedule-only] BQ upsert complete")
         return 0
+
+    # Console "Write to ADP" on missing punches (Issue #356): write the approved
+    # clock-outs, then fall through to the timecard-only resync below so the
+    # fixed punches land in adp_punches and drop off adp_timecard_gaps.
+    after_punch_fix = False
+    if _env_skip("BHAGA_PUNCH_FIX_APPLY_ONLY"):
+        args.store = os.environ.get("BHAGA_STORE") or args.store
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        from agents.bhaga.scripts.punch_fix_apply import run_from_env  # noqa: PLC0415
+
+        counts = run_from_env(args.store)
+        if not (counts.get("applied") or counts.get("already_resolved")):
+            print("[punch-fix] nothing changed in ADP — skipping resync")
+            return 0
+        os.environ["BHAGA_ADP_TIMECARD_ONLY"] = "1"
+        after_punch_fix = True
 
     # Console "Sync clocked hours" (Issue #267): Timecard scrape + BQ shifts/punches
     # only — no pay_info (token hourlies), no Square/KDS/model. Before completeness
@@ -2776,7 +2798,8 @@ def _run_refresh(run_id: str) -> int:
         today_xlsx = DOWNLOADS_DIR / f"Timecard-{_today_ct().isoformat()}.xlsx"
         meta = today_xlsx.with_suffix(today_xlsx.suffix + ".target-meta.json")
         today_sched = DOWNLOADS_DIR / f"Schedule-{_today_ct().isoformat()}.json"
-        for cached in (today_xlsx, meta, today_sched):
+        today_gaps = DOWNLOADS_DIR / f"TimecardsUI-{_today_ct().isoformat()}.json"
+        for cached in (today_xlsx, meta, today_sched, today_gaps):
             if cached.exists():
                 cached.unlink()
                 print(f"[adp-timecard-only] removed cached {cached.name} (force re-scrape)")
@@ -2786,12 +2809,13 @@ def _run_refresh(run_id: str) -> int:
             f"(set BHAGA_ADP_HEADED=1 for a visible browser)"
         )
         # Team Schedule rides the same login (open shifts, Issue #342); no
-        # earnings, liability or pay-rate scrape.
+        # earnings, liability or pay-rate scrape. A punch write cannot change
+        # the schedule, so its resync skips the ~2 min schedule walk.
         result = download_adp_bundle(
             store=args.store,
             target_date=refresh_date,
             include_earnings=False,
-            include_schedule=True,
+            include_schedule=not after_punch_fix,
             include_extras=False,
             headed=headed,
         )
@@ -2802,13 +2826,21 @@ def _run_refresh(run_id: str) -> int:
             )
         print(f"[adp-timecard-only] wrote {result['timecard_xlsx']}")
         skips = ["square", "adp_rates", "adp_liability", "square_rollup"]
-        if result.get("schedule_json") and not result["errors"].get("adp_schedule"):
+        if after_punch_fix:
+            skips.append("adp_schedule")
+        elif result.get("schedule_json") and not result["errors"].get("adp_schedule"):
             print(f"[adp-timecard-only] schedule refreshed → {result['schedule_json']}")
         else:
             skips.append("adp_schedule")
             print(
                 f"[adp-timecard-only] WARN: schedule refresh failed "
                 f"({result['errors'].get('adp_schedule')}); clocked hours still load"
+            )
+        if result["errors"].get("adp_timecard_gaps") or not result.get("timecards_ui_json"):
+            skips.append("adp_timecard_gaps")
+            print(
+                f"[adp-timecard-only] WARN: timecard gaps refresh failed "
+                f"({result['errors'].get('adp_timecard_gaps')}); clocked hours still load"
             )
         bq_env = {**os.environ, "BHAGA_DATASTORE": "bigquery", "PYTHONUNBUFFERED": "1"}
         subprocess.run(

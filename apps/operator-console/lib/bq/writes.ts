@@ -1107,3 +1107,91 @@ export async function hasAutomationPostToday(
   );
   return Number(rows[0]?.n ?? 0) > 0;
 }
+
+/**
+ * Append the operator's decision on one open punch (Issue #356). Append-only:
+ * the latest decided_at per (store, date, employee_id) is live, so changing a
+ * decision never loses the earlier one. Null params need explicit types — the
+ * Node client cannot infer a type from null.
+ */
+export async function recordPunchGapDecision(row: {
+  store: string;
+  date: string;
+  employee_id: string;
+  action: "accept" | "edit" | "reject";
+  in_time: string | null;
+  out_time: string | null;
+  open_entry_index: number | null;
+  note: string | null;
+  status: string;
+  decided_by: string;
+}): Promise<string> {
+  const decisionId = crypto.randomUUID();
+  await mutate(
+    `INSERT INTO ${fq("punch_gap_decisions")} (
+       decision_id, store, date, employee_id, action, in_time, out_time,
+       open_entry_index, note, status, decided_by, decided_at
+     ) VALUES (
+       @id, @store, @date, @employee, @action, @in_time, @out_time,
+       @open_idx, @note, @status, @by, CURRENT_TIMESTAMP()
+     )`,
+    {
+      id: decisionId,
+      store: row.store,
+      date: dateParam(row.date),
+      employee: row.employee_id,
+      action: row.action,
+      in_time: row.in_time,
+      out_time: row.out_time,
+      open_idx: row.open_entry_index != null ? intParam(row.open_entry_index) : null,
+      note: row.note,
+      status: row.status,
+      by: row.decided_by,
+    },
+    { in_time: "STRING", out_time: "STRING", open_idx: "INT64", note: "STRING" },
+  );
+  return decisionId;
+}
+
+/**
+ * Claim decisions for the ADP write-back (Issue #356): only the live decision
+ * per gap, accept/edit, still `recorded` or `failed`, flips to `applying`. A
+ * second click while a write runs claims nothing, so ADP is never written twice.
+ * Returns the ids actually claimed.
+ */
+export async function claimPunchGapDecisions(store: string, ids: string[]): Promise<string[]> {
+  if (!ids.length) return [];
+  await mutate(
+    `UPDATE ${fq("punch_gap_decisions")} d
+     SET status = 'applying', error = NULL
+     WHERE d.store = @store
+       AND d.decision_id IN UNNEST(@ids)
+       AND d.action IN ('accept', 'edit')
+       AND d.status IN ('recorded', 'failed')
+       AND d.decided_at = (
+         SELECT MAX(x.decided_at) FROM ${fq("punch_gap_decisions")} x
+         WHERE x.store = d.store AND x.date = d.date AND x.employee_id = d.employee_id
+       )`,
+    { store, ids },
+  );
+  const rows = await q<{ decision_id: string }>(
+    `SELECT decision_id FROM ${fq("punch_gap_decisions")}
+     WHERE store = @store AND decision_id IN UNNEST(@ids) AND status = 'applying'`,
+    { store, ids },
+  );
+  return rows.map((r) => r.decision_id);
+}
+
+/** Release a claim when the apply job could not be started. */
+export async function releasePunchGapDecisions(
+  store: string,
+  ids: string[],
+  error: string,
+): Promise<void> {
+  if (!ids.length) return;
+  await mutate(
+    `UPDATE ${fq("punch_gap_decisions")} SET status = 'failed', error = @error
+     WHERE store = @store AND decision_id IN UNNEST(@ids) AND status = 'applying'`,
+    { store, ids, error: error.slice(0, 300) },
+  );
+}

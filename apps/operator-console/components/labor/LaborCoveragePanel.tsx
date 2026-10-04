@@ -244,7 +244,8 @@ function DayStrip({
                   className="mt-0.5 text-[10px] font-medium tabular-nums"
                   style={{ color: DRAFT_COLOR }}
                 >
-                  +{newShifts(draftShifts!.get(chip.date)!).length} draft
+                  +{newShifts(draftShifts!.get(chip.date)!).length} draft ·{" "}
+                  {newShifts(draftShifts!.get(chip.date)!).reduce((h, d) => h + d.hours, 0)}h
                 </span>
               ) : (shortHours?.get(chip.date) ?? 0) > 0 ? (
                 <span className="mt-0.5 text-[10px] font-medium tabular-nums text-rose-600 dark:text-rose-400">
@@ -564,7 +565,7 @@ function CoverageTimeline({
                   <span className="truncate">{s.employee ?? "Open shift"}</span>
                 </span>
                 <span className="shrink-0 tabular-nums text-muted-foreground">
-                  {formatClockMin(s.startMin)}–{formatClockMin(s.endMin)}
+                  {formatClockMin(s.startMin)}–{formatClockMin(s.endMin)} · {s.hours}h
                 </span>
               </li>
             ))}
@@ -726,7 +727,7 @@ function CoverageTimeline({
                     }}
                   >
                     {width > 14
-                      ? `${s.kind === "open" ? "Open" : s.kind === "mid" ? "Mid" : "Close"} · ${formatClockMin(s.startMin)}–${formatClockMin(s.endMin)}`
+                      ? `${s.kind === "open" ? "Open" : s.kind === "mid" ? "Mid" : "Close"} · ${formatClockMin(s.startMin)}–${formatClockMin(s.endMin)} · ${s.hours}h`
                       : `${s.hours}h`}
                   </div>
                 </div>

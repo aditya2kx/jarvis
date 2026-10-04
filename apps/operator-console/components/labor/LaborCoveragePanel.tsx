@@ -851,8 +851,8 @@ export function LaborCoveragePanel({
   );
   const roster = useMemo(() => {
     const limits = staffLimits(rules.staffRules);
-    return baseRoster.map((a) => ({ ...a, ...limits.get(a.employee) }));
-  }, [baseRoster, rules.staffRules]);
+    return baseRoster.map((a) => ({ ...a, maxWeekHours: rules.staffing.maxWeekHours, ...limits.get(a.employee) }));
+  }, [baseRoster, rules.staffRules, rules.staffing.maxWeekHours]);
 
   const { chips, shortHours } = useMemo(() => {
     const short = new Map<string, number>();
@@ -908,7 +908,7 @@ export function LaborCoveragePanel({
       deliveries: new Set(deliveryDates ?? []),
     };
     const limits = staffLimits(r.staffRules);
-    const roster = baseRoster.map((a) => ({ ...a, ...limits.get(a.employee) }));
+    const roster = baseRoster.map((a) => ({ ...a, maxWeekHours: r.staffing.maxWeekHours, ...limits.get(a.employee) }));
     const weekStarts = [
       ...new Set(
         strip

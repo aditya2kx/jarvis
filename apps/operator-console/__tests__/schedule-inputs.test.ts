@@ -342,3 +342,14 @@ describe("moveItem", () => {
     expect(moveItem(["a", "b"], 1, 1)).toEqual(["a", "b"]);
   });
 });
+
+describe("most hours per person", () => {
+  it("defaults to 40 for older versions and validates the range", async () => {
+    const { parseScheduleRules, DEFAULT_STAFFING } = await import("@/lib/labor/schedule-inputs");
+    const base = { dayRules: [], staffRules: [], staffing: { ...DEFAULT_STAFFING } } as Record<string, unknown>;
+    const { maxWeekHours: _drop, ...older } = DEFAULT_STAFFING;
+    expect(parseScheduleRules({ ...base, staffing: older }).staffing.maxWeekHours).toBe(40);
+    expect(parseScheduleRules({ ...base, staffing: { ...DEFAULT_STAFFING, maxWeekHours: 30 } }).staffing.maxWeekHours).toBe(30);
+    expect(() => parseScheduleRules({ ...base, staffing: { ...DEFAULT_STAFFING, maxWeekHours: 0 } })).toThrow();
+  });
+});

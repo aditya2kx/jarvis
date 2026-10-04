@@ -335,7 +335,7 @@ function clock(min: number): string {
 }
 
 function staffingSummary(s: StaffingBasics): string {
-  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts${s.shiftTimes === "need" ? " · follow the need" : ""}`;
+  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.shiftTimes === "need" ? " · follow the need" : ""}`;
 }
 
 function rulesSummary(v: RulesVersion): string {
@@ -707,6 +707,14 @@ export function ScheduleInputsPanel({
                   }
                 />
                 <NumberField
+                  label="Most hours / person"
+                  unit="h/week"
+                  step={1}
+                  min={1}
+                  value={rules.staffing.maxWeekHours}
+                  onChange={(v) => setStaffing({ maxWeekHours: Math.min(80, Math.max(1, Math.round(v))) })}
+                />
+                <NumberField
                   label="Handover overlap"
                   unit="min"
                   step={15}
@@ -754,6 +762,7 @@ export function ScheduleInputsPanel({
                 {rules.staffing.handoverOverlapMin > 0
                   ? ` When someone leaves as someone else arrives, the newcomer starts ${rules.staffing.handoverOverlapMin} min earlier so a late arrival never leaves the floor short.`
                   : ""}
+                {` Nobody is drafted past ${rules.staffing.maxWeekHours}h in a week (ADP scheduled + draft) unless their staff rule sets a different target.`}
               </p>
             </Section>
           </div>

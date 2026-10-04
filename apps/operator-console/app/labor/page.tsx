@@ -27,6 +27,7 @@ import { FEATURES } from "@/lib/config/features";
 import type { DemandCell } from "@/lib/labor/staffing-need";
 import { HoursPerPersonCard } from "@/components/labor/HoursPerPersonCard";
 import { OpenShiftsCard } from "@/components/labor/OpenShiftsCard";
+import { CollapsibleSection } from "@/components/shell/CollapsibleSection";
 import { weekStartOf } from "@/lib/labor/week-options";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
 import { SuggestedHoursProvider } from "@/components/labor/SuggestedHoursContext";
@@ -760,6 +761,7 @@ export default async function LaborPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <SuggestedHoursProvider>
+          <CollapsibleSection id="labor-hours" title="Labor hours">
           <LaborHoursChart
             data={chartData}
             laborTypes={laborTypes}
@@ -771,7 +773,9 @@ export default async function LaborPage({
             stat={stat === "avg" ? "avg" : "total"}
             period={{ start: chartWin.start, end: chartWin.end }}
           />
+          </CollapsibleSection>
 
+          <CollapsibleSection id="concurrent" title="On the floor">
           <LaborConcurrentChart
             data={concurrentChartData}
             laborTypes={laborTypes}
@@ -781,7 +785,9 @@ export default async function LaborPage({
             stat={stat === "avg" ? "avg" : "total"}
             period={{ start: chartWin.start, end: chartWin.end }}
           />
+          </CollapsibleSection>
 
+          <CollapsibleSection id="coverage" title="Coverage & shift draft">
           <LaborCoveragePanel
             win={chartWin}
             actuals={coverageActuals}
@@ -796,7 +802,9 @@ export default async function LaborPage({
             activeStaff={activeStaff}
             adpWriteEnabled={FEATURES.adpScheduleWrite}
           />
+          </CollapsibleSection>
 
+          <CollapsibleSection id="availability" title="ADP availability">
           <AdpAvailabilityCard
             rows={unavailability}
             shifts={upcomingShifts}
@@ -805,7 +813,9 @@ export default async function LaborPage({
             lastReadAt={scheduleReadAt}
             todayIso={chicagoTodayIso()}
           />
+          </CollapsibleSection>
 
+          <CollapsibleSection id="hours-per-person" title="Hours per person">
           <HoursPerPersonCard
             actual={weeklyActualDays}
             scheduled={weeklyScheduledDays}
@@ -814,10 +824,14 @@ export default async function LaborPage({
             todayIso={chicagoTodayIso()}
             range={weeklyRange}
           />
+          </CollapsibleSection>
 
+          <CollapsibleSection id="open-shifts" title="Open shifts">
           <OpenShiftsCard todayIso={chicagoTodayIso()} />
+          </CollapsibleSection>
 
           {selectedPerson ? (
+            <CollapsibleSection id="one-person" title="One person">
             <div data-testid="labor-hours-one-person" className="flex flex-col gap-2">
               {personChartSupportsGrain(grain) ? (
                 <LaborHoursChart
@@ -855,16 +869,17 @@ export default async function LaborPage({
                 </p>
               )}
             </div>
+            </CollapsibleSection>
           ) : null}
 
           {punchGaps.length ? (
-            <PunchGapsPanel gaps={punchGaps} periodLabel={`${win.start} → ${win.end}`} />
+            <CollapsibleSection id="punch-gaps" title="Punch gaps">
+          <PunchGapsPanel gaps={punchGaps} periodLabel={`${win.start} → ${win.end}`} />
+          </CollapsibleSection>
           ) : null}
 
+          <CollapsibleSection id="solo" title={`Solo vs team hours — ${win.start} → ${win.end}`}>
           <div className="flex flex-col gap-2">
-            <h2 className="text-sm font-medium text-muted-foreground">
-              Solo vs team hours — {win.start} → {win.end}
-            </h2>
             {soloSummary.rows.length ? (
               <>
                 <DataTable
@@ -915,6 +930,7 @@ export default async function LaborPage({
               </p>
             ) : null}
           </div>
+          </CollapsibleSection>
         </SuggestedHoursProvider>
       )}
     </div>

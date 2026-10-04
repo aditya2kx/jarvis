@@ -17,7 +17,9 @@ import {
   laborScheduledHoursByGrain,
   laborScheduledShiftDays,
   laborSoloHoursPerPerson,
+  laborWageRates,
   storeConfig,
+  type LaborWageRates,
   upcomingRestockDates,
   type UnavailabilityRow,
 } from "@/lib/bq/queries";
@@ -31,6 +33,7 @@ import { OpenShiftsCard } from "@/components/labor/OpenShiftsCard";
 import { CollapsibleSection } from "@/components/shell/CollapsibleSection";
 import { weekStartOf } from "@/lib/labor/week-options";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
+import { LaborWagesChart } from "@/components/labor/LaborWagesChart";
 import { SuggestedHoursProvider } from "@/components/labor/SuggestedHoursContext";
 import { LaborWeeklyHoursGoal } from "@/components/labor/LaborWeeklyHoursGoal";
 import { LaborConcurrentChart } from "@/components/labor/LaborConcurrentChart";
@@ -203,6 +206,7 @@ export default async function LaborPage({
   let scheduleReadAt: string | null = null;
   let upcomingShifts: ScheduledShift[] = [];
   let adpRosterRows: AdpRosterRow[] = [];
+  let wageRates: LaborWageRates = { byName: {}, avgPartTime: null };
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
@@ -279,6 +283,7 @@ export default async function LaborPage({
       weeklySched,
       weeklyOpen,
       directoryRoster,
+      rates,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -334,8 +339,10 @@ export default async function LaborPage({
         : Promise.resolve([]),
       weeklySchedWin ? laborOpenShiftDays(weeklySchedWin).catch(() => []) : Promise.resolve([]),
       adpDirectoryRoster(DEFAULT_STORE).catch(() => []),
+      laborWageRates().catch(() => ({ byName: {}, avgPartTime: null })),
     ]);
     adpRosterRows = directoryRoster;
+    wageRates = rates;
     weeklyOpenDays = weeklyOpen.map((r) => ({ date: r.date, hours: Number(r.scheduled_hours) || 0 }));
     weeklyActualDays = weeklyActual;
     weeklyScheduledDays = weeklySched.map((r) => ({
@@ -389,6 +396,8 @@ export default async function LaborPage({
           hourly_pct: r.hourly_pct != null ? Number(r.hourly_pct) : null,
           fulltime_pct: r.fulltime_pct != null ? Number(r.fulltime_pct) : null,
           net_sales: r.net_sales != null ? Number(r.net_sales) : null,
+          parttime_cost: r.hourly_labor_cost != null ? Number(r.hourly_labor_cost) : null,
+          fulltime_cost: r.fulltime_labor_cost != null ? Number(r.fulltime_labor_cost) : null,
         },
       ] as const;
     }),
@@ -404,6 +413,8 @@ export default async function LaborPage({
             r.parttime_hours != null ? Number(Number(r.parttime_hours).toFixed(1)) : null,
           fulltime_scheduled_hours:
             r.fulltime_hours != null ? Number(Number(r.fulltime_hours).toFixed(1)) : null,
+          parttime_sched_cost: r.parttime_cost != null ? Number(r.parttime_cost) : null,
+          fulltime_sched_cost: r.fulltime_cost != null ? Number(r.fulltime_cost) : null,
         },
       ] as const;
     }),
@@ -463,6 +474,23 @@ export default async function LaborPage({
       net_sales: a?.net_sales ?? null,
       parttime_scheduled_hours: s?.parttime_scheduled_hours ?? null,
       fulltime_scheduled_hours: s?.fulltime_scheduled_hours ?? null,
+    };
+  });
+
+  const wagesChartData = bucketIsos.map((iso) => {
+    const a = actualByBucket.get(iso);
+    const s = schedHoursByBucket.get(iso);
+    const openHours = openByBucket.get(iso)?.open_hours ?? null;
+    return {
+      date: formatBucket(iso, grain, grain === "day" ? { weekday: true } : undefined),
+      bucket_iso: iso,
+      parttime_cost: a?.parttime_cost ?? null,
+      fulltime_cost: a?.fulltime_cost ?? null,
+      net_sales: a?.net_sales ?? null,
+      parttime_sched_cost: s?.parttime_sched_cost ?? null,
+      fulltime_sched_cost: s?.fulltime_sched_cost ?? null,
+      open_cost:
+        openHours != null && wageRates.avgPartTime != null ? openHours * wageRates.avgPartTime : null,
     };
   });
 
@@ -781,6 +809,19 @@ export default async function LaborPage({
             grain={grain}
             goalLaborHoursWeek={goalLaborHoursWeek}
             unit={chartUnit}
+            titlePrefix={statPrefix}
+            subtitle={statSubtitle}
+            stat={stat === "avg" ? "avg" : "total"}
+            period={{ start: chartWin.start, end: chartWin.end }}
+          />
+          </CollapsibleSection>
+
+          <CollapsibleSection id="labor-wages" title="Labor wages">
+          <LaborWagesChart
+            data={wagesChartData}
+            rates={wageRates}
+            laborTypes={laborTypes}
+            grain={grain}
             titlePrefix={statPrefix}
             subtitle={statSubtitle}
             stat={stat === "avg" ? "avg" : "total"}

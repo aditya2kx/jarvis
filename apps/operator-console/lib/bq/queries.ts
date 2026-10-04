@@ -181,6 +181,8 @@ export function laborByGrain(
          ) AS total_hours,
          SAFE_DIVIDE(COALESCE(l.hourly_hours, 0), ${div}) AS hourly_hours,
          SAFE_DIVIDE(COALESCE(l.fulltime_hours, 0), ${div}) AS fulltime_hours,
+         SAFE_DIVIDE(COALESCE(l.hourly_labor_cost, 0), ${div}) AS hourly_labor_cost,
+         SAFE_DIVIDE(COALESCE(l.fulltime_labor_cost, 0), ${div}) AS fulltime_labor_cost,
          CAST(NULL AS FLOAT64) AS hours_per_item,
          SAFE_DIVIDE(COALESCE(s.orders, 0), ${div}) AS orders,
          CAST(NULL AS FLOAT64) AS items_sold,
@@ -234,6 +236,8 @@ export function laborByGrain(
          SAFE_DIVIDE(a.hourly_hours + a.fulltime_hours, p.n_days) AS total_hours,
          SAFE_DIVIDE(a.hourly_hours, p.n_days) AS hourly_hours,
          SAFE_DIVIDE(a.fulltime_hours, p.n_days) AS fulltime_hours,
+         SAFE_DIVIDE(a.hourly_labor_cost, p.n_days) AS hourly_labor_cost,
+         SAFE_DIVIDE(a.fulltime_labor_cost, p.n_days) AS fulltime_labor_cost,
          SAFE_DIVIDE(a.hourly_hours + a.fulltime_hours, NULLIF(a.items_sold, 0)) AS hours_per_item,
          SAFE_DIVIDE(a.orders, p.n_days) AS orders,
          SAFE_DIVIDE(a.items_sold, p.n_days) AS items_sold,
@@ -257,6 +261,8 @@ export function laborByGrain(
        SUM(hourly_hours) + SUM(fulltime_hours) AS total_hours,
        SUM(hourly_hours) AS hourly_hours,
        SUM(fulltime_hours) AS fulltime_hours,
+       SUM(hourly_labor_cost) AS hourly_labor_cost,
+       SUM(fulltime_labor_cost) AS fulltime_labor_cost,
        SAFE_DIVIDE(SUM(hourly_hours) + SUM(fulltime_hours), SUM(items_sold)) AS hours_per_item,
        SAFE_DIVIDE(SUM(hourly_hours), SUM(items_sold)) AS hourly_hours_per_item,
        SAFE_DIVIDE(SUM(fulltime_hours), SUM(items_sold)) AS fulltime_hours_per_item,
@@ -613,7 +619,38 @@ export interface LaborScheduledHoursRow {
   parttime_hours: number;
   fulltime_hours: number;
   total_hours: number;
+  /** Scheduled hours × each person's rate on that date (avg part-time rate when unpriced). */
+  parttime_cost: number;
+  fulltime_cost: number;
   [key: string]: unknown;
+}
+
+const AVG_PT_WAGE_SQL = `SELECT AVG(wage_rate_dollars) AS rate
+       FROM ${fq("adp_wage_rates")}
+       WHERE wage_rate_dollars IS NOT NULL
+         AND NOT IFNULL(is_salaried, FALSE)
+         AND NOT IFNULL(excluded_from_labor_pct, FALSE)`;
+
+/** Current hourly rate per canonical name plus the average part-time rate, for pricing draft and open shifts. */
+export interface LaborWageRates {
+  byName: Record<string, number>;
+  avgPartTime: number | null;
+}
+
+export async function laborWageRates(): Promise<LaborWageRates> {
+  const [rows, avg] = await Promise.all([
+    q<{ name: string; rate: number }>(
+      `SELECT canonical_name AS name, ANY_VALUE(wage_rate_dollars) AS rate
+       FROM ${fq("adp_wage_rates")}
+       WHERE IFNULL(canonical_name, '') != '' AND wage_rate_dollars IS NOT NULL
+       GROUP BY canonical_name`,
+    ),
+    q<{ rate: number | null }>(AVG_PT_WAGE_SQL),
+  ]);
+  return {
+    byName: Object.fromEntries(rows.map((r) => [r.name, Number(r.rate)])),
+    avgPartTime: avg[0]?.rate != null ? Number(avg[0].rate) : null,
+  };
 }
 
 /**
@@ -668,10 +705,24 @@ export function laborScheduledHoursByGrain(
          s.scheduled_hours,
          0
        )) AS fulltime_hours,
-       SUM(s.scheduled_hours) AS total_hours
+       SUM(s.scheduled_hours) AS total_hours,
+       SUM(IF(
+         IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+         0,
+         s.scheduled_hours * COALESCE(er.wage_rate_dollars, w.wage_rate_dollars, avg_pt.rate)
+       )) AS parttime_cost,
+       SUM(IF(
+         IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+         s.scheduled_hours * IFNULL(COALESCE(er.wage_rate_dollars, w.wage_rate_dollars), 0),
+         0
+       )) AS fulltime_cost
      FROM ${fq("adp_scheduled_shifts")} s
      LEFT JOIN ${fq("adp_wage_rates")} w
        ON w.employee_id = s.employee_id
+     LEFT JOIN ${fq("vw_wage_rate_effective")} er
+       ON er.employee_id = s.employee_id
+      AND s.date BETWEEN er.effective_from AND er.effective_to
+     CROSS JOIN (${AVG_PT_WAGE_SQL}) avg_pt
      WHERE s.date BETWEEN @start AND @end
        AND IFNULL(s.scheduled_hours, 0) > 0
        ${ptoClause}

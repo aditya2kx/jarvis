@@ -209,7 +209,7 @@ export default async function LaborPage({
     );
     punchWin = actualPunchWindow(win, boundaryIso);
     chartWin = laborChartWindow(win, todayIso, scheduleHorizonEnd);
-    const schedWin = scheduledShiftWindow(win, boundaryIso, scheduleHorizonEnd);
+    const schedWin = scheduledShiftWindow(win, boundaryIso, scheduleHorizonEnd, todayIso);
     // Charts: Hour grain omits schedule stacks (#227). Coverage is day-level —
     // show ADP schedule whenever the schedule window is non-null (any Aggregation;
     // future-only Periods included) — Issue #243.

@@ -76,20 +76,20 @@ export function laborChartWindow(
 
 /**
  * Scheduled shifts window: from `boundaryIso` through Period end, extended to
- * the ADP schedule horizon when the Period reaches it.
+ * the ADP schedule horizon when the Period includes today (same test as
+ * `laborChartWindow`, so the chart spine and the schedule always agree).
  *
- * Returns null when the Period ends before the boundary — which is the case
- * every evening once the day's punches land: nothing in the Period is still a
- * forecast, so no schedule is drawn.
+ * Returns null when nothing in the Period or horizon is at/after the boundary —
+ * e.g. a Period ending today, once today's punches land, with no horizon.
  */
 export function scheduledShiftWindow(
   win: DateWindow,
   boundaryIso = chicagoTodayIso(),
   scheduleHorizonEnd: string | null = null,
+  todayIso = chicagoTodayIso(),
 ): DateWindow | null {
-  if (win.end < boundaryIso) return null;
   const start = win.start > boundaryIso ? win.start : boundaryIso;
-  const end = periodIncludesToday(win, boundaryIso)
+  const end = periodIncludesToday(win, todayIso)
     ? extendEndForScheduleHorizon(win.end, scheduleHorizonEnd)
     : win.end;
   if (start > end) return null;

@@ -77,7 +77,7 @@ describe("actual / schedule windows", () => {
     expect(extendEndForScheduleHorizon("2026-08-01", "2026-08-16")).toBe("2026-08-16");
     expect(extendEndForScheduleHorizon("2026-08-20", "2026-08-16")).toBe("2026-08-20");
     expect(
-      scheduledShiftWindow(win("2026-07-05", "2026-08-01"), today, "2026-08-16"),
+      scheduledShiftWindow(win("2026-07-05", "2026-08-01"), today, "2026-08-16", today),
     ).toEqual({
       ...win("2026-08-01", "2026-08-16"),
       preset: "custom",

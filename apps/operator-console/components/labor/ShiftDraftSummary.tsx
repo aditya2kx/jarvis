@@ -64,21 +64,27 @@ function HoursBreakdownList({
   const max = Math.max(...lines.map((l) => Math.abs(l.hours)), 1);
   const over = goalHoursWeek != null ? total - goalHoursWeek : 0;
   return (
-    <div data-testid="hours-breakdown" className="flex flex-col gap-1.5 rounded-md border bg-background/60 px-3 py-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">Where the week&apos;s hours come from</span>
-        <span className="text-[11px] tabular-nums text-muted-foreground">
-          {total.toFixed(0)}h{goalHoursWeek != null ? ` of ${goalHoursWeek}h goal` : ""}
+    <div
+      data-testid="hours-breakdown"
+      className="flex max-w-2xl flex-col gap-2.5 rounded-md border bg-background/60 px-4 py-3"
+    >
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-sm font-medium text-foreground">Where the week&apos;s hours come from</span>
+        <span className="text-sm tabular-nums">
+          <span className={cn("font-semibold", over > 0.5 ? "text-rose-600 dark:text-rose-400" : "text-foreground")}>
+            {total.toFixed(0)}h
+          </span>
+          {goalHoursWeek != null ? <span className="text-muted-foreground"> of {goalHoursWeek}h goal</span> : null}
         </span>
       </div>
-      <ul className="flex flex-col gap-1">
+      <ul className="flex flex-col gap-2">
         {lines.map((l) => (
-          <li key={l.key} className="grid grid-cols-[minmax(0,1fr)_96px_48px] items-center gap-2 text-xs">
-            <span className="truncate" title={l.label}>
-              {l.label}
-              {l.hint ? <span className="text-[11px] text-muted-foreground"> · {l.hint}</span> : null}
+          <li key={l.key} className="grid grid-cols-[minmax(0,1fr)_140px_56px] items-center gap-3 text-sm">
+            <span className="min-w-0" title={l.label}>
+              <span className="block truncate text-foreground">{l.label}</span>
+              {l.hint ? <span className="block truncate text-xs text-muted-foreground">{l.hint}</span> : null}
             </span>
-            <span className="h-1.5 overflow-hidden rounded-full bg-muted">
+            <span className="h-2.5 overflow-hidden rounded-full bg-muted">
               <span
                 className="block h-full rounded-full"
                 style={{
@@ -88,13 +94,20 @@ function HoursBreakdownList({
                 }}
               />
             </span>
-            <span className="text-right tabular-nums">{fmtH(l.hours)}</span>
+            <span
+              className={cn(
+                "text-right font-medium tabular-nums",
+                Math.abs(l.hours) < 0.05 ? "text-muted-foreground" : "text-foreground",
+              )}
+            >
+              {fmtH(l.hours)}
+            </span>
           </li>
         ))}
       </ul>
       {over > 0.5 ? (
-        <p className="text-[11px] text-muted-foreground">
-          {over.toFixed(0)}h over the goal. Loosen the biggest lines in Scheduling rules above — the
+        <p className="border-t pt-2 text-xs text-muted-foreground">
+          <span className="font-medium text-rose-600 dark:text-rose-400">{over.toFixed(0)}h over the goal.</span> Loosen the biggest lines in Scheduling rules above — the
           draft and this list update as you edit, before you save.
         </p>
       ) : null}

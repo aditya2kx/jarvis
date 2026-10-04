@@ -130,6 +130,83 @@ export function collapseWeekly<T extends UnavailabilityInput>(rows: T[]): T[] {
   return out;
 }
 
+export type PatternLine<T> = {
+  /** Mon=0 weekdays sharing these hours and end date; empty for a one-off date. */
+  weekdays: number[];
+  /** One-off date, or the first remaining date of a weekly pattern. */
+  date: string;
+  until: string | null;
+  all_day: boolean;
+  from_time: string | null;
+  to_time: string | null;
+  rows: T[];
+};
+
+/**
+ * Approved entries still ahead of `todayIso`, one entry per person: weekly
+ * repeats sharing hours, start week and end week fold into one line
+ * ("Mon–Fri · All day").
+ */
+export function approvedByPerson<T extends UnavailabilityInput>(
+  rows: T[],
+  todayIso: string,
+): { employee: string; lines: PatternLine<T>[] }[] {
+  const people = new Map<string, Map<string, PatternLine<T>>>();
+  for (const r of collapseWeekly(rows.filter((x) => x.status === "approved"))) {
+    const end = r.repeat_weekday != null ? (r.repeat_until ?? "9999-12-31") : r.first_date;
+    if (end < todayIso) continue;
+    const weekly = r.repeat_weekday != null;
+    const hours = r.all_day ? "all" : `${r.from_time}-${r.to_time}`;
+    const date = weekly ? nextOnOrAfter(r.first_date, todayIso) : r.first_date;
+    const lastWeek = r.repeat_until ? weekStart(r.repeat_until) : "";
+    const key = weekly ? `w|${hours}|${weekStart(date)}|${lastWeek}` : `d|${hours}|${r.first_date}`;
+    const lines = people.get(r.employee) ?? new Map<string, PatternLine<T>>();
+    people.set(r.employee, lines);
+    const line = lines.get(key);
+    if (line) {
+      if (weekly && !line.weekdays.includes(r.repeat_weekday!)) line.weekdays.push(r.repeat_weekday!);
+      if (date < line.date) line.date = date;
+      if (r.repeat_until && line.until && r.repeat_until > line.until) line.until = r.repeat_until;
+      line.rows.push(r);
+    } else {
+      lines.set(key, {
+        weekdays: weekly ? [r.repeat_weekday!] : [],
+        date,
+        until: weekly ? r.repeat_until : null,
+        all_day: r.all_day || !r.from_time || !r.to_time,
+        from_time: r.from_time,
+        to_time: r.to_time,
+        rows: [r],
+      });
+    }
+  }
+  return [...people.entries()]
+    .map(([employee, lines]) => ({
+      employee,
+      lines: [...lines.values()]
+        .map((l) => ({ ...l, weekdays: [...l.weekdays].sort((a, b) => a - b) }))
+        .sort(
+          (a, b) =>
+            (a.weekdays.length ? 0 : 1) - (b.weekdays.length ? 0 : 1) ||
+            (a.weekdays[0] ?? 0) - (b.weekdays[0] ?? 0) ||
+            a.date.localeCompare(b.date) ||
+            (a.from_time ?? "").localeCompare(b.from_time ?? ""),
+        ),
+    }))
+    .sort((a, b) => a.employee.localeCompare(b.employee));
+}
+
+function weekStart(iso: string): string {
+  return new Date(Date.parse(`${iso}T12:00:00Z`) - isoWeekdayMon0(iso) * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** First date on or after `floor` landing on the same weekday as `iso`. */
+function nextOnOrAfter(iso: string, floor: string): string {
+  if (iso >= floor) return iso;
+  const n = Math.ceil(daysBetween(iso, floor) / 7) * 7;
+  return new Date(Date.parse(`${iso}T12:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+}
+
 function daysBetween(a: string, b: string): number {
   return Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86_400_000);
 }

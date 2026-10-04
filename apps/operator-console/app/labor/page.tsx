@@ -763,6 +763,7 @@ export default async function LaborPage({
             shifts={upcomingShifts}
             approveEnabled={FEATURES.adpUnavailabilityApprove}
             lastReadAt={scheduleReadAt}
+            todayIso={chicagoTodayIso()}
           />
 
           <div data-testid="labor-hours-per-person" className="flex flex-col gap-2">

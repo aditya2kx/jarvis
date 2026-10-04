@@ -3,7 +3,13 @@ import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle }
 import { ApproveUnavailabilityButton } from "@/components/labor/ApproveUnavailabilityButton";
 import type { UnavailabilityRow } from "@/lib/bq/queries";
 import { minToTime } from "@/lib/labor/schedule-inputs";
-import { collapseWeekly, scheduleConflicts, type ScheduledShift } from "@/lib/labor/unavailability";
+import {
+  approvedByPerson,
+  collapseWeekly,
+  scheduleConflicts,
+  type PatternLine,
+  type ScheduledShift,
+} from "@/lib/labor/unavailability";
 import { cn } from "@/lib/utils";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -27,17 +33,40 @@ function hhmm(t: string): number {
   return Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
 }
 
-/** "Every Sat · 6:00 AM–10:00 AM · until Nov 1" / "Sun, Oct 4 · All day" — ADP's card, one line. */
-function when(r: UnavailabilityRow): string {
-  const hours = r.all_day || !r.from_time || !r.to_time
+function hoursText(r: { all_day: boolean; from_time: string | null; to_time: string | null }): string {
+  return r.all_day || !r.from_time || !r.to_time
     ? "All day"
     : `${clock(hhmm(r.from_time))}–${clock(hhmm(r.to_time))}`;
+}
+
+/** [0,1,2,3,4,6] → "Mon–Fri, Sun". */
+function weekdaysText(days: number[]): string {
+  const parts: string[] = [];
+  for (let i = 0; i < days.length; ) {
+    let j = i;
+    while (j + 1 < days.length && days[j + 1] === days[j]! + 1) j++;
+    parts.push(j - i >= 2 ? `${WEEKDAYS[days[i]!]}–${WEEKDAYS[days[j]!]}` : days.slice(i, j + 1).map((d) => WEEKDAYS[d]).join(", "));
+    i = j + 1;
+  }
+  return parts.join(", ");
+}
+
+/** "Every Sat · 6:00 AM–10:00 AM · until Nov 1" / "Sun, Oct 4 · All day" — ADP's card, one line. */
+function when(r: UnavailabilityRow): string {
   if (r.repeat_weekday != null) {
-    return `Every ${WEEKDAYS[r.repeat_weekday]} · ${hours} · ${shortDate(r.first_date)}${
+    return `Every ${WEEKDAYS[r.repeat_weekday]} · ${hoursText(r)} · ${shortDate(r.first_date)}${
       r.repeat_until ? ` – ${shortDate(r.repeat_until)}` : " onward"
     }`;
   }
-  return `${dayLabel(r.first_date)} · ${hours}`;
+  return `${dayLabel(r.first_date)} · ${hoursText(r)}`;
+}
+
+/** "Mon–Fri · All day · until Oct 30"; patterns still present in the last week ADP was read are "ongoing". */
+function lineText(l: PatternLine<UnavailabilityRow>, lastWeekFrom: string, nextWeek: string): string {
+  if (!l.weekdays.length) return `${dayLabel(l.date)} · ${hoursText(l)}`;
+  const start = l.date >= nextWeek ? ` · from ${shortDate(l.date)}` : "";
+  const end = !l.until ? "" : l.until >= lastWeekFrom ? " · ongoing" : ` · until ${shortDate(l.until)}`;
+  return `${weekdaysText(l.weekdays)} · ${hoursText(l)}${start}${end}`;
 }
 
 function initials(name: string): string {
@@ -60,11 +89,38 @@ function lastRead(iso: string | null | undefined): string {
     : d.toLocaleString("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " CT";
 }
 
+function Avatar({ name }: { name: string }) {
+  return (
+    <span
+      aria-hidden
+      className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-semibold text-muted-foreground"
+    >
+      {initials(name)}
+    </span>
+  );
+}
+
+function ClashBadge({ rows, shifts }: { rows: UnavailabilityRow[]; shifts: ScheduledShift[] }) {
+  const clashes = scheduleConflicts(rows, shifts);
+  if (!clashes.length) return null;
+  return (
+    <Badge
+      variant="destructive"
+      title={clashes.map((c) => `${dayLabel(c.date)} scheduled ${clock(c.shift.startMin)}–${clock(c.shift.endMin)}`).join("\n")}
+    >
+      {clashes.length} shift clash{clashes.length === 1 ? "" : "es"}
+    </Badge>
+  );
+}
+
+const ROW = "flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs transition-colors hover:bg-muted/40";
+
 export function AdpAvailabilityCard({
   rows,
   shifts,
   approveEnabled,
   lastReadAt,
+  todayIso,
 }: {
   rows: UnavailabilityRow[];
   /** Upcoming ADP scheduled shifts — only used to flag clashes. */
@@ -72,75 +128,73 @@ export function AdpAvailabilityCard({
   approveEnabled: boolean;
   /** Last Team Schedule read (the same run reads Pending requests). */
   lastReadAt: string | null;
+  todayIso: string;
 }) {
-  const entries = collapseWeekly(rows).sort(
-    (a, b) =>
-      (a.status === "pending" ? 0 : 1) - (b.status === "pending" ? 0 : 1) ||
-      (a.status === "pending" ? (a.hours_left ?? 1e9) - (b.hours_left ?? 1e9) : 0) ||
-      a.first_date.localeCompare(b.first_date) ||
-      a.employee.localeCompare(b.employee),
+  const pendingRows = collapseWeekly(rows.filter((r) => r.status === "pending")).sort(
+    (a, b) => (a.hours_left ?? 1e9) - (b.hours_left ?? 1e9) || a.first_date.localeCompare(b.first_date),
   );
-  const pending = entries.filter((r) => r.status === "pending").length;
+  const people = approvedByPerson(rows, todayIso);
+  const readThrough = rows.reduce((m, r) => (r.status === "approved" && r.first_date > m ? r.first_date : m), "");
+  const lastWeekFrom = readThrough
+    ? new Date(Date.parse(`${readThrough}T12:00:00Z`) - 6 * 86_400_000).toISOString().slice(0, 10)
+    : "";
+  const nextWeek = new Date(Date.parse(`${todayIso}T12:00:00Z`) + 7 * 86_400_000).toISOString().slice(0, 10);
 
   return (
     <Card data-testid="adp-availability">
       <CardHeader>
         <CardTitle>Unavailability</CardTitle>
         <CardDescription>
-          From ADP · last read {lastRead(lastReadAt)}. Drafts work around pending and approved entries.
+          From ADP · last read {lastRead(lastReadAt)}
+          {readThrough ? ` through ${shortDate(readThrough)}` : ""}. Drafts work around pending and approved entries.
         </CardDescription>
-        {pending ? (
+        {pendingRows.length ? (
           <CardAction>
-            <Badge>{pending} pending</Badge>
+            <Badge>{pendingRows.length} pending</Badge>
           </CardAction>
         ) : null}
       </CardHeader>
       <CardContent>
-        {entries.length ? (
+        {pendingRows.length || people.length ? (
           <ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
-            {entries.map((r) => {
-              const exp = r.status === "pending" ? expiry(r) : null;
-              const clashes = scheduleConflicts([r], shifts);
+            {pendingRows.map((r) => {
+              const exp = expiry(r);
               const text = when(r);
               return (
-                <li
-                  key={`${r.row_key}-${r.repeat_until ?? ""}`}
-                  className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs transition-colors hover:bg-muted/40"
-                >
-                  <span
-                    aria-hidden
-                    className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-semibold text-muted-foreground"
-                  >
-                    {initials(r.employee)}
-                  </span>
+                <li key={`${r.row_key}-${r.repeat_until ?? ""}`} className={ROW}>
+                  <Avatar name={r.employee} />
                   <span className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate font-medium text-foreground">{r.employee}</span>
                     <span className="truncate text-muted-foreground">{text}</span>
                   </span>
-                  {clashes.length ? (
-                    <Badge
-                      variant="destructive"
-                      title={clashes
-                        .map((c) => `${dayLabel(c.date)} scheduled ${clock(c.shift.startMin)}–${clock(c.shift.endMin)}`)
-                        .join("\n")}
-                    >
-                      {clashes.length} shift clash{clashes.length === 1 ? "" : "es"}
-                    </Badge>
-                  ) : null}
+                  <ClashBadge rows={[r]} shifts={shifts} />
                   {exp ? (
                     <span className={cn("tabular-nums", exp.urgent ? "font-medium text-destructive" : "text-muted-foreground")}>
                       {exp.text}
                     </span>
                   ) : null}
-                  <Badge variant={r.status === "pending" ? "outline" : "secondary"}>
-                    {r.status === "pending" ? "Pending" : "Approved"}
-                  </Badge>
-                  {r.status === "pending" && approveEnabled ? (
+                  <Badge variant="outline">Pending</Badge>
+                  {approveEnabled ? (
                     <ApproveUnavailabilityButton rowKey={r.row_key} employee={r.employee} when={text} />
                   ) : null}
                 </li>
               );
             })}
+            {people.map((p) => (
+              <li key={p.employee} className={cn(ROW, "items-start")}>
+                <Avatar name={p.employee} />
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="truncate font-medium text-foreground">{p.employee}</span>
+                  {p.lines.map((l) => (
+                    <span key={`${l.weekdays.join("")}-${l.date}-${l.from_time}`} className="text-muted-foreground tabular-nums">
+                      {lineText(l, lastWeekFrom, nextWeek)}
+                    </span>
+                  ))}
+                </span>
+                <ClashBadge rows={p.lines.flatMap((l) => l.rows)} shifts={shifts} />
+                <Badge variant="secondary">Approved</Badge>
+              </li>
+            ))}
           </ul>
         ) : (
           <p className="text-xs text-muted-foreground">No unavailability in ADP.</p>

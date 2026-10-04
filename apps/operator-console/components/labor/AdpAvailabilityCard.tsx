@@ -64,11 +64,14 @@ export function AdpAvailabilityCard({
   rows,
   shifts,
   approveEnabled,
+  lastReadAt,
 }: {
   rows: UnavailabilityRow[];
   /** Upcoming ADP scheduled shifts — only used to flag clashes. */
   shifts: ScheduledShift[];
   approveEnabled: boolean;
+  /** Last Team Schedule read (the same run reads Pending requests). */
+  lastReadAt: string | null;
 }) {
   const entries = collapseWeekly(rows).sort(
     (a, b) =>
@@ -78,14 +81,13 @@ export function AdpAvailabilityCard({
       a.employee.localeCompare(b.employee),
   );
   const pending = entries.filter((r) => r.status === "pending").length;
-  const scrapedAt = rows[0]?.scraped_at;
 
   return (
     <Card data-testid="adp-availability">
       <CardHeader>
         <CardTitle>Unavailability</CardTitle>
         <CardDescription>
-          From ADP · last read {lastRead(scrapedAt)}. Drafts work around pending and approved entries.
+          From ADP · last read {lastRead(lastReadAt)}. Drafts work around pending and approved entries.
         </CardDescription>
         {pending ? (
           <CardAction>

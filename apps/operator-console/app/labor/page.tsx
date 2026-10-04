@@ -1,6 +1,7 @@
 import {
   adpHoursScrapedAt,
   adpUnavailability,
+  adpScheduleScrapedAt,
   adpScheduleHorizonEnd,
   laborActualShiftDays,
   laborActualsThrough,
@@ -190,6 +191,7 @@ export default async function LaborPage({
   let deliveryDates: string[] = [];
   let rulesHistory: RulesVersion[] = [];
   let unavailability: UnavailabilityRow[] = [];
+  let scheduleReadAt: string | null = null;
   let upcomingShifts: ScheduledShift[] = [];
   let error: string | undefined;
   try {
@@ -248,6 +250,7 @@ export default async function LaborPage({
       restockDates,
       rulesVersions,
       unavailRows,
+      scheduleRead,
       upcomingRows,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
@@ -293,6 +296,7 @@ export default async function LaborPage({
       upcomingRestockDates(DEFAULT_STORE, todayIso).catch(() => []),
       scheduleRulesHistory(DEFAULT_STORE).catch(() => []),
       adpUnavailability(DEFAULT_STORE).catch(() => []),
+      adpScheduleScrapedAt().catch(() => null),
       laborScheduledShiftDays(
         { start: todayIso, end: shiftCalendarDate(todayIso, "day", 56), label: "Next 8 weeks", preset: "custom" },
         { store: DEFAULT_STORE, excludePto: true },
@@ -301,6 +305,7 @@ export default async function LaborPage({
     punchGaps = mergePunchDays(buildPunchGaps(gapRows, gapCoworkers), punchDays, gapCoworkers);
     rulesHistory = rulesVersions;
     unavailability = unavailRows;
+    scheduleReadAt = scheduleRead;
     upcomingShifts = upcomingRows;
     soloRows = solo;
     openHoursRows = openHours;
@@ -757,6 +762,7 @@ export default async function LaborPage({
             rows={unavailability}
             shifts={upcomingShifts}
             approveEnabled={FEATURES.adpUnavailabilityApprove}
+            lastReadAt={scheduleReadAt}
           />
 
           <div data-testid="labor-hours-per-person" className="flex flex-col gap-2">

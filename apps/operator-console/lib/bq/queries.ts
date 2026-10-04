@@ -1015,6 +1015,14 @@ export async function unavailabilityStillPending(rowKey: string): Promise<boolea
   return Number(rows[0]?.n ?? 0) > 0;
 }
 
+/** Last Team Schedule read — the same run reads the Pending requests pane. */
+export function adpScheduleScrapedAt(): Promise<string | null> {
+  return q<{ scraped: string | null }>(
+    `SELECT CAST(MAX(scraped_at_utc) AS STRING) AS scraped
+     FROM ${fq("adp_scheduled_shifts")}`,
+  ).then((rows) => rows[0]?.scraped ?? null);
+}
+
 /** Max scraped_at on clocked hours — the Sync ADP run stamps this last. */
 export function adpHoursScrapedAt(): Promise<string | null> {
   return q<{ scraped: string | null }>(

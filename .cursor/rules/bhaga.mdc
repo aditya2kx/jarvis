@@ -90,6 +90,12 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    Issue #356: the one timecard write is a flagged (`PUNCH_FIX_WRITEBACK`) Cloud Run fill of a
    missing clock-out / scheduled entry the operator approved in the console — re-read first, Save
    once, read back, never auto-retry (`RUNBOOK.md` § Missing punches).
+   Issue #337: the ADP **schedule** write is operator-clicked and flagged
+   (`FEATURES.adpScheduleWrite` / `CONSOLE_ADP_SCHEDULE_WRITE`): **Save to ADP as drafts**
+   (Team Schedule Create shift / Create open shift → Save as draft) and a separate
+   **Publish week** (Publish drafts + ClickUp post). Never on the nightly; every other
+   Team Schedule touch (open shifts, pending requests) stays read-only — never Approve /
+   Reject a request.
 7. **Timezone = Central (Texas).** All date selection on Square / ADP / reviews and all report
    timestamps use `ZoneInfo("America/Chicago")`. A date is "today" only after the shop closes (the
    nightly fires 21:30 CT). Never let local/PST/UTC leak into a date boundary.

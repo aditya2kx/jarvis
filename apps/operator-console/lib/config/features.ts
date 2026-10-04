@@ -39,4 +39,10 @@ export const FEATURES = {
   punchFixWriteback: true,
   /** Issue #158 — Plaid Link + sync write path. */
   writePlaidLink: true,
+  /**
+   * Issue #337 — Labor draft shifts → ADP Team Schedule ("Save to ADP as drafts",
+   * then "Publish week" + ClickUp post). Service env, not code, so turning it on
+   * or off is a config change; server-evaluated only (undefined in the browser).
+   */
+  adpScheduleWrite: process.env.CONSOLE_ADP_SCHEDULE_WRITE === "1",
 } as const;

@@ -470,6 +470,78 @@ def main() -> int:
                 summaries.append({"table": "adp_scheduled_shifts", "rows": n})
 
             _load_adp_open_shifts(payload.get("weeks", []), scraped_at, now_utc)
+            _load_adp_unavailability(payload, scraped_at, now_utc)
+
+    def _load_adp_unavailability(payload: dict, scraped_at, now_utc: str) -> None:
+        """Pending requests (replaced wholesale) + approved grid blocks (per week) — Issue #337."""
+        from core.datastore import fq, get_client  # noqa: PLC0415
+        from skills.adp_run_automation.employee_aliases import derive_canonical  # noqa: PLC0415
+
+        weeks = payload.get("weeks", [])
+        requests = payload.get("requests") or {"requests_error": "missing"}
+        scraped_on = datetime.date.fromisoformat((scraped_at or now_utc)[:10])
+        scopes: list[str] = []
+        rows: list[dict] = []
+        if requests.get("requests_error"):
+            print(f"  adp_unavailability: requests pane not read ({requests['requests_error']}) — pending rows untouched")
+        else:
+            scopes.append("status = 'pending'")
+            rows += schedule_backend.parse_unavailability_requests(
+                requests.get("unavailability_text"), scraped_on=scraped_on)
+        week_starts = sorted(
+            ws.isoformat() for wk in weeks
+            if wk.get("employee_rows") and (ws := schedule_backend.parse_week_start(wk.get("week_label")))
+        )
+        if week_starts:
+            end = (datetime.date.fromisoformat(week_starts[-1]) + datetime.timedelta(days=6)).isoformat()
+            scopes.append(f"(status = 'approved' AND first_date BETWEEN DATE '{week_starts[0]}' AND DATE '{end}')")
+            rows += schedule_backend.build_grid_unavailability_records(weeks)
+        bq_rows = [
+            {
+                **r,
+                "row_key": "|".join(str(r.get(k) or "") for k in
+                                    ("status", "raw_employee_name", "first_date", "from_time", "to_time")),
+                "employee_name": derive_canonical(r["raw_employee_name"]),
+                "scraped_at_utc": scraped_at,
+                "materialized_at_utc": now_utc,
+            }
+            for r in rows
+        ]
+        print(f"  parsed: {len(bq_rows)} unavailability rows ({len(scopes)} scopes)")
+        if args.dry_run or not scopes:
+            return
+        client = get_client()
+        if client is not None:
+            client.query(
+                f"DELETE FROM {fq('adp_unavailability')} WHERE {' OR '.join(scopes)}"
+            ).result()
+        n = 0
+        if bq_rows:
+            n = load_rows(
+                "adp_unavailability", bq_rows, merge_keys=["row_key"],
+                column_bq_types={
+                    "first_date": "DATE", "repeat_until": "DATE", "expires_at_ct": "DATETIME",
+                    "repeat_weekday": "INT64", "all_day": "BOOL", "hours": "FLOAT64",
+                    "scraped_at_utc": "TIMESTAMP", "materialized_at_utc": "TIMESTAMP",
+                },
+            )
+        print(f"  adp_unavailability (BQ): {n} rows upserted")
+        summaries.append({"table": "adp_unavailability", "rows": n})
+
+        if not requests.get("requests_error"):
+            types = [
+                {**t, "scraped_at_utc": scraped_at, "materialized_at_utc": now_utc}
+                for t in schedule_backend.parse_request_types(requests.get("list_text"))
+            ]
+            if client is not None:
+                client.query(f"DELETE FROM {fq('adp_schedule_requests')} WHERE TRUE").result()
+            if types:
+                load_rows(
+                    "adp_schedule_requests", types, merge_keys=["request_type"],
+                    column_bq_types={"pending": "INT64", "scraped_at_utc": "TIMESTAMP",
+                                     "materialized_at_utc": "TIMESTAMP"},
+                )
+            print(f"  adp_schedule_requests (BQ): {len(types)} request types")
 
     def _load_adp_open_shifts(weeks: list, scraped_at, now_utc: str) -> None:
         """Open (unassigned) slots — Issue #342. Purge scope is by scraped week."""

@@ -288,15 +288,17 @@ export function BarChartCard({
               const useSigned = signedValueColors?.dataKey === s.key;
               const color = s.color ?? chartColorAt(i);
               const hatch = s.pattern === "hatch";
+              const outline = s.pattern === "outline";
               return (
                 <Bar
                   key={s.key}
                   dataKey={s.key}
                   name={s.label}
                   fill={hatch ? `url(#${patternPrefix}-${s.key})` : color}
-                  stroke={hatch ? color : undefined}
-                  strokeWidth={hatch ? 1 : undefined}
-                  strokeDasharray={hatch ? "3 2" : undefined}
+                  fillOpacity={outline ? 0.15 : undefined}
+                  stroke={hatch || outline ? color : undefined}
+                  strokeWidth={hatch ? 1 : outline ? 1.5 : undefined}
+                  strokeDasharray={hatch ? "3 2" : outline ? "4 3" : undefined}
                   radius={stackId && i < series.length - 1 ? 0 : 2}
                   stackId={stackId}
                 >

@@ -2073,7 +2073,7 @@ class TestRequireAdpWiring(unittest.TestCase):
 class TestTimecardOnlyEarlyExit(unittest.TestCase):
     """BHAGA_ADP_TIMECARD_ONLY=1: Timecard + Team Schedule in one login, not pay_info."""
 
-    def _run(self, bundle_result):
+    def _run(self, bundle_result, mode_env=None):
         import pathlib
         import tempfile
         import agents.bhaga.scripts.daily_refresh as dr
@@ -2086,7 +2086,7 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
             with mock.patch.object(sys, "argv", argv), \
                  mock.patch.dict(
                      os.environ,
-                     {"BHAGA_ADP_TIMECARD_ONLY": "1", "BHAGA_STORE": "palmetto"},
+                     {**(mode_env or {"BHAGA_ADP_TIMECARD_ONLY": "1"}), "BHAGA_STORE": "palmetto"},
                      clear=False,
                  ), \
                  mock.patch(
@@ -2122,6 +2122,8 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         self.assertNotIn("adp_shifts", skip)
         self.assertNotIn("adp_punches", skip)
         self.assertNotIn("adp_schedule", skip)
+        # Never loads past the target day — today's punches are still in progress.
+        self.assertEqual(skip[skip.index("--end") + 1], "2026-08-23")
         stamp.assert_called_once_with(datetime.date(2026, 8, 10), datetime.date(2026, 8, 23))
 
     def test_schedule_failure_still_loads_clocked_hours(self):
@@ -2141,6 +2143,30 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
                 "timecard_xlsx": None, "schedule_json": "Schedule.json",
                 "errors": {"adp_timecard": "TimeoutError: export"},
             })
+
+    def test_sync_all_scrapes_and_loads_every_adp_source(self):
+        rc, dl, run, stamp = self._run(
+            {"timecard_xlsx": "Timecard.xlsx", "schedule_json": "Schedule.json", "errors": {}},
+            mode_env={"BHAGA_ADP_SYNC_ALL": "1"},
+        )
+        self.assertEqual(rc, 0)
+        kw = dl.call_args.kwargs
+        self.assertIs(kw.get("include_earnings"), True)
+        self.assertIs(kw.get("include_extras"), True)
+        skip = run.call_args.args[0]
+        for source in ("adp_rates", "adp_liability", "adp_schedule", "adp_shifts"):
+            self.assertNotIn(source, skip)
+        stamp.assert_called_once()
+
+    def test_sync_all_skips_loading_a_failed_earnings_scrape(self):
+        _rc, _dl, run, _stamp = self._run(
+            {"timecard_xlsx": "Timecard.xlsx", "schedule_json": "Schedule.json",
+             "errors": {"adp_earnings": "TimeoutError: grid"}},
+            mode_env={"BHAGA_ADP_SYNC_ALL": "1"},
+        )
+        skip = run.call_args.args[0]
+        self.assertIn("adp_rates", skip)
+        self.assertNotIn("adp_liability", skip)
 
 
 class TestPeriodEndPayrollDraftBounds(unittest.TestCase):

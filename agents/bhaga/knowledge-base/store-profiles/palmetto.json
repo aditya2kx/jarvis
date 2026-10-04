@@ -78,6 +78,10 @@
       "id": "8cr6661-737",
       "name": "running-austin-palmetto"
     },
+    "shift_coverage_channel": {
+      "id": "8cr6661-1617",
+      "name": "Shift Coverage & Trades"
+    },
     "credential_handle": "jarvis-clickup-palmetto-pat",
     "_doc": "Source channel where the upstream Google-review automation posts each new review. Read by skills/clickup_chat via PAT in Keychain."
   },

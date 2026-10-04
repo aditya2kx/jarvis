@@ -265,3 +265,21 @@ describe("GOAL_FIELDS labor hours", () => {
     expect(GOAL_FIELDS.find((f) => f.key === "goal_labor_hours_week")?.kind).toBe("hours");
   });
 });
+
+describe("ADP draft hours (Issue #337)", () => {
+  it("adds Draft + Total with draft to the tooltip, and Goal compares the total with draft", () => {
+    const row = {
+      date: "Wk of Oct 5", bucket_iso: "2026-10-05",
+      total_hours: null, parttime_hours: null, fulltime_hours: null,
+      labor_pct: null, hourly_pct: null, fulltime_pct: null, net_sales: null,
+      parttime_scheduled_hours: 150, fulltime_scheduled_hours: 40,
+      open_hours: 20, open_slots: 3, draft_hours: 14,
+    };
+    const tip = laborTooltipContent(row, 230, "week", null);
+    expect(tip.entries.slice(-2).map((e) => [e.label, e.value])).toEqual([
+      ["Draft in ADP", "14"],
+      ["Total with ADP drafts", "224"],
+    ]);
+    expect(tip.lines).toContain("Goal 230 hrs (97.4% of goal)");
+  });
+});

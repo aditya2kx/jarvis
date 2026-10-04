@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { draftDay, sampleRoster, type Availability } from "@/lib/labor/shift-draft";
+import { adpRoster, draftDay, fillOpenShift, type Availability } from "@/lib/labor/shift-draft";
 
 const mins: number[] = [];
 for (let t = 6 * 60; t < 21 * 60; t += 15) mins.push(t);
@@ -32,6 +32,20 @@ describe("draftDay", () => {
     expect(t.kind).toBe("open");
     expect(t.endMin).toBe(720);
     expect(t.trimmed).toBe(true);
+  });
+
+  it("won't trim a shift below the shortest-shift setting", () => {
+    // Free 6:30–10:30 = 4 h of the opener: fine at a 4 h minimum, too short at 4.5 h.
+    const roster: Availability[] = [{ employee: "Early", maxWeekHours: 40, windows: all([390, 630]) }];
+    const run = (minShiftMin: number) =>
+      draftDay({
+        iso: "2026-09-28", mins, onFloor: zeros, need: floorNeed,
+        roster, weekHours: new Map(), busy: new Set(), minShiftMin,
+      });
+    expect(run(240).some((s) => s.employee === "Early")).toBe(true);
+    const strict = run(270);
+    expect(strict.some((s) => s.employee === "Early")).toBe(false);
+    expect(strict.every((s) => s.endMin - s.startMin >= 270)).toBe(true);
   });
 
   it("never schedules past the hour target", () => {
@@ -84,9 +98,78 @@ describe("draftDay", () => {
   });
 });
 
-describe("sampleRoster", () => {
-  it("gives the two highest-hour people the widest availability", () => {
-    const r = sampleRoster(new Map([["A", 5], ["B", 30], ["C", 25]]));
-    expect(r.slice(0, 2).map((a) => [a.employee, a.maxWeekHours])).toEqual([["B", 40], ["C", 36]]);
+describe("adpRoster", () => {
+  it("makes everyone available store hours, most hours first", () => {
+    const r = adpRoster(new Map([["A", 5], ["B", 30]]));
+    expect(r.map((a) => a.employee)).toEqual(["B", "A"]);
+    expect(r[0]!.windows.every((w) => w?.[0] === 360 && w?.[1] === 1260)).toBe(true);
+  });
+});
+
+describe("draftDay with ADP unavailability", () => {
+  it("trims a shift around a blocked window and skips an all-day block", () => {
+    const roster: Availability[] = [
+      { employee: "Morning off", maxWeekHours: 40, windows: all([360, 1260]) },
+      { employee: "Away", maxWeekHours: 40, windows: all([360, 1260]) },
+    ];
+    const out = draftDay({
+      iso: "2026-10-03", mins, onFloor: zeros, need: floorNeed,
+      roster, weekHours: new Map(), busy: new Set(),
+      unavailable: new Map([
+        ["Morning off", [{ fromMin: 360, toMin: 600, status: "pending" as const }]],
+        ["Away", [{ fromMin: 0, toMin: 1440, status: "approved" as const }]],
+      ]),
+    });
+    expect(out.some((s) => s.employee === "Away")).toBe(false);
+    const m = out.filter((s) => s.employee === "Morning off");
+    expect(m.length).toBeGreaterThan(0);
+    expect(m.every((s) => s.startMin >= 600)).toBe(true);
+  });
+});
+
+describe("fillOpenShift", () => {
+  const slot = { iso: "2026-09-29", startMin: 540, endMin: 960 };
+
+  it("suggests someone free for the whole slot, below-target first, and books their hours", () => {
+    const roster: Availability[] = [
+      { employee: "Busy", maxWeekHours: 40, windows: all([360, 1260]) },
+      { employee: "Partial", maxWeekHours: 40, targetWeekHours: 30, windows: all([540, 720]) },
+      { employee: "Blocked", maxWeekHours: 40, targetWeekHours: 30, windows: all([360, 1260]) },
+      { employee: "Casual", maxWeekHours: 40, windows: all([360, 1260]) },
+      { employee: "Target", maxWeekHours: 40, targetWeekHours: 30, windows: all([360, 1260]) },
+    ];
+    const weekHours = new Map([["Casual", 20]]);
+    const busy = new Set(["Busy"]);
+    const out = fillOpenShift({
+      ...slot, roster, weekHours, busy,
+      unavailable: new Map([["Blocked", [{ fromMin: 780, toMin: 840, status: "pending" as const }]]]),
+    });
+    expect(out).toMatchObject({ employee: "Target", kind: "mid", hours: 7, fillsOpen: true, trimmed: false });
+    expect(weekHours.get("Target")).toBe(7);
+    expect(busy.has("Target")).toBe(true);
+  });
+
+  it("returns null rather than trimming or breaking an hours cap", () => {
+    const roster: Availability[] = [
+      { employee: "Capped", maxWeekHours: 40, targetWeekHours: 20, windows: all([360, 1260]) },
+    ];
+    expect(
+      fillOpenShift({ ...slot, roster, weekHours: new Map([["Capped", 15]]), busy: new Set() }),
+    ).toBeNull();
+  });
+});
+
+describe("last working day", () => {
+  const leaving: Availability = { employee: "Leaving", maxWeekHours: 40, lastDay: "2026-09-30", windows: all([360, 1260]) };
+  const fill = (iso: string) =>
+    fillOpenShift({ iso, startMin: 540, endMin: 960, roster: [leaving], weekHours: new Map(), busy: new Set() });
+  const draft = (iso: string) =>
+    draftDay({ iso, mins, onFloor: zeros, need: floorNeed, roster: [leaving], weekHours: new Map(), busy: new Set() });
+
+  it("is suggested through the last day and never after", () => {
+    expect(fill("2026-09-30")?.employee).toBe("Leaving");
+    expect(fill("2026-10-01")).toBeNull();
+    expect(draft("2026-09-30").some((s) => s.employee === "Leaving")).toBe(true);
+    expect(draft("2026-10-01").some((s) => s.employee === "Leaving")).toBe(false);
   });
 });

@@ -1,13 +1,14 @@
 /**
- * Draft open shifts for a day (Issue #337, mock increment).
+ * Draft open shifts for a day (Issue #337).
  * Greedy: repeatedly add the historical shift block (open / mid / close) that
  * covers the most short 15-min steps, give it to the best available person
  * (furthest below their target weekly hours first, then whoever already has the
- * most hours — fewer people overall), trimmed to their availability. No one
- * fits → unassigned.
+ * most hours — fewer people overall), trimmed around their ADP unavailability.
+ * No one fits → unassigned.
  */
 
 import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
+import { freeSegment, type Block } from "@/lib/labor/unavailability";
 
 export type ShiftKind = "open" | "mid" | "close";
 export type ShiftTemplate = { kind: ShiftKind; startMin: number; endMin: number };
@@ -21,7 +22,11 @@ export type Availability = {
   targetWeekHours?: number;
   /** Operator rule: at most this many shifts per pay period. */
   maxShiftsPerPeriod?: number;
+  /** Operator rule: final working day (YYYY-MM-DD). */
+  lastDay?: string;
 };
+
+const worksOn = (a: Availability, iso: string) => a.lastDay == null || iso <= a.lastDay;
 
 export type DraftShift = {
   date: string;
@@ -32,6 +37,8 @@ export type DraftShift = {
   employee: string | null;
   /** Shortened from the historical block to fit the person's availability. */
   trimmed: boolean;
+  /** Suggested person for an existing ADP open shift — already counted as coverage and hours. */
+  fillsOpen?: boolean;
 };
 
 const hm = (h: number, m = 0) => h * 60 + m;
@@ -78,6 +85,8 @@ export function draftDay(args: {
   busy: Set<string>;
   /** Shifts already in this day's pay period, per employee (mutated). */
   periodShifts?: Map<string, number>;
+  /** ADP unavailability on this day, per employee. */
+  unavailable?: Map<string, Block[]>;
   templates?: ShiftTemplate[];
   minShiftMin?: number;
   maxShifts?: number;
@@ -114,11 +123,14 @@ export function draftDay(args: {
     const mustCover = best.startMin <= t0 && t0 < best.endMin ? t0 : null;
 
     const candidates = args.roster
-      .filter((a) => !busy.has(a.employee) && a.windows[dow])
+      .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
       .map((a) => {
         const [ws, we] = a.windows[dow]!;
-        const s = Math.max(ws, best!.startMin);
-        const e = Math.min(we, best!.endMin);
+        const [s, e] = freeSegment(
+          Math.max(ws, best!.startMin),
+          Math.min(we, best!.endMin),
+          args.unavailable?.get(a.employee),
+        );
         return { a, s, e, len: e - s };
       })
       .filter(
@@ -160,34 +172,62 @@ export function draftDay(args: {
   return out.sort((a, b) => a.startMin - b.startMin);
 }
 
-const ANY: [number, number] = [hm(6), hm(21)];
-const AM: [number, number] = [hm(6), hm(14)];
-const PM: [number, number] = [hm(12), hm(21)];
-const EVE: [number, number] = [hm(15), hm(21)];
-const TILL_NOON: [number, number] = [hm(6, 30), hm(12)];
+/**
+ * Suggest who takes an ADP open shift: someone free for the whole slot, not
+ * past their last day, within their weekly hours / shift caps, ranked like `draftDay`. The slot's
+ * time is the operator's, so no trimming — nobody fits → null.
+ */
+export function fillOpenShift(args: {
+  iso: string;
+  startMin: number;
+  endMin: number;
+  roster: Availability[];
+  /** Mutated on a pick. */
+  weekHours: Map<string, number>;
+  /** Mutated on a pick. */
+  busy: Set<string>;
+  /** Mutated on a pick. */
+  periodShifts?: Map<string, number>;
+  unavailable?: Map<string, Block[]>;
+}): DraftShift | null {
+  const { startMin: s, endMin: e } = args;
+  const dow = isoWeekdayMon0(args.iso);
+  const hours = (e - s) / 60;
+  const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
+  const deficit = (a: Availability) =>
+    a.targetWeekHours == null ? 0 : Math.max(0, a.targetWeekHours - weekOf(a));
+  const pick = args.roster
+    .filter((a) => {
+      const w = a.windows[dow];
+      if (args.busy.has(a.employee) || !w || w[0] > s || w[1] < e || !worksOn(a, args.iso)) return false;
+      const [fs, fe] = freeSegment(s, e, args.unavailable?.get(a.employee));
+      return (
+        fs === s &&
+        fe === e &&
+        weekOf(a) + hours <= (a.targetWeekHours ?? a.maxWeekHours) &&
+        (a.maxShiftsPerPeriod == null ||
+          (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod)
+      );
+    })
+    .sort(
+      (x, y) => deficit(y) - deficit(x) || weekOf(y) - weekOf(x) || x.employee.localeCompare(y.employee),
+    )[0];
+  if (!pick) return null;
+  args.busy.add(pick.employee);
+  args.weekHours.set(pick.employee, weekOf(pick) + hours);
+  args.periodShifts?.set(pick.employee, (args.periodShifts.get(pick.employee) ?? 0) + 1);
+  const kind: ShiftKind = s <= hm(7, 30) ? "open" : e >= hm(20) ? "close" : "mid";
+  return { date: args.iso, kind, startMin: s, endMin: e, hours, employee: pick.employee, trimmed: false, fillsOpen: true };
+}
 
-/** Sample availability patterns (Mon … Sun) until the ADP availability spike lands. */
-const SAMPLE_PATTERNS: Omit<Availability, "employee">[] = [
-  { maxWeekHours: 40, windows: [ANY, ANY, ANY, ANY, ANY, null, ANY] },
-  { maxWeekHours: 36, windows: [AM, AM, AM, null, AM, ANY, ANY] },
-  { maxWeekHours: 28, windows: [PM, PM, null, PM, PM, PM, PM] },
-  { maxWeekHours: 24, windows: [null, null, null, null, ANY, ANY, ANY] },
-  { maxWeekHours: 20, windows: [EVE, EVE, EVE, EVE, EVE, ANY, null] },
-  { maxWeekHours: 20, windows: [TILL_NOON, TILL_NOON, TILL_NOON, TILL_NOON, TILL_NOON, TILL_NOON, null] },
-  { maxWeekHours: 24, windows: [ANY, null, ANY, ANY, null, PM, PM] },
-];
+const STORE_HOURS: [number, number] = [hm(6), hm(21)];
 
 /**
- * Deterministic sample roster: the two people with the most recent hours get
- * the widest patterns; everyone else cycles through the rest.
+ * Everyone who worked or is scheduled in the window, available store hours
+ * every day up to 40 h/week; ADP unavailability and staff rules narrow it.
  */
-export function sampleRoster(hoursByEmployee: Map<string, number>): Availability[] {
-  const names = [...hoursByEmployee.keys()].sort(
-    (a, b) => (hoursByEmployee.get(b) ?? 0) - (hoursByEmployee.get(a) ?? 0) || a.localeCompare(b),
-  );
-  const rest = SAMPLE_PATTERNS.slice(2);
-  return names.map((employee, i) => ({
-    employee,
-    ...(i < 2 ? SAMPLE_PATTERNS[i]! : rest[(i - 2) % rest.length]!),
-  }));
+export function adpRoster(hoursByEmployee: Map<string, number>): Availability[] {
+  return [...hoursByEmployee.keys()]
+    .sort((a, b) => (hoursByEmployee.get(b) ?? 0) - (hoursByEmployee.get(a) ?? 0) || a.localeCompare(b))
+    .map((employee) => ({ employee, maxWeekHours: 40, windows: Array(7).fill(STORE_HOURS) }));
 }

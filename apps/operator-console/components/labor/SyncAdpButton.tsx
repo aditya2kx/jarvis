@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  pollScheduledShiftsSyncAction,
-  syncScheduledShiftsAction,
+  pollAdpSyncAction,
+  syncAdpAction,
 } from "@/app/labor/actions";
 import { Button } from "@/components/ui/button";
 import { useActionToast } from "@/lib/actions/ActionToast";
@@ -27,13 +27,15 @@ function formatScraped(iso: string | null): string | null {
 type SyncPhase = "idle" | "starting" | "running" | "done" | "error";
 
 const POLL_MS = 4000;
-const TIMEOUT_MS = 6 * 60 * 1000;
+const TIMEOUT_MS = 20 * 60 * 1000;
 
-/** Sync ADP Team Schedule; page stays usable; status chip tracks progress. */
-export function SyncScheduledShiftsButton({
+/** One "Sync ADP": clocked hours, schedule (assigned + open), payroll earnings, rates. */
+export function SyncAdpButton({
   lastScrapedAt,
+  targetDate,
 }: {
   lastScrapedAt: string | null;
+  targetDate: string;
 }) {
   const router = useRouter();
   const toast = useActionToast();
@@ -66,9 +68,9 @@ export function SyncScheduledShiftsButton({
       setError(null);
       setScrapedAt(newScraped);
       setStatusText(
-        `Synced ${formatScraped(newScraped) ?? "just now"} CT — refreshing charts…`,
+        `Synced ${formatScraped(newScraped) ?? "just now"} CT — refreshing…`,
       );
-      toast.push("Scheduled shifts synced", "info");
+      toast.push("ADP synced", "info");
       router.refresh();
       window.setTimeout(() => {
         setPhase("idle");
@@ -92,12 +94,11 @@ export function SyncScheduledShiftsButton({
   const pollOnce = useCallback(async () => {
     if (Date.now() - startedAtRef.current > TIMEOUT_MS) {
       finishErr(
-        "Sync timed out after 6 minutes — check ADP login / Cloud Run logs, then try again.",
+        "Sync timed out after 20 minutes — check ADP login / Cloud Run logs, then try again.",
       );
       return;
     }
-    // Poll stays outside `run()` so we don't toast every 4s.
-    const ack = await pollScheduledShiftsSyncAction({
+    const ack = await pollAdpSyncAction({
       baselineScrapedAt: baselineRef.current,
       executionName: executionRef.current,
     });
@@ -113,21 +114,21 @@ export function SyncScheduledShiftsButton({
     if (execution?.failed) {
       finishErr(
         execution.message?.includes("not yet complete")
-          ? "Cloud job failed: schedule-only path not deployed yet (completeness gate). Use local console with BYPASS_IAP, or merge/deploy this branch first."
+          ? "Cloud job failed: Sync ADP path not deployed yet. Use local console with BYPASS_IAP, or merge/deploy this branch first."
           : `Sync failed: ${execution.message ?? "Cloud Run execution failed"}`,
       );
       return;
     }
     if (execution?.done && execution.succeeded && !advanced) {
       finishErr(
-        "Job finished but schedule data did not update — check ADP scrape logs.",
+        "Job finished but ADP data did not update — check the ADP scrape logs.",
       );
       return;
     }
     setStatusText(
       execution?.done
         ? "Finishing…"
-        : "Syncing scheduled shifts… (you can keep using the page)",
+        : "Syncing ADP… (you can keep using the page)",
     );
   }, [finishErr, finishOk]);
 
@@ -136,10 +137,10 @@ export function SyncScheduledShiftsButton({
     stopPolling();
     setPhase("starting");
     setStatusText("Starting sync…");
-    const ack = await run(() => syncScheduledShiftsAction(), {
+    const ack = await run(() => syncAdpAction(targetDate), {
       saving: "Starting sync…",
-      queued: "Schedule sync queued in the background",
-      done: "Schedule sync started in the background",
+      queued: "ADP sync queued in the background",
+      done: "ADP sync started in the background",
     });
     if (!ack.ok) {
       setPhase("error");
@@ -156,7 +157,7 @@ export function SyncScheduledShiftsButton({
     pollTimerRef.current = setInterval(() => {
       void pollOnce();
     }, POLL_MS);
-  }, [phase, pollOnce, run, scrapedAt, stopPolling]);
+  }, [phase, pollOnce, run, scrapedAt, stopPolling, targetDate]);
 
   const scrapedLabel = formatScraped(scrapedAt);
   const busy = phase === "starting" || phase === "running";
@@ -178,7 +179,7 @@ export function SyncScheduledShiftsButton({
           ? "Starting…"
           : phase === "running"
             ? "Syncing…"
-            : "Sync scheduled shifts"}
+            : "Sync ADP"}
       </Button>
       {phase !== "idle" && statusText ? (
       <p

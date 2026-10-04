@@ -961,15 +961,57 @@ export function laborActualShiftDays(
   );
 }
 
-/** Max scraped_at for schedule tables (Sync button freshness). */
-export function adpScheduleScrapedAt(): Promise<string | null> {
-  return q<{ scraped: string | null }>(
-    `SELECT CAST(MAX(scraped_at_utc) AS STRING) AS scraped
-     FROM ${fq("adp_scheduled_shifts")}`,
-  ).then((rows) => rows[0]?.scraped ?? null);
+export type UnavailabilityRow = {
+  employee: string;
+  status: "pending" | "approved";
+  first_date: string;
+  from_time: string | null;
+  to_time: string | null;
+  all_day: boolean;
+  repeat_weekday: number | null;
+  repeat_until: string | null;
+  expires_at_ct: string | null;
+  /** Hours until ADP expires the request (negative = expired), Central time. */
+  hours_left: number | null;
+  scraped_at: string | null;
+};
+
+/** ADP unavailability (pending requests + approved blocks), names resolved like the schedule. */
+export function adpUnavailability(store: string): Promise<UnavailabilityRow[]> {
+  return q<UnavailabilityRow>(
+    `SELECT
+       COALESCE(al.canonical_name, NULLIF(TRIM(u.raw_employee_name), ''), u.employee_name) AS employee,
+       u.status,
+       CAST(u.first_date AS STRING) AS first_date,
+       u.from_time,
+       u.to_time,
+       IFNULL(u.all_day, FALSE) AS all_day,
+       u.repeat_weekday,
+       CAST(u.repeat_until AS STRING) AS repeat_until,
+       CAST(u.expires_at_ct AS STRING) AS expires_at_ct,
+       DATETIME_DIFF(u.expires_at_ct, CURRENT_DATETIME('America/Chicago'), MINUTE) / 60 AS hours_left,
+       CAST(u.scraped_at_utc AS STRING) AS scraped_at
+     FROM ${fq("adp_unavailability")} u
+     LEFT JOIN ${fq("employee_aliases")} al
+       ON al.store = @store AND al.raw_name = TRIM(u.raw_employee_name)
+     WHERE COALESCE(u.repeat_until, u.first_date) >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 28 DAY)
+     ORDER BY employee, first_date`,
+    { store },
+  );
 }
 
-/** Max scraped_at on clocked hours (Sync clocked hours button). */
+export type ScheduleRequestRow = { request_type: string; pending: number; scraped_at: string | null };
+
+/** Pending-request counts per type from the Team Schedule requests pane. */
+export function adpScheduleRequests(): Promise<ScheduleRequestRow[]> {
+  return q<ScheduleRequestRow>(
+    `SELECT request_type, pending, CAST(scraped_at_utc AS STRING) AS scraped_at
+     FROM ${fq("adp_schedule_requests")}
+     ORDER BY request_type`,
+  );
+}
+
+/** Max scraped_at on clocked hours — the Sync ADP run stamps this last. */
 export function adpHoursScrapedAt(): Promise<string | null> {
   return q<{ scraped: string | null }>(
     `SELECT CAST(MAX(scraped_at_utc) AS STRING) AS scraped
@@ -2111,14 +2153,16 @@ export function storeConfig(store: string): Promise<StoreConfigRow[]> {
 }
 
 /**
- * Avg Payment orders per weekday (0 = Mon … 6 = Sun) × local hour over the
- * `weeks` full weeks before `asOfIso`. Divides by days that had orders, so a
- * closed day (e.g. couldn't open) doesn't drag the average down. Issue #337.
+ * Median Payment orders per weekday (0 = Mon … 6 = Sun) × local hour over the
+ * `weeks` weeks before `asOfIso` — one catering rush can't lift a whole weekday.
+ * Only days that had orders count (a closed day isn't a zero day); an hour with
+ * no orders on an open day counts as 0. Interpolated median, so a tie between
+ * two middle days lands on the higher side of ⌈÷ orders per person⌉. Issue #337.
  */
 export function laborDemandProfile(
   asOfIso: string,
-  weeks = 4,
-): Promise<{ dow: number; hour: number; avg_orders: number }[]> {
+  weeks = 8,
+): Promise<{ dow: number; hour: number; orders: number }[]> {
   return q(
     `WITH o AS (
        SELECT
@@ -2136,14 +2180,18 @@ export function laborDemandProfile(
            BETWEEN DATE_SUB(@asOf, INTERVAL @days DAY) AND DATE_SUB(@asOf, INTERVAL 1 DAY)
        GROUP BY 1, 2
      ),
-     dd AS (SELECT EXTRACT(DAYOFWEEK FROM d) AS wd, COUNT(DISTINCT d) AS nd FROM o GROUP BY 1)
-     SELECT
-       MOD(EXTRACT(DAYOFWEEK FROM o.d) + 5, 7) AS dow,
-       o.hr AS hour,
-       SUM(o.n) / ANY_VALUE(dd.nd) AS avg_orders
-     FROM o JOIN dd ON EXTRACT(DAYOFWEEK FROM o.d) = dd.wd
-     WHERE o.hr IS NOT NULL
-     GROUP BY 1, 2`,
+     grid AS (
+       SELECT DISTINCT o.d, h FROM o CROSS JOIN UNNEST(GENERATE_ARRAY(0, 23)) AS h
+     ),
+     cells AS (
+       SELECT
+         MOD(EXTRACT(DAYOFWEEK FROM g.d) + 5, 7) AS dow,
+         g.h AS hour,
+         PERCENTILE_CONT(COALESCE(o.n, 0), 0.5)
+           OVER (PARTITION BY EXTRACT(DAYOFWEEK FROM g.d), g.h) AS orders
+       FROM grid g LEFT JOIN o ON o.d = g.d AND o.hr = g.h
+     )
+     SELECT DISTINCT dow, hour, orders FROM cells WHERE orders > 0`,
     { asOf: dateParam(asOfIso), days: intParam(weeks * 7) },
   );
 }

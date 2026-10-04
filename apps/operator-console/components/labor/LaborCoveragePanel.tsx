@@ -35,7 +35,6 @@ import {
   type ScheduledShiftInput,
 } from "@/lib/labor/coverage-model";
 import {
-  DEFAULT_LABOR_FLOOR,
   isoWeekdayMon0,
   needSeries,
   onFloor,
@@ -44,12 +43,20 @@ import {
   shortWindows,
   type DemandCell,
 } from "@/lib/labor/staffing-need";
-import { draftDay, sampleRoster, type DraftShift } from "@/lib/labor/shift-draft";
-import { applyDayRules, staffLimits, type DayRule } from "@/lib/labor/schedule-inputs";
+import { adpRoster, draftDay, fillOpenShift, type DraftShift } from "@/lib/labor/shift-draft";
+import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
+import {
+  applyDayRules,
+  DEFAULT_RULES,
+  staffLimits,
+  type DayRule,
+  type RulesVersion,
+  type ScheduleRules,
+  type StaffingBasics,
+} from "@/lib/labor/schedule-inputs";
 import { payPeriodStartFor } from "@/lib/payroll/openPeriod";
 import { DRAFT_COLOR, ShiftDraftSummary } from "@/components/labor/ShiftDraftSummary";
 import { ScheduleInputsPanel } from "@/components/labor/ScheduleInputsPanel";
-import { useScheduleRules } from "@/components/labor/useScheduleRules";
 import { Button } from "@/components/ui/button";
 import { chicagoTodayIso, shiftCalendarDate, type DateWindow } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
@@ -63,16 +70,16 @@ const NEED = LABOR_CHART_COLORS.goalLine;
 const SHORT_TINT = "rgb(244 63 94 / 0.16)";
 
 /** Axis must span open hours so the need line isn't clipped on sparse days. */
-function withOpenHours(b: { startMin: number; endMin: number }) {
-  const open = Math.floor(DEFAULT_LABOR_FLOOR[0]!.fromMin / 60) * 60;
-  const close = Math.ceil(DEFAULT_LABOR_FLOOR[DEFAULT_LABOR_FLOOR.length - 1]!.toMin / 60) * 60;
+function withOpenHours(b: { startMin: number; endMin: number }, s: StaffingBasics) {
   return {
-    startMin: Math.min(b.startMin, open),
-    endMin: Math.max(b.endMin, close),
+    startMin: Math.min(b.startMin, Math.floor(s.openMin / 60) * 60),
+    endMin: Math.max(b.endMin, Math.ceil(s.closeMin / 60) * 60),
   };
 }
 
-type NeedCtx = { ordersPerPerson?: number; dayRules: DayRule[]; deliveries: ReadonlySet<string> };
+type NeedCtx = { staffing: StaffingBasics; dayRules: DayRule[]; deliveries: ReadonlySet<string> };
+
+const floorOf = (s: StaffingBasics) => [{ fromMin: s.openMin, toMin: s.closeMin, min: s.minPeople }];
 
 function dayCoverage(
   iso: string,
@@ -81,13 +88,13 @@ function dayCoverage(
   ctx: NeedCtx,
 ) {
   const base = axisBounds(people);
-  const bounds = demand?.length ? withOpenHours(base) : base;
+  const bounds = demand?.length ? withOpenHours(base, ctx.staffing) : base;
   const points = occupancySeries(people, bounds.startMin, bounds.endMin, 15);
   const need = demand?.length
     ? applyDayRules(
         iso,
         points.map((p) => p.min),
-        needSeries(iso, points, demand, ctx.ordersPerPerson),
+        needSeries(iso, points, demand, ctx.staffing.ordersPerPerson, floorOf(ctx.staffing)),
         ctx.dayRules,
         ctx.deliveries,
       )
@@ -101,12 +108,20 @@ function personDayHours(p: CoveragePersonDay): number {
   return (actual.length ? actual : p.segments).reduce((a, s) => a + s.hours, 0);
 }
 
+/** Draft shifts that add people/hours (not suggestions for existing ADP open shifts). */
+function newShifts(shifts: DraftShift[]): DraftShift[] {
+  return shifts.filter((s) => !s.fillsOpen);
+}
+
 function draftCountSeries(points: OccupancyPoint[], shifts: DraftShift[]): number[] {
-  return points.map((p) => shifts.filter((s) => p.min >= s.startMin && p.min < s.endMin).length);
+  const added = newShifts(shifts);
+  return points.map((p) => added.filter((s) => p.min >= s.startMin && p.min < s.endMin).length);
 }
 
 const GUTTER = "w-[7rem] sm:w-32";
 const NO_OPEN: OpenShiftInput[] = [];
+const NO_RULES_HISTORY: RulesVersion[] = [];
+const NO_UNAVAILABILITY: UnavailabilityInput[] = [];
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {
   const [y, m, d] = iso.split("-").map(Number);
@@ -223,12 +238,12 @@ function DayStrip({
                   +{chip.open} open
                 </span>
               ) : null}
-              {draftShifts?.has(chip.date) ? (
+              {newShifts(draftShifts?.get(chip.date) ?? []).length ? (
                 <span
                   className="mt-0.5 text-[10px] font-medium tabular-nums"
                   style={{ color: DRAFT_COLOR }}
                 >
-                  +{draftShifts.get(chip.date)!.length} draft
+                  +{newShifts(draftShifts!.get(chip.date)!).length} draft
                 </span>
               ) : (shortHours?.get(chip.date) ?? 0) > 0 ? (
                 <span className="mt-0.5 text-[10px] font-medium tabular-nums text-rose-600 dark:text-rose-400">
@@ -483,7 +498,7 @@ function CoverageTimeline({
   const neededCount = need && hoverIdx >= 0 ? (need[hoverIdx] ?? 0) : null;
   const draftAt = draft && hoverIdx >= 0 ? (draft[hoverIdx] ?? 0) : 0;
   const activeDraft = hover
-    ? draftShifts.filter((s) => hover.minute >= s.startMin && hover.minute < s.endMin)
+    ? newShifts(draftShifts).filter((s) => hover.minute >= s.startMin && hover.minute < s.endMin)
     : [];
 
   const crosshair = hover ? (
@@ -631,6 +646,11 @@ function CoverageTimeline({
           people.map((p) => {
             const totalHrs = p.segments.reduce((sum, s) => sum + s.hours, 0);
             const open = isOpenLane(p);
+            const takers = open
+              ? draftShifts
+                  .filter((s) => s.fillsOpen && p.segments.some((g) => g.startMin === s.startMin && g.endMin === s.endMin))
+                  .map((s) => s.employee)
+              : [];
             return (
               <div key={p.employee} className="flex items-center gap-2">
                 <div className={cn(GUTTER, "shrink-0 truncate")}>
@@ -645,6 +665,15 @@ function CoverageTimeline({
                     {totalHrs.toFixed(1)}h
                     {open ? (activeDay < todayIso ? " · unfilled" : " · unassigned") : ""}
                   </span>
+                  {takers.length ? (
+                    <span
+                      className="block truncate text-[10px]"
+                      style={{ color: DRAFT_COLOR }}
+                      title={`Suggested: ${takers.join(", ")}`}
+                    >
+                      suggest {takers.join(", ")}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="relative min-w-0 flex-1 cursor-crosshair">
                   <PersonLaneTrack
@@ -664,7 +693,7 @@ function CoverageTimeline({
               : " — if the store was open, Timecard may not have included this date yet."}
           </p>
         )}
-        {draftShifts.map((s, i) => {
+        {newShifts(draftShifts).map((s, i) => {
           const left = ((s.startMin - axisStart) / span) * 100;
           const width = ((s.endMin - s.startMin) / span) * 100;
           return (
@@ -729,9 +758,12 @@ export function LaborCoveragePanel({
   laborTypes,
   todayIso = chicagoTodayIso(),
   demand,
-  ordersPerPerson,
   goalHoursWeek,
   deliveryDates,
+  rulesHistory = NO_RULES_HISTORY,
+  unavailability = NO_UNAVAILABILITY,
+  activeStaff,
+  adpWriteEnabled = false,
 }: {
   win: DateWindow;
   actuals: ActualShiftInput[];
@@ -740,12 +772,19 @@ export function LaborCoveragePanel({
   open?: OpenShiftInput[];
   laborTypes: string[] | null;
   todayIso?: string;
-  /** Avg orders per weekday × hour (last 4 weeks); enables the Needed line. */
+  /** Median orders per weekday × hour (last 8 weeks); enables the Needed line. */
   demand?: DemandCell[];
-  ordersPerPerson?: number;
   goalHoursWeek?: number;
   /** Upcoming frozen delivery dates (restock schedule). */
   deliveryDates?: string[];
+  /** Saved scheduling-rules versions, newest (live) first. */
+  rulesHistory?: RulesVersion[];
+  /** ADP unavailability (pending + approved); the draft works around it. */
+  unavailability?: UnavailabilityInput[];
+  /** People on the ADP schedule ahead — the only ones the draft suggests (drops departed staff). */
+  activeStaff?: string[];
+  /** FEATURES.adpScheduleWrite, evaluated on the server. */
+  adpWriteEnabled?: boolean;
 }) {
   const strip = useMemo(
     () => coverageStripDates(win),
@@ -784,13 +823,28 @@ export function LaborCoveragePanel({
     for (const r of scheduled) {
       hours.set(r.employee, (hours.get(r.employee) ?? 0) + (r.scheduled_hours || 0));
     }
-    return sampleRoster(hours);
-  }, [actuals, scheduled]);
+    if (activeStaff) {
+      const active = new Set(activeStaff);
+      for (const name of hours.keys()) if (!active.has(name)) hours.delete(name);
+      for (const name of active) if (!hours.has(name)) hours.set(name, 0);
+    }
+    return adpRoster(hours);
+  }, [actuals, scheduled, activeStaff]);
 
-  const [rules, setRules] = useScheduleRules();
+  const saved = rulesHistory[0];
+  const savedVersion = saved?.version ?? 0;
+  const savedRules = saved?.rules ?? DEFAULT_RULES;
+  // Unsaved edits preview in the draft immediately; null = showing the saved version.
+  const [editedRules, setEditedRules] = useState<ScheduleRules | null>(null);
+  const [rulesBase, setRulesBase] = useState(savedVersion);
+  if (rulesBase !== savedVersion) {
+    setRulesBase(savedVersion);
+    setEditedRules(null);
+  }
+  const rules = editedRules ?? savedRules;
   const inputs = useMemo<NeedCtx>(
-    () => ({ ordersPerPerson, dayRules: rules.dayRules, deliveries: new Set(deliveryDates ?? []) }),
-    [ordersPerPerson, rules.dayRules, deliveryDates],
+    () => ({ staffing: rules.staffing, dayRules: rules.dayRules, deliveries: new Set(deliveryDates ?? []) }),
+    [rules.staffing, rules.dayRules, deliveryDates],
   );
   const roster = useMemo(() => {
     const limits = staffLimits(rules.staffRules);
@@ -839,7 +893,8 @@ export function LaborCoveragePanel({
 
   const [showDraft, setShowDraft] = useState(true);
 
-  // Draft each Mon–Sun week from today through the strip horizon. Each week
+  // Draft each Mon–Sun week from tomorrow through the strip horizon (today's
+  // shifts are already under way). Each week
   // has its own hours budget; weekly hours are shared within a week so hour
   // targets and caps span it. Shift counts carry across weeks per pay period.
   const drafts = useMemo(() => {
@@ -847,7 +902,7 @@ export function LaborCoveragePanel({
     const weekStarts = [
       ...new Set(
         strip
-          .filter((iso) => iso >= todayIso)
+          .filter((iso) => iso > todayIso)
           .map((iso) => shiftCalendarDate(iso, "day", -isoWeekdayMon0(iso))),
       ),
     ].sort();
@@ -879,7 +934,7 @@ export function LaborCoveragePanel({
         }
       }
       const state = days
-        .filter((iso) => iso >= todayIso)
+        .filter((iso) => iso > todayIso)
         .map((iso) => {
           const dayPeople = peopleByDay.get(iso)!;
           const cov = dayCoverage(iso, dayPeople, demand, inputs);
@@ -891,7 +946,7 @@ export function LaborCoveragePanel({
             floorNeed: applyDayRules(
               iso,
               mins,
-              needSeries(iso, cov.points, [], inputs.ordersPerPerson),
+              needSeries(iso, cov.points, [], inputs.staffing.ordersPerPerson, floorOf(inputs.staffing)),
               inputs.dayRules,
               inputs.deliveries,
             ),
@@ -919,9 +974,28 @@ export function LaborCoveragePanel({
           weekHours,
           busy: d.busy,
           periodShifts: shiftsInPeriod(d.iso),
+          unavailable: blocksOn(unavailability, d.iso),
+          minShiftMin: rules.staffing.minShiftMin,
           maxShifts,
         });
 
+      // ADP open shifts already count as coverage and hours; only suggest who takes them.
+      for (const d of state) {
+        const slots = peopleByDay.get(d.iso)!.filter(isOpenLane).flatMap((p) => p.segments);
+        for (const slot of slots) {
+          const fill = fillOpenShift({
+            iso: d.iso,
+            startMin: slot.startMin,
+            endMin: slot.endMin,
+            roster,
+            weekHours,
+            busy: d.busy,
+            periodShifts: shiftsInPeriod(d.iso),
+            unavailable: blocksOn(unavailability, d.iso),
+          });
+          if (fill) d.shifts.push(fill);
+        }
+      }
       // Pass 1: labor floor + day rules are mandatory regardless of the goal.
       for (const d of state) add(d, run(d, d.floorNeed));
       // Pass 2: spend what's left of the goal on the largest order-driven gaps.
@@ -929,7 +1003,7 @@ export function LaborCoveragePanel({
         goalHoursWeek != null
           ? goalHoursWeek -
             existingHours -
-            state.reduce((a, d) => a + d.shifts.reduce((b, s) => b + s.hours, 0), 0)
+            state.reduce((a, d) => a + newShifts(d.shifts).reduce((b, s) => b + s.hours, 0), 0)
           : Infinity;
       let peakLeftHours = 0;
       for (;;) {
@@ -963,7 +1037,7 @@ export function LaborCoveragePanel({
             [...d.shifts].sort((a, b) => a.startMin - b.startMin),
           );
       }
-      const all = [...byDay.values()].flat();
+      const all = newShifts([...byDay.values()].flat());
       return {
         weekStart,
         byDay,
@@ -988,16 +1062,24 @@ export function LaborCoveragePanel({
     inputs,
     roster,
     goalHoursWeek,
+    unavailability,
+    rules.staffing.minShiftMin,
   ]);
 
   const weekDraft =
-    drafts && activeDay && activeDay >= todayIso
+    drafts && activeDay && activeDay > todayIso
       ? (drafts.weeks.get(shiftCalendarDate(activeDay, "day", -isoWeekdayMon0(activeDay))) ?? null)
       : null;
 
   const draftShifts = useMemo(
     () => (showDraft && activeDay ? (weekDraft?.byDay.get(activeDay) ?? []) : []),
     [showDraft, activeDay, weekDraft],
+  );
+  const weekShifts = useMemo(
+    () =>
+      newShifts([...(weekDraft?.byDay.values() ?? [])].flat())
+        .map(({ date, employee, startMin, endMin }) => ({ date, employee, startMin, endMin })),
+    [weekDraft],
   );
 
   const shortLine = useMemo(() => {
@@ -1010,7 +1092,7 @@ export function LaborCoveragePanel({
       scheduled: onFloor(p) + draft[i]!,
     }));
     const line = shortNarrative(shortWindows(withDraft, need));
-    return draftShifts.length ? `With draft — ${line}` : line;
+    return newShifts(draftShifts).length ? `With draft — ${line}` : line;
   }, [points, need, draftShifts]);
 
   if (!activeDay) return null;
@@ -1036,7 +1118,11 @@ export function LaborCoveragePanel({
         {demand?.length ? (
           <ScheduleInputsPanel
             rules={rules}
-            onChange={setRules}
+            onChange={setEditedRules}
+            dirty={editedRules != null}
+            onDiscard={() => setEditedRules(null)}
+            savedVersion={savedVersion}
+            history={rulesHistory}
             employees={baseRoster.map((a) => a.employee).sort()}
             deliveryDates={deliveryDates ?? []}
             goalHoursWeek={goalHoursWeek}
@@ -1103,6 +1189,8 @@ export function LaborCoveragePanel({
             draftCount={weekDraft.draftCount}
             peakLeftHours={weekDraft.peakLeftHours}
             goalHoursWeek={goalHoursWeek}
+            weekShifts={weekShifts}
+            adpWriteEnabled={adpWriteEnabled}
           />
         ) : null}
 
@@ -1145,7 +1233,7 @@ export function LaborCoveragePanel({
             <>
               <span
                 className="inline-flex items-center gap-1.5"
-                title={`Larger of the labor floor (1 from 6:30, 2 from 7:30 to 8:30 PM) and avg orders for this weekday+hour over the last 4 weeks ÷ ${ordersPerPerson ?? 4} per person, then your day & time rules`}
+                title={`Larger of the minimum (${rules.staffing.minPeople}) and typical (median) orders for this weekday+hour over the last 8 weeks ÷ ${rules.staffing.ordersPerPerson} per person, rounded up, then your day & time rules`}
               >
                 <span
                   className="inline-block h-0.5 w-3 rounded-full"
@@ -1162,7 +1250,7 @@ export function LaborCoveragePanel({
               </span>
             </>
           ) : null}
-          {draftShifts.length ? (
+          {newShifts(draftShifts).length ? (
             <span className="inline-flex items-center gap-1.5">
               <span
                 className="inline-block size-2.5 rounded-sm border border-dashed"

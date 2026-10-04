@@ -1,21 +1,19 @@
 /**
- * Needed headcount for Staffing coverage (Issue #337, increment 1).
- * need(t) = max(labor floor at t, ⌈avg orders for that weekday+hour ÷ orders per person⌉),
- * zero outside the labor-floor windows (store closed).
+ * Needed headcount for Staffing coverage (Issue #337).
+ * need(t) = max(labor floor at t, ⌈typical orders for that weekday+hour ÷ orders per person⌉),
+ * zero outside the labor-floor windows (store closed). Rounding up is deliberate:
+ * when in doubt, staff the higher number.
  */
 
 import { formatClockMin, type OccupancyPoint } from "@/lib/labor/coverage-model";
 
-/** Avg Payment orders for one weekday (0 = Mon … 6 = Sun) and local hour. */
-export type DemandCell = { dow: number; hour: number; avg_orders: number };
+/** Typical (median) Payment orders for one weekday (0 = Mon … 6 = Sun) and local hour. */
+export type DemandCell = { dow: number; hour: number; orders: number };
 
 export type FloorWindow = { fromMin: number; toMin: number; min: number };
 
-/** 7/15 labor floor: opener 6:30, 2nd opener by 7:30, two on until close at 8:30. */
-export const DEFAULT_LABOR_FLOOR: FloorWindow[] = [
-  { fromMin: 6 * 60 + 30, toMin: 7 * 60 + 30, min: 1 },
-  { fromMin: 7 * 60 + 30, toMin: 20 * 60 + 30, min: 2 },
-];
+/** One person from the 6:30 opener until closing duties end at 8:30 PM. */
+export const DEFAULT_LABOR_FLOOR: FloorWindow[] = [{ fromMin: 6 * 60 + 30, toMin: 20 * 60 + 30, min: 1 }];
 
 export const DEFAULT_ORDERS_PER_PERSON = 4;
 
@@ -40,7 +38,7 @@ export function needSeries(
 ): number[] {
   const dow = isoWeekdayMon0(iso);
   const byHour = new Map<number, number>();
-  for (const c of demand) if (c.dow === dow) byHour.set(c.hour, c.avg_orders);
+  for (const c of demand) if (c.dow === dow) byHour.set(c.hour, c.orders);
   const opp = ordersPerPerson > 0 ? ordersPerPerson : DEFAULT_ORDERS_PER_PERSON;
   return points.map(({ min }) => {
     const f = floorAt(min, floor);
@@ -50,7 +48,6 @@ export function needSeries(
   });
 }
 
-/** Headcount the plan counts on: clocked where punches exist, else scheduled. */
 /** Headcount covering a step: clocked if punched, else scheduled, plus ADP open slots. */
 export function onFloor(p: Pick<OccupancyPoint, "actual" | "scheduled"> & { open?: number }): number {
   return (p.actual > 0 ? p.actual : p.scheduled) + (p.open ?? 0);

@@ -1,7 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, Plus, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ChevronDown, History, Plus, RotateCcw, X } from "lucide-react";
+import { saveScheduleRulesAction } from "@/app/labor/actions";
+import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,7 +20,9 @@ import {
   timeToMin,
   type DayRule,
   type DayScope,
+  type RulesVersion,
   type ScheduleRules,
+  type StaffingBasics,
   type StaffRule,
   type StaffRuleKind,
 } from "@/lib/labor/schedule-inputs";
@@ -37,6 +42,7 @@ const SCOPES: { value: DayScope; label: string }[] = [
 const KINDS: { value: StaffRuleKind; label: string; unit: string }[] = [
   { value: "target_week_hours", label: "About … hours / week", unit: "h / week" },
   { value: "max_shifts_per_period", label: "At most … shifts / pay period", unit: "shifts / pay period" },
+  { value: "last_day", label: "Last working day", unit: "not drafted after this day" },
 ];
 
 function dayLabel(iso: string): string {
@@ -46,6 +52,75 @@ function dayLabel(iso: string): string {
     month: "short",
     day: "numeric",
   });
+}
+
+function savedAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-US", {
+    timeZone: "America/Chicago",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function whoSaved(email: string): string {
+  return email.split("@")[0] ?? email;
+}
+
+function clock(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${((h + 11) % 12) + 1}${m ? `:${String(m).padStart(2, "0")}` : ""} ${h < 12 ? "AM" : "PM"}`;
+}
+
+function staffingSummary(s: StaffingBasics): string {
+  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}h+ shifts`;
+}
+
+function rulesSummary(v: RulesVersion): string {
+  const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
+  const staffing = v.savedStaffing ? staffingSummary(v.rules.staffing) : "before staffing basics";
+  return `${staffing} · ${n(v.rules.staffRules.length, "staff rule")} · ${n(v.rules.dayRules.length, "day rule")}`;
+}
+
+function NumberField({
+  label,
+  unit,
+  value,
+  step = 1,
+  min,
+  onChange,
+}: {
+  label: string;
+  unit: string;
+  value: number;
+  step?: number;
+  min: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+      <span className="flex items-center gap-1.5">
+        <Input
+          type="number"
+          min={min}
+          step={step}
+          value={value}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            if (Number.isFinite(v) && v >= min) onChange(v);
+          }}
+          className="h-7 w-16 text-xs tabular-nums"
+        />
+        <span className="text-xs text-muted-foreground">{unit}</span>
+      </span>
+    </label>
+  );
 }
 
 function Section({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
@@ -97,6 +172,10 @@ export function ScheduleInputsPanel({
   employees,
   deliveryDates,
   goalHoursWeek,
+  dirty,
+  onDiscard,
+  savedVersion,
+  history,
 }: {
   rules: ScheduleRules;
   onChange: (next: ScheduleRules) => void;
@@ -104,16 +183,37 @@ export function ScheduleInputsPanel({
   /** Upcoming frozen deliveries from the Inventory restock schedule (read-only here). */
   deliveryDates: string[];
   goalHoursWeek?: number;
+  /** Rules differ from the saved version (edits preview in the draft until saved). */
+  dirty: boolean;
+  onDiscard: () => void;
+  savedVersion: number;
+  /** Saved versions, newest (live) first. */
+  history: RulesVersion[];
 }) {
+  const router = useRouter();
+  const { run, isPending } = useConsoleAction();
   const [open, setOpen] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [note, setNote] = useState("");
+  const live = history[0];
+  const save = async () => {
+    const ack = await run(() => saveScheduleRulesAction(rules, savedVersion, note), { saving: "Saving rules…" });
+    if (ack.ok) {
+      setNote("");
+      router.refresh();
+    }
+  };
   const setDayRule = (id: string, patch: Partial<DayRule>) =>
     onChange({ ...rules, dayRules: rules.dayRules.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
   const setStaffRule = (id: string, patch: Partial<StaffRule>) =>
     onChange({ ...rules, staffRules: rules.staffRules.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
+  const setStaffing = (patch: Partial<StaffingBasics>) =>
+    onChange({ ...rules, staffing: { ...rules.staffing, ...patch } });
 
   const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   const summary = [
-    goalHoursWeek != null ? `${goalHoursWeek}h/week goal` : null,
+    `${rules.staffing.ordersPerPerson} orders/person`,
+    goalHoursWeek != null ? `${goalHoursWeek}h/week cap` : null,
     plural(rules.staffRules.length, "staff rule"),
     plural(rules.dayRules.length, "day rule"),
     plural(deliveryDates.length, "upcoming delivery", "upcoming deliveries"),
@@ -130,9 +230,15 @@ export function ScheduleInputsPanel({
         <span className="flex min-w-0 flex-col gap-0.5">
           <span className="flex items-center gap-2 text-sm font-medium text-foreground">
             Scheduling rules
-            <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">
-              Saved in this browser
-            </Badge>
+            {dirty ? (
+              <Badge className="h-4 border-amber-500/40 bg-amber-500/15 px-1.5 text-[10px] font-normal text-amber-700 dark:text-amber-300">
+                Unsaved changes
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">
+                {live ? `v${live.version} · ${whoSaved(live.createdBy)}, ${savedAt(live.createdAt)}` : "Defaults — not saved yet"}
+              </Badge>
+            )}
           </span>
           <span className="truncate text-xs text-muted-foreground">{summary.join(" · ")}</span>
         </span>
@@ -143,9 +249,58 @@ export function ScheduleInputsPanel({
 
       {open ? (
         <div className="grid gap-3 border-t border-border p-3 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <Section
+              title="Staffing basics"
+              hint="Needed people each hour = typical orders for that weekday and hour (median of the last 8 weeks) ÷ orders per person, rounded up — never below the minimum while staffed."
+            >
+              <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+                <NumberField
+                  label="Orders one person handles"
+                  unit="/ hour"
+                  step={0.5}
+                  min={1}
+                  value={rules.staffing.ordersPerPerson}
+                  onChange={(v) => setStaffing({ ordersPerPerson: v })}
+                />
+                <NumberField
+                  label="Minimum on the floor"
+                  unit="people"
+                  min={0}
+                  value={rules.staffing.minPeople}
+                  onChange={(v) => setStaffing({ minPeople: Math.round(v) })}
+                />
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] text-muted-foreground">Staffed hours (incl. open/close duties)</span>
+                  <span className="flex items-center gap-1.5">
+                    <TimeInput
+                      value={rules.staffing.openMin}
+                      onChange={(v) => setStaffing({ openMin: v })}
+                      label="Staffed from"
+                    />
+                    <span className="text-xs text-muted-foreground">to</span>
+                    <TimeInput
+                      value={rules.staffing.closeMin}
+                      onChange={(v) => setStaffing({ closeMin: v })}
+                      label="Staffed until"
+                    />
+                  </span>
+                </div>
+                <NumberField
+                  label="Shortest shift"
+                  unit="hours"
+                  step={0.5}
+                  min={1}
+                  value={rules.staffing.minShiftMin / 60}
+                  onChange={(v) => setStaffing({ minShiftMin: Math.round(v * 60) })}
+                />
+              </div>
+            </Section>
+          </div>
+
           <Section
-            title="Weekly hours goal"
-            hint="The draft never adds order-driven shifts past this. Set it in Weekly hours goal above."
+            title="Weekly hours cap"
+            hint="A ceiling, not a target: the draft never adds order-driven shifts past it. Set it in Weekly hours goal above."
           >
             <p className="text-sm font-medium tabular-nums text-foreground">
               {goalHoursWeek != null ? `${goalHoursWeek}h / week` : "Not set"}
@@ -172,7 +327,7 @@ export function ScheduleInputsPanel({
           <div className="md:col-span-2">
             <Section
               title="Staff rules"
-              hint="Hour targets get first pick of draft shifts until they reach the target (never past it). Pay periods are biweekly."
+              hint="Hour targets get first pick of draft shifts until they reach the target (never past it). Pay periods are biweekly. A last working day stops someone being drafted or suggested after it."
             >
               <div className="flex flex-col gap-1.5">
                 {rules.staffRules.map((r) => (
@@ -207,14 +362,24 @@ export function ScheduleInputsPanel({
                         ))}
                       </SelectContent>
                     </Select>
-                    <Input
-                      type="number"
-                      min={0}
-                      value={r.value}
-                      onChange={(e) => setStaffRule(r.id, { value: Math.max(0, Number(e.target.value)) })}
-                      className="h-7 w-16 text-xs tabular-nums"
-                      aria-label="Value"
-                    />
+                    {r.kind === "last_day" ? (
+                      <Input
+                        type="date"
+                        value={r.date ?? ""}
+                        onChange={(e) => setStaffRule(r.id, { date: e.target.value })}
+                        className="h-7 w-36 text-xs tabular-nums"
+                        aria-label="Last working day"
+                      />
+                    ) : (
+                      <Input
+                        type="number"
+                        min={0}
+                        value={r.value}
+                        onChange={(e) => setStaffRule(r.id, { value: Math.max(0, Number(e.target.value)) })}
+                        className="h-7 w-16 text-xs tabular-nums"
+                        aria-label="Value"
+                      />
+                    )}
                     <span className="text-xs text-muted-foreground">
                       {KINDS.find((k) => k.value === r.kind)?.unit}
                     </span>
@@ -249,7 +414,7 @@ export function ScheduleInputsPanel({
           <div className="md:col-span-2">
             <Section
               title="Day & time rules"
-              hint="Exactly how many people you want in a window. Replaces the labor floor and order-based need there; later rules win."
+              hint="Exactly how many people you want in a window — e.g. opening or closing duties. Replaces the minimum and order-based need there; later rules win."
             >
               <div className="flex flex-col gap-1.5">
                 {rules.dayRules.map((r) => (
@@ -328,6 +493,71 @@ export function ScheduleInputsPanel({
               </div>
             </Section>
           </div>
+
+          <div className="flex flex-wrap items-center gap-2 md:col-span-2">
+            {dirty ? (
+              <>
+                <Input
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="What changed? (optional)"
+                  maxLength={200}
+                  className="h-7 min-w-48 flex-1 text-xs"
+                  aria-label="Change note"
+                />
+                <Button size="xs" variant="ghost" onClick={onDiscard} disabled={isPending}>
+                  Discard
+                </Button>
+                <Button size="xs" onClick={save} disabled={isPending}>
+                  {isPending ? "Saving…" : "Save rules"}
+                </Button>
+              </>
+            ) : (
+              <span className="flex-1 text-xs text-muted-foreground">
+                Edits preview in the draft right away; save to keep them for every future week.
+              </span>
+            )}
+            <Button
+              size="xs"
+              variant="outline"
+              aria-expanded={showHistory}
+              onClick={() => setShowHistory((v) => !v)}
+              disabled={!history.length}
+            >
+              <History /> History ({history.length})
+            </Button>
+          </div>
+
+          {showHistory && history.length ? (
+            <ol className="flex flex-col divide-y divide-border rounded-lg border border-border md:col-span-2">
+              {history.map((v, i) => (
+                <li key={v.version} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs">
+                  <span className="font-medium tabular-nums text-foreground">v{v.version}</span>
+                  {i === 0 ? (
+                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                      Live
+                    </Badge>
+                  ) : null}
+                  <span className="text-muted-foreground">
+                    {whoSaved(v.createdBy)} · {savedAt(v.createdAt)}
+                  </span>
+                  <span className="text-muted-foreground">{rulesSummary(v)}</span>
+                  {v.note ? <span className="italic text-foreground">“{v.note}”</span> : null}
+                  {i > 0 ? (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      className="ml-auto"
+                      onClick={() => onChange(v.rules)}
+                      title="Load this version into the editor; save to make it live again"
+                    >
+                      <RotateCcw /> Restore
+                    </Button>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          ) : null}
         </div>
       ) : null}
     </div>

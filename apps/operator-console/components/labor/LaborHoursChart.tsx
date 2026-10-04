@@ -28,6 +28,8 @@ export type LaborHoursChartRow = {
   /** ADP open (unassigned) shift hours — same days as scheduled; no PT/FT split. */
   open_hours?: number | null;
   open_slots?: number | null;
+  /** Hours of unpublished draft shifts in ADP Team Schedule — not counted in scheduled hours; no PT/FT split. */
+  draft_hours?: number | null;
 };
 
 export type LaborTooltipEntry = {
@@ -183,6 +185,7 @@ const PT = LABOR_CHART_COLORS.parttimeActual;
 const FT = LABOR_CHART_COLORS.fulltimeActual;
 const PT_S = LABOR_CHART_COLORS.parttimeScheduled;
 const FT_S = LABOR_CHART_COLORS.fulltimeScheduled;
+const DRAFT = LABOR_CHART_COLORS.draftShift;
 
 /**
  * Tooltip: actual (bars) + scheduled (hover only) + combined total vs weekly Goal.
@@ -279,8 +282,16 @@ export function laborTooltipContent(
     entries.push({ label: "Total if filled", value: formatHours(totalIfFilled) });
   }
 
+  const draftHrs = row.draft_hours ?? null;
+  const hasDraft = draftHrs != null && draftHrs > 0 && (ptOn || ftOn);
+  const totalWithDraft = hasDraft ? sumNullable(totalIfFilled ?? combined ?? actualHrs ?? schedHrs, draftHrs) : null;
+  if (hasDraft) {
+    entries.push({ label: "Draft in ADP", value: formatHours(draftHrs), color: DRAFT });
+    entries.push({ label: "Total with ADP drafts", value: formatHours(totalWithDraft) });
+  }
+
   const lines: string[] = [];
-  if ((hasSched || hasOpen) && !hasActual && opts?.salesHints !== false) {
+  if ((hasSched || hasOpen || hasDraft) && !hasActual && opts?.salesHints !== false) {
     lines.push("Scheduled — no labor % (no Square sales yet)");
   }
   if (
@@ -289,11 +300,11 @@ export function laborTooltipContent(
     !Number.isNaN(Number(goalLaborHoursWeek))
   ) {
     const goalHrs = Number(goalLaborHoursWeek);
-    const vsGoalHrs = totalIfFilled ?? combined ?? actualHrs ?? schedHrs;
+    const vsGoalHrs = totalWithDraft ?? totalIfFilled ?? combined ?? actualHrs ?? schedHrs;
     const ofGoal = pctOfHoursGoal(vsGoalHrs, goalHrs);
     // Completed weeks only (no scheduled remainder): also show what 230 hrs
     // would be as % of that week's Square net sales.
-    const completedWeek = hasActual && !hasSched && !hasOpen;
+    const completedWeek = hasActual && !hasSched && !hasOpen && !hasDraft;
     const scoped = scopedLaborMetrics(row, laborTypes);
     const ofSales = completedWeek
       ? goalHoursAsSalesPct(goalHrs, scoped.hours, scoped.laborPct)
@@ -366,6 +377,8 @@ export function LaborHoursChart({
       );
     const hasAnyOpen =
       !pctMode && !person && data.some((r) => r.open_hours != null && r.open_hours > 0);
+    const hasAnyDraft =
+      !pctMode && !person && data.some((r) => r.draft_hours != null && r.draft_hours > 0);
 
     const series: Series[] = [];
     if (!neither) {
@@ -405,6 +418,9 @@ export function LaborHoursChart({
             pattern: "hatch",
           });
         }
+        if (hasAnyDraft) {
+          series.push({ key: "draft", label: "Draft in ADP", color: DRAFT, pattern: "outline" });
+        }
       }
     }
 
@@ -418,6 +434,7 @@ export function LaborHoursChart({
           parttime_sched: null,
           fulltime_sched: null,
           open: null,
+          draft: null,
           tooltipEntries: tip.entries,
           tooltipLines: tip.lines,
         };
@@ -432,6 +449,7 @@ export function LaborHoursChart({
         parttime_sched: pt ? (r.parttime_scheduled_hours ?? null) : null,
         fulltime_sched: ft ? (r.fulltime_scheduled_hours ?? null) : null,
         open: hasAnyOpen ? (r.open_hours ?? null) : null,
+        draft: hasAnyDraft && (pt || ft) ? (r.draft_hours ?? null) : null,
         tooltipEntries: tip.entries,
         tooltipLines: tip.lines,
       };

@@ -1,7 +1,7 @@
 "use client";
 
+import { AdpScheduleFinalize } from "@/components/labor/AdpScheduleFinalize";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -12,10 +12,12 @@ import {
 } from "@/components/ui/table";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
 import { formatClockMin } from "@/lib/labor/coverage-model";
+import type { PushShift } from "@/lib/labor/schedule-push";
 import type { Availability, DraftShift } from "@/lib/labor/shift-draft";
 import { cn } from "@/lib/utils";
 
 export const DRAFT_COLOR = LABOR_CHART_COLORS.draftShift;
+const OPEN_COLOR = LABOR_CHART_COLORS.openShift;
 
 const KIND_LABEL = { open: "Open", mid: "Mid", close: "Close" } as const;
 
@@ -34,9 +36,14 @@ export function ShiftDraftSummary({
   draftCount,
   peakLeftHours,
   goalHoursWeek,
+  weekShifts,
+  adpWriteEnabled,
 }: {
   dayLabel: string;
   shifts: DraftShift[];
+  /** Every draft shift of the week — what "Save to ADP as drafts" sends. */
+  weekShifts: PushShift[];
+  adpWriteEnabled: boolean;
   roster: Availability[];
   weekStart: string;
   existingHours: number;
@@ -61,7 +68,7 @@ export function ShiftDraftSummary({
           <div className="flex items-center gap-2">
             <h4 className="text-sm font-medium text-foreground">Draft open shifts — {dayLabel}</h4>
             <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">
-              Mock · sample availability
+              Works around ADP unavailability
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -85,13 +92,7 @@ export function ShiftDraftSummary({
             </p>
           ) : null}
         </div>
-        <Button
-          size="sm"
-          disabled
-          title="Mock — would create ADP Open Shifts and post them to ClickUp Shift Coverage & Trades"
-        >
-          Finalize week
-        </Button>
+        <AdpScheduleFinalize weekStart={weekStart} shifts={weekShifts} enabled={adpWriteEnabled} />
       </div>
 
       {shifts.length ? (
@@ -131,6 +132,16 @@ export function ShiftDraftSummary({
                         ) : null}
                         {s.trimmed ? (
                           <span className="text-[11px] text-muted-foreground">shortened to availability</span>
+                        ) : null}
+                        {s.fillsOpen ? (
+                          <Badge
+                            variant="outline"
+                            className="h-4 px-1.5 text-[10px] font-normal"
+                            style={{ borderColor: OPEN_COLOR, color: OPEN_COLOR }}
+                            title="Already an open shift in ADP — assign this person there. Not included in Save to ADP."
+                          >
+                            fills ADP open shift · assign in ADP
+                          </Badge>
                         ) : null}
                       </span>
                     ) : (

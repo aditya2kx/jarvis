@@ -31,3 +31,15 @@ clicked. Raw captures stay local under `extracted/spike-adp-availability/`.
    detail (the grid row only shows counts).
 3. **Finalize can write drafts, not publish**: ADP's open-shift flow has *Save draft* vs
    *Publish*, so Finalize can land ADP drafts for operator review before publishing.
+
+## Follow-up: pending requests + 8-week horizon
+| Signal | Finding |
+|---|---|
+| Pending requests | Both are **Unavailability update** requests from one employee, recurring weekly (Sat 6:00–10:00 AM; Sun all day) until Nov 1, 2026 |
+| Request fields | Employee, first date, time range, hours, repeat rule + end date, **request expires** timestamp, Approve / Reject |
+| History | Pane shows pending only; no History / Approved tab |
+| Grid, Sep 21 → Nov 15 | No unavailability blocks in any week — nothing has ever been approved |
+| Approval setting | Nav has **Settings → Time Settings** (also Time → Time Management); the auto-approve toggle was not located read-only |
+
+Implication: the scraper must read **pending** requests (the pane) *and* approved
+blocks (the grid), and a pending request that expires unanswered never lands in the grid.

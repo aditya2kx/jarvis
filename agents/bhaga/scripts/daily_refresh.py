@@ -2710,6 +2710,21 @@ def _run_refresh(run_id: str) -> int:
     )
     _RUN_SUMMARY.update(refresh_date=refresh_date, store=args.store, dry_run=args.dry_run)
 
+    # Console Labor "Save to ADP as drafts" / "Publish week" (Issue #337): ADP
+    # Team Schedule writes only, each an operator-confirmed click.
+    write_mode = os.environ.get("BHAGA_ADP_SCHEDULE_WRITE", "").strip()
+    if write_mode:
+        args.store = os.environ.get("BHAGA_STORE") or args.store
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        from agents.bhaga.scripts import adp_schedule_write  # noqa: PLC0415
+        argv = ["--store", args.store, "--headless"]
+        if write_mode == "publish":
+            argv += ["--publish", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
+        else:
+            argv += ["--push-id", os.environ.get("BHAGA_SCHEDULE_PUSH_ID", "")]
+        print(f"[adp-schedule-write] mode={write_mode} store={args.store}")
+        return adp_schedule_write.main(argv)
+
     # Console Labor "Sync scheduled shifts" (Issue #213): Team Schedule scrape
     # + BQ load only — no timecard/earnings/model. Runs before completeness gate
     # so it works mid-day. Forces a fresh Schedule JSON (deletes today's cache).
@@ -2784,11 +2799,15 @@ def _run_refresh(run_id: str) -> int:
     # Console "Sync clocked hours" (Issue #267): Timecard scrape + BQ shifts/punches
     # only — no pay_info (token hourlies), no Square/KDS/model. Before completeness
     # so it works mid-day after ADP punch-out fixes. Forces a fresh Timecard XLSX.
-    if _env_skip("BHAGA_ADP_TIMECARD_ONLY"):
+    # BHAGA_ADP_SYNC_ALL (console "Sync ADP", Issue #337) rides the same login and
+    # adds earnings, liability and pay rates — every ADP read, never a payroll draft.
+    sync_all = _env_skip("BHAGA_ADP_SYNC_ALL")
+    if sync_all or _env_skip("BHAGA_ADP_TIMECARD_ONLY"):
         args.store = os.environ.get("BHAGA_STORE") or args.store
         print(
-            f"[adp-timecard-only] store={args.store} "
-            f"target_date={refresh_date.isoformat()} — timecard + BQ hours only"
+            f"[adp-timecard-only] store={args.store} sync_all={sync_all} "
+            f"target_date={refresh_date.isoformat()} — "
+            f"{'all ADP reads' if sync_all else 'timecard + BQ hours only'}"
         )
         os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
         from skills.adp_run_automation.runner import (  # noqa: PLC0415
@@ -2799,7 +2818,10 @@ def _run_refresh(run_id: str) -> int:
         meta = today_xlsx.with_suffix(today_xlsx.suffix + ".target-meta.json")
         today_sched = DOWNLOADS_DIR / f"Schedule-{_today_ct().isoformat()}.json"
         today_gaps = DOWNLOADS_DIR / f"TimecardsUI-{_today_ct().isoformat()}.json"
-        for cached in (today_xlsx, meta, today_sched, today_gaps):
+        cached_exports = [today_xlsx, meta, today_sched, today_gaps]
+        if sync_all:
+            cached_exports.append(DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{_today_ct().isoformat()}.xlsx")
+        for cached in cached_exports:
             if cached.exists():
                 cached.unlink()
                 print(f"[adp-timecard-only] removed cached {cached.name} (force re-scrape)")
@@ -2808,15 +2830,15 @@ def _run_refresh(run_id: str) -> int:
             f"[adp-timecard-only] headed={headed} "
             f"(set BHAGA_ADP_HEADED=1 for a visible browser)"
         )
-        # Team Schedule rides the same login (open shifts, Issue #342); no
-        # earnings, liability or pay-rate scrape. A punch write cannot change
+        # Team Schedule rides the same login (open shifts, Issue #342); earnings,
+        # liability and pay rates only for Sync ADP. A punch write cannot change
         # the schedule, so its resync skips the ~2 min schedule walk.
         result = download_adp_bundle(
             store=args.store,
             target_date=refresh_date,
-            include_earnings=False,
+            include_earnings=sync_all,
             include_schedule=not after_punch_fix,
-            include_extras=False,
+            include_extras=sync_all,
             headed=headed,
         )
         if result["errors"].get("adp_timecard") or not result.get("timecard_xlsx"):
@@ -2825,7 +2847,15 @@ def _run_refresh(run_id: str) -> int:
                 f"{result['errors'].get('adp_timecard')}"
             )
         print(f"[adp-timecard-only] wrote {result['timecard_xlsx']}")
-        skips = ["square", "adp_rates", "adp_liability", "square_rollup"]
+        skips = ["square", "square_rollup"]
+        # The loader reads the newest file on disk, so a failed scrape must be
+        # skipped rather than reload yesterday's export as if it were fresh.
+        for key, source in (("adp_earnings", "adp_rates"), ("adp_liability", "adp_liability")):
+            if not sync_all or result["errors"].get(key):
+                skips.append(source)
+                if sync_all:
+                    print(f"[adp-timecard-only] WARN: {key} scrape failed "
+                          f"({result['errors'][key]}); skipping its load")
         if after_punch_fix:
             skips.append("adp_schedule")
         elif result.get("schedule_json") and not result["errors"].get("adp_schedule"):
@@ -2852,6 +2882,11 @@ def _run_refresh(run_id: str) -> int:
                 args.store,
                 *[a for s in skips for a in ("--skip", s)],
                 "--refresh-date",
+                refresh_date.isoformat(),
+                # The Timecard export runs through today; a daytime sync must not
+                # land today's in-progress punches (they flip the console's
+                # actual→schedule handoff and hide today's schedule).
+                "--end",
                 refresh_date.isoformat(),
             ],
             cwd=str(PROJECT_ROOT),

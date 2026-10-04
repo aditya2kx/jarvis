@@ -1,7 +1,8 @@
 import {
   adpHoursScrapedAt,
+  adpScheduleRequests,
+  adpUnavailability,
   adpScheduleHorizonEnd,
-  adpScheduleScrapedAt,
   laborActualShiftDays,
   laborActualsThrough,
   laborByGrain,
@@ -17,10 +18,13 @@ import {
   laborSoloHoursPerPerson,
   storeConfig,
   upcomingRestockDates,
+  type ScheduleRequestRow,
+  type UnavailabilityRow,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey, formatCents } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
+import { FEATURES } from "@/lib/config/features";
 import type { DemandCell } from "@/lib/labor/staffing-need";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
@@ -29,8 +33,11 @@ import { LaborConcurrentChart } from "@/components/labor/LaborConcurrentChart";
 import { LaborCoveragePanel } from "@/components/labor/LaborCoveragePanel";
 import { PunchGapsPanel } from "@/components/labor/PunchGapsPanel";
 import { buildPunchGaps, mergePunchDays, type PunchGap } from "@/lib/labor/punch-gaps";
-import { SyncClockedHoursButton } from "@/components/labor/SyncClockedHoursButton";
-import { SyncScheduledShiftsButton } from "@/components/labor/SyncScheduledShiftsButton";
+import { scheduleRulesHistory } from "@/lib/labor/schedule-rules-store";
+import type { RulesVersion } from "@/lib/labor/schedule-inputs";
+import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
+import { AdpAvailabilityCard } from "@/components/labor/AdpAvailabilityCard";
+import type { ScheduledShift } from "@/lib/labor/unavailability";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { FilterMultiSelect } from "@/components/filters/FilterMultiSelect";
@@ -42,6 +49,7 @@ import {
   GRAINS,
   chicagoTodayIso,
   enumerateBucketStarts,
+  shiftCalendarDate,
   formatBucket,
   wantsCustom,
   type DateWindow,
@@ -171,7 +179,6 @@ export default async function LaborPage({
   let goalLaborHoursWeek: number | undefined;
   let personActualDays: PersonDayHours[] = [];
   let personScheduledDays: PersonDayHours[] = [];
-  let scheduleScrapedAt: string | null = null;
   let hoursScrapedAt: string | null = null;
   let coverageActuals: LaborActualShiftDayRow[] = [];
   let coverageScheduled: LaborScheduledShiftDayRow[] = [];
@@ -180,8 +187,11 @@ export default async function LaborPage({
   let coverageOpen: LaborOpenShiftDayRow[] = [];
   let punchGaps: PunchGap[] = [];
   let coverageDemand: DemandCell[] = [];
-  let ordersPerPerson: number | undefined;
   let deliveryDates: string[] = [];
+  let rulesHistory: RulesVersion[] = [];
+  let unavailability: UnavailabilityRow[] = [];
+  let scheduleRequests: ScheduleRequestRow[] = [];
+  let upcomingShifts: ScheduledShift[] = [];
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
@@ -227,7 +237,6 @@ export default async function LaborPage({
       schedHours,
       schedDays,
       coverageSchedDays,
-      scraped,
       hoursScraped,
       actualShiftDays,
       solo,
@@ -238,6 +247,10 @@ export default async function LaborPage({
       punchDays,
       demand,
       restockDates,
+      rulesVersions,
+      unavailRows,
+      requestRows,
+      upcomingRows,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -262,7 +275,6 @@ export default async function LaborPage({
             () => [],
           )
         : Promise.resolve([]),
-      adpScheduleScrapedAt().catch(() => null),
       adpHoursScrapedAt().catch(() => null),
       punchWin ? laborActualShiftDays(punchWin).catch(() => []) : Promise.resolve([]),
       // Solo hours are punch-derived, so they only exist for days already
@@ -281,14 +293,24 @@ export default async function LaborPage({
       laborPunchDays(win, DEFAULT_STORE).catch(() => []),
       laborDemandProfile(todayIso).catch(() => []),
       upcomingRestockDates(DEFAULT_STORE, todayIso).catch(() => []),
+      scheduleRulesHistory(DEFAULT_STORE).catch(() => []),
+      adpUnavailability(DEFAULT_STORE).catch(() => []),
+      adpScheduleRequests().catch(() => []),
+      laborScheduledShiftDays(
+        { start: todayIso, end: shiftCalendarDate(todayIso, "day", 56), label: "Next 8 weeks", preset: "custom" },
+        { store: DEFAULT_STORE, excludePto: true },
+      ).catch(() => []),
     ]);
     punchGaps = mergePunchDays(buildPunchGaps(gapRows, gapCoworkers), punchDays, gapCoworkers);
+    rulesHistory = rulesVersions;
+    unavailability = unavailRows;
+    scheduleRequests = requestRows;
+    upcomingShifts = upcomingRows;
     soloRows = solo;
     openHoursRows = openHours;
     coverageOpen = openDays;
     coverageDemand = demand;
     deliveryDates = restockDates;
-    ordersPerPerson = goalFromConfig(config, "saturation_orders_per_labor_hour");
     rows = labor;
     concurrentRows = concurrent;
     scheduledHoursRows = schedHours;
@@ -297,7 +319,6 @@ export default async function LaborPage({
     scheduledConcurrentByBucket = chartSchedule
       ? rollConcurrentToGrain(aggregateScheduledDays(schedDays), grain)
       : [];
-    scheduleScrapedAt = scraped;
     hoursScrapedAt = hoursScraped;
     goalLaborHoursWeek = goalFromConfig(config, "goal_labor_hours_week");
     personActualDays = perPersonDays;
@@ -500,6 +521,10 @@ export default async function LaborPage({
       : showStat
         ? "Sum across Period"
         : undefined;
+  // Empty means the schedule read failed or nothing is posted yet — keep the unfiltered roster then.
+  const activeStaff = upcomingShifts.length
+    ? [...new Set(upcomingShifts.map((s) => s.employee))]
+    : undefined;
 
   return (
     <div className="flex flex-col gap-4">
@@ -627,14 +652,13 @@ export default async function LaborPage({
               }}
             />
             <LaborWeeklyHoursGoal current={goalLaborHoursWeek} />
-            <SyncClockedHoursButton
+            <SyncAdpButton
               lastScrapedAt={hoursScrapedAt}
               targetDate={clockedHoursTargetDate({
                 todayIso: chicagoTodayIso(),
                 coverageDay: sp.day,
               })}
             />
-            <SyncScheduledShiftsButton lastScrapedAt={scheduleScrapedAt} />
           </>
         }
       />
@@ -682,13 +706,11 @@ export default async function LaborPage({
           apply here, so scheduled shifts still show when Aggregation is Hour (or any
           other grain) whenever ADP has them in the schedule window. Scroll the chips when
           the range is long. Use{" "}
-          <span className="font-medium text-foreground">Sync scheduled shifts</span> after
-          editing the ADP schedule, and{" "}
-          <span className="font-medium text-foreground">Sync clocked hours</span> after
-          punch-out fixes (Timecard plus Team Schedule, so open shifts refresh too — does
-          not re-scrape pay rates). Status under
-          each button shows starting / syncing / done / error without blocking the rest
-          of the page. Hover a sync button when idle for last-synced time. Paid PTO is included in
+          <span className="font-medium text-foreground">Sync ADP</span> after editing the
+          ADP schedule or fixing punches — one ADP login refreshes clocked hours, assigned
+          and open shifts, payroll earnings and pay rates. Status under the button shows
+          starting / syncing / done / error without blocking the rest of the page. Hover it
+          when idle for last-synced time. Paid PTO is included in
           scheduled hours by default (matches ADP); use the PTO filter to exclude it.
           Per-person hours stack clocked hours with scheduled hours (slate) for the
           days not yet ingested, through Period end. Pick a{" "}
@@ -727,9 +749,18 @@ export default async function LaborPage({
             open={coverageOpen}
             laborTypes={laborTypes}
             demand={coverageDemand}
-            ordersPerPerson={ordersPerPerson}
             goalHoursWeek={goalLaborHoursWeek}
             deliveryDates={deliveryDates}
+            rulesHistory={rulesHistory}
+            unavailability={unavailability}
+            activeStaff={activeStaff}
+            adpWriteEnabled={FEATURES.adpScheduleWrite}
+          />
+
+          <AdpAvailabilityCard
+            rows={unavailability}
+            requests={scheduleRequests}
+            shifts={upcomingShifts}
           />
 
           <div data-testid="labor-hours-per-person" className="flex flex-col gap-2">

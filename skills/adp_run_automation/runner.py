@@ -1894,6 +1894,44 @@ def _scrape_open_shifts(page, frame, *, week_label: str) -> dict:
         return {"open_shifts_error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
+def _scrape_schedule_requests(page, frame) -> dict:
+    """Read Team Schedule › Pending requests: per-type counts + unavailability cards (Issue #337).
+
+    Read-only: clicks only "Pending requests", the "Unavailability Requests" row
+    and "Back" — never Approve / Reject. Never raises; on failure returns
+    ``requests_error`` so the loader leaves stored requests untouched.
+    """
+    import re as _re
+
+    pane = frame.locator("sdf-focus-pane")
+    try:
+        frame.get_by_role("button", name=_re.compile(r"^Pending requests")).first.click(timeout=8_000)
+        page.wait_for_timeout(1_500)
+        list_text = pane.first.inner_text(timeout=8_000)
+        unavail_text = ""
+        row = pane.locator(".vdl-list-view__content", has_text=_re.compile(r"Unavailability", _re.I))
+        if row.count():
+            row.first.click(timeout=8_000)
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                page.wait_for_timeout(400)
+                unavail_text = pane.first.inner_text(timeout=5_000)
+                if _re.search(r"Unavailability\s+(update|request)|Total\s+0", unavail_text, _re.I):
+                    break
+            pane.get_by_text("Back", exact=True).first.click(timeout=5_000)
+            page.wait_for_timeout(500)
+        page.keyboard.press("Escape")
+        print(f"[adp_schedule] requests pane read ({len(unavail_text)} chars of unavailability)")
+        return {"list_text": list_text, "unavailability_text": unavail_text}
+    except Exception as exc:  # noqa: BLE001 — additive channel
+        print(f"[adp_schedule] WARN: requests pane read failed: {type(exc).__name__}: {exc}")
+        try:
+            page.keyboard.press("Escape")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"requests_error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
 def _goto_next_week(page, frame) -> None:
     """Advance the schedule grid to the next week.
 
@@ -1964,11 +2002,12 @@ def _goto_next_week(page, frame) -> None:
     print("[adp_schedule] step=totals-settle-timeout (assuming identical-week totals)")
 
 
-def _schedule_within_session(page, *, weeks: int = None) -> list[dict]:
+def _schedule_within_session(page, *, weeks: int = None) -> tuple[list[dict], dict]:
     """Scrape consecutive weeks of Team Schedule totals (cap + stop-on-stall).
 
     Pre-condition: `page` is on the v2 ADP RUN dashboard (POST_LOGIN_URL_RE).
-    Returns a list of per-week raw payloads (see schedule_backend.build_schedule_records).
+    Returns per-week raw payloads (see schedule_backend.build_schedule_records)
+    plus the Pending requests pane read (``_scrape_schedule_requests``).
 
     Issue #230: managers often publish (or leave in draft) weeks beyond
     current+next. We advance the › chevron until the week label stops changing
@@ -1989,10 +2028,10 @@ def _schedule_within_session(page, *, weeks: int = None) -> list[dict]:
         except RuntimeError as exc:
             print(f"[adp_schedule] stop advancing weeks after {len(payloads)}: {exc}")
             break
-    return payloads
+    return payloads, _scrape_schedule_requests(page, frame)
 
 
-def _write_schedule_json(payloads: list[dict], *, store: str) -> pathlib.Path:
+def _write_schedule_json(payloads: list[dict], *, store: str, requests: Optional[dict] = None) -> pathlib.Path:
     """Persist the scraped week payloads as Schedule-<today>.json in DOWNLOADS_DIR.
 
     Mirrors the timecard/earnings "drop a file in downloads/, parse it later in
@@ -2008,6 +2047,7 @@ def _write_schedule_json(payloads: list[dict], *, store: str) -> pathlib.Path:
             "scraped_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
             "store": store,
             "weeks": payloads,
+            "requests": requests or {"requests_error": "not scraped"},
         },
         indent=2,
     ))
@@ -2193,8 +2233,8 @@ def download_schedule(
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        payloads = _schedule_within_session(page, weeks=weeks)
-        return _write_schedule_json(payloads, store=store)
+        payloads, requests = _schedule_within_session(page, weeks=weeks)
+        return _write_schedule_json(payloads, store=store, requests=requests)
 
 
 def download_payroll_liability(
@@ -2647,8 +2687,8 @@ def download_adp_bundle(
                         print(f"[adp_bundle] schedule: UNEXPECTED session lapse "
                               f"(url={page.url}); re-running login")
                         _ensure_logged_in(page, store=store)
-                payloads = _schedule_within_session(page, weeks=schedule_weeks)
-                path = _write_schedule_json(payloads, store=store)
+                payloads, requests = _schedule_within_session(page, weeks=schedule_weeks)
+                path = _write_schedule_json(payloads, store=store, requests=requests)
                 result["schedule_json"] = path
                 _mark_run_step_done(
                     "adp_schedule", refresh_date=target_date,

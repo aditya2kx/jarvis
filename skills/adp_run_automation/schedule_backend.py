@@ -747,6 +747,144 @@ def reconcile_open_shifts(weeks: list[dict], *, tolerance_hours: float = 0.05) -
 # ── Public entry ──────────────────────────────────────────────────
 
 
+# ── Unavailability (Issue #337) ─────────────────────────────────────────────
+# Employees add unavailability in ADP Mobile; it lands under Team Schedule ›
+# Pending requests › "Unavailability Requests" and only renders in the grid
+# once a manager approves it. The pane's cards read (spike 2026-09-27):
+#   Unavailability update / JG / Garcia, Jacob / Sat, Oct 3, / 6:00 AM - 10:00 AM
+#   / 4.00 HRS / Repeats / Every Saturday until Nov 1, 2026 / Repeats until
+#   / Sun, Nov 1 / Request expires / Oct 2, 2026 9:00 PM / ... APPROVE / REJECT
+_UNAVAIL_CARD_SPLIT_RE = re.compile(r"^\s*Unavailability\s+(?:update|request)\s*$", re.IGNORECASE | re.MULTILINE)
+_NAME_RE = re.compile(r"^\s*([A-Z][\w'.-]+(?:\s[\w'.-]+)*,\s*[A-Z][\w'.-]+(?:\s[\w'.-]+)*)\s*$")
+_CARD_DATE_RE = re.compile(r"^\s*(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*,\s*([A-Za-z]{3,9})\s+(\d{1,2}),?\s*$")
+_CARD_RANGE_RE = re.compile(r"(\d{1,2}):(\d{2})\s*([AP]M)\s*[-–—]\s*(\d{1,2}):(\d{2})\s*([AP]M)", re.IGNORECASE)
+_CARD_HOURS_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*HRS\s*$", re.IGNORECASE)
+_REPEAT_RE = re.compile(
+    r"Every\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+until\s+"
+    r"([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{4})",
+    re.IGNORECASE,
+)
+_EXPIRES_RE = re.compile(r"([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{4})\s+(\d{1,2}):(\d{2})\s*([AP]M)", re.IGNORECASE)
+_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+_REQUEST_TYPE_RE = re.compile(r"^\s*(.+?\bRequests?)\s*\n\s*(\d+)\s+Pending\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _month(name: str) -> Optional[int]:
+    return _MONTHS.get(name[:3].lower())
+
+
+def _hm(h: str, m: str, ampm: str) -> str:
+    """12h clock parts → 24h "HH:MM"."""
+    return f"{int(h) % 12 + (12 if ampm.upper() == 'PM' else 0):02d}:{m}"
+
+
+def _nearest_date(month: int, day: int, near: datetime.date) -> Optional[datetime.date]:
+    """ADP omits the year on the card date; pick the year closest to ``near``."""
+    best = None
+    for year in (near.year - 1, near.year, near.year + 1):
+        try:
+            cand = datetime.date(year, month, day)
+        except ValueError:
+            continue
+        if best is None or abs((cand - near).days) < abs((best - near).days):
+            best = cand
+    return best
+
+
+def parse_request_types(pane_text: Optional[str]) -> list[dict]:
+    """Pending-request categories from the pane list ("Unavailability Requests / 2 Pending")."""
+    return [
+        {"request_type": m.group(1).strip(), "pending": int(m.group(2))}
+        for m in _REQUEST_TYPE_RE.finditer(pane_text or "")
+    ]
+
+
+def parse_unavailability_requests(pane_text: Optional[str], *, scraped_on: datetime.date) -> list[dict]:
+    """Pending unavailability cards → one dict per request (pure; see card shape above).
+
+    ``from_time``/``to_time`` are 24h "HH:MM"; a 12:00 AM → 12:00 AM range (24 HRS) is
+    ``all_day``. Weekly repeats carry ``repeat_weekday`` (Mon=0) + ``repeat_until``.
+    Cards without a parseable employee and date are dropped, never guessed.
+    """
+    out: list[dict] = []
+    for card in _UNAVAIL_CARD_SPLIT_RE.split(pane_text or "")[1:]:
+        lines = [ln for ln in card.splitlines() if ln.strip()]
+        name = next((m.group(1) for ln in lines if (m := _NAME_RE.match(ln))), None)
+        date_m = next((m for ln in lines if (m := _CARD_DATE_RE.match(ln))), None)
+        if not name or not date_m or not _month(date_m.group(1)):
+            continue
+        first = _nearest_date(_month(date_m.group(1)), int(date_m.group(2)), scraped_on)
+        if first is None:
+            continue
+        rng = _CARD_RANGE_RE.search(card)
+        hours_m = next((m for ln in lines if (m := _CARD_HOURS_RE.match(ln))), None)
+        hours = float(hours_m.group(1)) if hours_m else None
+        from_t = _hm(*rng.group(1, 2, 3)) if rng else None
+        to_t = _hm(*rng.group(4, 5, 6)) if rng else None
+        all_day = (hours or 0) >= 24 or (from_t == "00:00" and to_t == "00:00")
+        rep = _REPEAT_RE.search(card)
+        repeat_until = None
+        if rep and _month(rep.group(2)):
+            repeat_until = datetime.date(int(rep.group(4)), _month(rep.group(2)), int(rep.group(3))).isoformat()
+        exp = None
+        exp_idx = card.find("expires")
+        if exp_idx >= 0 and (em := _EXPIRES_RE.search(card, exp_idx)) and _month(em.group(1)):
+            exp = (f"{int(em.group(3)):04d}-{_month(em.group(1)):02d}-{int(em.group(2)):02d}T"
+                   f"{_hm(em.group(4), em.group(5), em.group(6))}:00")
+        out.append({
+            "raw_employee_name": name.strip(),
+            "status": "pending",
+            "first_date": first.isoformat(),
+            "from_time": None if all_day else from_t,
+            "to_time": None if all_day else to_t,
+            "all_day": all_day,
+            "hours": hours,
+            "repeat_weekday": _WEEKDAYS.index(rep.group(1).lower()) if rep else None,
+            "repeat_until": repeat_until,
+            "expires_at_ct": exp,
+        })
+    return out
+
+
+_GRID_UNAVAIL_RE = re.compile(r"unavailab", re.IGNORECASE)
+
+
+def build_grid_unavailability_records(weeks: list[dict]) -> list[dict]:
+    """Approved unavailability blocks read from employee day-cell text.
+
+    Unverified against a live approved block (none existed at the 2026-09-27
+    spike): any cell whose text mentions "unavailab" counts; a time range in the
+    same text narrows it, otherwise it is all day.
+    """
+    out: list[dict] = []
+    for wk in weeks:
+        week_start = parse_week_start(wk.get("week_label"))
+        if week_start is None:
+            continue
+        for emp in wk.get("employee_rows") or []:
+            raw = (emp.get("name") or "").strip()
+            for day in emp.get("days") or []:
+                text = day.get("cell_text") or ""
+                idx = day.get("header_index")
+                if not raw or not _GRID_UNAVAIL_RE.search(text) or not isinstance(idx, int) or not 0 <= idx <= 6:
+                    continue
+                after = text[_GRID_UNAVAIL_RE.search(text).start():]
+                rng = _CARD_RANGE_RE.search(after)
+                out.append({
+                    "raw_employee_name": raw,
+                    "status": "approved",
+                    "first_date": (week_start + datetime.timedelta(days=idx)).isoformat(),
+                    "from_time": _hm(*rng.group(1, 2, 3)) if rng else None,
+                    "to_time": _hm(*rng.group(4, 5, 6)) if rng else None,
+                    "all_day": rng is None,
+                    "hours": parse_shift_range_hours(rng.group(0)) if rng else 24.0,
+                    "repeat_weekday": None,
+                    "repeat_until": None,
+                    "expires_at_ct": None,
+                })
+    return out
+
+
 def _newest_schedule_json(downloads_dir: pathlib.Path = DOWNLOADS_DIR) -> Optional[pathlib.Path]:
     files = sorted(downloads_dir.glob("Schedule-*.json"))
     return files[-1] if files else None

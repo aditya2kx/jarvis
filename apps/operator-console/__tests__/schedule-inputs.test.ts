@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   applyDayRules,
+  DEFAULT_RULES,
+  DEFAULT_STAFFING,
+  parseScheduleRules,
   minToTime,
   staffLimits,
   timeToMin,
@@ -60,5 +63,52 @@ describe("time helpers", () => {
     expect(timeToMin("06:30")).toBe(390);
     expect(minToTime(390)).toBe("06:30");
     expect(timeToMin("")).toBeNull();
+  });
+});
+
+describe("parseScheduleRules", () => {
+  it("round-trips the defaults from JSON", () => {
+    expect(parseScheduleRules(JSON.stringify(DEFAULT_RULES))).toEqual(DEFAULT_RULES);
+  });
+
+  it("rejects a window that ends before it starts", () => {
+    const bad = { dayRules: [{ ...DEFAULT_RULES.dayRules[0], fromMin: 600, toMin: 500 }], staffRules: [] };
+    expect(() => parseScheduleRules(bad)).toThrow(/Day rule 1/);
+  });
+
+  it("rejects a staff rule without an employee", () => {
+    const bad = { dayRules: [], staffRules: [{ id: "x", employee: "", kind: "target_week_hours", value: 40 }] };
+    expect(() => parseScheduleRules(bad)).toThrow(/Staff rule 1/);
+  });
+
+  it("rejects a missing list", () => {
+    expect(() => parseScheduleRules({ dayRules: [] })).toThrow();
+  });
+
+  it("loads versions saved before staffing basics with the defaults", () => {
+    expect(parseScheduleRules({ dayRules: [], staffRules: [] }).staffing).toEqual(DEFAULT_STAFFING);
+  });
+
+  it("validates staffing basics", () => {
+    const withStaffing = (patch: object) => ({
+      dayRules: [],
+      staffRules: [],
+      staffing: { ...DEFAULT_STAFFING, ...patch },
+    });
+    expect(parseScheduleRules(withStaffing({ ordersPerPerson: 4.5 })).staffing.ordersPerPerson).toBe(4.5);
+    expect(() => parseScheduleRules(withStaffing({ ordersPerPerson: 0 }))).toThrow(/Orders per person/);
+    expect(() => parseScheduleRules(withStaffing({ minPeople: 1.5 }))).toThrow(/Minimum people/);
+    expect(() => parseScheduleRules(withStaffing({ closeMin: 300 }))).toThrow(/Staffed hours/);
+    expect(() => parseScheduleRules(withStaffing({ minShiftMin: 30 }))).toThrow(/Shortest shift/);
+  });
+});
+
+describe("last working day staff rule", () => {
+  it("parses a dated rule, rejects a missing date, and surfaces lastDay in limits", () => {
+    const rule = { id: "l", employee: "Krause, Lindsay", kind: "last_day", value: 0, date: "2026-09-30" };
+    const parsed = parseScheduleRules({ dayRules: [], staffRules: [rule] });
+    expect(parsed.staffRules[0]).toMatchObject({ kind: "last_day", date: "2026-09-30" });
+    expect(staffLimits(parsed.staffRules).get("Krause, Lindsay")).toEqual({ lastDay: "2026-09-30" });
+    expect(() => parseScheduleRules({ dayRules: [], staffRules: [{ ...rule, date: "" }] })).toThrow(/last day needs a date/);
   });
 });

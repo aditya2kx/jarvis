@@ -20,11 +20,12 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Payroll | Recognition bonus | `addRecognitionBonusAction` | — |
 | Payroll | Training quick-add (flag off) | `addTrainingShiftAction` | — |
 | Payroll | Add reimbursement | `addEmployeePerkAction` | — |
-| Payroll / Labor | Sync clocked hours | `syncClockedHoursAction` / `pollClockedHoursSyncAction` | Headless `adp-timecard` (local laptop when BYPASS_IAP); Timecard + BQ shifts/punches, not pay_info |
+| Payroll / Labor | Sync ADP | `syncAdpAction` / `pollAdpSyncAction` | Headless `BHAGA_ADP_SYNC_ALL` on Cloud Run (`bhaga-daily-refresh`): Timecard, Team Schedule (assigned + open), earnings, liability, pay rates in one login — never a payroll draft |
+| Labor | Save scheduling rules | `saveScheduleRulesAction` | Appends a `labor_schedule_rules` version (history kept) |
+| Labor | Save to ADP as drafts / Publish week | `saveDraftsToAdpAction`, `publishWeekAction` / `schedulePushStatusAction` | Behind `FEATURES.adpScheduleWrite` (`CONSOLE_ADP_SCHEDULE_WRITE=1`). Queues `labor_schedule_pushes` rows, then `BHAGA_ADP_SCHEDULE_WRITE` on Cloud Run creates ADP draft shifts; publish clicks ADP Publish drafts and posts open shifts to ClickUp Shift Coverage & Trades |
 | Labor | Punches Accept / Edit / Dismiss | `decidePunchGapAction` | — (appends `punch_gap_decisions`; nothing reaches ADP) |
 | Labor | Punches bulk Accept / Dismiss (selected rows) | `acceptPunchGapsAction`, `dismissPunchGapsAction` | — (one decision per selected row; nothing reaches ADP) |
 | Labor | Punches Write to ADP | `writePunchGapsToAdpAction` / `pollPunchGapWriteAction` | Headless `adp-punch-fix` on Cloud Run (`bhaga-daily-refresh`; local dev needs `BHAGA_ADP_PREVIEW_JOB`): fills approved Out Times / adds missing entries in ADP Timecards, then timecard resync. Flag `punchFixWriteback` |
-| Labor | Sync scheduled shifts | `syncScheduledShiftsAction` / `pollScheduledShiftsSyncAction` | Headless `adp-schedule` |
 | Accounting | Link / Relink | `createPlaidLinkTokenAction`, `exchangePlaidPublicTokenAction` | Plaid sync (in-request, staged UX) |
 | Accounting | Sync now | `syncPlaidNowAction` | Plaid sync |
 | Accounting | Overrides / taxonomy / rules | `setTxnCategoryOverrideAction`, `upsertTaxonomyNodeAction`, `setTaxonomyNodeEnabledAction`, `setCategoryRuleEnabledAction`, `setTaxonomyExcludeAction`, `dryRunRuleAction`, `previewRuleMatchesAction`, `commitRuleFromTxnAction`, `revertRuleEvidenceAction`, `reapplyPlaidCategoriesAction`, `setPlaidInternalAction` | — |

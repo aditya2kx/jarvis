@@ -1905,15 +1905,22 @@ def _open_unavailability_requests(page, frame):
     """Team Schedule › Pending requests › Unavailability Requests (read-only clicks).
 
     Returns ``(pane, list_text, unavailability_text)``; the text is "" when ADP
-    lists no unavailability row. Raises with the toolbar's request-ish buttons in
-    the message when "Pending requests" cannot be found, so a failed run says why.
+    lists no unavailability row. ADP renders ``#schedule-request-button`` only
+    while something is pending, so a rendered toolbar (``publish-cta``) without it
+    means zero pending. Otherwise raises with the toolbar's request-ish buttons.
     """
     import re as _re
 
     pane = frame.locator("sdf-focus-pane")
-    opener = frame.get_by_role("button", name=_re.compile(r"Pending requests", _re.I))
-    if not opener.count():
-        opener = frame.get_by_text(_re.compile(r"^\s*Pending requests", _re.I))
+    opener = frame.locator("#schedule-request-button")
+    try:
+        frame.locator("[data-e2e=publish-cta]").first.wait_for(state="attached", timeout=15_000)
+        page.wait_for_timeout(1_500)
+    except Exception:  # noqa: BLE001 — fall through to the click's own error
+        pass
+    if not opener.count() and frame.locator("[data-e2e=publish-cta]").count():
+        print("[adp_schedule] no Pending requests button — ADP has nothing pending")
+        return pane, "", ""
     try:
         opener.first.click(timeout=8_000)
     except Exception as exc:  # noqa: BLE001
@@ -1949,7 +1956,8 @@ def _scrape_schedule_requests(page, frame) -> dict:
         if unavail_text:
             pane.get_by_text("Back", exact=True).first.click(timeout=5_000)
             page.wait_for_timeout(500)
-        page.keyboard.press("Escape")
+        if list_text:
+            page.keyboard.press("Escape")
         print(f"[adp_schedule] requests pane read ({len(unavail_text)} chars of unavailability)")
         return {"list_text": list_text, "unavailability_text": unavail_text}
     except Exception as exc:  # noqa: BLE001 — additive channel

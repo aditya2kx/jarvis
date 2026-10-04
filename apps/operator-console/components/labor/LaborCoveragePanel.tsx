@@ -217,7 +217,7 @@ function DayStrip({
                 isToday && !active && "ring-1 ring-inset ring-primary/30",
               )}
             >
-              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 {label.weekday}
                 {isToday ? (
                   <span className="text-primary"> · Today</span>
@@ -228,13 +228,13 @@ function DayStrip({
               </span>
               <Badge
                 variant={active ? "default" : "secondary"}
-                className="mt-1 h-4 max-w-full truncate px-1.5 text-[10px] font-normal"
+                className="mt-1 h-4 max-w-full truncate px-1.5 text-[11px] font-normal"
               >
                 {chip.headcount} {suffix}
               </Badge>
               {chip.open > 0 ? (
                 <span
-                  className="mt-0.5 text-[10px] font-medium leading-none"
+                  className="mt-0.5 text-[11px] font-medium leading-none"
                   style={{ color: OPEN }}
                 >
                   +{chip.open} open
@@ -242,14 +242,14 @@ function DayStrip({
               ) : null}
               {newShifts(draftShifts?.get(chip.date) ?? []).length ? (
                 <span
-                  className="mt-0.5 text-[10px] font-medium tabular-nums"
+                  className="mt-0.5 text-[11px] font-medium tabular-nums"
                   style={{ color: DRAFT_COLOR }}
                 >
                   +{newShifts(draftShifts!.get(chip.date)!).length} draft ·{" "}
                   {newShifts(draftShifts!.get(chip.date)!).reduce((h, d) => h + d.hours, 0)}h
                 </span>
               ) : (shortHours?.get(chip.date) ?? 0) > 0 ? (
-                <span className="mt-0.5 text-[10px] font-medium tabular-nums text-rose-600 dark:text-rose-400">
+                <span className="mt-0.5 text-[11px] font-medium tabular-nums text-rose-600 dark:text-rose-400">
                   {shortHours!.get(chip.date)!.toFixed(1)}h short
                 </span>
               ) : null}
@@ -258,7 +258,7 @@ function DayStrip({
         })}
       </div>
       {chips.length > 7 ? (
-        <p className="px-1 text-[11px] text-muted-foreground">
+        <p className="px-1 text-xs text-muted-foreground">
           {chips.length} days in range · scroll for more
         </p>
       ) : null}
@@ -374,7 +374,7 @@ function AxisTicks({ axisStart, axisEnd }: { axisStart: number; axisEnd: number 
   const ticks: number[] = [];
   for (let t = axisStart; t <= axisEnd; t += 60) ticks.push(t);
   return (
-    <div className="flex justify-between pt-1 text-[10px] text-muted-foreground">
+    <div className="flex justify-between pt-1 text-[11px] text-muted-foreground">
       {ticks.map((t) => (
         <span key={t}>{formatClockMin(t)}</span>
       ))}
@@ -405,7 +405,7 @@ function PersonLaneTrack({
           return (
             <div
               key={`open-${seg.startMin}-${i}`}
-              className="absolute inset-y-1.5 flex items-center justify-center overflow-hidden rounded-sm border border-dashed text-[10px] font-semibold"
+              className="absolute inset-y-1.5 flex items-center justify-center overflow-hidden rounded-sm border border-dashed text-[11px] font-semibold"
               style={{
                 left: `${left}%`,
                 width: `${Math.max(width, 0.8)}%`,
@@ -422,7 +422,7 @@ function PersonLaneTrack({
           <div
             key={`${seg.kind}-${seg.startMin}-${i}`}
             className={cn(
-              "absolute flex items-center justify-center overflow-hidden rounded-sm text-[10px] font-medium text-white",
+              "absolute flex items-center justify-center overflow-hidden rounded-sm text-[11px] font-medium text-white",
               isSched ? "top-[18px] h-3 border border-dashed opacity-90" : "top-1.5 h-3.5",
             )}
             style={{
@@ -622,7 +622,7 @@ function CoverageTimeline({
         <div
           className={cn(
             GUTTER,
-            "shrink-0 pb-5 text-[10px] leading-none text-muted-foreground",
+            "shrink-0 pb-5 text-[11px] leading-none text-muted-foreground",
           )}
         >
           Headcount
@@ -658,19 +658,19 @@ function CoverageTimeline({
               <div key={p.employee} className="flex items-center gap-2">
                 <div className={cn(GUTTER, "shrink-0 truncate")}>
                   <span
-                    className={cn("block truncate text-xs font-medium", open && "italic")}
+                    className={cn("block truncate text-sm font-medium", open && "italic")}
                     style={open ? { color: OPEN } : undefined}
                     title={p.employee}
                   >
                     {p.employee}
                   </span>
-                  <span className="text-[10px] text-muted-foreground">
+                  <span className="text-xs text-muted-foreground">
                     {totalHrs.toFixed(1)}h
                     {open ? (activeDay < todayIso ? " · unfilled" : " · unassigned") : ""}
                   </span>
                   {takers.length ? (
                     <span
-                      className="block truncate text-[10px]"
+                      className="block truncate text-xs"
                       style={{ color: DRAFT_COLOR }}
                       title={`Suggested: ${takers.join(", ")}`}
                     >
@@ -704,21 +704,21 @@ function CoverageTimeline({
               <div className={cn(GUTTER, "shrink-0 truncate")}>
                 <span
                   className={cn(
-                    "block truncate text-xs font-medium",
+                    "block truncate text-sm font-medium",
                     !s.employee && "italic text-muted-foreground",
                   )}
                   title={s.employee ?? "Open shift"}
                 >
                   {s.employee ?? "Open shift"}
                 </span>
-                <span className="text-[10px]" style={{ color: DRAFT_COLOR }}>
+                <span className="text-xs" style={{ color: DRAFT_COLOR }}>
                   draft · {s.hours.toFixed(1)}h
                 </span>
               </div>
               <div className="relative min-w-0 flex-1 cursor-crosshair">
                 <div className="relative h-9 w-full overflow-hidden rounded-md bg-muted/40">
                   <div
-                    className="absolute top-1.5 flex h-6 items-center justify-center overflow-hidden rounded-sm border border-dashed text-[10px] font-medium"
+                    className="absolute top-1.5 flex h-6 items-center justify-center overflow-hidden rounded-sm border border-dashed text-[11px] font-medium"
                     style={{
                       left: `${left}%`,
                       width: `${Math.max(width, 0.8)}%`,
@@ -1271,7 +1271,7 @@ export function LaborCoveragePanel({
           draftShifts={draftShifts}
         />
 
-        <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1.5">
             <span className="inline-block size-2.5 rounded-sm" style={{ backgroundColor: PT }} />
             Actual PT

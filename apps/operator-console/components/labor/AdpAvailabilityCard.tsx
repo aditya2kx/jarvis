@@ -98,7 +98,7 @@ function Avatar({ name }: { name: string }) {
   return (
     <span
       aria-hidden
-      className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-semibold text-muted-foreground"
+      className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-muted-foreground"
     >
       {initials(name)}
     </span>
@@ -118,7 +118,7 @@ function ClashBadge({ rows, shifts }: { rows: UnavailabilityRow[]; shifts: Sched
   );
 }
 
-const ROW = "flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs transition-colors hover:bg-muted/40";
+const ROW = "flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm transition-colors hover:bg-muted/40";
 
 type View = "pending" | "approved" | "none" | "all";
 
@@ -173,7 +173,7 @@ export function AdpAvailabilityCard({
     <Card data-testid="adp-availability">
       <CardHeader className="gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle>Unavailability</CardTitle>
+          <CardTitle className="text-sm font-medium text-muted-foreground">Unavailability</CardTitle>
           <div className="flex flex-wrap items-center gap-2">
             <LocalMultiSelect label="People" selected={selected} options={everyone} onChange={setSelected} />
             <div className="flex items-center gap-1 rounded-lg border border-border p-0.5" role="group" aria-label="Unavailability status">
@@ -253,7 +253,7 @@ export function AdpAvailabilityCard({
             ))}
           </ul>
         ) : (
-          <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+          <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
             {view === "pending" ? "Nothing waiting for approval." : "No one matches these filters."}
           </p>
         )}

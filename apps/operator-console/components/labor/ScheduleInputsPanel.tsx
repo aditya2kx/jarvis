@@ -363,7 +363,7 @@ function NumberField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[11px] text-muted-foreground">{label}</span>
+      <span className="text-xs text-muted-foreground">{label}</span>
       <span className="flex items-center gap-1.5">
         <Input
           type="number"
@@ -395,7 +395,7 @@ function Section({
     <div className="flex flex-col gap-2 rounded-lg border border-border/80 bg-card/60 p-3">
       <div>
         <h4 className="text-xs font-medium text-foreground">{title}</h4>
-        <p className="text-[11px] text-muted-foreground">{hint}</p>
+        <p className="text-xs text-muted-foreground">{hint}</p>
       </div>
       {children}
     </div>
@@ -495,7 +495,7 @@ function HoursImpact({
             {vsGoal != null ? (
               <span
                 className={cn(
-                  "rounded px-1 text-[10px]",
+                  "rounded px-1 text-[11px]",
                   Math.abs(vsGoal) <= 2
                     ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
                     : vsGoal > 0
@@ -619,13 +619,13 @@ export function ScheduleInputsPanel({
           <span className="flex items-center gap-2 text-sm font-medium text-foreground">
             Scheduling rules
             {dirty ? (
-              <Badge className="h-4 border-amber-500/40 bg-amber-500/15 px-1.5 text-[10px] font-normal text-amber-700 dark:text-amber-300">
+              <Badge className="h-4 border-amber-500/40 bg-amber-500/15 px-1.5 text-[11px] font-normal text-amber-700 dark:text-amber-300">
                 Unsaved changes
               </Badge>
             ) : (
               <Badge
                 variant="outline"
-                className="h-4 px-1.5 text-[10px] font-normal"
+                className="h-4 px-1.5 text-[11px] font-normal"
               >
                 {live
                   ? `v${live.version} · ${whoSaved(live.createdBy)}, ${savedAt(live.createdAt)}`
@@ -669,7 +669,7 @@ export function ScheduleInputsPanel({
                   onChange={(v) => setStaffing({ minPeople: Math.round(v) })}
                 />
                 <div className="flex flex-col gap-1">
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="text-xs text-muted-foreground">
                     Staffed hours (incl. open/close duties)
                   </span>
                   <span className="flex items-center gap-1.5">
@@ -717,7 +717,7 @@ export function ScheduleInputsPanel({
                   }
                 />
                 <div className="flex flex-col gap-1">
-                  <span className="text-[11px] text-muted-foreground">Shift times</span>
+                  <span className="text-xs text-muted-foreground">Shift times</span>
                   <div
                     role="group"
                     aria-label="Shift times"
@@ -1098,7 +1098,7 @@ export function ScheduleInputsPanel({
                   {i === 0 ? (
                     <Badge
                       variant="secondary"
-                      className="h-4 px-1.5 text-[10px]"
+                      className="h-4 px-1.5 text-[11px]"
                     >
                       Live
                     </Badge>

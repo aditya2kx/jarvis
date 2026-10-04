@@ -139,7 +139,7 @@ function DecisionBadge({ gap }: { gap: PunchGap }) {
         {decisionTimes(d)}
       </span>
       <span
-        className={cn("text-[10px]", line.tone)}
+        className={cn("text-[11px]", line.tone)}
         title={d.error ?? undefined}
       >
         {line.text}
@@ -273,7 +273,7 @@ function GapActions({ gap, onDone }: { gap: PunchGap; onDone: () => void }) {
         </div>
         <span
           className={cn(
-            "text-[10px]",
+            "text-[11px]",
             error ? "text-destructive" : "text-muted-foreground",
           )}
         >
@@ -327,7 +327,7 @@ function GapActions({ gap, onDone }: { gap: PunchGap; onDone: () => void }) {
         ) : null}
       </div>
       {error ? (
-        <span className="text-[10px] text-destructive">{error}</span>
+        <span className="text-[11px] text-destructive">{error}</span>
       ) : null}
     </div>
   );

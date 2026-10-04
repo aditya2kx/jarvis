@@ -31,7 +31,7 @@ function hourLabel(min: number): string {
 /** Hour ticks for the timeline column header (shared axis across rows). */
 export function PunchGapTimelineAxis({ bounds }: { bounds: Bounds }) {
   return (
-    <div className="relative h-4 w-full text-[10px] font-normal text-muted-foreground">
+    <div className="relative h-4 w-full text-[11px] font-normal text-muted-foreground">
       {ticks(bounds).map((m) => (
         <span
           key={m}

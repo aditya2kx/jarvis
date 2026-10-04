@@ -160,7 +160,7 @@ export function ShiftDraftSummary({
         <div className="flex flex-col gap-0.5">
           <div className="flex items-center gap-2">
             <h4 className="text-sm font-medium text-foreground">Draft open shifts — {dayLabel}</h4>
-            <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">
+            <Badge variant="outline" className="h-4 px-1.5 text-[11px] font-normal">
               Works around ADP unavailability
             </Badge>
           </div>
@@ -196,10 +196,10 @@ export function ShiftDraftSummary({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="h-8 text-xs">Shift</TableHead>
-              <TableHead className="h-8 text-xs">Time</TableHead>
-              <TableHead className="h-8 text-right text-xs">Hours</TableHead>
-              <TableHead className="h-8 text-xs">Suggested</TableHead>
+              <TableHead className="h-8">Shift</TableHead>
+              <TableHead className="h-8">Time</TableHead>
+              <TableHead className="h-8 text-right">Hours</TableHead>
+              <TableHead className="h-8">Suggested</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -212,28 +212,28 @@ export function ShiftDraftSummary({
                       {KIND_LABEL[s.kind]}
                     </Badge>
                   </TableCell>
-                  <TableCell className="py-1.5 text-xs tabular-nums">
+                  <TableCell className="py-1.5 tabular-nums">
                     {formatClockMin(s.startMin)}–{formatClockMin(s.endMin)}
                   </TableCell>
-                  <TableCell className="py-1.5 text-right text-xs tabular-nums">
+                  <TableCell className="py-1.5 text-right tabular-nums">
                     {s.hours.toFixed(1)}
                   </TableCell>
-                  <TableCell className="py-1.5 text-xs">
+                  <TableCell className="py-1.5">
                     {s.employee ? (
                       <span className="flex flex-wrap items-center gap-x-2">
                         <span className="font-medium">{s.employee}</span>
                         {a?.targetWeekHours != null ? (
-                          <span className="text-[11px] text-muted-foreground">
+                          <span className="text-xs text-muted-foreground">
                             target {a.targetWeekHours}h/week
                           </span>
                         ) : null}
                         {s.trimmed ? (
-                          <span className="text-[11px] text-muted-foreground">shortened to availability</span>
+                          <span className="text-xs text-muted-foreground">shortened to availability</span>
                         ) : null}
                         {s.fillsOpen ? (
                           <Badge
                             variant="outline"
-                            className="h-4 px-1.5 text-[10px] font-normal"
+                            className="h-4 px-1.5 text-[11px] font-normal"
                             style={{ borderColor: OPEN_COLOR, color: OPEN_COLOR }}
                             title="Already an open shift in ADP — assign this person there. Not included in Save to ADP."
                           >
@@ -253,7 +253,7 @@ export function ShiftDraftSummary({
           </TableBody>
         </Table>
       ) : (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           Nothing to draft — the schedule already meets the needed headcount.
         </p>
       )}

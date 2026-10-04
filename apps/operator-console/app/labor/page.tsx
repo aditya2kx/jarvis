@@ -28,6 +28,7 @@ import { FEATURES } from "@/lib/config/features";
 import type { DemandCell } from "@/lib/labor/staffing-need";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
+import { SuggestedHoursProvider } from "@/components/labor/SuggestedHoursContext";
 import { LaborWeeklyHoursGoal } from "@/components/labor/LaborWeeklyHoursGoal";
 import { LaborConcurrentChart } from "@/components/labor/LaborConcurrentChart";
 import { LaborCoveragePanel } from "@/components/labor/LaborCoveragePanel";
@@ -723,7 +724,7 @@ export default async function LaborPage({
       {error ? (
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
-        <>
+        <SuggestedHoursProvider>
           <LaborHoursChart
             data={chartData}
             laborTypes={laborTypes}
@@ -883,7 +884,7 @@ export default async function LaborPage({
               </p>
             ) : null}
           </div>
-        </>
+        </SuggestedHoursProvider>
       )}
     </div>
   );

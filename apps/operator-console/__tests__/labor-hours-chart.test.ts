@@ -9,6 +9,7 @@ import {
   pctOfHoursGoal,
   scopedLaborMetrics,
   weeklyHoursGoalApplicable,
+  withSuggestedHours,
 } from "@/components/labor/LaborHoursChart";
 import { GOAL_FIELDS } from "@/lib/kpi/goal-fields";
 import {
@@ -281,5 +282,41 @@ describe("ADP draft hours (Issue #337)", () => {
       ["Total with ADP drafts", "224"],
     ]);
     expect(tip.lines).toContain("Goal 230 hrs (97.4% of goal)");
+  });
+});
+
+describe("withSuggestedHours", () => {
+  const row = (bucket_iso: string) => ({
+    date: bucket_iso,
+    bucket_iso,
+    total_hours: null,
+    parttime_hours: null,
+    fulltime_hours: null,
+    labor_pct: null,
+    hourly_pct: null,
+    fulltime_pct: null,
+    net_sales: null,
+    parttime_scheduled_hours: 100,
+    fulltime_scheduled_hours: 0,
+  });
+
+  it("sums suggested day hours into their week bucket", () => {
+    const rows = withSuggestedHours(
+      [row("2026-10-05"), row("2026-10-12")],
+      new Map([
+        ["2026-10-13", 8.5],
+        ["2026-10-18", 4.5],
+        ["2026-10-01", 9],
+      ]),
+    );
+    expect(rows.map((r) => r.suggested_hours)).toEqual([undefined, 13]);
+  });
+
+  it("adds suggested hours to the total measured against the goal", () => {
+    const [r] = withSuggestedHours([row("2026-10-12")], new Map([["2026-10-13", 13]]));
+    const tip = laborTooltipContent(r!, 230, "week", null);
+    expect(tip.entries).toContainEqual(expect.objectContaining({ label: "Suggested (draft)", value: "13" }));
+    expect(tip.entries).toContainEqual({ label: "Total with suggested", value: "113" });
+    expect(tip.lines).toContain("Goal 230 hrs (49.1% of goal)");
   });
 });

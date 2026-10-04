@@ -56,6 +56,7 @@ import {
 } from "@/lib/labor/schedule-inputs";
 import { payPeriodStartFor } from "@/lib/payroll/openPeriod";
 import { DRAFT_COLOR, ShiftDraftSummary } from "@/components/labor/ShiftDraftSummary";
+import { useSuggestedHours } from "@/components/labor/SuggestedHoursContext";
 import { ScheduleInputsPanel } from "@/components/labor/ScheduleInputsPanel";
 import { Button } from "@/components/ui/button";
 import { chicagoTodayIso, shiftCalendarDate, type DateWindow } from "@/lib/filters/range";
@@ -1065,6 +1066,20 @@ export function LaborCoveragePanel({
     unavailability,
     rules.staffing.minShiftMin,
   ]);
+
+  const { setByDay: publishSuggested } = useSuggestedHours();
+  useEffect(() => {
+    const byDay = new Map<string, number>();
+    if (showDraft && drafts) {
+      const inStrip = new Set(strip);
+      for (const [iso, shifts] of drafts.byDay) {
+        const h = newShifts(shifts).reduce((a, s) => a + s.hours, 0);
+        if (h > 0 && inStrip.has(iso)) byDay.set(iso, h);
+      }
+    }
+    publishSuggested(byDay);
+  }, [showDraft, drafts, strip, publishSuggested]);
+  useEffect(() => () => publishSuggested(new Map()), [publishSuggested]);
 
   const weekDraft =
     drafts && activeDay && activeDay > todayIso

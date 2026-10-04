@@ -45,4 +45,10 @@ export const FEATURES = {
    * or off is a config change; server-evaluated only (undefined in the browser).
    */
   adpScheduleWrite: process.env.CONSOLE_ADP_SCHEDULE_WRITE === "1",
+  /**
+   * Labor "Approve" on a pending ADP unavailability request (Issue #337): a
+   * headless Cloud Run job clicks that card's APPROVE in Team Schedule ›
+   * Pending requests. Server-evaluated only.
+   */
+  adpUnavailabilityApprove: process.env.CONSOLE_ADP_UNAVAIL_APPROVE === "1",
 } as const;

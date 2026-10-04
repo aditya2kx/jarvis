@@ -962,6 +962,7 @@ export function laborActualShiftDays(
 }
 
 export type UnavailabilityRow = {
+  row_key: string;
   employee: string;
   status: "pending" | "approved";
   first_date: string;
@@ -980,6 +981,7 @@ export type UnavailabilityRow = {
 export function adpUnavailability(store: string): Promise<UnavailabilityRow[]> {
   return q<UnavailabilityRow>(
     `SELECT
+       u.row_key,
        COALESCE(al.canonical_name, NULLIF(TRIM(u.raw_employee_name), ''), u.employee_name) AS employee,
        u.status,
        CAST(u.first_date AS STRING) AS first_date,
@@ -1002,15 +1004,15 @@ export function adpUnavailability(store: string): Promise<UnavailabilityRow[]> {
   );
 }
 
-export type ScheduleRequestRow = { request_type: string; pending: number; scraped_at: string | null };
-
-/** Pending-request counts per type from the Team Schedule requests pane. */
-export function adpScheduleRequests(): Promise<ScheduleRequestRow[]> {
-  return q<ScheduleRequestRow>(
-    `SELECT request_type, pending, CAST(scraped_at_utc AS STRING) AS scraped_at
-     FROM ${fq("adp_schedule_requests")}
-     ORDER BY request_type`,
+/** Whether a stored unavailability request is still pending (and not expired). */
+export async function unavailabilityStillPending(rowKey: string): Promise<boolean> {
+  const rows = await q<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM ${fq("adp_unavailability")}
+     WHERE row_key = @key AND status = 'pending'
+       AND (expires_at_ct IS NULL OR expires_at_ct > CURRENT_DATETIME('America/Chicago'))`,
+    { key: rowKey },
   );
+  return Number(rows[0]?.n ?? 0) > 0;
 }
 
 /** Max scraped_at on clocked hours — the Sync ADP run stamps this last. */

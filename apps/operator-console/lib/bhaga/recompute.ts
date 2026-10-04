@@ -219,6 +219,25 @@ export async function triggerAdpScheduleWrite(
   return runJob(env, `triggerAdpScheduleWrite(store=${store} mode=${job.mode})`, adpJobResource());
 }
 
+/**
+ * Labor "Approve" (Issue #337): approve one pending ADP unavailability request,
+ * then refresh the schedule. Short-circuits via BHAGA_ADP_UNAVAIL_APPROVE.
+ */
+export async function triggerAdpUnavailabilityApprove(
+  store: string,
+  rowKey: string,
+  requestedBy: string,
+): Promise<{ executionName: string }> {
+  if (!store) throw new Error("triggerAdpUnavailabilityApprove: store is required");
+  const env = [
+    { name: "BHAGA_ADP_UNAVAIL_APPROVE", value: rowKey },
+    { name: "BHAGA_REQUESTED_BY", value: requestedBy },
+    { name: "BHAGA_IGNORE_HALT", value: "1" },
+    { name: "BHAGA_STORE", value: store },
+  ];
+  return runJob(env, `triggerAdpUnavailabilityApprove(store=${store})`, adpJobResource());
+}
+
 function payrollDraftOnlyEnv(
   store: string,
   periodStart: string,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  availabilityByPerson,
   blocksOn,
+  collapseWeekly,
   coversDate,
   freeSegment,
   overlapMinutes,
@@ -56,7 +56,7 @@ describe("freeSegment / overlapMinutes", () => {
   });
 });
 
-describe("scheduleConflicts / availabilityByPerson", () => {
+describe("scheduleConflicts", () => {
   const shifts = [
     { date: "2026-10-10", employee: "A", shift_ranges_json: JSON.stringify(["8:00 AM - 2:00 PM"]) },
     { date: "2026-10-10", employee: "B", shift_ranges_json: JSON.stringify(["8:00 AM - 2:00 PM"]) },
@@ -67,10 +67,19 @@ describe("scheduleConflicts / availabilityByPerson", () => {
     expect(c).toHaveLength(1);
     expect(c[0]).toMatchObject({ date: "2026-10-10", employee: "A", shift: { startMin: 480, endMin: 840 } });
   });
-  it("rolls up per person, conflicts first", () => {
-    const rows = [weeklySat, oneOff];
-    const people = availabilityByPerson(rows, shifts, scheduleConflicts(rows, shifts));
-    expect(people[0]).toEqual({ employee: "A", pending: 1, approved: 0, upcomingShifts: 2, conflicts: 1 });
-    expect(people.find((p) => p.employee === "B")).toMatchObject({ approved: 1, upcomingShifts: 1 });
+});
+
+describe("collapseWeekly", () => {
+  const block = (first_date: string, from_time = "06:00"): UnavailabilityInput => ({
+    employee: "A", status: "approved", first_date, from_time, to_time: "10:00",
+    all_day: false, repeat_weekday: null, repeat_until: null,
+  });
+  it("folds weekly approved blocks into one repeating row", () => {
+    const out = collapseWeekly([block("2026-10-03"), block("2026-10-17"), block("2026-10-10")]);
+    expect(out).toEqual([{ ...block("2026-10-03"), repeat_weekday: 5, repeat_until: "2026-10-17" }]);
+  });
+  it("keeps gaps, other windows and pending rows separate", () => {
+    const out = collapseWeekly([block("2026-10-03"), block("2026-10-17"), block("2026-10-10", "07:00"), weeklySat]);
+    expect(out).toHaveLength(4);
   });
 });

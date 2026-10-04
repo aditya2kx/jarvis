@@ -1894,6 +1894,49 @@ def _scrape_open_shifts(page, frame, *, week_label: str) -> dict:
         return {"open_shifts_error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
+_REQUEST_BUTTONS_JS = r"""
+() => [...document.querySelectorAll('button, sdf-button, [role=button]')]
+  .map(b => (b.innerText || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
+  .filter(t => /request|pending/i.test(t)).slice(0, 12)
+"""
+
+
+def _open_unavailability_requests(page, frame):
+    """Team Schedule › Pending requests › Unavailability Requests (read-only clicks).
+
+    Returns ``(pane, list_text, unavailability_text)``; the text is "" when ADP
+    lists no unavailability row. Raises with the toolbar's request-ish buttons in
+    the message when "Pending requests" cannot be found, so a failed run says why.
+    """
+    import re as _re
+
+    pane = frame.locator("sdf-focus-pane")
+    opener = frame.get_by_role("button", name=_re.compile(r"Pending requests", _re.I))
+    if not opener.count():
+        opener = frame.get_by_text(_re.compile(r"^\s*Pending requests", _re.I))
+    try:
+        opener.first.click(timeout=8_000)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            seen = frame.evaluate(_REQUEST_BUTTONS_JS)
+        except Exception:  # noqa: BLE001
+            seen = "?"
+        raise RuntimeError(f"Pending requests button not found (request-ish buttons: {seen}): {exc}") from exc
+    page.wait_for_timeout(1_500)
+    list_text = pane.first.inner_text(timeout=8_000)
+    unavail_text = ""
+    row = pane.locator(".vdl-list-view__content", has_text=_re.compile(r"Unavailability", _re.I))
+    if row.count():
+        row.first.click(timeout=8_000)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(400)
+            unavail_text = pane.first.inner_text(timeout=5_000)
+            if _re.search(r"Unavailability\s+(update|request)|Total\s+0", unavail_text, _re.I):
+                break
+    return pane, list_text, unavail_text
+
+
 def _scrape_schedule_requests(page, frame) -> dict:
     """Read Team Schedule › Pending requests: per-type counts + unavailability cards (Issue #337).
 
@@ -1901,23 +1944,9 @@ def _scrape_schedule_requests(page, frame) -> dict:
     and "Back" — never Approve / Reject. Never raises; on failure returns
     ``requests_error`` so the loader leaves stored requests untouched.
     """
-    import re as _re
-
-    pane = frame.locator("sdf-focus-pane")
     try:
-        frame.get_by_role("button", name=_re.compile(r"^Pending requests")).first.click(timeout=8_000)
-        page.wait_for_timeout(1_500)
-        list_text = pane.first.inner_text(timeout=8_000)
-        unavail_text = ""
-        row = pane.locator(".vdl-list-view__content", has_text=_re.compile(r"Unavailability", _re.I))
-        if row.count():
-            row.first.click(timeout=8_000)
-            deadline = time.monotonic() + 10.0
-            while time.monotonic() < deadline:
-                page.wait_for_timeout(400)
-                unavail_text = pane.first.inner_text(timeout=5_000)
-                if _re.search(r"Unavailability\s+(update|request)|Total\s+0", unavail_text, _re.I):
-                    break
+        pane, list_text, unavail_text = _open_unavailability_requests(page, frame)
+        if unavail_text:
             pane.get_by_text("Back", exact=True).first.click(timeout=5_000)
             page.wait_for_timeout(500)
         page.keyboard.press("Escape")
@@ -2018,6 +2047,8 @@ def _schedule_within_session(page, *, weeks: int = None) -> tuple[list[dict], di
 
     weeks = min(weeks or sb.DEFAULT_WEEKS, sb.MAX_SCHEDULE_WEEKS)
     frame = _open_team_schedule(page)
+    # Read on the opening week, before the chevrons move the grid.
+    requests = _scrape_schedule_requests(page, frame)
     payloads: list[dict] = []
     for i in range(weeks):
         payloads.append(_scrape_one_week(page, frame))
@@ -2028,7 +2059,7 @@ def _schedule_within_session(page, *, weeks: int = None) -> tuple[list[dict], di
         except RuntimeError as exc:
             print(f"[adp_schedule] stop advancing weeks after {len(payloads)}: {exc}")
             break
-    return payloads, _scrape_schedule_requests(page, frame)
+    return payloads, requests
 
 
 def _write_schedule_json(payloads: list[dict], *, store: str, requests: Optional[dict] = None) -> pathlib.Path:

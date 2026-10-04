@@ -92,29 +92,46 @@ export function scheduleConflicts(rows: UnavailabilityInput[], shifts: Scheduled
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.employee.localeCompare(b.employee));
 }
 
-export type PersonAvailability = {
-  employee: string;
-  pending: number;
-  approved: number;
-  upcomingShifts: number;
-  conflicts: number;
-};
+/**
+ * ADP paints an approved weekly entry as one block per date. Fold same-person,
+ * same-window blocks on the same weekday, a week apart, back into one weekly row.
+ */
+export function collapseWeekly<T extends UnavailabilityInput>(rows: T[]): T[] {
+  const out: T[] = [];
+  const groups = new Map<string, T[]>();
+  for (const r of rows) {
+    if (r.status !== "approved" || r.repeat_weekday != null) {
+      out.push(r);
+      continue;
+    }
+    const key = [r.employee, isoWeekdayMon0(r.first_date), r.all_day, r.from_time, r.to_time].join("|");
+    groups.set(key, [...(groups.get(key) ?? []), r]);
+  }
+  for (const g of groups.values()) {
+    g.sort((a, b) => a.first_date.localeCompare(b.first_date));
+    let run: T[] = [];
+    const flush = () => {
+      if (run.length > 1) {
+        out.push({
+          ...run[0]!,
+          repeat_weekday: isoWeekdayMon0(run[0]!.first_date),
+          repeat_until: run[run.length - 1]!.first_date,
+        });
+      } else out.push(...run);
+      run = [];
+    };
+    for (const r of g) {
+      const prev = run[run.length - 1];
+      if (prev && daysBetween(prev.first_date, r.first_date) !== 7) flush();
+      run.push(r);
+    }
+    flush();
+  }
+  return out;
+}
 
-/** One row per person on the schedule or with unavailability on file. */
-export function availabilityByPerson(
-  rows: UnavailabilityInput[],
-  shifts: ScheduledShift[],
-  conflicts: Conflict[],
-): PersonAvailability[] {
-  const m = new Map<string, PersonAvailability>();
-  const get = (employee: string) =>
-    m.get(employee) ?? m.set(employee, { employee, pending: 0, approved: 0, upcomingShifts: 0, conflicts: 0 }).get(employee)!;
-  for (const r of rows) get(r.employee)[r.status] += 1;
-  for (const s of shifts) get(s.employee).upcomingShifts += 1;
-  for (const c of conflicts) get(c.employee).conflicts += 1;
-  return [...m.values()].sort(
-    (a, b) => b.conflicts - a.conflicts || b.pending - a.pending || a.employee.localeCompare(b.employee),
-  );
+function daysBetween(a: string, b: string): number {
+  return Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86_400_000);
 }
 
 /** Minutes of overlap between [s, e) and the blocks. */

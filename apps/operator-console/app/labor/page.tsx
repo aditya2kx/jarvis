@@ -1,6 +1,5 @@
 import {
   adpHoursScrapedAt,
-  adpScheduleRequests,
   adpUnavailability,
   adpScheduleHorizonEnd,
   laborActualShiftDays,
@@ -18,7 +17,6 @@ import {
   laborSoloHoursPerPerson,
   storeConfig,
   upcomingRestockDates,
-  type ScheduleRequestRow,
   type UnavailabilityRow,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
@@ -192,7 +190,6 @@ export default async function LaborPage({
   let deliveryDates: string[] = [];
   let rulesHistory: RulesVersion[] = [];
   let unavailability: UnavailabilityRow[] = [];
-  let scheduleRequests: ScheduleRequestRow[] = [];
   let upcomingShifts: ScheduledShift[] = [];
   let error: string | undefined;
   try {
@@ -251,7 +248,6 @@ export default async function LaborPage({
       restockDates,
       rulesVersions,
       unavailRows,
-      requestRows,
       upcomingRows,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
@@ -297,7 +293,6 @@ export default async function LaborPage({
       upcomingRestockDates(DEFAULT_STORE, todayIso).catch(() => []),
       scheduleRulesHistory(DEFAULT_STORE).catch(() => []),
       adpUnavailability(DEFAULT_STORE).catch(() => []),
-      adpScheduleRequests().catch(() => []),
       laborScheduledShiftDays(
         { start: todayIso, end: shiftCalendarDate(todayIso, "day", 56), label: "Next 8 weeks", preset: "custom" },
         { store: DEFAULT_STORE, excludePto: true },
@@ -306,7 +301,6 @@ export default async function LaborPage({
     punchGaps = mergePunchDays(buildPunchGaps(gapRows, gapCoworkers), punchDays, gapCoworkers);
     rulesHistory = rulesVersions;
     unavailability = unavailRows;
-    scheduleRequests = requestRows;
     upcomingShifts = upcomingRows;
     soloRows = solo;
     openHoursRows = openHours;
@@ -761,8 +755,8 @@ export default async function LaborPage({
 
           <AdpAvailabilityCard
             rows={unavailability}
-            requests={scheduleRequests}
             shifts={upcomingShifts}
+            approveEnabled={FEATURES.adpUnavailabilityApprove}
           />
 
           <div data-testid="labor-hours-per-person" className="flex flex-col gap-2">

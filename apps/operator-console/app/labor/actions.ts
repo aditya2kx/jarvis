@@ -24,6 +24,11 @@ import {
   type AdpSyncStart,
 } from "@/lib/bhaga/adp-sync";
 import {
+  pollUnavailabilityApprove,
+  startUnavailabilityApprove,
+  type UnavailabilityApprovePoll,
+} from "@/lib/bhaga/unavailability-approve";
+import {
   pollPunchFixApply,
   startPunchFixApply,
   type PunchFixPoll,
@@ -95,6 +100,37 @@ export async function publishWeekAction(weekStart: string): Promise<ActionAck<{ 
 export async function schedulePushStatusAction(weekStart: string): Promise<ActionAck<{ rows: PushRow[] }>> {
   try {
     return okAck({ data: { rows: await weekPushRows(DEFAULT_STORE, weekStart) } });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Approve one pending ADP unavailability request (headless Cloud Run job). */
+export async function approveUnavailabilityAction(
+  rowKey: string,
+): Promise<ActionAck<{ executionName: string }>> {
+  try {
+    if (!FEATURES.adpUnavailabilityApprove) {
+      throw new Error("Approving in ADP is turned off (CONSOLE_ADP_UNAVAIL_APPROVE).");
+    }
+    if (typeof rowKey !== "string" || !rowKey) throw new Error("Missing request.");
+    const data = await startUnavailabilityApprove(DEFAULT_STORE, rowKey, await operatorEmail());
+    return okAck({
+      data,
+      queued: ["adp-unavail-approve"],
+      message: "Approving in ADP — about 5–10 min including the schedule refresh.",
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+export async function pollUnavailabilityApproveAction(opts: {
+  rowKey: string;
+  executionName?: string | null;
+}): Promise<ActionAck<UnavailabilityApprovePoll>> {
+  try {
+    return okAck({ data: await pollUnavailabilityApprove(opts) });
   } catch (e) {
     return failAck(e);
   }

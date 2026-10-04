@@ -2725,6 +2725,22 @@ def _run_refresh(run_id: str) -> int:
         print(f"[adp-schedule-write] mode={write_mode} store={args.store}")
         return adp_schedule_write.main(argv)
 
+    # Console Labor "Approve" on an unavailability request (Issue #337): one
+    # operator-confirmed APPROVE click, then the schedule-only refresh below so
+    # the request leaves pending and the approved entry lands in BQ.
+    approve_key = os.environ.get("BHAGA_ADP_UNAVAIL_APPROVE", "").strip()
+    if approve_key:
+        args.store = os.environ.get("BHAGA_STORE") or args.store
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        from agents.bhaga.scripts import adp_unavailability_approve  # noqa: PLC0415
+        rc = adp_unavailability_approve.main([
+            "--store", args.store, "--headless", "--row-key", approve_key,
+            "--requested-by", os.environ.get("BHAGA_REQUESTED_BY", ""),
+        ])
+        if rc:
+            return rc
+        os.environ["BHAGA_ADP_SCHEDULE_ONLY"] = "1"
+
     # Console Labor "Sync scheduled shifts" (Issue #213): Team Schedule scrape
     # + BQ load only — no timecard/earnings/model. Runs before completeness gate
     # so it works mid-day. Forces a fresh Schedule JSON (deletes today's cache).

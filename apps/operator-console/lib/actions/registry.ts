@@ -38,6 +38,8 @@ export const MUTATING_ACTIONS = [
   { name: "saveDraftsToAdpAction", page: "labor", heavy: "adp-schedule-write" },
   { name: "publishWeekAction", page: "labor", heavy: "adp-schedule-write" },
   { name: "schedulePushStatusAction", page: "labor", heavy: null },
+  { name: "approveUnavailabilityAction", page: "labor", heavy: "adp-unavail-approve" },
+  { name: "pollUnavailabilityApproveAction", page: "labor", heavy: null },
   { name: "decidePunchGapAction", page: "labor", heavy: null },
   { name: "acceptPunchGapsAction", page: "labor", heavy: null },
   { name: "dismissPunchGapsAction", page: "labor", heavy: null },

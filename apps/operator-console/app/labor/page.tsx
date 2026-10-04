@@ -82,6 +82,7 @@ import {
   periodIncludesToday,
   scheduleTakesOverFrom,
   scheduledShiftWindow,
+  forwardHorizonEnd,
 } from "@/lib/labor/actual-schedule-windows";
 import {
   aggregateScheduledDays,
@@ -196,11 +197,11 @@ export default async function LaborPage({
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
-    // date (any Aggregation) — not just Period end.
-    const scheduleHorizonEnd = includesToday
-      ? await adpScheduleHorizonEnd().catch(() => null)
-      : null;
+    // date or FORWARD_WEEKS ahead, whichever is later (any Aggregation).
     const todayIso = chicagoTodayIso();
+    const scheduleHorizonEnd = includesToday
+      ? forwardHorizonEnd(todayIso, await adpScheduleHorizonEnd().catch(() => null))
+      : null;
     // Hand off from actual to scheduled where the punches actually end, not at
     // a fixed "yesterday" — otherwise the evening's freshly-ingested hours are
     // overdrawn by their own schedule. Falls back to today if unreadable.

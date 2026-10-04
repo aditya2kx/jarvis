@@ -3,6 +3,7 @@ import {
   shiftCalendarDate,
   type DateWindow,
 } from "@/lib/filters/range";
+import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
 
 /** Period overlaps Chicago today (schedule overlay is eligible). */
 export function periodIncludesToday(win: DateWindow, todayIso = chicagoTodayIso()): boolean {
@@ -57,6 +58,24 @@ export function extendEndForScheduleHorizon(
 ): string {
   if (!scheduleHorizonEnd) return periodEnd;
   return scheduleHorizonEnd > periodEnd ? scheduleHorizonEnd : periodEnd;
+}
+
+/** Full Mon–Sun weeks ahead of today that a Period including today always shows. */
+export const FORWARD_WEEKS = 3;
+
+/**
+ * Forward horizon for a Period that includes today: the later of the ADP
+ * schedule horizon and the Sunday ending the week `FORWARD_WEEKS` out, so draft
+ * weeks stay visible beyond what ADP has published.
+ */
+export function forwardHorizonEnd(
+  todayIso: string,
+  scheduleHorizonEnd: string | null | undefined,
+  weeks = FORWARD_WEEKS,
+): string {
+  const ahead = shiftCalendarDate(todayIso, "day", weeks * 7);
+  const sunday = shiftCalendarDate(ahead, "day", 6 - isoWeekdayMon0(ahead));
+  return extendEndForScheduleHorizon(sunday, scheduleHorizonEnd);
 }
 
 /**

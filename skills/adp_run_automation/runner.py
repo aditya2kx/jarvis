@@ -2864,6 +2864,14 @@ def download_adp_bundle(
             except Exception as exc:  # noqa: BLE001
                 print(f"[adp_bundle] pay_info BQ puncher union skipped: {exc}")
 
+            try:
+                page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
+                page.wait_for_timeout(1500)
+                result["directory_roster"] = pib.directory_roster(page)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[adp_bundle] BREADCRUMB directory_roster failed: "
+                      f"{type(exc).__name__}: {exc}")
+
             if names:
                 print(f"[adp_bundle] pay_info refresh for {len(names)}: {names}")
                 page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
@@ -2874,6 +2882,7 @@ def download_adp_bundle(
                 )
                 path = pib.write_pay_info_json(
                     rates, store=store, errors=scrape_errors, attempted=names,
+                    directory=result.get("directory_roster"),
                 )
                 result["pay_info_json"] = path
                 print(f"[adp_bundle] pay_info OK → {path} ({len(rates)} rates)")

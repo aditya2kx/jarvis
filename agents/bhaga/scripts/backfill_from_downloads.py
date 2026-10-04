@@ -806,6 +806,15 @@ def main() -> int:
                 else:
                     n = write_pay_info_rates_bq(rates, dry_run=False)
                     summaries.append({"table": "adp_wage_rates_pay_info", "rows": n})
+                    try:
+                        from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
+                            write_directory_status_bq,
+                        )
+                        summaries.append({"table": "adp_directory_status",
+                                          "rows": write_directory_status_bq(payload)})
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[pay_info] BREADCRUMB directory_status_load_failed "
+                              f"err={type(exc).__name__}: {exc}")
                     remaining: list[str] = []
                     try:
                         from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415

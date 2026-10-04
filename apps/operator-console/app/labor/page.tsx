@@ -1,7 +1,7 @@
 import {
   adpHoursScrapedAt,
   adpUnavailability,
-  adpHourlyRoster,
+  adpDirectoryRoster,
   adpScheduleScrapedAt,
   adpScheduleHorizonEnd,
   laborActualShiftDays,
@@ -278,7 +278,7 @@ export default async function LaborPage({
       weeklyActual,
       weeklySched,
       weeklyOpen,
-      hourlyRoster,
+      directoryRoster,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -333,9 +333,9 @@ export default async function LaborPage({
         ? laborScheduledShiftDays(weeklySchedWin, { store: DEFAULT_STORE, excludePto }).catch(() => [])
         : Promise.resolve([]),
       weeklySchedWin ? laborOpenShiftDays(weeklySchedWin).catch(() => []) : Promise.resolve([]),
-      adpHourlyRoster().catch(() => []),
+      adpDirectoryRoster(DEFAULT_STORE).catch(() => []),
     ]);
-    adpRosterRows = hourlyRoster;
+    adpRosterRows = directoryRoster;
     weeklyOpenDays = weeklyOpen.map((r) => ({ date: r.date, hours: Number(r.scheduled_hours) || 0 }));
     weeklyActualDays = weeklyActual;
     weeklyScheduledDays = weeklySched.map((r) => ({
@@ -564,13 +564,16 @@ export default async function LaborPage({
       : showStat
         ? "Sum across Period"
         : undefined;
-  // Anyone scheduled in ADP or on its hourly roster, unless ADP says Terminated. Empty means
-  // both reads failed — keep the unfiltered roster then.
-  const terminated = new Set(
-    adpRosterRows.filter((r) => r.employment_status?.toLowerCase() === "terminated").map((r) => r.employee),
-  );
-  const staffNames = [...new Set([...upcomingShifts.map((s) => s.employee), ...adpRosterRows.map((r) => r.employee)])]
-    .filter((name) => !terminated.has(name));
+  // Anyone scheduled in ADP plus every hourly person the ADP Directory lists as Active; a Directory
+  // status other than Active (Terminated, Leave of absence) drops even the scheduled.
+  // Empty means both reads failed — keep the unfiltered roster then.
+  const statusOf = new Map(adpRosterRows.map((r) => [r.employee, r.employment_status?.toLowerCase() ?? null]));
+  const staffNames = [
+    ...new Set([
+      ...upcomingShifts.map((s) => s.employee),
+      ...adpRosterRows.filter((r) => r.employment_status?.toLowerCase() === "active").map((r) => r.employee),
+    ]),
+  ].filter((name) => (statusOf.get(name) ?? "active") === "active");
   const activeStaff = staffNames.length ? staffNames : undefined;
 
   return (

@@ -980,22 +980,31 @@ export type UnavailabilityRow = {
 export type AdpRosterRow = { employee: string; employment_status: string | null };
 
 /**
- * Hourly staff on ADP's pay-info roster (refreshed nightly for everyone who punched in the
- * last 60 days) with their ADP status — NULL until the scrape has read it (migration 085).
+ * Latest ADP People Directory snapshot (every status, nightly — migration 085), names resolved
+ * like the schedule, salaried / labor-excluded staff dropped. A person is Active if any of their
+ * Directory records is (ADP keeps a terminated record beside a rehire's active one).
  */
-export async function adpHourlyRoster(): Promise<AdpRosterRow[]> {
-  const sql = (status: string) =>
-    `SELECT canonical_name AS employee, ${status} AS employment_status
-     FROM ${fq("adp_wage_rates")}
-     WHERE canonical_name IS NOT NULL
-       AND NOT IFNULL(is_salaried, FALSE)
-       AND NOT IFNULL(excluded_from_labor_pct, FALSE)
-     ORDER BY employee`;
-  try {
-    return await q<AdpRosterRow>(sql("employment_status"));
-  } catch {
-    return q<AdpRosterRow>(sql("CAST(NULL AS STRING)"));
-  }
+export function adpDirectoryRoster(store: string): Promise<AdpRosterRow[]> {
+  return q<AdpRosterRow>(
+    `WITH snap AS (
+       SELECT employee_name, employment_status
+       FROM ${fq("adp_directory_status")}
+       WHERE store = @store
+       QUALIFY scraped_at_utc = MAX(scraped_at_utc) OVER ()
+     )
+     SELECT COALESCE(al.canonical_name, s.employee_name) AS employee,
+            IF(LOGICAL_OR(s.employment_status = 'Active'), 'Active', ANY_VALUE(s.employment_status)) AS employment_status
+     FROM snap s
+     LEFT JOIN ${fq("employee_aliases")} al ON al.store = @store AND al.raw_name = s.employee_name
+     WHERE COALESCE(al.canonical_name, s.employee_name) NOT IN (
+       SELECT canonical_name FROM ${fq("adp_wage_rates")}
+       WHERE canonical_name IS NOT NULL
+         AND (IFNULL(is_salaried, FALSE) OR IFNULL(excluded_from_labor_pct, FALSE))
+     )
+     GROUP BY employee
+     ORDER BY employee`,
+    { store },
+  );
 }
 
 /** ADP unavailability (pending requests + approved blocks), names resolved like the schedule. */

@@ -761,6 +761,7 @@ export default async function LaborPage({
           <AdpAvailabilityCard
             rows={unavailability}
             shifts={upcomingShifts}
+            roster={activeStaff ?? []}
             approveEnabled={FEATURES.adpUnavailabilityApprove}
             lastReadAt={scheduleReadAt}
             todayIso={chicagoTodayIso()}

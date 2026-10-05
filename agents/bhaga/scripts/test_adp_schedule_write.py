@@ -239,3 +239,45 @@ class PublishMessage(unittest.TestCase):
         self.assertIn("Oct 26–Nov 1", msg)
         self.assertIn("no open shifts", msg)
         self.assertNotIn("claim it", msg)
+
+
+class RunPublish(unittest.TestCase):
+    W = datetime.date(2026, 10, 12)
+
+    def _run(self, publish, refreshed=True, drafted_left=0):
+        sqls = []
+
+        def fq(sql, params):
+            sqls.append(sql)
+            if sql.startswith("SELECT status"):
+                return [{"status": "drafted"}] * drafted_left + [{"status": "published"}]
+            return []
+
+        with mock.patch.object(w, "_query", fq), \
+             mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
+             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
+             mock.patch.object(wb, "goto_week"), \
+             mock.patch.object(wb, "publish_drafts", publish), \
+             mock.patch.object(w, "refresh_schedule", return_value=refreshed), \
+             mock.patch.object(w, "notify_published") as notify:
+            rc = w.run_publish("palmetto", self.W, headless=True, dry_run=False)
+        published = any(s.startswith("UPDATE") and "'published'" in s for s in sqls)
+        return rc, notify, published
+
+    def test_publish_marks_rows_and_sends_the_dm(self):
+        rc, notify, published = self._run(mock.MagicMock(return_value=33))
+        self.assertEqual((rc, published), (0, True))
+        notify.assert_called_once_with("palmetto", self.W)
+
+    def test_lagging_count_confirmed_by_the_schedule_still_succeeds(self):
+        publish = mock.MagicMock(side_effect=wb.PublishUnconfirmed("still shows drafts", 33))
+        rc, notify, published = self._run(publish)
+        self.assertEqual((rc, published), (0, True))
+        notify.assert_called_once()
+
+    def test_drafts_still_in_the_schedule_fail_without_a_dm(self):
+        publish = mock.MagicMock(side_effect=wb.PublishUnconfirmed("still shows drafts", 33))
+        for kwargs in ({"drafted_left": 2}, {"refreshed": False}):
+            rc, notify, published = self._run(publish, **kwargs)
+            self.assertEqual((rc, published), (1, False))
+            notify.assert_not_called()

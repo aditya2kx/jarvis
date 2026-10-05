@@ -44,6 +44,14 @@ class ScheduleWriteError(RuntimeError):
     """A single shift could not be created; the caller records it and moves on."""
 
 
+class PublishUnconfirmed(ScheduleWriteError):
+    """Publish was confirmed in ADP, but the draft count never read 0 afterwards."""
+
+    def __init__(self, msg: str, pending: int):
+        super().__init__(msg)
+        self.pending = pending
+
+
 class UnconfirmedSave(ScheduleWriteError):
     """Save was clicked but the draft count never moved — the shift may exist in ADP.
 
@@ -437,5 +445,5 @@ def publish_drafts(frame, page, *, dry_run: bool = False) -> int:
         raise ScheduleWriteError("no Publish confirmation button after Publish drafts")
     confirm.click(timeout=8000)
     if not _wait_drafts(frame, page, 0, timeout_s=30.0):
-        raise ScheduleWriteError("ADP still shows unpublished drafts after Publish")
+        raise PublishUnconfirmed("ADP still shows unpublished drafts after Publish", pending)
     return pending

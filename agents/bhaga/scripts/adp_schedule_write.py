@@ -326,6 +326,16 @@ def notify_published(store: str, week_start: dt.date) -> None:
     print(f"[schedule_write] publish DM sent week_start={week_start} open_shifts={len(open_shifts)}")
 
 
+def _drafted_left(store: str, week_start: dt.date) -> int:
+    """Rows of the week still 'drafted' (after the refresh's reconcile)."""
+    rows = _query(
+        "SELECT status FROM {T} WHERE store = @store AND week_start = @week"
+        " QUALIFY ROW_NUMBER() OVER (PARTITION BY row_key ORDER BY updated_at DESC) = 1",
+        [("store", "STRING", store), ("week", "DATE", week_start)],
+    )
+    return sum(r["status"] == "drafted" for r in rows)
+
+
 def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: bool) -> int:
     from skills.adp_run_automation import runner as r
 
@@ -334,9 +344,18 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
         page.wait_for_timeout(2500)
         wb.goto_week(frame, page, week_start)
         try:
-            pending = wb.publish_drafts(frame, page, dry_run=dry_run)
-            if pending and not dry_run:
-                refresh_schedule(page, store, week_start)
+            try:
+                pending = wb.publish_drafts(frame, page, dry_run=dry_run)
+            except wb.PublishUnconfirmed as exc:
+                # ADP's toolbar count can lag or vanish after a publish; the grid's DRAFT tags decide.
+                print(f"[schedule_write] {exc}; checking the schedule instead")
+                if not refresh_schedule(page, store, week_start) or _drafted_left(store, week_start):
+                    raise
+                pending = exc.pending
+                print(f"[schedule_write] publish confirmed by schedule re-read week_start={week_start}")
+            else:
+                if pending and not dry_run:
+                    refresh_schedule(page, store, week_start)
         except Exception as exc:  # noqa: BLE001
             msg = f"{type(exc).__name__}: {exc}"[:400]
             print(f"BREADCRUMB adp_schedule_publish store={store} week_start={week_start} error={msg}")

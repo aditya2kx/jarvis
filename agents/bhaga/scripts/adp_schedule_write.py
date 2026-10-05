@@ -159,15 +159,42 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
     return 0
 
 
+def run_inspect(store: str, week_start: dt.date, *, headless: bool) -> int:
+    """Read-only: the week's "Publish drafts (N)" count and its open shifts, as ADP shows them."""
+    from skills.adp_run_automation import runner as r
+
+    with r.adp_session(store=store, headed=not headless) as (_ctx, page):
+        frame = r._open_team_schedule(page)
+        page.wait_for_timeout(2500)
+        wb.goto_week(frame, page, week_start)
+        page.wait_for_timeout(2000)
+        try:
+            pending: int | str = wb.drafts_pending(frame)
+        except wb.ScheduleWriteError as exc:
+            pending = f"unreadable ({exc})"
+        print(f"[schedule_write] inspect week_start={week_start} publish_drafts={pending}")
+        info = r._scrape_open_shifts(page, frame, week_label=str(week_start))
+        for cell in info.get("open_shift_cells") or []:
+            print(f"[schedule_write] inspect open {cell.get('heading')!r}: {cell.get('shifts')}")
+        if info.get("open_shifts_error"):
+            print(f"[schedule_write] inspect open_shifts_error={info['open_shifts_error']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--store", default="palmetto")
     p.add_argument("--push-id")
     p.add_argument("--publish", action="store_true")
+    p.add_argument("--inspect", action="store_true", help="read-only: draft count + open shifts for --week-start")
     p.add_argument("--week-start", type=dt.date.fromisoformat)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--headless", action="store_true")
     a = p.parse_args(argv)
+    if a.inspect:
+        if not a.week_start or a.week_start.weekday() != 0:
+            p.error("--inspect needs --week-start on a Monday")
+        return run_inspect(a.store, a.week_start, headless=a.headless)
     if a.publish:
         if not a.week_start or a.week_start.weekday() != 0:
             p.error("--publish needs --week-start on a Monday")

@@ -110,13 +110,11 @@ export async function schedulePushStatusAction(
       weekPushRows(DEFAULT_STORE, weekStart),
       runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE"),
     ]);
-    const running: ScheduleWriteRun | null = hit
-      ? {
-          mode: hit.env.BHAGA_ADP_SCHEDULE_WRITE === "publish" ? "publish" : "drafts",
-          pushId: hit.env.BHAGA_SCHEDULE_PUSH_ID,
-          weekStart: hit.env.BHAGA_SCHEDULE_WEEK_START,
-        }
-      : null;
+    const mode = hit?.env.BHAGA_ADP_SCHEDULE_WRITE;
+    const running: ScheduleWriteRun | null =
+      hit && (mode === "drafts" || mode === "publish")
+        ? { mode, pushId: hit.env.BHAGA_SCHEDULE_PUSH_ID, weekStart: hit.env.BHAGA_SCHEDULE_WEEK_START }
+        : null;
     return okAck({ data: { rows, running } });
   } catch (e) {
     return failAck(e);

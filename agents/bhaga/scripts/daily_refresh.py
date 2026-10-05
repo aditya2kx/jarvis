@@ -2722,7 +2722,10 @@ def _run_refresh(run_id: str) -> int:
             argv += ["--publish", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
         else:
             argv += ["--push-id", os.environ.get("BHAGA_SCHEDULE_PUSH_ID", "")]
-        print(f"[adp-schedule-write] mode={write_mode} store={args.store}")
+        # Walks each wizard to its last step and backs out — a live selector check that saves nothing.
+        if os.environ.get("BHAGA_SCHEDULE_DRY_RUN") == "1":
+            argv.append("--dry-run")
+        print(f"[adp-schedule-write] mode={write_mode} store={args.store} argv={argv}")
         return adp_schedule_write.main(argv)
 
     # Console Labor "Approve" on an unavailability request (Issue #337): one

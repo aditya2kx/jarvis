@@ -130,7 +130,10 @@ function gain(short: number[], mins: number[], s: number, e: number): number {
   return g;
 }
 
-export function draftDay(args: {
+/** One step's alternative: give it to `person` (null = leave open) and/or as one longest, unpaced shift. */
+type DraftChoice = { person?: string | null; long?: boolean };
+
+type DraftDayArgs = {
   iso: string;
   /** Minute-of-day per 15-min step. */
   mins: number[];
@@ -159,7 +162,22 @@ export function draftDay(args: {
   /** Days left this week (including this one) the person could still be drafted — paces hour targets. */
   daysLeft?: (employee: string) => number;
   prefer?: DraftPreference;
-}): DraftShift[] {
+};
+
+/**
+ * Each step tries every alternative (anyone free, their longest shift instead of an even split,
+ * or leaving it open), plays the rest of the day out greedily, and keeps the plan with the fewest
+ * unstaffed (short or open) then total hours — so scarce days give people full shifts instead of
+ * open ones. Ties keep the plain greedy plan, so hour-target pacing holds when it costs nothing.
+ */
+export function draftDay(args: DraftDayArgs): DraftShift[] {
+  return draftCore(args, { lookahead: true }) ?? [];
+}
+
+function draftCore(
+  args: DraftDayArgs,
+  opts: { lookahead: boolean; force?: DraftChoice; seed?: DraftShift[]; rolloutLong?: boolean },
+): DraftShift[] | null {
   const dow = isoWeekdayMon0(args.iso);
   const templates = args.templates ?? HISTORICAL_TEMPLATES[dow]!;
   const minLen = args.minShiftMin ?? 240;
@@ -167,7 +185,7 @@ export function draftDay(args: {
   const overlap = args.handoverOverlapMin ?? 0;
   const cover = [...args.onFloor];
   const busy = new Set(args.busy);
-  const out: DraftShift[] = [];
+  const out: DraftShift[] = (opts.seed ?? []).map((o) => ({ ...o }));
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
   const priority = byPriority(weekOf, (a) => args.weekShifts?.get(a.employee) ?? 0, args.prefer);
 
@@ -206,13 +224,13 @@ export function draftDay(args: {
   };
 
   /** "need": the unbroken short run from the first short step, split evenly past the longest shift. */
-  const needBlock = (short: number[], firstIdx: number) => {
+  const needBlock = (short: number[], firstIdx: number, long: boolean) => {
     let j = firstIdx;
     while (j + 1 < short.length && short[j + 1]! > 0) j++;
     const t0 = args.mins[firstIdx]!;
     const run = args.mins[j]! + step - t0;
-    const parts = Math.ceil(run / maxLen);
-    const len = Math.max(minLen, Math.ceil(run / parts / step) * step);
+    const parts = long ? 1 : Math.ceil(run / maxLen);
+    const len = Math.max(minLen, Math.min(maxLen, Math.ceil(run / parts / step) * step));
     const end = Math.min(dayEnd, t0 + len);
     const start = Math.max(dayStart, Math.min(t0, end - len));
     const kind: ShiftKind = start <= dayStart ? "open" : end >= dayEnd ? "close" : "mid";
@@ -247,7 +265,52 @@ export function draftDay(args: {
     return true;
   };
 
-  for (let n = 0; n < (args.maxShifts ?? 8); n++) {
+  const maxShifts = args.maxShifts ?? 8;
+  const bestChoice = (n: number): DraftChoice => {
+    const free = args.roster
+      .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
+      .map((a) => a.employee);
+    const choices: DraftChoice[] = [
+      {},
+      { long: true },
+      { person: null },
+      ...free.flatMap((person) => [{ person }, { person, long: true }]),
+    ];
+    let best: DraftChoice = {};
+    let bestScore: number[] | null = null;
+    for (const force of choices) for (const rolloutLong of [false, true]) {
+      const plan = draftCore(
+        {
+          ...args,
+          onFloor: cover,
+          busy,
+          weekHours: new Map(args.weekHours),
+          weekShifts: args.weekShifts && new Map(args.weekShifts),
+          periodShifts: args.periodShifts && new Map(args.periodShifts),
+          maxShifts: maxShifts - n,
+        },
+        { lookahead: false, force, seed: out, rolloutLong },
+      );
+      if (!plan) continue;
+      const shortH =
+        args.need.reduce(
+          (acc, x, i) =>
+            acc + Math.max(0, x - args.onFloor[i]! - plan.filter((p) => args.mins[i]! >= p.startMin && args.mins[i]! < p.endMin).length),
+          0,
+        ) * step / 60;
+      const openH = plan.reduce((acc, p) => acc + (p.employee == null ? p.hours : 0), 0);
+      const totalH = plan.reduce((acc, p) => acc + p.hours, 0);
+      const score = [shortH + openH, totalH];
+      const k = bestScore ? score.findIndex((v, i) => Math.abs(v - bestScore![i]!) > 1e-9) : -1;
+      if (!bestScore || (k >= 0 && score[k]! < bestScore[k]!)) {
+        best = force;
+        bestScore = score;
+      }
+    }
+    return best;
+  };
+
+  for (let n = 0; n < maxShifts; n++) {
     const short = args.need.map((x, i) => x - cover[i]!);
     const firstIdx = short.findIndex((x) => x > 0);
     if (firstIdx < 0) break;
@@ -261,7 +324,10 @@ export function draftDay(args: {
       n--;
       continue;
     }
-    const block = args.shiftTimes === "need" ? needBlock(short, firstIdx) : templateBlock(short, args.mins[firstIdx]!);
+    const forced = n === 0 ? opts.force : undefined;
+    const choice = forced ?? (opts.lookahead ? bestChoice(n) : { long: opts.rolloutLong });
+    const block =
+      args.shiftTimes === "need" ? needBlock(short, firstIdx, !!choice.long) : templateBlock(short, args.mins[firstIdx]!);
     if (!block) break;
     let { start: blockStart, end: blockEnd } = block;
     const { mustCover } = block;
@@ -303,7 +369,7 @@ export function draftDay(args: {
         // Spread an hour target evenly over as few days as their longest shift allows
         // (40 h at 9 h → 5 days of 8 h; at 7 h → 6 days of 6.75 h), never more days than are left.
         const left = a.targetWeekHours != null && args.daysLeft ? args.daysLeft(a.employee) : 0;
-        if (left > 0) {
+        if (left > 0 && !choice.long) {
           const remaining = (a.targetWeekHours! - weekOf(a)) * 60;
           const days = Math.max(1, Math.min(left, Math.ceil(remaining / (own ?? maxLen))));
           e = Math.min(e, s + Math.max(minLen, Math.ceil(remaining / days / step) * step));
@@ -327,8 +393,12 @@ export function draftDay(args: {
       .sort((x, y) => priority(x.a, y.a));
     // Nobody can start the gap: whoever covers the most of it takes their part.
     const pick =
-      starts[0] ??
-      eligible.sort((x, y) => y.gain - x.gain || priority(x.a, y.a))[0];
+      choice.person === null
+        ? undefined
+        : choice.person !== undefined
+          ? eligible.find((x) => x.a.employee === choice.person)
+          : (starts[0] ?? eligible.sort((x, y) => y.gain - x.gain || priority(x.a, y.a))[0]);
+    if (choice.person && !pick) return null;
     const s = pick ? pick.s : blockStart;
     const e = pick ? pick.e : blockEnd;
     out.push({

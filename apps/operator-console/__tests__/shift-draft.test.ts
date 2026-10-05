@@ -128,6 +128,23 @@ describe("draftDay", () => {
     expect(out.map((s) => s.startMin).sort()).toEqual([960, 990]);
   });
 
+  it("on a scarce day gives a paced target their longest shift when it shrinks the open shift", () => {
+    // Only three free (like Oct 13): pacing would hold Kenya to 8 h; 9 h trims the open close.
+    const need = mins.map((t) => (t < 390 ? 0 : t < 510 ? 1 : t < 1230 ? 2 : 0));
+    const roster: Availability[] = [
+      { employee: "Kenya", maxWeekHours: 40, targetWeekHours: 40, maxShiftMin: 540, windows: all([360, 1260]) },
+      { employee: "Hillary", maxWeekHours: 40, windows: all([360, 1260]) },
+      { employee: "Perales", maxWeekHours: 40, windows: all([360, 1260]) },
+    ];
+    const out = draftDay({
+      iso: "2026-10-13", mins, onFloor: zeros, need, roster, weekHours: new Map(), busy: new Set(),
+      minShiftMin: 240, maxShiftMin: 450, handoverOverlapMin: 30, shiftTimes: "need", daysLeft: () => 5,
+      unavailable: new Map([["Perales", [{ fromMin: 360, toMin: 959, status: "approved" as const }]]]),
+    });
+    expect(out.find((s) => s.employee === "Kenya")!.hours).toBe(9);
+    expect(out.filter((s) => s.employee === null).reduce((h, s) => h + s.hours, 0)).toBeLessThanOrEqual(5.5);
+  });
+
   it("stretches a drafted neighbour over a gap shorter than the shortest shift instead of overstaffing", () => {
     // 2 needed 8:30–20:30. Mid leaves 14:30; Late is unavailable until 15:59. The 14:30–16:00
     // gap goes to Mid (→ 7.5 h), not a fresh 4 h shift that makes three on the floor till 18:30.
@@ -292,11 +309,13 @@ describe("draftDay", () => {
 describe("hour target pacing", () => {
   const need = mins.map((t) => (t < 390 || t >= 1230 ? 0 : 1));
   const dolce: Availability = { employee: "Dolce", maxWeekHours: 30, targetWeekHours: 40, maxShiftMin: 540, windows: all([360, 1260]) };
+  // A backup covers the rest of the day, so pacing Dolce costs no coverage.
+  const backup: Availability = { employee: "Backup", maxWeekHours: 40, windows: all([360, 1260]) };
   const run = (weekHours: number, daysLeft: number) =>
     draftDay({
-      iso: "2026-10-12", mins, onFloor: zeros, need, roster: [dolce], weekHours: new Map([["Dolce", weekHours]]),
-      busy: new Set(), minShiftMin: 270, maxShiftMin: 420, shiftTimes: "need", maxShifts: 1, daysLeft: () => daysLeft,
-    })[0]!;
+      iso: "2026-10-12", mins, onFloor: zeros, need, roster: [dolce, backup], weekHours: new Map([["Dolce", weekHours]]),
+      busy: new Set(), minShiftMin: 270, maxShiftMin: 420, shiftTimes: "need", maxShifts: 2, daysLeft: () => daysLeft,
+    }).find((s) => s.employee === "Dolce")!;
 
   it("spreads the target over as few days as the longest shift allows (40 h at 9 h → 8 h)", () => {
     expect(run(0, 7).hours).toBe(8);

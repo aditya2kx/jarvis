@@ -53,6 +53,7 @@ import {
   type DraftPreference,
   type DraftShift,
 } from "@/lib/labor/shift-draft";
+import { savedPlan, type PushRow } from "@/lib/labor/schedule-push";
 import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
 import {
   applyDayRules,
@@ -134,6 +135,12 @@ const GUTTER = "w-[7rem] sm:w-32";
 const NO_OPEN: OpenShiftInput[] = [];
 const NO_RULES_HISTORY: RulesVersion[] = [];
 const NO_UNAVAILABILITY: UnavailabilityInput[] = [];
+const NO_PUSH_ROWS: PushRow[] = [];
+
+function planShift(s: { date: string; employee: string | null; startMin: number; endMin: number }): DraftShift {
+  const kind = s.startMin <= 450 ? "open" : s.endMin >= 1200 ? "close" : "mid";
+  return { ...s, kind, hours: (s.endMin - s.startMin) / 60, trimmed: false };
+}
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {
   const [y, m, d] = iso.split("-").map(Number);
@@ -781,6 +788,7 @@ export function LaborCoveragePanel({
   rulesHistory = NO_RULES_HISTORY,
   unavailability = NO_UNAVAILABILITY,
   activeStaff,
+  savedPushRows = NO_PUSH_ROWS,
   adpWriteEnabled = false,
 }: {
   win: DateWindow;
@@ -801,6 +809,8 @@ export function LaborCoveragePanel({
   unavailability?: UnavailabilityInput[];
   /** People on the ADP schedule ahead — the only ones the draft suggests (drops departed staff). */
   activeStaff?: string[];
+  /** labor_schedule_pushes rows for upcoming weeks; a week with any is locked to that saved plan. */
+  savedPushRows?: PushRow[];
   /** FEATURES.adpScheduleWrite, evaluated on the server. */
   adpWriteEnabled?: boolean;
 }) {
@@ -920,6 +930,15 @@ export function LaborCoveragePanel({
   // shifts are already under way). Each week
   // has its own hours budget; weekly hours are shared within a week so hour
   // targets and caps span it. Shift counts carry across weeks per pay period.
+  const plans = useMemo(() => {
+    const byWeek = new Map<string, ReturnType<typeof savedPlan>>();
+    for (const s of savedPlan(savedPushRows)) {
+      const week = shiftCalendarDate(s.date, "day", -isoWeekdayMon0(s.date));
+      byWeek.set(week, [...(byWeek.get(week) ?? []), s]);
+    }
+    return byWeek;
+  }, [savedPushRows]);
+
   const buildDrafts = useCallback((r: ScheduleRules) => {
     if (!demand?.length) return null;
     const inputs: NeedCtx = {
@@ -1114,13 +1133,13 @@ export function LaborCoveragePanel({
         }
       }
 
+      const plan = plans.get(weekStart);
       const byDay = new Map<string, DraftShift[]>();
       for (const d of state) {
-        if (d.shifts.length)
-          byDay.set(
-            d.iso,
-            [...d.shifts].sort((a, b) => a.startMin - b.startMin),
-          );
+        const shifts = plan
+          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan.filter((s) => s.date === d.iso).map(planShift)]
+          : d.shifts;
+        if (shifts.length) byDay.set(d.iso, [...shifts].sort((a, b) => a.startMin - b.startMin));
       }
       const all = newShifts([...byDay.values()].flat());
       return {
@@ -1129,8 +1148,9 @@ export function LaborCoveragePanel({
         existingHours,
         draftHours: all.reduce((a, s) => a + s.hours, 0),
         draftCount: all.length,
-        peakLeftHours,
-        breakdown,
+        peakLeftHours: plan ? 0 : peakLeftHours,
+        breakdown: plan ? undefined : breakdown,
+        locked: plan != null,
       };
     };
     const weeks = new Map(weekStarts.map((w) => [w, draftWeek(w)]));
@@ -1149,6 +1169,7 @@ export function LaborCoveragePanel({
     baseRoster,
     goalHoursWeek,
     unavailability,
+    plans,
   ]);
   const drafts = useMemo(() => buildDrafts(rules), [buildDrafts, rules]);
   const savedDrafts = useMemo(
@@ -1341,6 +1362,7 @@ export function LaborCoveragePanel({
             breakdown={weekDraft.breakdown}
             dayRules={rules.dayRules}
             goalHoursWeek={goalHoursWeek}
+            locked={weekDraft.locked}
           />
         ) : null}
 

@@ -69,10 +69,12 @@ export async function saveDraftsToAdpAction(
     const valid = validatePushShifts(weekStart, shifts, chicagoTodayIso());
     const pushId = await queueDraftPush(DEFAULT_STORE, weekStart, valid, await operatorEmail());
     await startScheduleWrite(DEFAULT_STORE, { mode: "drafts", pushId });
+    // The week now has a saved plan; re-render so it locks to what was just sent.
+    revalidatePath("/labor");
     return okAck({
       data: { pushId, count: valid.length },
       queued: ["adp-schedule-write"],
-      message: `Saving ${valid.length} shifts to ADP as drafts — about 20–40 s each. Employees can't see drafts until you publish.`,
+      message: `Saving ${valid.length} shifts to ADP as drafts — about 7 s each. Employees can't see drafts until you publish.`,
     });
   } catch (e) {
     return failAck(e);

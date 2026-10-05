@@ -8,7 +8,8 @@ export type PushShift = {
   endMin: number;
 };
 
-export type PushStatus = "queued" | "drafted" | "skipped" | "failed" | "published";
+/** deleted = removed from ADP (the operator replaced it); skipped = an earlier save already drafted it. */
+export type PushStatus = "queued" | "drafted" | "skipped" | "failed" | "published" | "deleted";
 
 export type PushRow = {
   push_id: string;
@@ -38,6 +39,18 @@ export function pushRowKey(store: string, s: PushShift): string {
 
 function rowShift(r: PushRow): PushShift {
   return { date: r.date, employee: r.employee, startMin: Number(r.start_min), endMin: Number(r.end_min) };
+}
+
+/**
+ * The plan the operator saved: every shift sent to ADP for these rows (latest row
+ * per shift), whether it landed or still needs a retry. Once a week has one, the
+ * console shows this instead of re-drafting, so reloads and rule edits can't change it.
+ */
+export function savedPlan(rows: PushRow[]): PushShift[] {
+  return rows
+    .filter((r) => r.status !== "skipped" && r.status !== "deleted")
+    .map(rowShift)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin);
 }
 
 /**
@@ -101,7 +114,7 @@ export function validatePushShifts(weekStart: string, shifts: unknown, todayIso:
 }
 
 export function summarizePush(rows: PushRow[]): PushSummary {
-  const out: PushSummary = { queued: 0, drafted: 0, skipped: 0, failed: 0, published: 0, errors: [] };
+  const out: PushSummary = { queued: 0, drafted: 0, skipped: 0, failed: 0, published: 0, deleted: 0, errors: [] };
   for (const r of rows) {
     out[r.status] += 1;
     if (r.error) out.errors.push(r.error);

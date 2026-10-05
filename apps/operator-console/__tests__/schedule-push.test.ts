@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   pushRowKey,
   relevantRows,
+  savedPlan,
   splitAgainstAdp,
   summarizePush,
   validatePushShifts,
@@ -53,6 +54,19 @@ describe("splitAgainstAdp", () => {
     );
     expect(toSave).toEqual([B, C]);
     expect(inAdp).toEqual([A, OPEN]);
+  });
+});
+
+describe("savedPlan", () => {
+  it("is every shift sent (landed or awaiting retry), minus skipped and deleted, in day order", () => {
+    const later = { ...A, date: "2026-10-04", employee: "Roe, Sam" };
+    const plan = savedPlan([
+      row(later, "failed", "not attempted"),
+      row(A, "drafted"),
+      row({ ...A, startMin: 420 }, "deleted"),
+      row(OPEN, "skipped"),
+    ]);
+    expect(plan).toEqual([A, later]);
   });
 });
 

@@ -125,8 +125,11 @@ export function ShiftDraftSummary({
   breakdown,
   dayRules,
   goalHoursWeek,
+  locked = false,
 }: {
   dayLabel: string;
+  /** The week was saved to ADP: these are the saved shifts, not a fresh draft. */
+  locked?: boolean;
   shifts: DraftShift[];
   roster: Availability[];
   weekStart: string;
@@ -152,11 +155,18 @@ export function ShiftDraftSummary({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex flex-col gap-0.5">
           <div className="flex items-center gap-2">
-            <h4 className="text-sm font-medium text-foreground">Draft open shifts — {dayLabel}</h4>
+            <h4 className="text-sm font-medium text-foreground">
+              {locked ? "Saved shifts" : "Draft open shifts"} — {dayLabel}
+            </h4>
             <Badge variant="outline" className="h-4 px-1.5 text-[11px] font-normal">
-              Works around ADP unavailability
+              {locked ? "Locked — saved to ADP" : "Works around ADP unavailability"}
             </Badge>
           </div>
+          {locked ? (
+            <p className="text-xs text-muted-foreground">
+              This week shows exactly what was saved to ADP. Reloads and rule edits don&apos;t change it.
+            </p>
+          ) : null}
           <p className="text-xs text-muted-foreground">
             Week of {weekLabel(weekStart)}: {existingHours.toFixed(0)}h scheduled +{" "}
             {draftHours.toFixed(1)}h draft ({draftCount} shifts) ={" "}

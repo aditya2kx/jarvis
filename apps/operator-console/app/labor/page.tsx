@@ -32,6 +32,8 @@ import { HoursPerPersonCard } from "@/components/labor/HoursPerPersonCard";
 import { OpenShiftsCard } from "@/components/labor/OpenShiftsCard";
 import { CollapsibleSection } from "@/components/shell/CollapsibleSection";
 import { weekStartOf } from "@/lib/labor/week-options";
+import { upcomingPushRows } from "@/lib/labor/schedule-push-store";
+import type { PushRow } from "@/lib/labor/schedule-push";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
 import { LaborWagesChart } from "@/components/labor/LaborWagesChart";
 import { SuggestedHoursProvider } from "@/components/labor/SuggestedHoursContext";
@@ -207,6 +209,7 @@ export default async function LaborPage({
   let upcomingShifts: ScheduledShift[] = [];
   let adpRosterRows: AdpRosterRow[] = [];
   let wageRates: LaborWageRates = { byName: {}, avgPartTime: null };
+  let savedPushRows: PushRow[] = [];
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
@@ -284,6 +287,7 @@ export default async function LaborPage({
       weeklyOpen,
       directoryRoster,
       rates,
+      pushRows,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -340,7 +344,9 @@ export default async function LaborPage({
       weeklySchedWin ? laborOpenShiftDays(weeklySchedWin).catch(() => []) : Promise.resolve([]),
       adpDirectoryRoster(DEFAULT_STORE).catch(() => []),
       laborWageRates().catch(() => ({ byName: {}, avgPartTime: null })),
+      upcomingPushRows(DEFAULT_STORE, weekStartOf(todayIso)).catch(() => []),
     ]);
+    savedPushRows = pushRows;
     adpRosterRows = directoryRoster;
     wageRates = rates;
     weeklyOpenDays = weeklyOpen.map((r) => ({ date: r.date, hours: Number(r.scheduled_hours) || 0 }));
@@ -854,6 +860,7 @@ export default async function LaborPage({
             rulesHistory={rulesHistory}
             unavailability={unavailability}
             activeStaff={activeStaff}
+            savedPushRows={savedPushRows}
             adpWriteEnabled={FEATURES.adpScheduleWrite}
           />
           </CollapsibleSection>

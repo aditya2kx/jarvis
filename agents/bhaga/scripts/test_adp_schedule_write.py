@@ -36,8 +36,9 @@ def fake_session(**_kw):
 
 
 class RunDrafts(unittest.TestCase):
-    def _run(self, fq, create_shift=None, dry_run=False):
+    def _run(self, fq, create_shift=None, dry_run=False, counts=(0,)):
         with mock.patch.object(w, "_query", fq), \
+             mock.patch.object(wb, "drafts_pending", mock.MagicMock(side_effect=list(counts))), \
              mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
              mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
              mock.patch.object(wb, "goto_week") as goto, \
@@ -68,10 +69,39 @@ class RunDrafts(unittest.TestCase):
         self.assertIn("not listed", fq.updates[0][2])
         self.assertEqual(fq.updates[1], ("b", "drafted", None))
 
+    def test_each_shift_gets_the_tracked_baseline(self):
+        fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam")])
+        rc, _g, cs, _c = self._run(fq, counts=(6,))
+        self.assertEqual(rc, 0)
+        self.assertEqual([c.kwargs["before"] for c in cs.call_args_list], [6, 7])
+
+    def test_lagging_count_confirmed_by_recheck_continues(self):
+        fq = FakeQuery([_row("a", None), _row("b", "Roe, Sam")])
+        with mock.patch.object(wb, "create_open_shift", mock.MagicMock(side_effect=wb.UnconfirmedSave("slow"))):
+            with mock.patch.object(w, "_query", fq), \
+                 mock.patch.object(wb, "drafts_pending", mock.MagicMock(side_effect=[6, 7])), \
+                 mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
+                 mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
+                 mock.patch.object(wb, "goto_week"), \
+                 mock.patch.object(wb, "create_shift") as cs:
+                rc = w.run_drafts("palmetto", "p1", headless=True, dry_run=False)
+        self.assertEqual(rc, 0)
+        self.assertEqual(fq.updates, [("a", "drafted", None), ("b", "drafted", None)])
+        self.assertEqual(cs.call_args.kwargs["before"], 7)
+
+    def test_recheck_showing_no_new_draft_marks_failed_and_continues(self):
+        fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam")])
+        boom = mock.MagicMock(side_effect=[wb.UnconfirmedSave("count did not move"), "Roe, Sam"])
+        rc, _g, cs, _c = self._run(fq, create_shift=boom, counts=(3, 3))
+        self.assertEqual(rc, 1)
+        self.assertEqual(fq.updates[0][:2], ("a", "failed"))
+        self.assertEqual(fq.updates[1], ("b", "drafted", None))
+        self.assertEqual(cs.call_args.kwargs["before"], 3)
+
     def test_unconfirmed_save_stops_the_run(self):
         fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam"), _row("c", "Poe, Kim")])
         boom = mock.MagicMock(side_effect=["Doe, Alex", wb.UnconfirmedSave("count did not move")])
-        rc, _g, cs, _c = self._run(fq, create_shift=boom)
+        rc, _g, cs, _c = self._run(fq, create_shift=boom, counts=(0, 5))
         self.assertEqual(rc, 1)
         self.assertEqual(cs.call_count, 2)
         self.assertEqual(fq.updates[0], ("a", "drafted", None))

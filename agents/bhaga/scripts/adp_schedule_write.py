@@ -20,7 +20,9 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import sys
+import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 from skills.adp_run_automation import schedule_write_backend as wb
 
@@ -90,41 +92,74 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
         by_week[week_start_of(row["date"])].append(row)
     failed = 0
     pending = {row["row_key"] for row in todo}
+    # BQ DML takes seconds; one ordered background writer keeps it off the browser's path.
+    writer = ThreadPoolExecutor(max_workers=1)
+
+    def set_status(row_key: str, status: str, error: str | None = None) -> None:
+        if not dry_run:
+            writer.submit(_set_status, row_key, push_id, status, error)
 
     def fail(row_key: str, msg: str) -> None:
         print(f"BREADCRUMB adp_schedule_write push_id={push_id} row_key={row_key} error={msg}")
-        if not dry_run:
-            _set_status(row_key, push_id, "failed", msg)
+        set_status(row_key, "failed", msg)
 
-    with r.adp_session(store=store, headed=not headless) as (_ctx, page):
+    def recheck(page, week: dt.date, row: dict, expected: int):
+        """After a lagging count: reload the grid and ask ADP whether the shift exists."""
         frame = r._open_team_schedule(page)
-        page.wait_for_timeout(2500)
-        for week in sorted(by_week):
-            wb.goto_week(frame, page, week)
-            for row in by_week[week]:
-                pending.discard(row["row_key"])
-                iso = row["date"].isoformat()
-                adp_name = "open shift"
-                try:
-                    if row["employee"]:
-                        adp_name = wb.create_shift(frame, page, date_iso=iso, employee=row["employee"],
-                                                   start_min=row["start_min"], end_min=row["end_min"],
-                                                   dry_run=dry_run)
-                    else:
-                        wb.create_open_shift(frame, page, date_iso=iso, start_min=row["start_min"],
-                                             end_min=row["end_min"], dry_run=dry_run)
-                except wb.UnconfirmedSave as exc:
-                    fail(row["row_key"], f"UnconfirmedSave: {exc}"[:400])
-                    for key in sorted(pending):
-                        fail(key, "not attempted: stopped after an unconfirmed save")
-                    return 1
-                except Exception as exc:  # noqa: BLE001 — one bad shift must not stop the rest
-                    failed += 1
-                    fail(row["row_key"], f"{type(exc).__name__}: {exc}"[:400])
-                    continue
-                print(f"[schedule_write] {'checked' if dry_run else 'drafted'} {row['row_key']} as {adp_name!r}")
-                if not dry_run:
-                    _set_status(row["row_key"], push_id, "drafted")
+        wb.goto_week(frame, page, week)
+        page.wait_for_timeout(1500)
+        n = wb.drafts_pending(frame)
+        print(f"[schedule_write] recheck row_key={row['row_key']} publish_drafts={n} expected={expected + 1}")
+        return frame, n
+
+    try:
+        with r.adp_session(store=store, headed=not headless) as (_ctx, page):
+            frame = r._open_team_schedule(page)
+            for week in sorted(by_week):
+                wb.goto_week(frame, page, week)
+                expected = wb.drafts_pending(frame)
+                for row in by_week[week]:
+                    pending.discard(row["row_key"])
+                    iso = row["date"].isoformat()
+                    adp_name = "open shift"
+                    started = time.monotonic()
+                    try:
+                        if row["employee"]:
+                            adp_name = wb.create_shift(
+                                frame, page, date_iso=iso, employee=row["employee"],
+                                start_min=row["start_min"], end_min=row["end_min"],
+                                before=expected, dry_run=dry_run,
+                            )
+                        else:
+                            wb.create_open_shift(
+                                frame, page, date_iso=iso, start_min=row["start_min"],
+                                end_min=row["end_min"], before=expected, dry_run=dry_run,
+                            )
+                    except wb.UnconfirmedSave as exc:
+                        frame, n = recheck(page, week, row, expected)
+                        if n == expected:
+                            # ADP has no new draft, so nothing was saved; safe to move on.
+                            failed += 1
+                            fail(row["row_key"], f"not saved — ADP still shows {n} drafts")
+                            continue
+                        if n != expected + 1:
+                            fail(row["row_key"], f"UnconfirmedSave: {exc} (ADP shows {n}, expected {expected + 1})"[:400])
+                            for key in sorted(pending):
+                                fail(key, "not attempted: stopped after an unconfirmed save")
+                            return 1
+                    except Exception as exc:  # noqa: BLE001 — one bad shift must not stop the rest
+                        failed += 1
+                        fail(row["row_key"], f"{type(exc).__name__}: {exc}"[:400])
+                        continue
+                    if not dry_run:
+                        expected += 1
+                    print(
+                        f"[schedule_write] {'checked' if dry_run else 'drafted'} {row['row_key']} "
+                        f"as {adp_name!r} in {time.monotonic() - started:.1f}s"
+                    )
+                    set_status(row["row_key"], "drafted")
+    finally:
+        writer.shutdown(wait=True)
     return 1 if failed else 0
 
 

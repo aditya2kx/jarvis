@@ -1662,8 +1662,13 @@ confirm inserts one `labor_schedule_pushes` row per shift (migration 078, status
 `push_id`) and starts `BHAGA_ADP_SCHEDULE_WRITE=drafts` (laptop: `adp_schedule_write.py` directly).
 Each shift goes through Actions › Create shift (employee picked from ADP's "Unscheduled employees" list
 by display name) or Create open shift, then **Save as draft**; the toolbar's "Publish drafts (N)" count
-must rise by one, otherwise the row is `failed` with `UnconfirmedSave` and the run **stops** (the rest
-are `not attempted`) — look in ADP before re-saving, since that shift may exist. A person already scheduled that day is not in ADP's list, so
+must reach the count the job expects (it tracks the count itself, so a lagging toolbar never confirms
+the wrong shift). If it doesn't within 20 s, the job reloads the grid and re-reads the count: one more
+draft → the shift exists (`drafted`); no new draft → nothing was saved (`failed`, run continues); any
+other count → `UnconfirmedSave` and the run **stops** (the rest are `not attempted`) — look in ADP
+before re-saving. ADP updates the count late for open shifts, which is what the reload covers.
+Read-only check of a week (draft count + open shifts): `BHAGA_ADP_SCHEDULE_WRITE=inspect
+BHAGA_SCHEDULE_WEEK_START=<Mon>` on the job, or `adp_schedule_write --inspect --week-start <Mon>`. A person already scheduled that day is not in ADP's list, so
 that row fails with the names ADP did list. **Publish week** (enabled once a row is `drafted`) runs
 `BHAGA_ADP_SCHEDULE_WRITE=publish`: Publish drafts for that week — every draft, including ones added by
 hand in ADP — then the week's rows become `published`. Nothing is posted to ClickUp; the operator

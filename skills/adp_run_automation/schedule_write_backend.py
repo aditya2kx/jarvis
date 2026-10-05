@@ -149,12 +149,23 @@ def _pane_open(frame) -> bool:
     return bool(frame.evaluate(OPEN_PANE_JS))
 
 
+def _wait_for(page, check, timeout_s: float, step_ms: int = 250) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if check():
+            return True
+        if time.monotonic() > deadline:
+            return False
+        page.wait_for_timeout(step_ms)
+
+
 def _open_action(frame, page, item: str) -> None:
     _back_out(frame, page)
     _click(frame, r"^\s*Actions\b", what="Actions")
-    page.wait_for_timeout(800)
     frame.get_by_text(re.compile(rf"^\s*{re.escape(item)}\s*$", re.I)).first.click(timeout=5000)
-    page.wait_for_timeout(2000)
+    if not _wait_for(page, lambda: _pane_open(frame), 8.0):
+        raise ScheduleWriteError(f"{item} dialog did not open")
+    frame.locator("sdf-focus-pane sdf-date-picker input").first.wait_for(state="visible", timeout=8000)
 
 
 def _back_out(frame, page) -> None:
@@ -187,7 +198,7 @@ def _fill_times(frame, page, start_min: int, end_min: int) -> None:
         box = times.nth(i)
         box.fill(value, timeout=5000)
         box.press("Tab")
-    page.wait_for_timeout(600)
+    page.wait_for_timeout(300)
 
 
 def goto_week(frame, page, week_start: dt.date) -> None:
@@ -205,18 +216,40 @@ def goto_week(frame, page, week_start: dt.date) -> None:
     raise ScheduleWriteError(f"could not reach week {week_start}")
 
 
+def _settled_picker(frame, page, timeout_s: float = 8.0) -> list[dict]:
+    """ADP's unscheduled-employee list for the date just typed, once it stops changing.
+
+    The list re-renders after the date commits, so wait for two identical reads.
+    """
+    page.wait_for_timeout(500)
+    last: list[dict] | None = None
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        now = frame.evaluate(PICKER_JS)
+        if now and now == last:
+            return now
+        last = now
+        page.wait_for_timeout(400)
+    return last or []
+
+
 def create_shift(
-    frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int, dry_run: bool = False
+    frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int,
+    before: int | None = None, dry_run: bool = False,
 ) -> str:
-    """Create one assigned draft shift. Returns the ADP display name used."""
-    before = drafts_pending(frame)
+    """Create one assigned draft shift. Returns the ADP display name used.
+
+    ``before`` is the draft count the caller expects ADP to show now; a lagging
+    toolbar count must not let the previous save "confirm" this one.
+    """
+    if before is None:
+        before = drafts_pending(frame)
     _open_action(frame, page, "Create shift")
     try:
         date_box = frame.locator("sdf-focus-pane sdf-date-picker input").first
         date_box.fill(fmt_date(date_iso), timeout=5000)
         date_box.press("Tab")
-        page.wait_for_timeout(1500)
-        options = frame.evaluate(PICKER_JS)
+        options = _settled_picker(frame, page)
         name = match_employee([o["name"] for o in options], employee)
         if name is None:
             listed = ", ".join(o["name"] for o in options) or "nobody"
@@ -226,7 +259,7 @@ def create_shift(
         value = next(o["value"] for o in options if o["name"] == name)
         frame.locator(f"input[name=employeeGroup][value='{value}']").check(force=True, timeout=5000)
         _click(frame, r"^\s*Next\b", what="Next")
-        page.wait_for_timeout(1500)
+        frame.locator(f"sdf-focus-pane {TIME_INPUT}").first.wait_for(state="visible", timeout=8000)
         _fill_times(frame, page, start_min, end_min)
         if dry_run:
             if _visible_button(frame, r"^\s*Save as draft\s*$") is None:
@@ -245,10 +278,12 @@ def create_shift(
 
 
 def create_open_shift(
-    frame, page, *, date_iso: str, start_min: int, end_min: int, dry_run: bool = False
+    frame, page, *, date_iso: str, start_min: int, end_min: int,
+    before: int | None = None, dry_run: bool = False,
 ) -> None:
-    """Create one unassigned draft open shift (default eligibility)."""
-    before = drafts_pending(frame)
+    """Create one unassigned draft open shift (default eligibility). ``before`` as in create_shift."""
+    if before is None:
+        before = drafts_pending(frame)
     _open_action(frame, page, "Create open shift")
     try:
         date_box = frame.locator("sdf-focus-pane sdf-date-picker input").first
@@ -256,7 +291,7 @@ def create_open_shift(
         date_box.press("Tab")
         _fill_times(frame, page, start_min, end_min)
         _click(frame, r"^\s*Next\b", what="Next")
-        page.wait_for_timeout(1500)
+        _wait_for(page, lambda: _visible_button(frame, r"^\s*Save draft\s*$") is not None, 8.0)
         if dry_run:
             if _visible_button(frame, r"^\s*Save draft\s*$") is None:
                 raise ScheduleWriteError("Save draft not found on the eligibility step")

@@ -2015,6 +2015,20 @@ def _week_label_jump_days(before: str, after: str) -> Optional[int]:
     return (b - a).days if a and b else None
 
 
+def _wait_week_label_change(page, label, before: str, seconds: float) -> Optional[str]:
+    """Poll the week label until it differs from ``before``; None on timeout."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(300)
+        try:
+            now = label.inner_text(timeout=2_000).strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if now != before:
+            return now
+    return None
+
+
 def _goto_next_week(page, frame) -> None:
     """Advance the schedule grid to the next week.
 
@@ -2052,28 +2066,29 @@ def _goto_next_week(page, frame) -> None:
         page.mouse.click(box["x"] + box["width"] + 16, box["y"] + box["height"] / 2)
 
     # Phase 1: label must change (confirms the nav fired).
-    deadline = time.monotonic() + 12.0
-    label_changed = False
-    while time.monotonic() < deadline:
-        page.wait_for_timeout(300)
-        try:
-            now = label.inner_text(timeout=2_000).strip()
-        except Exception:  # noqa: BLE001
-            now = before_label
-        if now != before_label:
-            label_changed = True
-            print(f"[adp_schedule] step=advanced-week {before_label!r} -> {now!r}")
-            # Sunday evening CT (already Monday UTC) › lands two weeks on and the
-            # week in between is never read (2026-10-04 spike, 3/3 runs).
-            jump = _week_label_jump_days(before_label, now)
-            if jump is not None and jump != 7:
-                print(f"[adp_schedule] BREADCRUMB week_skip jump_days={jump} {before_label!r} -> {now!r}")
-            break
-    if not label_changed:
+    now = _wait_week_label_change(page, label, before_label, 12.0)
+    if now is None:
         raise RuntimeError(
             f"Next-week navigation did not change the week label (still {before_label!r}). "
             "Chevron position may have drifted."
         )
+    print(f"[adp_schedule] step=advanced-week {before_label!r} -> {now!r}")
+    # Sunday evening CT (already Monday UTC) the first › lands two weeks on; one ‹
+    # lands on the skipped week and later › clicks behave (2026-10-04, 3/3 runs).
+    jump = _week_label_jump_days(before_label, now)
+    if jump is not None and jump > 7:
+        print(f"[adp_schedule] BREADCRUMB week_skip jump_days={jump} {before_label!r} -> {now!r}")
+        skipped = now
+        try:
+            # A DOM click; a coordinate click on the ‹ did nothing in the spike.
+            frame.locator('[aria-label="Select previous week"]').first.evaluate("el => el.click()", timeout=5_000)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[adp_schedule] WARN: previous-week click failed: {type(exc).__name__}: {exc}"[:300])
+        back = _wait_week_label_change(page, label, skipped, 8.0)
+        if back is not None and _week_label_jump_days(before_label, back) == 7:
+            print(f"[adp_schedule] step=week-skip-corrected {skipped!r} -> {back!r}")
+        else:
+            print(f"[adp_schedule] BREADCRUMB week_skip_uncorrected now={back or skipped!r}")
 
     # Phase 2: footer totals must re-render. Poll until they differ from the
     # pre-nav snapshot; if they never differ within the settle window the two

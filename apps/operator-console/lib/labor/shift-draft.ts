@@ -265,13 +265,18 @@ export function draftDay(args: {
     if (!block) break;
     let { start: blockStart, end: blockEnd } = block;
     const { mustCover } = block;
-    // Nobody arrives the minute someone leaves: overlap the handover instead.
+    // Nobody arrives the minute someone leaves: overlap the handover instead, but at most one
+    // over the need — when two leave together, only one arrival overlaps.
     if (overlap > 0) {
       const at = (t: number) => args.mins.indexOf(t);
+      const roomFor = (from: number, to: number) =>
+        args.mins.every((t, k) => t < from || t >= to || cover[k]! <= args.need[k]!);
       const i = at(blockStart);
-      if (i > 0 && cover[i - 1]! > cover[i]!) blockStart = Math.max(dayStart, blockStart - overlap);
+      const padStart = Math.max(dayStart, blockStart - overlap);
+      if (i > 0 && cover[i - 1]! > cover[i]! && roomFor(padStart, blockStart)) blockStart = padStart;
       const j = at(blockEnd);
-      if (j > 0 && cover[j]! > cover[j - 1]!) blockEnd = Math.min(dayEnd, blockEnd + overlap);
+      const padEnd = Math.min(dayEnd, blockEnd + overlap);
+      if (j > 0 && cover[j]! > cover[j - 1]! && roomFor(blockEnd, padEnd)) blockEnd = padEnd;
     }
     blockStart = snapDown(blockStart);
     blockEnd = snapUp(blockEnd);

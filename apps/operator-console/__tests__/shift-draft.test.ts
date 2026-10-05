@@ -115,6 +115,19 @@ describe("draftDay", () => {
     expect([s!.startMin, s!.endMin]).toEqual([750, 1020]);
   });
 
+  it("overlaps a handover by at most one over the need when two leave together", () => {
+    // Two scheduled until 16:30, 2 needed to 20:30: one closer arrives 16:00, the other 16:30.
+    const need = mins.map((t) => (t >= 390 && t < 1230 ? 2 : 0));
+    const onFloor = mins.map((t) => (t >= 390 && t < 990 ? 2 : 0));
+    const out = draftDay({
+      iso: "2026-10-14", mins, onFloor, need, roster: [], weekHours: new Map(), busy: new Set(),
+      minShiftMin: 240, maxShiftMin: 450, handoverOverlapMin: 30, shiftTimes: "need",
+    });
+    const cover = mins.map((t, i) => onFloor[i]! + out.filter((s) => t >= s.startMin && t < s.endMin).length);
+    expect(Math.max(...cover)).toBe(3);
+    expect(out.map((s) => s.startMin).sort()).toEqual([960, 990]);
+  });
+
   it("stretches a drafted neighbour over a gap shorter than the shortest shift instead of overstaffing", () => {
     // 2 needed 8:30–20:30. Mid leaves 14:30; Late is unavailable until 15:59. The 14:30–16:00
     // gap goes to Mid (→ 7.5 h), not a fresh 4 h shift that makes three on the floor till 18:30.

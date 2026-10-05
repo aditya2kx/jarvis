@@ -394,6 +394,58 @@ def _wait_for_login_form(page, *, max_retries: int = 2, _sleep_fn=None):
 
 
 def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
+    _login(page, store=store, timeout_ms=timeout_ms)
+    _select_company(page, store=store)
+
+
+COMPANY_ROW_JS = r"""
+(iid) => {
+  const vis = e => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
+  const h = [...document.querySelectorAll('h1, h2, [role=heading]')]
+    .find(e => vis(e) && /^\s*Companies\s*$/.test(e.innerText || ''));
+  if (!h) return { list: false };
+  const rows = [...document.querySelectorAll('tr, [role=row]')]
+    .filter(r => vis(r) && new RegExp('Client ID:\\s*' + iid + '(\\D|$)').test(r.innerText || ''));
+  document.querySelectorAll('[data-jarvis-company]').forEach(e => e.removeAttribute('data-jarvis-company'));
+  const link = rows.length === 1 && rows[0].querySelector('a, [role=link], button');
+  if (link) link.setAttribute('data-jarvis-company', '1');
+  return { list: true, rows: rows.length, link: !!link };
+}
+"""
+
+
+def _select_company(page, *, store: str, wait_s: float = 6.0) -> None:
+    """Multi-company logins land on a "Companies" list: open this store's company.
+
+    Matched by the ADP client ID (store profile ``adp_run.iid``), never by name
+    or position — picking the wrong company would read or write another store.
+    """
+    iid = (_load_store_profile(store).get("adp_run") or {}).get("iid", "")
+    deadline = time.monotonic() + wait_s
+    info = page.evaluate(COMPANY_ROW_JS, iid)
+    while not info["list"] and time.monotonic() < deadline:
+        page.wait_for_timeout(500)
+        info = page.evaluate(COMPANY_ROW_JS, iid)
+    if not info["list"]:
+        return
+    if not iid or not info["link"]:
+        _raise_with_evidence(
+            page, store=store,
+            reason=f"ADP shows a company list but no single row for client ID {iid!r} "
+                   f"(rows matched: {info['rows']}). Set adp_run.iid in the store profile.",
+        )
+    print(f"[adp_login] step=select-company iid={iid}")
+    page.locator("[data-jarvis-company='1']").first.click(timeout=10_000)
+    gone = time.monotonic() + 30.0
+    while page.evaluate(COMPANY_ROW_JS, iid)["list"]:
+        if time.monotonic() > gone:
+            _raise_with_evidence(page, store=store, reason=f"ADP company {iid} did not open from the company list")
+        page.wait_for_timeout(500)
+    page.wait_for_load_state("domcontentloaded")
+    print(f"[adp_login] step=company-open url={page.url}")
+
+
+def _login(page, *, store: str, timeout_ms: int = 60_000) -> None:
     """Open ADP and complete a FRESH login using keychain creds.
 
     Stateless: assumes no cookies (ephemeral browser context). Flow:

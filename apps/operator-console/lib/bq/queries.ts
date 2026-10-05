@@ -1112,6 +1112,42 @@ export function adpHoursScrapedAt(): Promise<string | null> {
   ).then((rows) => rows[0]?.scraped ?? null);
 }
 
+export interface PunchFixNotInHoursRow {
+  date: string;
+  employee: string;
+  in_time: string | null;
+  out_time: string;
+}
+
+/**
+ * Punch fixes saved in ADP whose punch is not in adp_punches yet (Issue #358) —
+ * so not in hours or payroll either. Same rule as punch_fix_apply.missing_from_hours.
+ */
+export function punchFixesNotInHours(
+  store: string,
+  start: string,
+  end: string,
+): Promise<PunchFixNotInHoursRow[]> {
+  return q<PunchFixNotInHoursRow>(
+    `SELECT CAST(d.date AS STRING) AS date, d.employee_id AS employee, d.in_time, d.out_time
+     FROM (
+       SELECT * FROM ${fq("punch_gap_decisions")} d
+       WHERE d.store = @store AND d.date BETWEEN @start AND @end
+       QUALIFY ROW_NUMBER() OVER (
+         PARTITION BY d.store, d.date, d.employee_id ORDER BY d.decided_at DESC) = 1
+     ) d
+     WHERE d.status IN ('applied', 'not_in_hours') AND d.out_time IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM ${fq("adp_punches")} p
+         WHERE p.date = d.date AND p.employee_id = d.employee_id
+           AND p.out_time = d.out_time
+           AND (d.in_time IS NULL OR p.in_time = d.in_time)
+       )
+     ORDER BY date, employee`,
+    { store, start: dateParam(start), end: dateParam(end) },
+  );
+}
+
 /** Latest calendar date with scheduled or open hours (today+), for chart horizon. */
 export function adpScheduleHorizonEnd(): Promise<string | null> {
   return q<{ horizon: string | null }>(

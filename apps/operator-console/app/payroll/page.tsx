@@ -9,6 +9,7 @@ import {
   listPayPeriodsWithPaidStatus,
   payrollDraftRun,
   payrollSoloPremium,
+  punchFixesNotInHours,
   soloCoverageGap,
   soloPremiumDeltaDollars,
 } from "@/lib/bq/queries";
@@ -29,6 +30,7 @@ import { payPeriodKey } from "@/lib/payroll/periodKey";
 import { rowMatchesLaborType } from "@/lib/payroll/laborBucket";
 import { PayrollDraftButton } from "@/components/payroll/PayrollDraftButton";
 import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
+import { PunchFixesNotInHoursNotice } from "@/components/labor/PunchFixesNotInHoursNotice";
 import { chicagoTodayIso } from "@/lib/filters/range";
 import { hasRunningBhagaJob } from "@/lib/bhaga/recompute";
 import { clockedHoursTargetDate } from "@/lib/labor/actual-schedule-windows";
@@ -49,6 +51,7 @@ import type {
   TipExemptionRow,
   PayPeriodOption,
   PayrollSoloPremiumRow,
+  PunchFixNotInHoursRow,
 } from "@/lib/bq/queries";
 import type { PayrollRowWithSolo } from "@/lib/payroll/solo-premium";
 
@@ -127,6 +130,7 @@ export default async function PayrollPage({
   let soloDelta: number | null = null;
   let soloGap: string[] = [];
   let hoursScrapedAt: string | null = null;
+  let fixesNotInHours: PunchFixNotInHoursRow[] = [];
   let error: string | undefined;
   try {
     const settled = await Promise.all([
@@ -203,7 +207,7 @@ export default async function PayrollPage({
 
   if (!error && tipStart && tipEnd) {
     try {
-      const [s, e, empRows, hoursScraped, running] = await Promise.all([
+      const [s, e, empRows, hoursScraped, running, notInHours] = await Promise.all([
         adpShiftsForPeriod(DEFAULT_STORE, tipStart, tipEnd),
         tipExemptions(DEFAULT_STORE, tipStart, tipEnd),
         listCanonicalEmployees(DEFAULT_STORE),
@@ -212,7 +216,9 @@ export default async function PayrollPage({
         // refuse while a run is live. Ask up front so the button is disabled
         // instead of accepting a click it cannot honour.
         hasRunningBhagaJob().catch(() => false),
+        punchFixesNotInHours(DEFAULT_STORE, tipStart, tipEnd).catch(() => []),
       ]);
+      fixesNotInHours = notInHours;
       shifts = s;
       exemptions = e;
       employees = empRows.map((r) => r.employee_name);
@@ -439,6 +445,7 @@ export default async function PayrollPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
+          <PunchFixesNotInHoursNotice rows={fixesNotInHours} />
           <div className="flex flex-col gap-2">
             <p className="text-xs text-muted-foreground">
               Pay period {periodLabel}

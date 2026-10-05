@@ -213,7 +213,10 @@ class TestTableIsolation(unittest.TestCase):
              mock.patch.object(bfd.schedule_backend, "reconcile_employee_vs_footer",
                                return_value=[]), \
              mock.patch.object(bfd, "load_rows", side_effect=_load), \
-             mock.patch.object(bfd, "_ds_load_rows"):
+             mock.patch.object(bfd, "_ds_load_rows"), \
+             mock.patch("agents.bhaga.scripts.punch_fix_apply.reconcile_not_in_hours",
+                        return_value=0), \
+             mock.patch("agents.bhaga.scripts.punch_fix_apply.get_client"):
             rc = bfd.main()
         failures = (json.loads(result_json.read_text())["failures"]
                     if result_json.exists() else None)
@@ -281,7 +284,10 @@ class TestOpenShiftsLoad(unittest.TestCase):
                         return_value={"permanent": []}), \
              mock.patch("core.datastore.get_client", return_value=client), \
              mock.patch.object(bfd, "load_rows", side_effect=_load), \
-             mock.patch.object(bfd, "_ds_load_rows"):
+             mock.patch.object(bfd, "_ds_load_rows"), \
+             mock.patch("agents.bhaga.scripts.punch_fix_apply.reconcile_not_in_hours",
+                        return_value=0), \
+             mock.patch("agents.bhaga.scripts.punch_fix_apply.get_client"):
             rc = bfd.main()
         failures = (json.loads(result_json.read_text())["failures"]
                     if result_json.exists() else None)

@@ -45,6 +45,7 @@ import {
   decisionTimes,
   formatClock,
   isOpenGap,
+  isWrittenToAdp,
   hoursIfClosedAt,
   openClockIn,
   punchGapOptions,
@@ -120,6 +121,10 @@ function DecisionBadge({ gap }: { gap: PunchGap }) {
       text: "Written to ADP ✓",
       tone: "text-emerald-700 dark:text-emerald-400",
     },
+    not_in_hours: {
+      text: "In ADP — not in hours yet",
+      tone: "text-amber-700 dark:text-amber-400",
+    },
     already_resolved: {
       text: "Already fixed in ADP",
       tone: "text-muted-foreground",
@@ -187,8 +192,7 @@ function GapActions({ gap, onDone }: { gap: PunchGap; onDone: () => void }) {
   }
 
   if (gap.decision && !changing) {
-    const locked =
-      gap.decision.status === "applying" || gap.decision.status === "applied";
+    const locked = isWrittenToAdp(gap.decision.status);
     return (
       <div className="flex items-start justify-end gap-1">
         <DecisionBadge gap={gap} />
@@ -415,8 +419,7 @@ function ContextLine({ gap }: { gap: PunchGap }) {
 /** Rows a bulk action may touch: not on shift and not already written / being written to ADP. */
 function selectable(gap: PunchGap): boolean {
   if (gap.kind === "in_progress" || gap.kind === "ok") return false;
-  const status = gap.decision?.status;
-  return status !== "applying" && status !== "applied";
+  return !isWrittenToAdp(gap.decision?.status);
 }
 
 function RowCheckbox({

@@ -2808,17 +2808,26 @@ def _run_refresh(run_id: str) -> int:
 
     # Console "Write to ADP" on missing punches (Issue #356): write the approved
     # clock-outs, then fall through to the timecard-only resync below so the
-    # fixed punches land in adp_punches and drop off adp_timecard_gaps.
+    # fixed punches land in adp_punches and drop off adp_timecard_gaps. The
+    # resync targets the pay period of the latest fix (Issue #358) — "yesterday"
+    # is the next period once ADP's open period lags the calendar — and loads
+    # the export the write job verified instead of logging in again.
     after_punch_fix = False
+    keep_punch_fix_export = False
+    load_end = refresh_date
     if _env_skip("BHAGA_PUNCH_FIX_APPLY_ONLY"):
         args.store = os.environ.get("BHAGA_STORE") or args.store
         os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
         from agents.bhaga.scripts.punch_fix_apply import run_from_env  # noqa: PLC0415
 
         counts = run_from_env(args.store)
-        if not (counts.get("applied") or counts.get("already_resolved")):
+        if not counts.get("max_date"):
             print("[punch-fix] nothing changed in ADP — skipping resync")
             return 0
+        refresh_date = counts["max_date"]
+        # Still load every finished day the export holds, not just through the fix.
+        load_end = max(load_end, refresh_date)
+        keep_punch_fix_export = bool(counts.get("export_on_disk"))
         os.environ["BHAGA_ADP_TIMECARD_ONLY"] = "1"
         after_punch_fix = True
 
@@ -2847,10 +2856,13 @@ def _run_refresh(run_id: str) -> int:
         cached_exports = [today_xlsx, meta, today_sched, today_gaps]
         if sync_all:
             cached_exports.append(DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{_today_ct().isoformat()}.xlsx")
-        for cached in cached_exports:
-            if cached.exists():
-                cached.unlink()
-                print(f"[adp-timecard-only] removed cached {cached.name} (force re-scrape)")
+        if keep_punch_fix_export:
+            print("[adp-timecard-only] reusing the write job's post-write export (no second login)")
+        else:
+            for cached in cached_exports:
+                if cached.exists():
+                    cached.unlink()
+                    print(f"[adp-timecard-only] removed cached {cached.name} (force re-scrape)")
         headed = _env_skip("BHAGA_ADP_HEADED")
         print(
             f"[adp-timecard-only] headed={headed} "
@@ -2913,7 +2925,7 @@ def _run_refresh(run_id: str) -> int:
                 # land today's in-progress punches (they flip the console's
                 # actual→schedule handoff and hide today's schedule).
                 "--end",
-                refresh_date.isoformat(),
+                load_end.isoformat(),
             ],
             cwd=str(PROJECT_ROOT),
             check=True,

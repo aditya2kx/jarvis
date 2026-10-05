@@ -89,7 +89,9 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    done + hours/total-pay vs last Preview (no session URL).
    Issue #356: the one timecard write is a flagged (`PUNCH_FIX_WRITEBACK`) Cloud Run fill of a
    missing clock-out / scheduled entry the operator approved in the console — re-read first, Save
-   once, read back, never auto-retry (`RUNBOOK.md` § Missing punches).
+   once, read back, never auto-retry (`RUNBOOK.md` § Missing punches). `applied` means the punch
+   is in the Timecard export too (Issue #358): only the read-only download repeats; a fix still
+   missing is `not_in_hours`, locked, and flagged on `/labor` + `/payroll` until a sync loads it.
    Issue #337: the ADP **schedule** write is operator-clicked and flagged
    (`FEATURES.adpScheduleWrite` / `CONSOLE_ADP_SCHEDULE_WRITE`): **Save to ADP as drafts**
    (Team Schedule Create shift / Create open shift → Save as draft) and a separate

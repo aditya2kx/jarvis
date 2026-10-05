@@ -22,6 +22,8 @@ import {
   type LaborWageRates,
   upcomingRestockDates,
   type UnavailabilityRow,
+  punchFixesNotInHours,
+  type PunchFixNotInHoursRow,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey, formatCents } from "@/lib/format";
@@ -41,6 +43,7 @@ import { LaborWeeklyHoursGoal } from "@/components/labor/LaborWeeklyHoursGoal";
 import { LaborConcurrentChart } from "@/components/labor/LaborConcurrentChart";
 import { LaborCoveragePanel } from "@/components/labor/LaborCoveragePanel";
 import { PunchGapsPanel } from "@/components/labor/PunchGapsPanel";
+import { PunchFixesNotInHoursNotice } from "@/components/labor/PunchFixesNotInHoursNotice";
 import { buildPunchGaps, mergePunchDays, type PunchGap } from "@/lib/labor/punch-gaps";
 import { scheduleRulesHistory } from "@/lib/labor/schedule-rules-store";
 import { ruleUnavailability, type RulesVersion } from "@/lib/labor/schedule-inputs";
@@ -210,6 +213,7 @@ export default async function LaborPage({
   let adpRosterRows: AdpRosterRow[] = [];
   let wageRates: LaborWageRates = { byName: {}, avgPartTime: null };
   let savedPushRows: PushRow[] = [];
+  let fixesNotInHours: PunchFixNotInHoursRow[] = [];
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
@@ -288,6 +292,7 @@ export default async function LaborPage({
       directoryRoster,
       rates,
       pushRows,
+      notInHours,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -345,6 +350,7 @@ export default async function LaborPage({
       adpDirectoryRoster(DEFAULT_STORE).catch(() => []),
       laborWageRates().catch(() => ({ byName: {}, avgPartTime: null })),
       upcomingPushRows(DEFAULT_STORE, weekStartOf(todayIso)).catch(() => []),
+      punchFixesNotInHours(DEFAULT_STORE, win.start, win.end).catch(() => []),
     ]);
     savedPushRows = pushRows;
     adpRosterRows = directoryRoster;
@@ -362,6 +368,7 @@ export default async function LaborPage({
     unavailability = unavailRows;
     scheduleReadAt = scheduleRead;
     upcomingShifts = upcomingRows;
+    fixesNotInHours = notInHours;
     soloRows = solo;
     openHoursRows = openHours;
     coverageOpen = openDays;
@@ -746,6 +753,8 @@ export default async function LaborPage({
           </>
         }
       />
+
+      <PunchFixesNotInHoursNotice rows={fixesNotInHours} />
 
       <div
         role="note"

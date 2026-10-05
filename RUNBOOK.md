@@ -402,15 +402,27 @@ time per row; each choice is a `punch_gap_decisions` row (latest `decided_at` pe
 `BHAGA_PUNCH_FIX_APPLY_ONLY=1`, `BHAGA_PUNCH_FIX_WRITEBACK=1`,
 `BHAGA_PUNCH_FIX_DECISION_IDS=<ids>` (`agents/bhaga/scripts/punch_fix_apply.py`). Per row it
 re-reads the day, fills the Out Time (or adds the whole entry for `no_entry`) with a comment
-naming the approver, Saves **once**, and reads it back. Then the same run does the timecard-only
-resync (Team Schedule skipped) so `adp_punches` and the gaps table catch up. Roughly 2 min to
-start, ~15 s per row, ~2 min resync; closing the tab is safe and the panel polls while any row is
-`applying`.
+naming the approver, Saves **once**, and reads it back. ADP's Timecard export lags a Timecards
+save (Issue #358: a fix saved 40 s before the download was missing from it, so Labor said
+"Written to ADP ✓" while hours and `/payroll` lacked the shift), so the **same login** then waits
+`BHAGA_PUNCH_FIX_RESYNC_WAIT_S` (default 90 s) and re-downloads the export — up to 3 times —
+until every written punch is in it (`[punch-fix] resync attempt=N/3 missing=K`). The run then
+loads that export (no second login) for the pay period of the **latest fixed date**, not
+"yesterday", so `adp_punches`, `adp_shifts`, `adp_timecard_gaps` and `/payroll` catch up together.
+Roughly 2 min to start, ~15 s per row, 2–5 min resync; closing the tab is safe and the panel polls
+while any row is `applying`.
 
-Statuses: `applied` (ADP shows the value), `already_resolved` (ADP already closed it — no write),
+Statuses: `applied` (ADP shows the value **and** it is in the Timecard export),
+`not_in_hours` (saved in ADP, still missing from the export after 3 downloads — breadcrumb
+`[punch-fix] NOT_IN_HOURS date=… emp=…`; the row stays locked, `/labor` and `/payroll` show an
+amber "N punch fixes saved in ADP are not in hours yet" notice, and **Sync ADP** later
+flips it to `applied` via `punch_fix_apply.reconcile_not_in_hours` in `backfill_from_downloads`;
+**never re-write it**), `already_resolved` (ADP already closed it — no write),
 `failed` (breadcrumb `[punch-fix] FAIL date=… emp=… step=… evidence=…`, screenshot under
 `gs://bhaga-scrape-cache/<date>/evidence/`). **A failed row is never retried automatically** — a
 Save may have half-landed; open the day in ADP, then re-accept and write it again from the console.
+`python3 -m agents.bhaga.scripts.status --store palmetto` fails `punch_fixes_in_hours` while any
+written fix is missing from `adp_punches` (same rule as the console notice).
 
 **Local dev:** the console writes only through Cloud Run. With `BYPASS_IAP_EMAIL` set it refuses
 unless `BHAGA_ADP_PREVIEW_JOB=<job>` names a branch-built job (a copy of `bhaga-daily-refresh`

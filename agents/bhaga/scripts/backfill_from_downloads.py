@@ -377,6 +377,14 @@ def main() -> int:
                                   column_bq_types=_TS_TYPES)
                     print(f"  adp_punches (BQ): {n} rows upserted")
                     summaries.append({"table": "adp_punches", "rows": n})
+                    from agents.bhaga.scripts import punch_fix_apply as pfa
+
+                    try:
+                        fixed = pfa.reconcile_not_in_hours(pfa.get_client(), args.store)
+                        print(f"  punch fixes reconciled: {fixed}")
+                    except Exception as exc:  # noqa: BLE001 — hours already loaded
+                        print(f"[punch-fix] WARN reconcile failed store={args.store}: "
+                              f"{type(exc).__name__}: {exc}")
 
     # ── ADP scheduled hours (Team Schedule, forward-looking) ─────
     def _load_adp_schedule() -> None:

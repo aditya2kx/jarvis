@@ -22,9 +22,16 @@ export type PunchGapStatus =
   | "pending_write"
   | "applying"
   | "applied"
+  /** Saved in ADP, but ADP's Timecard export (→ hours, payroll) lacks it yet. */
+  | "not_in_hours"
   | "failed"
   | "already_resolved"
   | "rejected";
+
+/** Already in ADP (or being written): never re-decide or re-write these. */
+export function isWrittenToAdp(status: PunchGapStatus | undefined): boolean {
+  return status === "applying" || status === "applied" || status === "not_in_hours";
+}
 
 export interface PunchEntry {
   in: string | null;
@@ -342,6 +349,7 @@ export function decisionLabel(gap: PunchGap): string {
   if (!d) return gap.kind === "ok" ? "Nothing to decide" : "Needs decision";
   if (d.action === "reject") return "Dismissed";
   if (d.status === "applied") return "Written to ADP";
+  if (d.status === "not_in_hours") return "In ADP, not in hours yet";
   if (d.status === "already_resolved") return "Already fixed in ADP";
   return d.action === "accept" ? "Accepted" : "Edited";
 }

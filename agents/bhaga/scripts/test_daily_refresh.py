@@ -2169,6 +2169,61 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         self.assertNotIn("adp_liability", skip)
 
 
+class TestPunchFixResync(unittest.TestCase):
+    """Issue #358: after a console punch fix the resync reloads the latest fix's
+    pay period from the export the write job verified — not "yesterday"."""
+
+    def _run(self, counts):
+        import pathlib
+        import tempfile
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        argv = ["daily_refresh", "--store", "palmetto", "--date", "2026-10-06", "--no-slack"]
+        with tempfile.TemporaryDirectory() as td:
+            fake_dl = pathlib.Path(td)
+            cached = fake_dl / f"Timecard-{dr._today_ct().isoformat()}.xlsx"
+            cached.write_bytes(b"x")
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.dict(os.environ, {"BHAGA_PUNCH_FIX_APPLY_ONLY": "1",
+                                              "BHAGA_STORE": "palmetto"}, clear=False), \
+                 mock.patch("agents.bhaga.scripts.punch_fix_apply.run_from_env",
+                            return_value=counts), \
+                 mock.patch("skills.adp_run_automation.runner.DOWNLOADS_DIR", fake_dl), \
+                 mock.patch("skills.adp_run_automation.runner.download_adp_bundle",
+                            return_value={"timecard_xlsx": cached, "timecards_ui_json": cached,
+                                          "errors": {}}) as dl, \
+                 mock.patch("agents.bhaga.scripts.daily_refresh.subprocess.run") as run, \
+                 mock.patch.object(dr, "_stamp_adp_hours_scraped_at") as stamp:
+                os.environ.pop("BHAGA_ADP_TIMECARD_ONLY", None)
+                try:
+                    rc = dr.main()
+                finally:
+                    os.environ.pop("BHAGA_ADP_TIMECARD_ONLY", None)
+                kept = cached.exists()
+        return rc, dl, run, stamp, kept
+
+    def test_resync_targets_latest_fix_and_reuses_verified_export(self):
+        rc, dl, run, stamp, kept = self._run(
+            {"applied": 1, "max_date": datetime.date(2026, 10, 4), "export_on_disk": True})
+        self.assertEqual(rc, 0)
+        self.assertTrue(kept)
+        self.assertEqual(dl.call_args.kwargs["target_date"], datetime.date(2026, 10, 4))
+        self.assertIn("2026-10-04", run.call_args.args[0])
+        stamp.assert_called_once_with(datetime.date(2026, 9, 21), datetime.date(2026, 10, 4))
+
+    def test_unverified_write_forces_a_fresh_export(self):
+        _rc, dl, _run, _stamp, kept = self._run(
+            {"already_resolved": 1, "max_date": datetime.date(2026, 10, 4)})
+        self.assertFalse(kept)
+        self.assertEqual(dl.call_args.kwargs["target_date"], datetime.date(2026, 10, 4))
+
+    def test_nothing_written_skips_resync(self):
+        rc, dl, run, _stamp, _kept = self._run({"applied": 0, "failed": 1})
+        self.assertEqual(rc, 0)
+        dl.assert_not_called()
+        run.assert_not_called()
+
+
 class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
     """Monday 07:00 after Sunday close; not Sunday itself, not Tuesday."""
 

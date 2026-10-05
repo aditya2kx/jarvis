@@ -95,6 +95,8 @@ export type DraftShift = {
   fillsOpen?: boolean;
   /** A saved shift ADP's synced schedule already shows — counted there, not as suggested. */
   inAdp?: boolean;
+  /** Saved for a person, but ADP now shows it as an open shift (e.g. approved unavailability). */
+  adpOpen?: boolean;
 };
 
 const hm = (h: number, m = 0) => h * 60 + m;

@@ -46,10 +46,10 @@ function rowShift(r: PushRow): PushShift {
  * per shift), whether it landed or still needs a retry. Once a week has one, the
  * console shows this instead of re-drafting, so reloads and rule edits can't change it.
  */
-export function savedPlan(rows: PushRow[]): PushShift[] {
+export function savedPlan(rows: PushRow[]): (PushShift & { status: PushStatus })[] {
   return rows
     .filter((r) => r.status !== "skipped" && r.status !== "deleted")
-    .map(rowShift)
+    .map((r) => ({ ...rowShift(r), status: r.status }))
     .sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin);
 }
 

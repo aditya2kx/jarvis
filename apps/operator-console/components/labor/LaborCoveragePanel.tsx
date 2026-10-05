@@ -53,7 +53,7 @@ import {
   type DraftPreference,
   type DraftShift,
 } from "@/lib/labor/shift-draft";
-import { inAdpSchedule, savedPlan, type PushRow, type PushShift } from "@/lib/labor/schedule-push";
+import { inAdpSchedule, savedPlan, type PushRow, type PushShift, type PushStatus } from "@/lib/labor/schedule-push";
 import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
 import {
   applyDayRules,
@@ -137,14 +137,20 @@ const NO_RULES_HISTORY: RulesVersion[] = [];
 const NO_UNAVAILABILITY: UnavailabilityInput[] = [];
 const NO_PUSH_ROWS: PushRow[] = [];
 
-function planShift(s: PushShift, lanes: readonly CoveragePersonDay[]): DraftShift {
+function planShift(s: PushShift & { status: PushStatus }, lanes: readonly CoveragePersonDay[]): DraftShift {
   const kind = s.startMin <= 450 ? "open" : s.endMin >= 1200 ? "close" : "mid";
   const adp = lanes.map((l) => ({
     employee: l.employee,
     open: isOpenLane(l),
     segments: l.segments.filter((g) => g.kind !== "actual"),
   }));
-  return { ...s, kind, hours: (s.endMin - s.startMin) / 60, trimmed: false, inAdp: inAdpSchedule(s, adp) };
+  const asPerson = inAdpSchedule(s, adp);
+  // ADP unassigns a saved shift when the person's unavailability is approved; it's still in ADP, as an open shift.
+  const adpOpen =
+    !asPerson && s.employee != null && (s.status === "drafted" || s.status === "published") &&
+    inAdpSchedule({ ...s, employee: null }, adp);
+  const { status: _status, ...shift } = s;
+  return { ...shift, kind, hours: (s.endMin - s.startMin) / 60, trimmed: false, inAdp: asPerson || adpOpen, adpOpen };
 }
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {

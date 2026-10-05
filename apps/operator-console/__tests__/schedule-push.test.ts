@@ -67,7 +67,7 @@ describe("savedPlan", () => {
       row({ ...A, startMin: 420 }, "deleted"),
       row(OPEN, "skipped"),
     ]);
-    expect(plan).toEqual([A, later]);
+    expect(plan).toEqual([{ ...A, status: "drafted" }, { ...later, status: "failed" }]);
   });
 });
 

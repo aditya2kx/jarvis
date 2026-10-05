@@ -214,7 +214,16 @@ export function ShiftDraftSummary({
                       <Badge variant="secondary" className="h-5 px-1.5 text-[11px] font-normal">
                         {KIND_LABEL[s.kind]}
                       </Badge>
-                      {s.inAdp ? (
+                      {s.adpOpen ? (
+                        <Badge
+                          variant="outline"
+                          className="h-4 px-1.5 text-[11px] font-normal"
+                          style={{ borderColor: OPEN_COLOR, color: OPEN_COLOR }}
+                          title="Saved for this person, but ADP now shows it unassigned (for example, their unavailability was approved). Assign someone in ADP."
+                        >
+                          now an open shift in ADP
+                        </Badge>
+                      ) : s.inAdp ? (
                         <Badge
                           variant="outline"
                           className="h-4 px-1.5 text-[11px] font-normal text-muted-foreground"

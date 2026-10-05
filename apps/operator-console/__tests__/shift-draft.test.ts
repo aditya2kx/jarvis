@@ -4,6 +4,7 @@ import {
   availableCount,
   draftDay,
   fillOpenShift,
+  paidHours,
   type Availability,
   type DraftPreference,
 } from "@/lib/labor/shift-draft";
@@ -416,5 +417,15 @@ describe("last working day", () => {
     expect(fill("2026-10-01")).toBeNull();
     expect(draft("2026-09-30").some((s) => s.employee === "Leaving")).toBe(true);
     expect(draft("2026-10-01").some((s) => s.employee === "Leaving")).toBe(false);
+  });
+});
+
+describe("paidHours", () => {
+  const meal = { afterMin: 6 * 60, unpaidMin: 30 };
+  it("removes the unpaid meal only on shifts longer than the threshold, like ADP", () => {
+    expect(paidHours(9 * 60, 15 * 60 + 30, meal)).toBe(6);
+    expect(paidHours(9 * 60, 15 * 60, meal)).toBe(6);
+    expect(paidHours(7 * 60, 16 * 60, meal)).toBe(8.5);
+    expect(paidHours(7 * 60, 16 * 60)).toBe(9);
   });
 });

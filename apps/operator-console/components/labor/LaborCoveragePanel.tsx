@@ -50,8 +50,10 @@ import {
   canWorkDay,
   draftDay,
   fillOpenShift,
+  paidHours,
   type DraftPreference,
   type DraftShift,
+  type MealRule,
 } from "@/lib/labor/shift-draft";
 import { inAdpSchedule, savedPlan, type PushRow, type PushShift, type PushStatus } from "@/lib/labor/schedule-push";
 import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
@@ -137,7 +139,11 @@ const NO_RULES_HISTORY: RulesVersion[] = [];
 const NO_UNAVAILABILITY: UnavailabilityInput[] = [];
 const NO_PUSH_ROWS: PushRow[] = [];
 
-function planShift(s: PushShift & { status: PushStatus }, lanes: readonly CoveragePersonDay[]): DraftShift {
+function planShift(
+  s: PushShift & { status: PushStatus },
+  lanes: readonly CoveragePersonDay[],
+  meal: MealRule,
+): DraftShift {
   const kind = s.startMin <= 450 ? "open" : s.endMin >= 1200 ? "close" : "mid";
   const adp = lanes.map((l) => ({
     employee: l.employee,
@@ -150,7 +156,7 @@ function planShift(s: PushShift & { status: PushStatus }, lanes: readonly Covera
     !asPerson && s.employee != null && (s.status === "drafted" || s.status === "published") &&
     inAdpSchedule({ ...s, employee: null }, adp);
   const { status: _status, ...shift } = s;
-  return { ...shift, kind, hours: (s.endMin - s.startMin) / 60, trimmed: false, inAdp: asPerson || adpOpen, adpOpen };
+  return { ...shift, kind, hours: paidHours(s.startMin, s.endMin, meal), trimmed: false, inAdp: asPerson || adpOpen, adpOpen };
 }
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {
@@ -952,6 +958,7 @@ export function LaborCoveragePanel({
 
   const buildDrafts = useCallback((r: ScheduleRules) => {
     if (!demand?.length) return null;
+    const meal: MealRule = { afterMin: r.staffing.mealAfterMin, unpaidMin: r.staffing.unpaidMealMin };
     const inputs: NeedCtx = {
       staffing: r.staffing,
       dayRules: r.dayRules,
@@ -1057,6 +1064,7 @@ export function LaborCoveragePanel({
           maxShiftMin: r.staffing.maxShiftMin,
           shiftTimes: r.staffing.shiftTimes,
           handoverOverlapMin: r.staffing.handoverOverlapMin,
+          meal,
           maxShifts,
         });
 
@@ -1074,6 +1082,7 @@ export function LaborCoveragePanel({
             busy: d.busy,
             periodShifts: shiftsInPeriod(d.iso),
             unavailable: blocksOn(unavailability, d.iso),
+            meal,
           });
           if (fill) d.shifts.push(fill);
         }
@@ -1148,7 +1157,7 @@ export function LaborCoveragePanel({
       const byDay = new Map<string, DraftShift[]>();
       for (const d of state) {
         const shifts = plan
-          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan.filter((s) => s.date === d.iso).map((s) => planShift(s, lanesFor(d.iso)))]
+          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan.filter((s) => s.date === d.iso).map((s) => planShift(s, lanesFor(d.iso), meal))]
           : d.shifts;
         if (shifts.length) byDay.set(d.iso, [...shifts].sort((a, b) => a.startMin - b.startMin));
       }

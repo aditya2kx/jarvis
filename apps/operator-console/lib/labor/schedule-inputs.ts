@@ -72,6 +72,9 @@ export type StaffingBasics = {
   maxWeekHours: number;
   /** Everyone available gets at least this many shifts a week before regulars take more (0 = off). */
   minWeekShifts: number;
+  /** ADP meal policy: shifts longer than `mealAfterMin` lose `unpaidMealMin` of paid time. */
+  unpaidMealMin: number;
+  mealAfterMin: number;
 };
 
 export type ShiftTimes = "history" | "need";
@@ -101,6 +104,8 @@ export const DEFAULT_STAFFING: StaffingBasics = {
   handoverOverlapMin: 0,
   maxWeekHours: 40,
   minWeekShifts: 0,
+  unpaidMealMin: 30,
+  mealAfterMin: 6 * 60,
 };
 
 export const DEFAULT_RULES: ScheduleRules = {
@@ -334,6 +339,14 @@ function parseStaffing(raw: unknown): StaffingBasics {
   if (!Number.isInteger(minWeekShifts) || minWeekShifts < 0 || minWeekShifts > 7) {
     throw new Error("Fewest shifts per person must be a whole number 0–7");
   }
+  const unpaidMealMin = s.unpaidMealMin ?? DEFAULT_STAFFING.unpaidMealMin;
+  if (!Number.isInteger(unpaidMealMin) || unpaidMealMin < 0 || unpaidMealMin > 90) {
+    throw new Error("Unpaid meal must be 0–90 minutes");
+  }
+  const mealAfterMin = s.mealAfterMin ?? DEFAULT_STAFFING.mealAfterMin;
+  if (!Number.isInteger(mealAfterMin) || mealAfterMin < 0 || mealAfterMin > 12 * 60) {
+    throw new Error("Meal applies to shifts of 0–12 hours");
+  }
   return {
     ordersPerPerson: opp,
     minPeople: s.minPeople!,
@@ -345,6 +358,8 @@ function parseStaffing(raw: unknown): StaffingBasics {
     handoverOverlapMin,
     maxWeekHours,
     minWeekShifts,
+    unpaidMealMin,
+    mealAfterMin,
   };
 }
 

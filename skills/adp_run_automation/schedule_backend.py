@@ -424,6 +424,13 @@ def parse_day_cell_hours(day: dict) -> tuple[float, list[str], str]:
     return 0.0, [], "shift"
 
 
+# Palmetto's ADP meal policy (shift details pane: 6.5 h shift = "6:00 Regular,
+# 0:30 Unpaid Meal"; a 6 h shift has none). Applied only when it reproduces the
+# person's ADP week total exactly; otherwise hours scale proportionally.
+MEAL_AFTER_HOURS = 6.0
+MEAL_HOURS = 0.5
+
+
 def _day_range_hours(day: dict) -> float:
     hours, _, _ = parse_day_cell_hours(day)
     return hours
@@ -453,6 +460,11 @@ def scale_hours_to_week_total(
     if wall < week_total_hours:
         # Incomplete day set vs paid week total — do not invent hours.
         return [round(h, 2) for h in day_hours]
+    # ADP takes a whole unpaid meal off each long shift. When that explains the
+    # gap exactly, use it so each day matches ADP's own per-shift paid hours.
+    long_days = [i for i, h in enumerate(day_hours) if h > MEAL_AFTER_HOURS + 1e-9]
+    if long_days and abs(wall - week_total_hours - len(long_days) * MEAL_HOURS) < 0.02:
+        return [round(h - MEAL_HOURS, 2) if i in long_days else round(h, 2) for i, h in enumerate(day_hours)]
     scale = week_total_hours / wall
     scaled = [round(h * scale, 2) for h in day_hours]
     drift = round(week_total_hours - sum(scaled), 2)

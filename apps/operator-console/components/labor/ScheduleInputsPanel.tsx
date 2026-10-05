@@ -343,7 +343,7 @@ function clock(min: number): string {
 }
 
 function staffingSummary(s: StaffingBasics): string {
-  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}`;
+  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}${s.unpaidMealMin ? ` · ${s.unpaidMealMin}m unpaid meal over ${s.mealAfterMin / 60}h` : ""}`;
 }
 
 function rulesSummary(v: RulesVersion): string {
@@ -843,6 +843,46 @@ export function ScheduleInputsPanel({
                   />
                   <span className="text-xs text-muted-foreground">
                     shifts / week · before regulars take more, when they&apos;re available · 0 = off
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2" data-testid="staff-rule-everyone-meal">
+                  <span className="flex h-7 w-48 items-center rounded-md border border-dashed border-border px-2.5 text-xs font-medium">
+                    Everyone
+                  </span>
+                  <span className="flex h-7 w-56 items-center px-1 text-xs text-muted-foreground">
+                    Unpaid meal … min
+                  </span>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={90}
+                    step={5}
+                    value={rules.staffing.unpaidMealMin}
+                    onChange={(e) =>
+                      setStaffing({
+                        unpaidMealMin: Math.min(90, Math.max(0, Math.round(Number(e.target.value) || 0))),
+                      })
+                    }
+                    className="h-7 w-16 text-xs tabular-nums"
+                    aria-label="Unpaid meal minutes"
+                  />
+                  <span className="text-xs text-muted-foreground">min on shifts longer than</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={12}
+                    step={0.5}
+                    value={rules.staffing.mealAfterMin / 60}
+                    onChange={(e) =>
+                      setStaffing({
+                        mealAfterMin: Math.min(720, Math.max(0, Math.round((Number(e.target.value) || 0) * 60))),
+                      })
+                    }
+                    className="h-7 w-16 text-xs tabular-nums"
+                    aria-label="Meal applies to shifts longer than (hours)"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    h · as in ADP, so drafted hours are paid hours
                   </span>
                 </div>
                 {staffGroups(rules.staffRules).map(([name, list]) => (

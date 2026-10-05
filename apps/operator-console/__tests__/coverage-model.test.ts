@@ -119,6 +119,24 @@ describe("buildPersonDaysForDate + occupancy", () => {
     expect(narrative).toMatch(/then 2/i);
   });
 
+  it("scheduled lanes carry ADP paid hours, not clock span", () => {
+    const people = buildPersonDaysForDate(
+      "2026-10-12",
+      [],
+      [
+        {
+          date: "2026-10-12",
+          employee: "Kenya",
+          labor_bucket: "parttime",
+          scheduled_hours: 8.5,
+          shift_ranges_json: '["7:00 AM - 4:00 PM"]',
+        },
+      ],
+      null,
+    );
+    expect(people[0].segments[0].hours).toBe(8.5);
+  });
+
   it("parses scheduled ranges into swimlanes", () => {
     const people = buildPersonDaysForDate(
       "2026-08-01",

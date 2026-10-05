@@ -110,6 +110,16 @@ def test_scale_hours_to_week_total_unit():
     ]
 
 
+def test_meal_deduction_matches_adp_per_shift():
+    """Week of Oct 12 2026 (Kenya): 6.5/9/8 h shifts lose a 30 min meal, 5.5 h ones don't → ADP 38.5."""
+    assert sb.scale_hours_to_week_total([6.5, 9.0, 8.0, 5.5, 5.5, 5.5], 38.5) == [6.0, 8.5, 7.5, 5.5, 5.5, 5.5]
+    assert sb.scale_hours_to_week_total([6.0, 6.0], 12.0) == [6.0, 6.0]
+
+
+def test_unexplained_gap_falls_back_to_proportional():
+    assert sb.scale_hours_to_week_total([6.5, 5.5], 11.0) == [5.96, 5.04]
+
+
 def test_scale_hours_never_inflates_sparse_days():
     """2 scraped days + week_total 40 must NOT become 20h/day (concurrent blow-up)."""
     assert sb.scale_hours_to_week_total([8.5, 8.5], 40.0) == [8.5, 8.5]

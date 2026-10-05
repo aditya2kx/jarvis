@@ -184,12 +184,15 @@ export function buildPersonDaysForDate(
     if (!bucketAllowed(r.labor_bucket, laborTypes)) continue;
     const ranges = parseShiftRangesJson(r.shift_ranges_json);
     if (!ranges.length) continue;
+    // Ranges are clock time; scheduled_hours is ADP's paid total (unpaid meal removed).
+    const wall = ranges.reduce((a, x) => a + x.hours, 0);
+    const paid = Number(r.scheduled_hours) > 0 && wall > 0 ? Number(r.scheduled_hours) / wall : 1;
     for (const range of ranges) {
       mergePerson(map, r.employee, r.labor_bucket, {
         kind: "scheduled",
         startMin: range.startMin,
         endMin: range.endMin,
-        hours: range.hours,
+        hours: Number((range.hours * paid).toFixed(2)),
       });
     }
   }

@@ -39,6 +39,15 @@ const worksOn = (a: Availability, iso: string) => a.lastDay == null || iso <= a.
 
 export const weekCap = (a: Availability) => a.targetWeekHours ?? a.maxWeekHours;
 
+/** ADP meal policy: shifts longer than `afterMin` lose `unpaidMin` of paid time. */
+export type MealRule = { afterMin: number; unpaidMin: number };
+
+/** Paid hours for a shift, as ADP counts them (unpaid meal removed). */
+export function paidHours(startMin: number, endMin: number, meal?: MealRule): number {
+  const len = endMin - startMin;
+  return (meal && len > meal.afterMin ? len - meal.unpaidMin : len) / 60;
+}
+
 /**
  * "coverage" (required shifts): hour targets by deficit, anyone under their weekly minimum shifts,
  * then most hours left under the cap — so the few people free on scarce days aren't capped out
@@ -161,6 +170,8 @@ type DraftDayArgs = {
   maxShiftMin?: number;
   /** Minutes an arriving person overlaps the one leaving (0 = back-to-back). */
   handoverOverlapMin?: number;
+  /** Shift and weekly hours are paid hours under this rule (none = clock time). */
+  meal?: MealRule;
   shiftTimes?: ShiftTimes;
   maxShifts?: number;
   /** Days left this week (including this one) the person could still be drafted — paces hour targets. */
@@ -192,6 +203,7 @@ function draftCore(
   const out: DraftShift[] = (opts.seed ?? []).map((o) => ({ ...o }));
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
   const priority = byPriority(weekOf, (a) => args.weekShifts?.get(a.employee) ?? 0, args.prefer);
+  const paid = (s: number, e: number) => paidHours(s, e, args.meal);
 
   const step = args.mins.length > 1 ? args.mins[1]! - args.mins[0]! : 15;
   const needIdx = args.need.flatMap((x, i) => (x > 0 ? [i] : []));
@@ -251,7 +263,7 @@ function draftCore(
         const s = Math.max(dayStart, snapDown(Math.min(o.startMin, g0)));
         const e = Math.min(dayEnd, snapUp(Math.max(o.endMin, g1)));
         const [fs, fe] = freeSegment(s, e, args.unavailable?.get(a.employee));
-        const added = (e - s - (o.endMin - o.startMin)) / 60;
+        const added = paid(s, e) - paid(o.startMin, o.endMin);
         const ok =
           s >= w[0] && e <= w[1] && fs === s && fe === e &&
           e - s <= (a.maxShiftMin ?? maxLen) &&
@@ -265,7 +277,7 @@ function draftCore(
     args.mins.forEach((t, i) => {
       if ((t >= f.s && t < f.o.startMin) || (t >= f.o.endMin && t < f.e)) cover[i]! += 1;
     });
-    Object.assign(f.o, { startMin: f.s, endMin: f.e, hours: (f.e - f.s) / 60 });
+    Object.assign(f.o, { startMin: f.s, endMin: f.e, hours: paid(f.s, f.e) });
     return true;
   };
 
@@ -388,7 +400,7 @@ function draftCore(
         ({ a, len, gain }) =>
           len >= minLen &&
           gain > 0 &&
-          weekOf(a) + len / 60 <= weekCap(a) &&
+          weekOf(a) + paid(0, len) <= weekCap(a) &&
           (a.maxShiftsPerPeriod == null ||
             (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod),
       );
@@ -410,13 +422,13 @@ function draftCore(
       kind: block.kind,
       startMin: s,
       endMin: e,
-      hours: (e - s) / 60,
+      hours: paid(s, e),
       employee: pick?.a.employee ?? null,
       trimmed: !!pick && pick.trimmed,
     });
     if (pick) {
       busy.add(pick.a.employee);
-      args.weekHours.set(pick.a.employee, (args.weekHours.get(pick.a.employee) ?? 0) + (e - s) / 60);
+      args.weekHours.set(pick.a.employee, (args.weekHours.get(pick.a.employee) ?? 0) + paid(s, e));
       args.weekShifts?.set(pick.a.employee, (args.weekShifts.get(pick.a.employee) ?? 0) + 1);
       args.periodShifts?.set(pick.a.employee, (args.periodShifts.get(pick.a.employee) ?? 0) + 1);
     }
@@ -446,10 +458,11 @@ export function fillOpenShift(args: {
   /** Mutated on a pick. */
   periodShifts?: Map<string, number>;
   unavailable?: Map<string, Block[]>;
+  meal?: MealRule;
 }): DraftShift | null {
   const { startMin: s, endMin: e } = args;
   const dow = isoWeekdayMon0(args.iso);
-  const hours = (e - s) / 60;
+  const hours = paidHours(s, e, args.meal);
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
   const pick = args.roster
     .filter((a) => {

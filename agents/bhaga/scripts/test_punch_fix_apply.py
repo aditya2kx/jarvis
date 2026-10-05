@@ -198,28 +198,68 @@ def test_export_download_failure_leaves_write_unverified(monkeypatch):
 
 
 class _Job:
-    def __init__(self, rows=(), affected=0):
-        self._rows, self.num_dml_affected_rows = rows, affected
+    num_dml_affected_rows = 2
 
     def result(self):
-        return self._rows
+        return []
 
 
 class _Client:
-    def __init__(self, missing):
-        self.missing, self.sql = missing, []
+    def __init__(self):
+        self.sql = []
 
     def query(self, sql, job_config=None):
         self.sql.append((sql, job_config))
-        if sql.lstrip().startswith("SELECT"):
-            return _Job(rows=[{"decision_id": i, "status": "not_in_hours"} for i in self.missing])
-        return _Job(affected=2)
+        return _Job()
 
 
-def test_reconcile_flips_only_rows_now_in_hours():
-    client = _Client(missing=["d9"])
+def test_reconcile_flips_only_rows_whose_own_punch_is_loaded():
+    client = _Client()
     assert pfa.reconcile_not_in_hours(client, "palmetto") == 2
-    update, cfg = client.sql[-1]
-    assert "SET status = 'applied'" in update and "status = 'not_in_hours'" in update
-    still = {p.name: p for p in cfg.query_parameters}["still"]
-    assert still.values == ["d9"]
+    (update, cfg), = client.sql
+    assert "SET status = 'applied'" in update and "d.status = 'not_in_hours'" in update
+    assert "p.date = d.date AND p.employee_id = d.employee_id" in update
+    assert "p.out_time = d.out_time" in update and "p.in_time = d.in_time" in update
+    assert {p.name: p.value for p in cfg.query_parameters} == {"store": "palmetto"}
+
+
+def test_verified_export_is_reused_by_the_resync_without_a_second_login(monkeypatch, tmp_path):
+    """The files _resync_in_session leaves are the exact ones download_adp_bundle's
+    real Layer A treats as fresh for target_date=max_date — no second ADP login."""
+    import datetime
+
+    from skills.adp_run_automation import runner, shift_backend
+
+    monkeypatch.setattr(runner, "DOWNLOADS_DIR", tmp_path)
+    monkeypatch.setenv("BHAGA_PUNCH_FIX_RESYNC_WAIT_S", "0")
+    monkeypatch.setattr("skills.store_profile.load_aliases", lambda store: {})
+
+    def real_named_export(page, target_date, store):
+        path = tmp_path / f"Timecard-{datetime.date.today().isoformat()}.xlsx"
+        path.write_bytes(b"x" * 20_000)
+        return path
+
+    monkeypatch.setattr(runner, "_timecard_within_session", real_named_export)
+    monkeypatch.setattr(shift_backend, "parse_xlsx", lambda path, employee_aliases=None: [_punch(CIMINO)])
+    monkeypatch.setattr(runner, "_timecard_gaps_within_session",
+                        lambda page: {"employees": [{"name": "Denton, Cimino R", "days": []}]})
+    target = datetime.date(2026, 10, 4)
+    assert pfa._resync_in_session(_Page(), "u", "palmetto", [CIMINO], target) == []
+
+    @contextlib.contextmanager
+    def no_login(**_):
+        raise AssertionError("resync opened a second ADP login")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(runner, "adp_session", no_login)
+    monkeypatch.setattr(runner, "_mark_run_step_done", lambda *a, **k: None)
+    result = runner.download_adp_bundle(
+        store="palmetto", target_date=target, include_earnings=False,
+        include_schedule=False, include_extras=False, headed=False,
+    )
+    assert result["errors"] == {}
+    assert result["timecard_xlsx"] == tmp_path / f"Timecard-{datetime.date.today().isoformat()}.xlsx"
+    assert result["timecards_ui_json"] == tmp_path / f"TimecardsUI-{datetime.date.today().isoformat()}.json"
+    # A different target date is a different pay period: never reused.
+    assert not runner._xlsx_fresh_for_target(result["timecard_xlsx"], target_date=datetime.date(2026, 10, 3),
+                                             min_bytes=10_000)

@@ -93,18 +93,15 @@ def missing_from_hours_sql(store: str) -> str:
 
 
 def reconcile_not_in_hours(client, store: str) -> int:
-    """Flip not_in_hours → applied for every decision whose punch is now loaded."""
-    still = {r["decision_id"] for r in missing_from_hours(client, store)}
-    sql = f"""UPDATE {fq("punch_gap_decisions")}
+    """Flip not_in_hours → applied for every decision whose own punch is now loaded."""
+    sql = f"""UPDATE {fq("punch_gap_decisions")} d
               SET status = 'applied', error = NULL, applied_at = CURRENT_TIMESTAMP()
-              WHERE store = @store AND status = 'not_in_hours'
-                AND decision_id NOT IN UNNEST(@still)"""
-    from google.cloud import bigquery
-
-    job = client.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("store", "STRING", store),
-        bigquery.ArrayQueryParameter("still", "STRING", sorted(still)),
-    ]))
+              WHERE d.store = @store AND d.status = 'not_in_hours' AND EXISTS (
+                SELECT 1 FROM {fq("adp_punches")} p
+                WHERE p.date = d.date AND p.employee_id = d.employee_id
+                  AND p.out_time = d.out_time
+                  AND (d.in_time IS NULL OR p.in_time = d.in_time))"""
+    job = client.query(sql, job_config=_param_config([("store", "STRING", store)]))
     job.result()
     return job.num_dml_affected_rows or 0
 

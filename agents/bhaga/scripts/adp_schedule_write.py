@@ -139,10 +139,12 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
             for row in by_week[week]:
                 pending.discard(row["row_key"])
                 iso = row["date"].isoformat()
+                adp_name = "open shift"
                 try:
                     if row["employee"]:
-                        wb.create_shift(frame, page, date_iso=iso, employee=row["employee"],
-                                        start_min=row["start_min"], end_min=row["end_min"], dry_run=dry_run)
+                        adp_name = wb.create_shift(frame, page, date_iso=iso, employee=row["employee"],
+                                                   start_min=row["start_min"], end_min=row["end_min"],
+                                                   dry_run=dry_run)
                     else:
                         wb.create_open_shift(frame, page, date_iso=iso, start_min=row["start_min"],
                                              end_min=row["end_min"], dry_run=dry_run)
@@ -155,7 +157,7 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
                     failed += 1
                     fail(row["row_key"], f"{type(exc).__name__}: {exc}"[:400])
                     continue
-                print(f"[schedule_write] {'checked' if dry_run else 'drafted'} {row['row_key']}")
+                print(f"[schedule_write] {'checked' if dry_run else 'drafted'} {row['row_key']} as {adp_name!r}")
                 if not dry_run:
                     _set_status(row["row_key"], push_id, "drafted")
     return 1 if failed else 0

@@ -73,10 +73,15 @@ def _resync_in_session(page, dashboard_url, store, applied, target_date) -> list
 
 `agents/bhaga/scripts/daily_refresh.py`
 
-5. `:2768-2782`: after `run_from_env`, set `refresh_date = max(refresh_date, counts["max_date"])` and
-   keep `after_punch_fix = True`. `:2798-2805`: do **not** delete the cached Timecard/TimecardsUI files
-   when `after_punch_fix` — `download_adp_bundle` Layer A (`runner.py:2472`) then reuses the files the
-   write job just produced, so the resync needs no second ADP login.
+5. `:2768-2782`: after `run_from_env`, set `refresh_date = counts["max_date"]` (latest applied /
+   already_resolved date) and keep `after_punch_fix = True`. *Implementation note:* exact, not
+   `max(yesterday, …)` — the export covers the pay period containing its target date and ADP only
+   accepts writes inside its open period, so "yesterday" can name the next period; Layer A also
+   needs the target-meta to match exactly. `:2798-2805`: do **not** delete the cached
+   Timecard/TimecardsUI files when the write job reports `export_on_disk` (its in-session download
+   succeeded) — `download_adp_bundle` Layer A (`runner.py:2472`) then reuses them, so the resync
+   needs no second ADP login. Without `export_on_disk` (e.g. only `already_resolved`) the cache is
+   deleted as before.
 
 `agents/bhaga/scripts/backfill_from_downloads.py`
 

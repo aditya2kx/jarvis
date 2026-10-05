@@ -41,6 +41,16 @@ function rowShift(r: PushRow): PushShift {
 }
 
 /**
+ * Rows worth showing for the current draft: anything in (or headed for) ADP, plus
+ * failures for shifts still in the draft. A failed row for a shift the draft no
+ * longer has never reached ADP and is just history.
+ */
+export function relevantRows(shifts: PushShift[], rows: PushRow[]): PushRow[] {
+  const current = new Set(shifts.map(shiftKey));
+  return rows.filter((r) => r.status !== "failed" || current.has(shiftKey(rowShift(r))));
+}
+
+/**
  * Draft shifts not yet in ADP (never saved, or the save failed) vs already there
  * or in flight. 'skipped' means an earlier save already drafted it.
  */

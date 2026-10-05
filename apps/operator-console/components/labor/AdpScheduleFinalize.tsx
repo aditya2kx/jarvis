@@ -21,6 +21,7 @@ import {
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { formatClockMin } from "@/lib/labor/coverage-model";
 import {
+  relevantRows,
   splitAgainstAdp,
   summarizePush,
   type PushRow,
@@ -106,7 +107,7 @@ export function AdpScheduleFinalize({
   shifts: PushShift[];
   enabled: boolean;
 }) {
-  const [rows, setRows] = useState<PushRow[]>([]);
+  const [allRows, setRows] = useState<PushRow[]>([]);
   const [running, setRunning] = useState<ScheduleWriteRun | null>(null);
   const [loadedWeek, setLoadedWeek] = useState<string | null>(null);
   // Right after a click the Cloud Run execution may not be listed yet; keep polling meanwhile.
@@ -148,6 +149,7 @@ export function AdpScheduleFinalize({
     return () => clearInterval(id);
   }, [polling, graceUntil, refresh]);
 
+  const rows = useMemo(() => relevantRows(shifts, allRows), [shifts, allRows]);
   const summary = useMemo(() => summarizePush(rows), [rows]);
   const { toSave, inAdp } = useMemo(() => splitAgainstAdp(shifts, rows), [shifts, rows]);
   const drafted = rows.filter((r) => r.status === "drafted");
@@ -206,7 +208,7 @@ export function AdpScheduleFinalize({
             : otherWeek
               ? "ADP is busy saving or publishing another week — this week's buttons unlock when it finishes."
               : saving
-                ? `Saving to ADP as drafts — ${savedSoFar} of ${pushRowsNow.length || "…"} done (about 20–40 s per shift). Safe to leave or reload this page.`
+                ? `Saving to ADP as drafts — ${savedSoFar} of ${pushRowsNow.length || "…"} done (about 7 s per shift, after ~2 min to sign in to ADP). Safe to leave or reload this page.`
                 : publishing
                   ? "Publishing the week in ADP — employees get notified when it finishes. Safe to leave or reload this page."
                   : toSave.length
@@ -273,7 +275,7 @@ export function AdpScheduleFinalize({
                 <SheetTitle>Save week of {range} to ADP as drafts</SheetTitle>
                 <SheetDescription>
                   {`Creates these ${toSave.length} suggested shifts (${days} days) in ADP Team Schedule as drafts.`}
-                  Employees don&apos;t see drafts until you publish the week. Takes about 20–40 s per
+                  Employees don&apos;t see drafts until you publish the week. Takes about 7 s per
                   shift; you can keep using the page.
                   {inAdp.length ? ` ${inAdp.length} shifts already in ADP are left alone.` : ""}
                 </SheetDescription>

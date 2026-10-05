@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   pushRowKey,
+  relevantRows,
   splitAgainstAdp,
   summarizePush,
   validatePushShifts,
@@ -52,6 +53,14 @@ describe("splitAgainstAdp", () => {
     );
     expect(toSave).toEqual([B, C]);
     expect(inAdp).toEqual([A, OPEN]);
+  });
+});
+
+describe("relevantRows", () => {
+  it("drops failures for shifts no longer in the draft but keeps everything in ADP", () => {
+    const old = { ...A, startMin: 420 };
+    const rows = [row(A, "failed", "x"), row(old, "failed", "not attempted"), row(OPEN, "drafted")];
+    expect(relevantRows([A], rows)).toEqual([rows[0], rows[2]]);
   });
 });
 

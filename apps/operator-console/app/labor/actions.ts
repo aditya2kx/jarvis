@@ -16,6 +16,7 @@ import { saveScheduleRules } from "@/lib/labor/schedule-rules-store";
 import { queueDraftPush, weekPushRows } from "@/lib/labor/schedule-push-store";
 import { validatePushShifts, type PushRow } from "@/lib/labor/schedule-push";
 import { startScheduleWrite } from "@/lib/bhaga/schedule-write";
+import { runningAdpExecution } from "@/lib/bhaga/recompute";
 import { chicagoTodayIso } from "@/lib/filters/range";
 import {
   pollAdpSync,
@@ -98,9 +99,25 @@ export async function publishWeekAction(weekStart: string): Promise<ActionAck<{ 
 }
 
 /** Latest ADP push state for a week (poll target for both steps). */
-export async function schedulePushStatusAction(weekStart: string): Promise<ActionAck<{ rows: PushRow[] }>> {
+export type ScheduleWriteRun = { mode: "drafts" | "publish"; pushId?: string; weekStart?: string };
+
+/** The week's push rows plus the ADP schedule-write job still running, if any (survives a reload). */
+export async function schedulePushStatusAction(
+  weekStart: string,
+): Promise<ActionAck<{ rows: PushRow[]; running: ScheduleWriteRun | null }>> {
   try {
-    return okAck({ data: { rows: await weekPushRows(DEFAULT_STORE, weekStart) } });
+    const [rows, hit] = await Promise.all([
+      weekPushRows(DEFAULT_STORE, weekStart),
+      runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE"),
+    ]);
+    const running: ScheduleWriteRun | null = hit
+      ? {
+          mode: hit.env.BHAGA_ADP_SCHEDULE_WRITE === "publish" ? "publish" : "drafts",
+          pushId: hit.env.BHAGA_SCHEDULE_PUSH_ID,
+          weekStart: hit.env.BHAGA_SCHEDULE_WEEK_START,
+        }
+      : null;
+    return okAck({ data: { rows, running } });
   } catch (e) {
     return failAck(e);
   }

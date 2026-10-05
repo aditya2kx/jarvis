@@ -5,6 +5,7 @@ import {
   publishWeekAction,
   saveDraftsToAdpAction,
   schedulePushStatusAction,
+  type ScheduleWriteRun,
 } from "@/app/labor/actions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,7 +28,7 @@ import {
 } from "@/lib/labor/schedule-push";
 
 const POLL_MS = 5000;
-const POLL_LIMIT_MS = 20 * 60 * 1000;
+const GRACE_MS = 90 * 1000;
 
 function dayLabel(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
@@ -106,54 +107,67 @@ export function AdpScheduleFinalize({
   enabled: boolean;
 }) {
   const [rows, setRows] = useState<PushRow[]>([]);
-  const [pollUntil, setPollUntil] = useState(0);
+  const [running, setRunning] = useState<ScheduleWriteRun | null>(null);
+  const [loadedWeek, setLoadedWeek] = useState<string | null>(null);
+  // Right after a click the Cloud Run execution may not be listed yet; keep polling meanwhile.
+  const [graceUntil, setGraceUntil] = useState(0);
+  const [lastAction, setLastAction] = useState<"save" | "publish" | null>(null);
   const [sheet, setSheet] = useState<"save" | "publish" | null>(null);
   const { isPending, run } = useConsoleAction();
 
   const refresh = useCallback(async () => {
     const ack = await schedulePushStatusAction(weekStart);
-    if (ack.ok && ack.data) setRows(ack.data.rows);
+    if (ack.ok && ack.data) {
+      setRows(ack.data.rows);
+      setRunning(ack.data.running);
+    }
   }, [weekStart]);
 
   useEffect(() => {
     let live = true;
     void schedulePushStatusAction(weekStart).then((ack) => {
-      if (live && ack.ok && ack.data) setRows(ack.data.rows);
+      if (!live) return;
+      if (ack.ok && ack.data) {
+        setRows(ack.data.rows);
+        setRunning(ack.data.running);
+      }
+      setLoadedWeek(weekStart);
     });
     return () => {
       live = false;
     };
   }, [weekStart]);
 
+  const polling = running != null || graceUntil > 0;
+  useEffect(() => {
+    if (!polling) return;
+    const id = setInterval(() => {
+      if (graceUntil && Date.now() > graceUntil) setGraceUntil(0);
+      void refresh();
+    }, POLL_MS);
+    return () => clearInterval(id);
+  }, [polling, graceUntil, refresh]);
+
   const summary = useMemo(() => summarizePush(rows), [rows]);
   const { toSave, inAdp } = useMemo(() => splitAgainstAdp(shifts, rows), [shifts, rows]);
   const drafted = rows.filter((r) => r.status === "drafted");
-  const busy = summary.queued > 0 || pollUntil > 0;
+  const loaded = loadedWeek === weekStart;
+  const busy = polling || !loaded;
+  const pushRowsNow = running?.pushId ? rows.filter((r) => r.push_id === running.pushId) : [];
+  const otherWeek =
+    running != null &&
+    (running.mode === "publish" ? running.weekStart !== weekStart : pushRowsNow.length === 0) &&
+    graceUntil === 0;
+  const saving = !otherWeek && (running?.mode === "drafts" || (graceUntil > 0 && lastAction === "save"));
+  const publishing = !otherWeek && (running?.mode === "publish" || (graceUntil > 0 && lastAction === "publish"));
+  const savedSoFar = pushRowsNow.filter((r) => r.status !== "queued").length;
+  const stalled = !polling && summary.queued > 0;
 
-  useEffect(() => {
-    if (!pollUntil) return;
-    const id = setInterval(() => {
-      if (Date.now() > pollUntil) setPollUntil(0);
-      else void refresh();
-    }, POLL_MS);
-    return () => clearInterval(id);
-  }, [pollUntil, refresh]);
-
-  // Stop polling once the job has settled: nothing queued and, after publish, the
-  // drafts either became published or were stamped with a new publish error.
-  const [publishBaseline, setPublishBaseline] = useState<string | null>(null);
-  const publishing = publishBaseline != null;
-  const draftStamp = drafted.map((r) => `${r.row_key}@${r.updated_at}`).join(",");
-  const settled =
-    summary.queued === 0 && (!publishing || drafted.length === 0 || draftStamp !== publishBaseline);
-  const [prevSettled, setPrevSettled] = useState(settled);
-  if (settled !== prevSettled) {
-    setPrevSettled(settled);
-    if (settled && pollUntil) {
-      setPollUntil(0);
-      setPublishBaseline(null);
-    }
-  }
+  const start = (action: "save" | "publish") => {
+    setSheet(null);
+    setLastAction(action);
+    setGraceUntil(Date.now() + GRACE_MS);
+  };
 
   const save = async () => {
     const ack = await run(() => saveDraftsToAdpAction(weekStart, toSave), {
@@ -161,9 +175,8 @@ export function AdpScheduleFinalize({
       queued: "Saving drafts to ADP in the background.",
     });
     if (ack.ok) {
-      setSheet(null);
+      start("save");
       await refresh();
-      setPollUntil(Date.now() + POLL_LIMIT_MS);
     }
   };
 
@@ -172,11 +185,7 @@ export function AdpScheduleFinalize({
       saving: "Starting publish…",
       queued: "Publishing the week in ADP in the background.",
     });
-    if (ack.ok) {
-      setSheet(null);
-      setPublishBaseline(draftStamp);
-      setPollUntil(Date.now() + POLL_LIMIT_MS);
-    }
+    if (ack.ok) start("publish");
   };
 
   const disabledTitle = enabled ? undefined : "ADP schedule writes are off (CONSOLE_ADP_SCHEDULE_WRITE)";
@@ -191,14 +200,34 @@ export function AdpScheduleFinalize({
     >
       <div className="flex min-w-0 flex-col gap-1">
         <h4 className="text-sm font-medium text-foreground">Send the suggested schedule for {range} to ADP</h4>
-        <p className="text-xs text-muted-foreground">
-          {toSave.length
-            ? `The shifts this page drafted for every day of the week (the “+N draft” on each day above): ${toSave.length} shifts — ${toSave.length - open} assigned, ${open} open — ${hoursOf(toSave).toFixed(1)}h. Not in ADP yet.`
-            : "Every suggested shift of this week is already in ADP."}
+        <p data-testid="adp-finalize-status" className="text-xs text-muted-foreground">
+          {!loaded
+            ? "Checking ADP status…"
+            : otherWeek
+              ? "ADP is busy saving or publishing another week — this week's buttons unlock when it finishes."
+              : saving
+                ? `Saving to ADP as drafts — ${savedSoFar} of ${pushRowsNow.length || "…"} done (about 20–40 s per shift). Safe to leave or reload this page.`
+                : publishing
+                  ? "Publishing the week in ADP — employees get notified when it finishes. Safe to leave or reload this page."
+                  : toSave.length
+                    ? `The shifts this page drafted for every day of the week (the “+N draft” on each day above): ${toSave.length} shifts — ${toSave.length - open} assigned, ${open} open — ${hoursOf(toSave).toFixed(1)}h. Not in ADP yet.`
+                    : drafted.length
+                      ? `All ${drafted.length} suggested shifts are ADP drafts — employees don't see them until you publish.`
+                      : "Every suggested shift of this week is already in ADP."}
         </p>
+        {stalled ? (
+          <p className="text-xs text-rose-600 dark:text-rose-400">
+            The save stopped with {summary.queued} shift{summary.queued === 1 ? "" : "s"} not saved. Check ADP
+            before saving again.
+          </p>
+        ) : null}
         {rows.length ? (
           <div className="flex flex-wrap gap-1.5 text-[11px]">
-            {summary.queued ? <Badge variant="secondary">{summary.queued} saving</Badge> : null}
+            {summary.queued ? (
+              <Badge variant="secondary">
+                {summary.queued} {stalled ? "not saved" : "waiting"}
+              </Badge>
+            ) : null}
             {drafted.length ? <Badge variant="outline">{drafted.length} ADP drafts</Badge> : null}
             {summary.published ? <Badge variant="default">{summary.published} published</Badge> : null}
             {summary.failed ? <Badge variant="destructive">{summary.failed} failed</Badge> : null}
@@ -220,7 +249,11 @@ export function AdpScheduleFinalize({
           title={disabledTitle ?? "Step 1 — employees don't see drafts"}
           onClick={() => setSheet("save")}
         >
-          {summary.queued > 0 ? "Saving to ADP…" : "1 · Review & save as ADP drafts"}
+          {saving
+            ? pushRowsNow.length
+              ? `Saving to ADP… ${savedSoFar} of ${pushRowsNow.length}`
+              : "Saving to ADP…"
+            : "1 · Review & save as ADP drafts"}
         </Button>
         <Button
           size="sm"

@@ -138,20 +138,24 @@ export async function hasRunningBhagaJob(): Promise<boolean> {
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Newest unfinished "Sync ADP" execution (by its BHAGA_ADP_SYNC_ALL override), so a reloaded page can keep watching it. */
-export async function runningAdpSyncExecution(): Promise<{ name: string; createTime: string } | null> {
+/** Latest unfinished execution of the ADP job whose env sets ``envName`` (to ``value``, if given). */
+export async function runningAdpExecution(
+  envName: string,
+  value?: string,
+): Promise<{ name: string; createTime: string; env: Record<string, string> } | null> {
   const auth = new GoogleAuth({
     scopes: ["https://www.googleapis.com/auth/cloud-platform"],
   });
   const token = await (await auth.getClient()).getAccessToken();
   if (!token.token) {
-    throw new Error("runningAdpSyncExecution: failed to obtain ADC access token");
+    throw new Error("runningAdpExecution: failed to obtain ADC access token");
   }
   const res = await fetch(`https://run.googleapis.com/v2/${adpJobResource()}/executions?pageSize=10`, {
     headers: { Authorization: `Bearer ${token.token}` },
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`runningAdpSyncExecution: HTTP ${res.status} ${text.slice(0, 300)}`);
+    throw new Error(`runningAdpExecution: HTTP ${res.status} ${text.slice(0, 300)}`);
   }
   const json = (await res.json()) as {
     executions?: {
@@ -161,12 +165,20 @@ export async function runningAdpSyncExecution(): Promise<{ name: string; createT
       template?: { containers?: { env?: { name: string; value?: string }[] }[] };
     }[];
   };
-  const hit = (json.executions ?? []).find(
-    (e) =>
-      !e.completionTime &&
-      e.template?.containers?.some((c) => c.env?.some((v) => v.name === "BHAGA_ADP_SYNC_ALL" && v.value === "1")),
-  );
-  return hit ? { name: hit.name, createTime: hit.createTime } : null;
+  for (const e of json.executions ?? []) {
+    if (e.completionTime) continue;
+    const env = Object.fromEntries(
+      (e.template?.containers ?? []).flatMap((c) => c.env ?? []).map((x) => [x.name, x.value ?? ""]),
+    );
+    if (env[envName] && (value == null || env[envName] === value)) {
+      return { name: e.name, createTime: e.createTime, env };
+    }
+  }
+  return null;
+}
+
+export async function runningAdpSyncExecution(): Promise<{ name: string; createTime: string } | null> {
+  return runningAdpExecution("BHAGA_ADP_SYNC_ALL", "1");
 }
 
 function adpSyncEnv(

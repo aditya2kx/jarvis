@@ -445,3 +445,33 @@ def test_build_schedule_records_ignores_open_shift_keys():
     assert sb.build_schedule_records(weeks) == sb.build_schedule_records(
         [{"week_label": weeks[0]["week_label"], "headers": [], "totals": []}]
     )
+
+
+def test_adp_shift_states_reads_draft_tag_and_open_day_draft_count():
+    weeks = [{
+        "week_label": "Week of Oct 12, 2026 - Oct 18, 2026",
+        "employee_rows": [{
+            "name": "Huang, Wing",
+            "week_total_text": "11:00 Hrs",
+            "days": [
+                {"header_index": 0, "ranges": ["9:00 AM - 2:30 PM"]},
+                {"header_index": 6, "ranges": ["9:00 AM - 2:30 PM DRAFT"]},
+            ],
+        }],
+        "open_shift_cells": [
+            {"heading": "Open Shifts on Tue, Oct 13, 2026", "summary": "Open Shifts (1) Drafts: 0",
+             "shifts": [{"range": "3:00 PM - 8:30 PM", "hours_text": "05:30 hours"}]},
+            {"heading": "Open Shifts on Sat, Oct 17, 2026", "summary": "Open Shifts (1) Drafts: 1",
+             "shifts": [{"range": "2:30 PM - 8:00 PM", "hours_text": "05:30 hours"}]},
+        ],
+    }]
+    got = sorted(
+        (s["date"], s["employee"] or "", s["start_min"], s["end_min"], s["draft"])
+        for s in sb.adp_shift_states(weeks)
+    )
+    assert got == [
+        ("2026-10-12", "Huang, Wing", 540, 870, False),
+        ("2026-10-13", "", 900, 1230, False),
+        ("2026-10-17", "", 870, 1200, True),
+        ("2026-10-18", "Huang, Wing", 540, 870, True),
+    ]

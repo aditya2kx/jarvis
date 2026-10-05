@@ -62,6 +62,53 @@ def week_start_of(date: dt.date) -> dt.date:
     return date - dt.timedelta(days=date.weekday())
 
 
+def _same_person(a: str, b: str) -> bool:
+    a, b = a.strip().lower(), b.strip().lower()
+    return a == b or a.startswith(b + " ") or b.startswith(a + " ")
+
+
+def published_row_keys(rows: list[dict], states: list[dict]) -> list[str]:
+    """Drafted rows whose shift ADP now shows without the draft tag.
+
+    An assigned row also matches an open shift at the same times: ADP unassigns a
+    saved shift when that person's unavailability is approved.
+    """
+    live = [s for s in states if not s["draft"]]
+    out = []
+    for r in rows:
+        if any(
+            s["date"] == str(r["date"])
+            and s["start_min"] == r["start_min"]
+            and s["end_min"] == r["end_min"]
+            and (s["employee"] is None or (r["employee"] and _same_person(s["employee"], r["employee"])))
+            for s in live
+        ):
+            out.append(r["row_key"])
+    return out
+
+
+def reconcile_published(store: str, states: list[dict]) -> int:
+    """Mark drafted rows 'published' when ADP shows them published (e.g. published in ADP)."""
+    dates = sorted({s["date"] for s in states})
+    if not dates:
+        return 0
+    latest = _query(
+        "SELECT row_key, status, CAST(date AS STRING) AS date, employee, start_min, end_min FROM {T}"
+        " WHERE store = @store AND date BETWEEN @lo AND @hi"
+        " QUALIFY ROW_NUMBER() OVER (PARTITION BY row_key ORDER BY updated_at DESC) = 1",
+        [("store", "STRING", store), ("lo", "DATE", dates[0]), ("hi", "DATE", dates[-1])],
+    )
+    keys = published_row_keys([r for r in latest if r["status"] == "drafted"], states)
+    if keys:
+        _query(
+            "UPDATE {T} SET status = 'published', error = NULL, updated_at = CURRENT_TIMESTAMP()"
+            " WHERE store = @store AND status = 'drafted' AND row_key IN UNNEST(SPLIT(@keys, '\\n'))",
+            [("store", "STRING", store), ("keys", "STRING", "\n".join(keys))],
+        )
+    print(f"[schedule_write] reconcile store={store} dates={dates[0]}..{dates[-1]} newly_published={len(keys)}")
+    return len(keys)
+
+
 _NOT_SCHEDULE = ("square", "adp_shifts", "adp_punches", "adp_rates", "adp_liability",
                  "adp_timecard_gaps", "square_rollup")
 
@@ -203,6 +250,73 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
     return 1 if failed else 0
 
 
+def _clock(m: int) -> str:
+    h, mm = divmod(m, 60)
+    return f"{(h - 1) % 12 + 1}:{mm:02d} {'AM' if h < 12 else 'PM'}"
+
+
+def _week_label(week_start: dt.date) -> str:
+    end = week_start + dt.timedelta(days=6)
+    tail = f"{end.day}" if end.month == week_start.month else f"{end:%b} {end.day}"
+    return f"{week_start:%b} {week_start.day}–{tail}"
+
+
+def publish_message(week_start: dt.date, open_shifts: list[dict]) -> str:
+    """ClickUp DM to the operator: a ready-to-post note for the team.
+
+    ``open_shifts``: ``{"date": date, "start_min": int, "end_min": int}`` rows.
+    """
+    week = _week_label(week_start)
+    lines = [
+        f"Published **{week}** in ADP. Draft for the team — copy and post:",
+        "",
+        "---",
+        "",
+        f"Hi team! ADP shifts for the week of {week} are published. Please take a look and make sure "
+        "they match your availability, and let me know if there are any issues.",
+        "",
+    ]
+    if open_shifts:
+        lines.append("Open shifts — reply here if you'd like to take one:")
+        for o in sorted(open_shifts, key=lambda x: (x["date"], x["start_min"])):
+            d = o["date"]
+            lines.append(f"- {d:%a %b} {d.day} · {_clock(o['start_min'])} – {_clock(o['end_min'])}")
+    else:
+        lines.append("There are no open shifts this week.")
+    return "\n".join(lines)
+
+
+def notify_published(store: str, week_start: dt.date) -> None:
+    """DM the operator a draft team message after a console publish. Best-effort, posts once."""
+    from core.datastore import fq
+
+    from agents.bhaga.scripts.team_pulse import DEFAULT_DM_USER_ID, DEFAULT_WORKSPACE_ID
+    from skills.adp_run_automation.schedule_backend import _SHIFT_RANGE_RE, _to_minutes
+    from skills.clickup_chat import ensure_dm_channel, post_message
+
+    try:
+        rows = _query(
+            f"SELECT date, shift_range FROM {fq('adp_open_shifts')}"
+            " WHERE week_start = @week ORDER BY date, slot_index",
+            [("week", "DATE", week_start)],
+        )
+        open_shifts = []
+        for r in rows:
+            m = _SHIFT_RANGE_RE.search(r["shift_range"] or "")
+            if m:
+                open_shifts.append({
+                    "date": r["date"],
+                    "start_min": _to_minutes(int(m.group(1)), int(m.group(2)), m.group(3)),
+                    "end_min": _to_minutes(int(m.group(4)), int(m.group(5)), m.group(6)),
+                })
+        channel = ensure_dm_channel([DEFAULT_DM_USER_ID], team_id=DEFAULT_WORKSPACE_ID)
+        post_message(str(channel["id"]), publish_message(week_start, open_shifts), team_id=DEFAULT_WORKSPACE_ID)
+    except Exception as exc:  # noqa: BLE001
+        print(f"BREADCRUMB adp_publish_dm store={store} week_start={week_start} error={type(exc).__name__}: {exc}"[:500])
+        return
+    print(f"[schedule_write] publish DM sent week_start={week_start} open_shifts={len(open_shifts)}")
+
+
 def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: bool) -> int:
     from skills.adp_run_automation import runner as r
 
@@ -233,6 +347,8 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
         " WHERE store = @store AND week_start = @week AND status = 'drafted'",
         [("store", "STRING", store), ("week", "DATE", week_start)],
     )
+    if pending:
+        notify_published(store, week_start)
     return 0
 
 

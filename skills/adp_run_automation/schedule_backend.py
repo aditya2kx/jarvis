@@ -741,6 +741,55 @@ def open_shift_weeks(weeks: list[dict]) -> list[str]:
     return sorted(out)
 
 
+_DRAFTS_RE = re.compile(r"Drafts?:\s*(\d+)", re.IGNORECASE)
+
+
+def adp_shift_states(weeks: list[dict]) -> list[dict]:
+    """Every scraped shift with whether ADP still shows it as a draft.
+
+    Assigned shifts carry a per-shift "DRAFT" tag. Open shifts only have the
+    day cell's "Drafts: N" count, so a day with any open draft (or no readable
+    count) keeps all its open shifts as drafts. ``employee`` is None for open.
+    """
+    out: list[dict] = []
+    for r in build_employee_schedule_records(weeks):
+        if r.get("hour_kind") not in (None, "shift", "mixed"):
+            continue
+        for rng in json.loads(r.get("shift_ranges_json") or "[]"):
+            m = _SHIFT_RANGE_RE.search(str(rng))
+            if not m:
+                continue
+            out.append({
+                "date": r["date"],
+                "employee": r["employee_name"],
+                "start_min": _to_minutes(int(m.group(1)), int(m.group(2)), m.group(3)),
+                "end_min": _to_minutes(int(m.group(4)), int(m.group(5)), m.group(6)),
+                "draft": "DRAFT" in str(rng).upper(),
+            })
+    for wk in weeks:
+        week_start = parse_week_start(wk.get("week_label"))
+        if week_start is None or not _open_week_ok(wk):
+            continue
+        for cell in wk.get("open_shift_cells") or []:
+            d = parse_open_pane_date(cell.get("heading"), week_start)
+            if d is None:
+                continue
+            drafts = _DRAFTS_RE.search(cell.get("summary") or "")
+            draft = drafts is None or int(drafts.group(1)) > 0
+            for shift in cell.get("shifts") or []:
+                m = _SHIFT_RANGE_RE.search(shift.get("range") or "")
+                if not m:
+                    continue
+                out.append({
+                    "date": d.isoformat(),
+                    "employee": None,
+                    "start_min": _to_minutes(int(m.group(1)), int(m.group(2)), m.group(3)),
+                    "end_min": _to_minutes(int(m.group(4)), int(m.group(5)), m.group(6)),
+                    "draft": draft,
+                })
+    return out
+
+
 def reconcile_open_shifts(weeks: list[dict], *, tolerance_hours: float = 0.05) -> list[str]:
     """Warnings when parsed slots disagree with ADP's row label ("7 Shifts, 45:30 HRS")."""
     recs = build_open_shift_records(weeks)

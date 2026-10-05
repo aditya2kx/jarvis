@@ -223,7 +223,9 @@ export function AdpScheduleFinalize({
                     ? `The shifts this page drafted for every day of the week (the “+N draft” on each day above): ${toSave.length} shifts — ${toSave.length - open} assigned, ${open} open — ${hoursOf(toSave).toFixed(1)}h. Not in ADP yet.`
                     : drafted.length
                       ? `All ${drafted.length} suggested shifts are ADP drafts — employees don't see them until you publish.`
-                      : "Every suggested shift of this week is already in ADP."}
+                      : summary.published
+                        ? "Published — employees can see this week in ADP."
+                        : "Every suggested shift of this week is already in ADP."}
         </p>
         {stalled ? (
           <p className="text-xs text-rose-600 dark:text-rose-400">
@@ -302,7 +304,8 @@ export function AdpScheduleFinalize({
                 <SheetTitle>Publish week of {range}</SheetTitle>
                 <SheetDescription>
                   Publishes every ADP draft for this week (including any you added in ADP) — employees
-                  get notified in ADP Mobile.
+                  get notified in ADP Mobile. You then get a ClickUp DM with a draft message for the team,
+                  listing the week&apos;s open shifts, to copy and post.
                 </SheetDescription>
               </SheetHeader>
               <ShiftList

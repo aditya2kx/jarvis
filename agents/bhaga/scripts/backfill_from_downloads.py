@@ -471,6 +471,16 @@ def main() -> int:
 
             _load_adp_open_shifts(payload.get("weeks", []), scraped_at, now_utc)
             _load_adp_unavailability(payload, scraped_at, now_utc)
+            if not args.dry_run:
+                _reconcile_published(payload.get("weeks", []))
+
+    def _reconcile_published(weeks: list) -> None:
+        """Shifts published straight in ADP flip their console rows to 'published'."""
+        from agents.bhaga.scripts.adp_schedule_write import reconcile_published  # noqa: PLC0415
+        try:
+            reconcile_published(args.store, schedule_backend.adp_shift_states(weeks))
+        except Exception as exc:  # noqa: BLE001
+            print(f"BREADCRUMB adp_publish_reconcile store={args.store} error={type(exc).__name__}: {exc}"[:500])
 
     def _load_adp_unavailability(payload: dict, scraped_at, now_utc: str) -> None:
         """Pending requests (replaced wholesale) + approved grid blocks (per week) — Issue #337."""

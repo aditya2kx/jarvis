@@ -193,3 +193,46 @@ class RunDelete(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublishedRowKeys(unittest.TestCase):
+    rows = [
+        {"row_key": "a", "date": "2026-10-12", "employee": "Johnson, Dolce", "start_min": 390, "end_min": 870},
+        {"row_key": "b", "date": "2026-10-13", "employee": None, "start_min": 900, "end_min": 1230},
+        {"row_key": "c", "date": "2026-10-17", "employee": "Huynh, Hillary", "start_min": 870, "end_min": 1200},
+        {"row_key": "d", "date": "2026-10-18", "employee": "Huang, Wing", "start_min": 540, "end_min": 870},
+    ]
+
+    def test_published_in_adp_matches_by_person_prefix_times_and_open(self):
+        states = [
+            {"date": "2026-10-12", "employee": "Johnson, Dolce J", "start_min": 390, "end_min": 870, "draft": False},
+            {"date": "2026-10-13", "employee": None, "start_min": 900, "end_min": 1230, "draft": False},
+            # ADP unassigned Hillary's shift (approved unavailability) and it was published open.
+            {"date": "2026-10-17", "employee": None, "start_min": 870, "end_min": 1200, "draft": False},
+            {"date": "2026-10-18", "employee": "Huang, Wing", "start_min": 540, "end_min": 870, "draft": True},
+        ]
+        self.assertEqual(w.published_row_keys(self.rows, states), ["a", "b", "c"])
+
+    def test_moved_or_reassigned_shift_is_not_published(self):
+        states = [
+            {"date": "2026-10-12", "employee": "Johnson, Dolce", "start_min": 420, "end_min": 870, "draft": False},
+            {"date": "2026-10-13", "employee": "Perales, Elizabeth", "start_min": 900, "end_min": 1230, "draft": False},
+            {"date": "2026-10-18", "employee": "Huang, Winger", "start_min": 540, "end_min": 870, "draft": False},
+        ]
+        self.assertEqual(w.published_row_keys(self.rows, states), [])
+
+
+class PublishMessage(unittest.TestCase):
+    def test_lists_open_shifts_by_day(self):
+        msg = w.publish_message(datetime.date(2026, 10, 12), [
+            {"date": datetime.date(2026, 10, 17), "start_min": 870, "end_min": 1200},
+            {"date": datetime.date(2026, 10, 13), "start_min": 900, "end_min": 1230},
+        ])
+        self.assertIn("ADP shifts for the week of Oct 12–18 are published", msg)
+        self.assertIn("match your availability", msg)
+        self.assertLess(msg.index("Tue Oct 13 · 3:00 PM – 8:30 PM"), msg.index("Sat Oct 17 · 2:30 PM – 8:00 PM"))
+
+    def test_no_open_shifts_and_month_boundary(self):
+        msg = w.publish_message(datetime.date(2026, 10, 26), [])
+        self.assertIn("Oct 26–Nov 1", msg)
+        self.assertIn("no open shifts", msg)

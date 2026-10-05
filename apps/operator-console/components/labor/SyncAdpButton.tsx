@@ -107,7 +107,13 @@ export function SyncAdpButton({
       return;
     }
     const { scrapedAt: latest, advanced, execution } = ack.data ?? {};
-    if (advanced) {
+    // Clocked hours land mid-job (schedule, rates and unavailability follow), so with an
+    // execution to watch, only its completion ends the sync.
+    if (advanced && !executionRef.current) {
+      finishOk(latest ?? null);
+      return;
+    }
+    if (execution?.done && execution.succeeded && advanced) {
       finishOk(latest ?? null);
       return;
     }
@@ -128,7 +134,9 @@ export function SyncAdpButton({
     setStatusText(
       execution?.done
         ? "Finishing…"
-        : "Syncing ADP… (you can keep using the page)",
+        : advanced
+          ? "Clocked hours synced — still reading schedule and pay rates…"
+          : "Syncing ADP… (you can keep using the page)",
     );
   }, [finishErr, finishOk]);
 

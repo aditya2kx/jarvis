@@ -97,6 +97,11 @@ export type DraftShift = {
 
 const hm = (h: number, m = 0) => h * 60 + m;
 
+/** Drafted shifts start and end on the hour or half hour. */
+const GRID = 30;
+const snapDown = (t: number) => Math.floor(t / GRID) * GRID;
+const snapUp = (t: number) => Math.ceil(t / GRID) * GRID;
+
 /**
  * Median open / mid / close blocks per weekday (Mon = 0), ADP punches
  * 2026-07-27 → 2026-09-25, rounded to 15 min. The 6:30 opener and 7:30 second
@@ -214,10 +219,48 @@ export function draftDay(args: {
     return { kind, start, end, mustCover: t0 };
   };
 
+  const extendNeighbour = (g0: number, g1: number): boolean => {
+    const fits = out
+      .filter((o) => o.employee != null && (o.endMin === g0 || o.startMin === g1))
+      .flatMap((o) => {
+        const a = args.roster.find((r) => r.employee === o.employee);
+        const w = a?.windows[dow];
+        if (!a || !w) return [];
+        const s = Math.max(dayStart, snapDown(Math.min(o.startMin, g0)));
+        const e = Math.min(dayEnd, snapUp(Math.max(o.endMin, g1)));
+        const [fs, fe] = freeSegment(s, e, args.unavailable?.get(a.employee));
+        const added = (e - s - (o.endMin - o.startMin)) / 60;
+        const ok =
+          s >= w[0] && e <= w[1] && fs === s && fe === e &&
+          e - s <= (a.maxShiftMin ?? maxLen) &&
+          weekOf(a) + added <= weekCap(a);
+        return ok ? [{ o, a, s, e, added }] : [];
+      })
+      .sort((x, y) => x.added - y.added || priority(x.a, y.a));
+    const f = fits[0];
+    if (!f) return false;
+    args.weekHours.set(f.a.employee, weekOf(f.a) + f.added);
+    args.mins.forEach((t, i) => {
+      if ((t >= f.s && t < f.o.startMin) || (t >= f.o.endMin && t < f.e)) cover[i]! += 1;
+    });
+    Object.assign(f.o, { startMin: f.s, endMin: f.e, hours: (f.e - f.s) / 60 });
+    return true;
+  };
+
   for (let n = 0; n < (args.maxShifts ?? 8); n++) {
     const short = args.need.map((x, i) => x - cover[i]!);
     const firstIdx = short.findIndex((x) => x > 0);
     if (firstIdx < 0) break;
+    let gapIdx = firstIdx;
+    while (gapIdx + 1 < short.length && short[gapIdx + 1]! > 0) gapIdx++;
+    const g0 = args.mins[firstIdx]!;
+    const g1 = args.mins[gapIdx]! + step;
+    // A gap shorter than the shortest shift: stretch a drafted neighbour over it rather than
+    // add a minimum-length shift that overstaffs the rest of its span.
+    if (g1 - g0 < minLen && extendNeighbour(g0, g1)) {
+      n--;
+      continue;
+    }
     const block = args.shiftTimes === "need" ? needBlock(short, firstIdx) : templateBlock(short, args.mins[firstIdx]!);
     if (!block) break;
     let { start: blockStart, end: blockEnd } = block;
@@ -230,6 +273,8 @@ export function draftDay(args: {
       const j = at(blockEnd);
       if (j > 0 && cover[j]! > cover[j - 1]!) blockEnd = Math.min(dayEnd, blockEnd + overlap);
     }
+    blockStart = snapDown(blockStart);
+    blockEnd = snapUp(blockEnd);
 
     // A person with a longer own longest shift may stay on through the rest of the short run.
     let runEnd = firstIdx;
@@ -246,7 +291,9 @@ export function draftDay(args: {
         if (own != null) {
           hi = own > blockEnd - blockStart ? Math.min(we, Math.min(reach, blockStart + own)) : Math.min(hi, lo + own);
         }
-        const [s, free] = freeSegment(lo, hi, args.unavailable?.get(a.employee));
+        const [s0, free0] = freeSegment(lo, hi, args.unavailable?.get(a.employee));
+        const s = snapUp(s0);
+        const free = snapDown(free0);
         let e = own != null ? Math.min(free, s + own) : free;
         // Spread an hour target evenly over as few days as their longest shift allows
         // (40 h at 9 h → 5 days of 8 h; at 7 h → 6 days of 6.75 h), never more days than are left.
@@ -257,7 +304,7 @@ export function draftDay(args: {
           e = Math.min(e, s + Math.max(minLen, Math.ceil(remaining / days / step) * step));
         }
         // A last shift may end early to land on the weekly cap instead of being skipped.
-        e = Math.min(e, s + Math.floor(((weekCap(a) - weekOf(a)) * 60) / step) * step);
+        e = snapDown(Math.min(e, s + Math.floor(((weekCap(a) - weekOf(a)) * 60) / step) * step));
         // "Trimmed" = cut short by their availability, not by pacing or their own longest shift.
         const trimmed = s > lo || free < hi || lo > blockStart || (own == null && hi < blockEnd);
         return { a, s, e, len: e - s, gain: gain(short, args.mins, s, e), trimmed };

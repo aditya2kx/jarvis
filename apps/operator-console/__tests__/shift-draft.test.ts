@@ -115,6 +115,26 @@ describe("draftDay", () => {
     expect([s!.startMin, s!.endMin]).toEqual([750, 1020]);
   });
 
+  it("stretches a drafted neighbour over a gap shorter than the shortest shift instead of overstaffing", () => {
+    // 2 needed 8:30–20:30. Mid leaves 14:30; Late is unavailable until 15:59. The 14:30–16:00
+    // gap goes to Mid (→ 7.5 h), not a fresh 4 h shift that makes three on the floor till 18:30.
+    const need = mins.map((t) => (t < 390 ? 0 : t < 510 ? 1 : t < 1230 ? 2 : 0));
+    const roster: Availability[] = [
+      { employee: "Opener", maxWeekHours: 40, maxShiftMin: 480, windows: all([390, 870]) },
+      { employee: "Mid", maxWeekHours: 40, windows: all([510, 1260]) },
+      { employee: "Late", maxWeekHours: 40, windows: all([360, 1260]) },
+    ];
+    const out = draftDay({
+      iso: "2026-10-13", mins, onFloor: zeros, need, roster, weekHours: new Map(), busy: new Set(),
+      minShiftMin: 240, maxShiftMin: 450, handoverOverlapMin: 30, shiftTimes: "need",
+      unavailable: new Map([["Late", [{ fromMin: 360, toMin: 959, status: "approved" as const }]]]),
+    });
+    const cover = mins.map((t) => out.filter((s) => t >= s.startMin && t < s.endMin).length);
+    expect(Math.max(...cover.filter((_, i) => mins[i]! >= 960))).toBe(2);
+    expect(out.find((s) => s.employee === "Mid")!.endMin).toBe(960);
+    expect(out.every((s) => s.startMin % 30 === 0 && s.endMin % 30 === 0)).toBe(true);
+  });
+
   it("ends a shift after the last short step, not at the template's later end", () => {
     // Tuesday's close template ends 20:45; need stops at 20:30.
     const need = mins.map((t) => (t >= 840 && t < 1230 ? 1 : 0));

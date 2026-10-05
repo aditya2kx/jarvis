@@ -43,7 +43,8 @@ class RunDrafts(unittest.TestCase):
              mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
              mock.patch.object(wb, "goto_week") as goto, \
              mock.patch.object(wb, "create_shift", create_shift or mock.MagicMock()) as cs, \
-             mock.patch.object(wb, "create_open_shift") as cos:
+             mock.patch.object(wb, "create_open_shift") as cos, \
+             mock.patch.object(w, "refresh_schedule") as self.refresh:
             rc = w.run_drafts("palmetto", "p1", headless=True, dry_run=dry_run)
         return rc, goto, cs, cos
 
@@ -59,6 +60,8 @@ class RunDrafts(unittest.TestCase):
         self.assertIn(("c", "skipped", "already drafted in ADP by an earlier save"), fq.updates)
         self.assertIn(("a", "drafted", None), fq.updates)
         self.assertIn(("b", "drafted", None), fq.updates)
+        self.refresh.assert_called_once()
+        self.assertEqual(self.refresh.call_args.args[2], datetime.date(2026, 9, 28))
 
     def test_one_failure_is_recorded_and_the_rest_continue(self):
         fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam")])
@@ -83,7 +86,8 @@ class RunDrafts(unittest.TestCase):
                  mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
                  mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
                  mock.patch.object(wb, "goto_week"), \
-                 mock.patch.object(wb, "create_shift") as cs:
+                 mock.patch.object(wb, "create_shift") as cs, \
+                 mock.patch.object(w, "refresh_schedule"):
                 rc = w.run_drafts("palmetto", "p1", headless=True, dry_run=False)
         self.assertEqual(rc, 0)
         self.assertEqual(fq.updates, [("a", "drafted", None), ("b", "drafted", None)])
@@ -114,6 +118,7 @@ class RunDrafts(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(cs.call_args.kwargs["dry_run"])
         self.assertEqual(fq.updates, [])
+        self.refresh.assert_not_called()
 
 
 class RunDelete(unittest.TestCase):
@@ -134,7 +139,8 @@ class RunDelete(unittest.TestCase):
              mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
              mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
              mock.patch.object(wb, "goto_week"), \
-             mock.patch.object(wb, "delete_shift", delete_shift or mock.MagicMock()) as ds:
+             mock.patch.object(wb, "delete_shift", delete_shift or mock.MagicMock()) as ds, \
+             mock.patch.object(w, "refresh_schedule") as self.refresh:
             rc = w.run_delete("palmetto", self.W, keys, headless=True, dry_run=dry_run)
         return rc, ds, updates
 
@@ -147,6 +153,7 @@ class RunDelete(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual([c.kwargs["before"] for c in ds.call_args_list], [10, 9])
         self.assertEqual(updates, [("a", "p2", "deleted"), ("b", "p2", "deleted")])
+        self.refresh.assert_called_once_with(mock.ANY, "palmetto", self.W)
 
     def test_refuses_rows_that_are_not_assigned_drafts(self):
         for latest in ([self._latest("a", status="published")], [self._latest("a", employee=None)], []):
@@ -161,6 +168,7 @@ class RunDelete(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(ds.call_count, 1)
         self.assertEqual(updates, [])
+        self.refresh.assert_not_called()
 
     def test_lagging_count_confirmed_by_recheck_continues(self):
         boom = mock.MagicMock(side_effect=[wb.UnconfirmedSave("slow"), None])

@@ -2722,6 +2722,8 @@ def _run_refresh(run_id: str) -> int:
             argv += ["--publish", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
         elif write_mode == "inspect":
             argv += ["--inspect", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
+        elif write_mode == "refresh":
+            argv += ["--refresh-schedule", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
         elif write_mode == "delete":
             argv += ["--delete", os.environ.get("BHAGA_SCHEDULE_DELETE_KEYS", ""),
                      "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]

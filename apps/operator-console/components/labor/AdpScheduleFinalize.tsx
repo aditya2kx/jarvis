@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   publishWeekAction,
   saveDraftsToAdpAction,
@@ -115,6 +116,7 @@ export function AdpScheduleFinalize({
   const [lastAction, setLastAction] = useState<"save" | "publish" | null>(null);
   const [sheet, setSheet] = useState<"save" | "publish" | null>(null);
   const { isPending, run } = useConsoleAction();
+  const router = useRouter();
 
   const refresh = useCallback(async () => {
     const ack = await schedulePushStatusAction(weekStart);
@@ -140,6 +142,12 @@ export function AdpScheduleFinalize({
   }, [weekStart]);
 
   const polling = running != null || graceUntil > 0;
+  // A finished job also reloaded ADP's schedule for the week; re-fetch the page's data.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && running == null) router.refresh();
+    wasRunning.current = running != null;
+  }, [running, router]);
   useEffect(() => {
     if (!polling) return;
     const id = setInterval(() => {

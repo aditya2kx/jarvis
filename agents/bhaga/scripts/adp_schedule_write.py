@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
+import re
+import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -59,6 +62,38 @@ def week_start_of(date: dt.date) -> dt.date:
     return date - dt.timedelta(days=date.weekday())
 
 
+_NOT_SCHEDULE = ("square", "adp_shifts", "adp_punches", "adp_rates", "adp_liability",
+                 "adp_timecard_gaps", "square_rollup")
+
+
+def refresh_schedule(page, store: str, week: dt.date) -> bool:
+    """Re-scrape ``week`` from the grid already open on it and reload adp_scheduled_shifts.
+
+    The console reads ADP's schedule from BQ; without this, a save/delete/publish
+    only shows after the next sync. The loader purges each scraped date first, so
+    removed shifts disappear too. Best-effort: the ADP write already happened.
+    """
+    from skills.adp_run_automation import runner as r
+
+    try:
+        frame = r._open_team_schedule(page)
+        label = frame.get_by_text(re.compile(r"Week of")).first.inner_text(timeout=5000)
+        if wb.week_label_start(label) != week:
+            raise wb.ScheduleWriteError(f"grid shows {label!r}, not {week}")
+        payloads, requests = r._schedule_within_session(page, weeks=1)
+        path = r._write_schedule_json(payloads, store=store, requests=requests)
+        subprocess.run(
+            [sys.executable, "-m", "agents.bhaga.scripts.backfill_from_downloads", "--store", store,
+             *[a for s in _NOT_SCHEDULE for a in ("--skip", s)]],
+            check=True, env={**os.environ, "BHAGA_DATASTORE": "bigquery", "PYTHONUNBUFFERED": "1"},
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"BREADCRUMB adp_schedule_refresh store={store} week_start={week} error={type(exc).__name__}: {exc}"[:500])
+        return False
+    print(f"[schedule_write] schedule refreshed week_start={week} from {path.name}")
+    return True
+
+
 def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> int:
     rows = _query(
         "SELECT * FROM {T} WHERE store = @store AND push_id = @push AND status = 'queued'"
@@ -91,6 +126,7 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
     for row in todo:
         by_week[week_start_of(row["date"])].append(row)
     failed = 0
+    changed: set[dt.date] = set()
     pending = {row["row_key"] for row in todo}
     # BQ DML takes seconds; one ordered background writer keeps it off the browser's path.
     writer = ThreadPoolExecutor(max_workers=1)
@@ -153,11 +189,15 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
                         continue
                     if not dry_run:
                         expected += 1
+                        changed.add(week)
                     print(
                         f"[schedule_write] {'checked' if dry_run else 'drafted'} {row['row_key']} "
                         f"as {adp_name!r} in {time.monotonic() - started:.1f}s"
                     )
                     set_status(row["row_key"], "drafted")
+            if changed:
+                # The grid is on the last week written; the console saves one week per click.
+                refresh_schedule(page, store, max(changed))
     finally:
         writer.shutdown(wait=True)
     return 1 if failed else 0
@@ -172,6 +212,8 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
         wb.goto_week(frame, page, week_start)
         try:
             pending = wb.publish_drafts(frame, page, dry_run=dry_run)
+            if pending and not dry_run:
+                refresh_schedule(page, store, week_start)
         except Exception as exc:  # noqa: BLE001
             msg = f"{type(exc).__name__}: {exc}"[:400]
             print(f"BREADCRUMB adp_schedule_publish store={store} week_start={week_start} error={msg}")
@@ -225,6 +267,7 @@ def run_delete(store: str, week_start: dt.date, row_keys: list[str], *, headless
         wb.goto_week(frame, page, week_start)
         page.wait_for_timeout(1500)
         expected = wb.drafts_pending(frame)
+        rc, deleted = 0, 0
         for row in todo:
             started = time.monotonic()
             try:
@@ -246,15 +289,30 @@ def run_delete(store: str, week_start: dt.date, row_keys: list[str], *, headless
             except Exception as exc:  # noqa: BLE001 — stop: the next delete's baseline would be unknown
                 msg = f"{type(exc).__name__}: {exc}"[:400]
                 print(f"BREADCRUMB adp_schedule_delete row_key={row['row_key']} expected={expected} error={msg}")
-                return 1
+                rc = 1
+                break
             print(
                 f"[schedule_write] {'checked' if dry_run else 'deleted'} {row['row_key']}"
                 f" in {time.monotonic() - started:.1f}s"
             )
             if not dry_run:
                 expected -= 1
+                deleted += 1
                 _set_status(row["row_key"], row["push_id"], "deleted")
-    return 0
+        if deleted:
+            refresh_schedule(page, store, week_start)
+    return rc
+
+
+def run_refresh(store: str, week_start: dt.date, *, headless: bool) -> int:
+    """Read-only: re-scrape one week of ADP Team Schedule into adp_scheduled_shifts."""
+    from skills.adp_run_automation import runner as r
+
+    with r.adp_session(store=store, headed=not headless) as (_ctx, page):
+        frame = r._open_team_schedule(page)
+        wb.goto_week(frame, page, week_start)
+        page.wait_for_timeout(1500)
+        return 0 if refresh_schedule(page, store, week_start) else 1
 
 
 def run_inspect(store: str, week_start: dt.date, *, headless: bool) -> int:
@@ -285,11 +343,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--push-id")
     p.add_argument("--publish", action="store_true")
     p.add_argument("--inspect", action="store_true", help="read-only: draft count + open shifts for --week-start")
+    p.add_argument("--refresh-schedule", action="store_true", help="read-only: reload --week-start's ADP schedule into BQ")
     p.add_argument("--delete", help="';'-separated row_keys of drafted shifts to remove from ADP (--week-start)")
     p.add_argument("--week-start", type=dt.date.fromisoformat)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--headless", action="store_true")
     a = p.parse_args(argv)
+    if a.refresh_schedule:
+        if not a.week_start or a.week_start.weekday() != 0:
+            p.error("--refresh-schedule needs --week-start on a Monday")
+        return run_refresh(a.store, a.week_start, headless=a.headless)
     if a.delete:
         if not a.week_start or a.week_start.weekday() != 0:
             p.error("--delete needs --week-start on a Monday")

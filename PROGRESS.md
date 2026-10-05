@@ -1,3 +1,11 @@
+## 2026-10-05 — Shift scheduling: the console plans the week and ADP gets it, drafts to published (Issue #337, PR #360)
+
+**Scope:** the operator planned shifts on `/labor` and then re-keyed every one into ADP Team Schedule. The console's hours were wall-clock, ADP's are paid (30 min meal off shifts over 6 h), so the two never agreed. Adding Houston to the same ADP login also stalled every ADP job at the Companies list.
+
+**Key changes:** versioned scheduling rules per store (migration 076, append-only), including the meal rule and a per-person **Unavailable on dates** rule. ADP unavailability (077) and Directory status (085) feed a coverage-first draft in paid hours. Behind `CONSOLE_ADP_SCHEDULE_WRITE` (off by default), **Review & save as ADP drafts** and **Publish** run on Cloud Run (078 `labor_schedule_pushes`). Each save or delete must move ADP's draft count by exactly one. Publish is confirmed by re-reading the grid, and the week is re-scraped after every write. A console publish DMs the operator a ClickUp team note listing open shifts. A week published directly in ADP flips to published on the next schedule load. Login opens the store's company by Client ID.
+
+**Evidence:** the week of Oct 12 was drafted, edited (Kenya off Oct 17–18, Wing assigned) and published from the console on 2026-10-05. 33 rows published, 9 deleted, 0 still drafted. Totals match ADP at 207 paid hours. The first publish exposed a lagging draft count in ADP, which was fixed in the same PR.
+
 ## 2026-10-04 — Missing punches: ADP's export hid open punches, now /labor shows them and writes the fix back (Issue #356, PR #357)
 
 **Scope:** ADP's Timecard export drops entries with no clock-out and scheduled days with no punch, so those hours never reached `/labor` or payroll prep. The operator was closing them by hand in ADP.

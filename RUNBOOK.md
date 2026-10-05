@@ -588,6 +588,15 @@ The nightly job **no longer sends a READY-handshake Slack message before startin
 directly to the ADP/Square scrapes. When the previous run's ADP session is restored successfully, ADP
 recognises the device and no OTP challenge fires.
 
+### ADP multi-company login (Houston + Austin on one account)
+
+Since Houston payroll was added to the same ADP login (2026-10), sign-in lands on a **Companies**
+list instead of the dashboard. `runner._ensure_logged_in` logs in, then `_select_company` opens the
+row whose `Client ID` equals the store profile's `adp_run.iid` (Palmetto Austin = 30109821; logs
+`[adp_login] step=select-company iid=…` / `step=company-open`). It waits up to 15 s for the client IDs
+to render and raises with a screenshot when not exactly one row matches — never guesses a company.
+Single-company logins skip the step.
+
 ### ADP trusted-device session (`_session/adp-palmetto.json`)
 
 `runner.adp_session()` — the single entry point for every ADP browser launch (timecard, earnings,
@@ -1671,12 +1680,33 @@ Read-only check of a week (draft count + open shifts): `BHAGA_ADP_SCHEDULE_WRITE
 BHAGA_SCHEDULE_WEEK_START=<Mon>` on the job, or `adp_schedule_write --inspect --week-start <Mon>`. A person already scheduled that day is not in ADP's list, so
 that row fails with the names ADP did list. **Publish week** (enabled once a row is `drafted`) runs
 `BHAGA_ADP_SCHEDULE_WRITE=publish`: Publish drafts for that week — every draft, including ones added by
-hand in ADP — then the week's rows become `published`. Nothing is posted to ClickUp; the operator
-announces open shifts. A failed publish
+hand in ADP — then the week's rows become `published`. If the toolbar count never reads 0 after the
+confirm, the job re-reads the week's grid and treats the publish as done only when no row is left
+`drafted` (else `PublishUnconfirmed`, rows stay `drafted`). A console publish then DMs the operator in
+ClickUp (`notify_published`, team_pulse's DM user) a ready-to-post team note listing the week's ADP
+open shifts — nothing is posted to the team (`BREADCRUMB adp_publish_dm` if the DM fails). **Publishing
+in ADP directly also works:** every Team Schedule load (nightly, Sync ADP, after any console write)
+reads each shift's `DRAFT` tag and each day's open-shift `Drafts: N` and flips matching `drafted` rows
+to `published` (`reconcile_published`, `[schedule_write] reconcile … newly_published=N`,
+`BREADCRUMB adp_publish_reconcile` on error); no DM in that case. A failed publish
 leaves rows `drafted` with `error='publish failed: …'`. Re-saving only sends failed / new shifts;
 a row_key already drafted is `skipped`. Dry run (fills each wizard, saves nothing):
 `BHAGA_ADP_CDP_URL=http://127.0.0.1:9333 python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --push-id <id> --dry-run`.
 Check: `bq query 'SELECT date, employee, start_min, end_min, status, error FROM bhaga.labor_schedule_pushes ORDER BY requested_at DESC LIMIT 40'`.
+Every save / delete / publish ends by re-scraping that week into `adp_scheduled_shifts` /
+`adp_open_shifts` (`[schedule_write] schedule refreshed …`, `BREADCRUMB adp_schedule_refresh` if not),
+so the console shows ADP's state without a Sync. Other job modes (`BHAGA_SCHEDULE_WEEK_START=<Mon>`):
+`BHAGA_ADP_SCHEDULE_WRITE=refresh` (read-only re-scrape of the week) and `=delete` with
+`BHAGA_SCHEDULE_DELETE_KEYS=<row_key,…>` — removes superseded **assigned drafts** only (refuses any key
+whose latest row isn't an assigned `drafted` one), verifies the pane shows that date/time/name and that
+ADP's draft count drops by exactly one, stops on anything else, marks rows `deleted`. Always run it
+with `BHAGA_SCHEDULE_DRY_RUN=1` first (opens the shift, cancels the confirm). Never "Delete all".
+**Paid hours:** ADP removes a 30-min unpaid meal from shifts over 6 h; the console's draft, saved
+shifts and scheduled lanes use paid hours (Staffing basics "Unpaid meal … min on shifts longer than …
+h") and the scraper stores exact per-day paid hours, so the week total matches ADP.
+**Unavailable on dates** (staff rule, from–to): for people who can't enter unavailability in ADP; the
+draft treats it as approved all-day unavailability and the Unavailability card lists it as
+"Scheduling rule". A saved week stays locked — fix an affected saved shift with delete + a new draft.
 
 **ADP local attach — one OTP per live ADP session (Issue #342).** Every fresh browser process is a new
 ADP login (`SMSESSION` is a session cookie), and ADP's risk engine texts a code for most of them. For

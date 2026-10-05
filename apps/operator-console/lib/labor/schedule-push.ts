@@ -53,6 +53,25 @@ export function savedPlan(rows: PushRow[]): PushShift[] {
     .sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin);
 }
 
+type ScheduleLane = { employee: string; open: boolean; segments: { startMin: number; endMin: number }[] };
+
+/**
+ * True once ADP's synced schedule carries this exact shift (same person — or an
+ * open shift — and the same start/end). Until the next ADP sync a saved draft
+ * isn't there yet, so the console keeps showing it as suggested.
+ */
+export function inAdpSchedule(s: PushShift, lanes: readonly ScheduleLane[]): boolean {
+  const want = s.employee?.replace(/\s+/g, " ").trim().toLowerCase();
+  return lanes.some((l) => {
+    if (want == null ? !l.open : l.open) return false;
+    if (want != null) {
+      const name = l.employee.replace(/\s+/g, " ").trim().toLowerCase();
+      if (name !== want && !name.startsWith(`${want} `)) return false;
+    }
+    return l.segments.some((g) => g.startMin === s.startMin && g.endMin === s.endMin);
+  });
+}
+
 /**
  * Rows worth showing for the current draft: anything in (or headed for) ADP, plus
  * failures for shifts still in the draft. A failed row for a shift the draft no

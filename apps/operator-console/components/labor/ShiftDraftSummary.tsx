@@ -210,9 +210,20 @@ export function ShiftDraftSummary({
               return (
                 <TableRow key={`${s.kind}-${s.startMin}-${i}`}>
                   <TableCell className="py-1.5">
-                    <Badge variant="secondary" className="h-5 px-1.5 text-[11px] font-normal">
-                      {KIND_LABEL[s.kind]}
-                    </Badge>
+                    <span className="flex flex-wrap items-center gap-1">
+                      <Badge variant="secondary" className="h-5 px-1.5 text-[11px] font-normal">
+                        {KIND_LABEL[s.kind]}
+                      </Badge>
+                      {s.inAdp ? (
+                        <Badge
+                          variant="outline"
+                          className="h-4 px-1.5 text-[11px] font-normal text-muted-foreground"
+                          title="ADP's schedule already shows this shift, so it counts as scheduled, not suggested."
+                        >
+                          in ADP schedule
+                        </Badge>
+                      ) : null}
+                    </span>
                   </TableCell>
                   <TableCell className="py-1.5 tabular-nums">
                     {formatClockMin(s.startMin)}–{formatClockMin(s.endMin)}

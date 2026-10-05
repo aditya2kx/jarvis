@@ -53,7 +53,7 @@ import {
   type DraftPreference,
   type DraftShift,
 } from "@/lib/labor/shift-draft";
-import { savedPlan, type PushRow } from "@/lib/labor/schedule-push";
+import { inAdpSchedule, savedPlan, type PushRow, type PushShift } from "@/lib/labor/schedule-push";
 import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
 import {
   applyDayRules,
@@ -121,9 +121,9 @@ function personDayHours(p: CoveragePersonDay): number {
   return (actual.length ? actual : p.segments).reduce((a, s) => a + s.hours, 0);
 }
 
-/** Draft shifts that add people/hours (not suggestions for existing ADP open shifts). */
+/** Draft shifts that add people/hours: not fills for ADP open shifts, not saved shifts ADP already shows. */
 function newShifts(shifts: DraftShift[]): DraftShift[] {
-  return shifts.filter((s) => !s.fillsOpen);
+  return shifts.filter((s) => !s.fillsOpen && !s.inAdp);
 }
 
 function draftCountSeries(points: OccupancyPoint[], shifts: DraftShift[]): number[] {
@@ -137,9 +137,14 @@ const NO_RULES_HISTORY: RulesVersion[] = [];
 const NO_UNAVAILABILITY: UnavailabilityInput[] = [];
 const NO_PUSH_ROWS: PushRow[] = [];
 
-function planShift(s: { date: string; employee: string | null; startMin: number; endMin: number }): DraftShift {
+function planShift(s: PushShift, lanes: readonly CoveragePersonDay[]): DraftShift {
   const kind = s.startMin <= 450 ? "open" : s.endMin >= 1200 ? "close" : "mid";
-  return { ...s, kind, hours: (s.endMin - s.startMin) / 60, trimmed: false };
+  const adp = lanes.map((l) => ({
+    employee: l.employee,
+    open: isOpenLane(l),
+    segments: l.segments.filter((g) => g.kind !== "actual"),
+  }));
+  return { ...s, kind, hours: (s.endMin - s.startMin) / 60, trimmed: false, inAdp: inAdpSchedule(s, adp) };
 }
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {
@@ -1137,7 +1142,7 @@ export function LaborCoveragePanel({
       const byDay = new Map<string, DraftShift[]>();
       for (const d of state) {
         const shifts = plan
-          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan.filter((s) => s.date === d.iso).map(planShift)]
+          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan.filter((s) => s.date === d.iso).map((s) => planShift(s, lanesFor(d.iso)))]
           : d.shifts;
         if (shifts.length) byDay.set(d.iso, [...shifts].sort((a, b) => a.startMin - b.startMin));
       }
@@ -1243,7 +1248,9 @@ export function LaborCoveragePanel({
   );
   const weekShifts = useMemo(
     () =>
-      newShifts([...(weekDraft?.byDay.values() ?? [])].flat())
+      [...(weekDraft?.byDay.values() ?? [])]
+        .flat()
+        .filter((s) => !s.fillsOpen)
         .map(({ date, employee, startMin, endMin }) => ({ date, employee, startMin, endMin })),
     [weekDraft],
   );

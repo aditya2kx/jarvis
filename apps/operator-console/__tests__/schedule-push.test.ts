@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  inAdpSchedule,
   pushRowKey,
   relevantRows,
   savedPlan,
@@ -84,5 +85,21 @@ describe("summarizePush", () => {
     expect(s.drafted).toBe(1);
     expect(s.failed).toBe(1);
     expect(s.errors).toEqual(["boom"]);
+  });
+});
+
+describe("inAdpSchedule", () => {
+  const lanes = [
+    { employee: "Johnson, Dolce J", open: false, segments: [{ startMin: 390, endMin: 870 }] },
+    { employee: "", open: true, segments: [{ startMin: 900, endMin: 1230 }] },
+  ];
+  it("matches the same person (middle initial tolerated) and exact times", () => {
+    expect(inAdpSchedule({ date: "2026-10-13", employee: "Johnson, Dolce", startMin: 390, endMin: 870 }, lanes)).toBe(true);
+    expect(inAdpSchedule({ date: "2026-10-13", employee: "Johnson, Dolce", startMin: 390, endMin: 900 }, lanes)).toBe(false);
+    expect(inAdpSchedule({ date: "2026-10-13", employee: "Huynh, Hillary", startMin: 390, endMin: 870 }, lanes)).toBe(false);
+  });
+  it("matches open shifts only against open lanes", () => {
+    expect(inAdpSchedule({ date: "2026-10-13", employee: null, startMin: 900, endMin: 1230 }, lanes)).toBe(true);
+    expect(inAdpSchedule({ date: "2026-10-13", employee: null, startMin: 390, endMin: 870 }, lanes)).toBe(false);
   });
 });

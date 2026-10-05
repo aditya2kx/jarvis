@@ -93,6 +93,8 @@ export type DraftShift = {
   trimmed: boolean;
   /** Suggested person for an existing ADP open shift — already counted as coverage and hours. */
   fillsOpen?: boolean;
+  /** A saved shift ADP's synced schedule already shows — counted there, not as suggested. */
+  inAdp?: boolean;
 };
 
 const hm = (h: number, m = 0) => h * 60 + m;

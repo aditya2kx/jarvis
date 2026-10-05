@@ -398,18 +398,18 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
     _select_company(page, store=store)
 
 
+# RUN "MCA parent" company list: each row is an sdf-button[data-test-id=mca-list-row-link]
+# next to a "Client ID: <iid>" span (live DOM 2026-10-05).
 COMPANY_ROW_JS = r"""
 (iid) => {
   const vis = e => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
-  const h = [...document.querySelectorAll('h1, h2, [role=heading]')]
-    .find(e => vis(e) && /^\s*Companies\s*$/.test(e.innerText || ''));
-  if (!h) return { list: false };
-  const rows = [...document.querySelectorAll('tr, [role=row]')]
-    .filter(r => vis(r) && new RegExp('Client ID:\\s*' + iid + '(\\D|$)').test(r.innerText || ''));
+  const links = [...document.querySelectorAll('[data-test-id="mca-list-row-link"]')].filter(vis);
+  if (!links.length) return { list: false };
+  const re = new RegExp('Client ID:\\s*' + iid + '(\\D|$)');
+  const hits = links.filter(a => re.test((a.parentElement && a.parentElement.innerText) || ''));
   document.querySelectorAll('[data-jarvis-company]').forEach(e => e.removeAttribute('data-jarvis-company'));
-  const link = rows.length === 1 && rows[0].querySelector('a, [role=link], button');
-  if (link) link.setAttribute('data-jarvis-company', '1');
-  return { list: true, rows: rows.length, link: !!link };
+  if (hits.length === 1) hits[0].setAttribute('data-jarvis-company', '1');
+  return { list: true, rows: hits.length, link: hits.length === 1 };
 }
 """
 

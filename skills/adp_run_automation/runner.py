@@ -428,6 +428,11 @@ def _select_company(page, *, store: str, wait_s: float = 6.0) -> None:
         info = page.evaluate(COMPANY_ROW_JS, iid)
     if not info["list"]:
         return
+    # Row links render before their "Client ID" text; wait for the match to settle.
+    rows_deadline = time.monotonic() + 15.0
+    while iid and not info["link"] and time.monotonic() < rows_deadline:
+        page.wait_for_timeout(500)
+        info = page.evaluate(COMPANY_ROW_JS, iid)
     if not iid or not info["link"]:
         _raise_with_evidence(
             page, store=store,

@@ -47,6 +47,12 @@ class SelectCompany(unittest.TestCase):
         r._select_company(page, store="palmetto")
         page.clicked.assert_called_once()
 
+    def test_waits_for_client_ids_to_render(self):
+        page = FakePage([{"list": True, "rows": 0, "link": False},
+                         {"list": True, "rows": 1, "link": True}, {"list": False}])
+        r._select_company(page, store="palmetto")
+        page.clicked.assert_called_once()
+
     def test_no_unique_match_raises_with_evidence(self):
         page = FakePage([{"list": True, "rows": 0, "link": False}])
         with mock.patch.object(r, "_raise_with_evidence", side_effect=RuntimeError("no row")) as rwe:

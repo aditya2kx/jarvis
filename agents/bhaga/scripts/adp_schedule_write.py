@@ -228,10 +228,21 @@ def run_delete(store: str, week_start: dt.date, row_keys: list[str], *, headless
         for row in todo:
             started = time.monotonic()
             try:
-                wb.delete_shift(
-                    frame, page, date_iso=row["date"].isoformat(), employee=row["employee"],
-                    start_min=row["start_min"], end_min=row["end_min"], before=expected, dry_run=dry_run,
-                )
+                try:
+                    wb.delete_shift(
+                        frame, page, date_iso=row["date"].isoformat(), employee=row["employee"],
+                        start_min=row["start_min"], end_min=row["end_min"], before=expected, dry_run=dry_run,
+                    )
+                except wb.UnconfirmedSave:
+                    if dry_run:
+                        raise
+                    frame = r._open_team_schedule(page)
+                    wb.goto_week(frame, page, week_start)
+                    page.wait_for_timeout(1500)
+                    n = wb.drafts_pending(frame)
+                    print(f"[schedule_write] delete recheck row_key={row['row_key']} publish_drafts={n} expected={expected - 1}")
+                    if n != expected - 1:
+                        raise
             except Exception as exc:  # noqa: BLE001 — stop: the next delete's baseline would be unknown
                 msg = f"{type(exc).__name__}: {exc}"[:400]
                 print(f"BREADCRUMB adp_schedule_delete row_key={row['row_key']} expected={expected} error={msg}")

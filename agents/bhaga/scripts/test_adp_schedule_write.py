@@ -119,7 +119,7 @@ class RunDrafts(unittest.TestCase):
 class RunDelete(unittest.TestCase):
     W = datetime.date(2026, 9, 28)
 
-    def _run(self, latest, keys, delete_shift=None, dry_run=False):
+    def _run(self, latest, keys, delete_shift=None, dry_run=False, counts=(10,)):
         updates = []
 
         def fq(sql, params):
@@ -130,7 +130,7 @@ class RunDelete(unittest.TestCase):
             return latest
 
         with mock.patch.object(w, "_query", fq), \
-             mock.patch.object(wb, "drafts_pending", mock.MagicMock(return_value=10)), \
+             mock.patch.object(wb, "drafts_pending", mock.MagicMock(side_effect=list(counts))), \
              mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
              mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
              mock.patch.object(wb, "goto_week"), \
@@ -160,6 +160,20 @@ class RunDelete(unittest.TestCase):
         rc, ds, updates = self._run([self._latest("a"), self._latest("b")], ["a", "b"], delete_shift=boom)
         self.assertEqual(rc, 1)
         self.assertEqual(ds.call_count, 1)
+        self.assertEqual(updates, [])
+
+    def test_lagging_count_confirmed_by_recheck_continues(self):
+        boom = mock.MagicMock(side_effect=[wb.UnconfirmedSave("slow"), None])
+        rc, ds, updates = self._run([self._latest("a"), self._latest("b")], ["a", "b"],
+                                    delete_shift=boom, counts=(10, 9))
+        self.assertEqual(rc, 0)
+        self.assertEqual(ds.call_args.kwargs["before"], 9)
+        self.assertEqual(updates, [("a", "p2", "deleted"), ("b", "p2", "deleted")])
+
+    def test_recheck_without_the_drop_stops(self):
+        boom = mock.MagicMock(side_effect=wb.UnconfirmedSave("slow"))
+        rc, ds, updates = self._run([self._latest("a")], ["a"], delete_shift=boom, counts=(10, 10))
+        self.assertEqual(rc, 1)
         self.assertEqual(updates, [])
 
     def test_dry_run_writes_nothing(self):

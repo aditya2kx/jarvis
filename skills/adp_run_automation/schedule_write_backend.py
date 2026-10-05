@@ -348,19 +348,9 @@ PANE_TEXT_JS = r"""
   .map(p => (p.innerText || '').replace(/\s+/g, ' ').trim()).join(' | ')
 """
 
-# Every visible dialog-ish surface and its buttons, to pin the delete confirmation.
-DIALOGS_JS = r"""
-() => {
-  const norm = e => (e.innerText || '').replace(/\s+/g, ' ').trim();
-  const vis = e => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
-  return [...document.querySelectorAll('sdf-focus-pane, sdf-modal, sdf-alert, [role=dialog], [role=alertdialog]')]
-    .filter(vis).map(d => ({
-      tag: d.tagName, role: d.getAttribute('role'), text: norm(d).slice(0, 400),
-      buttons: [...d.querySelectorAll('button, sdf-button')].filter(vis)
-        .map(b => ({ tag: b.tagName, text: norm(b).slice(0, 40), aria: b.getAttribute('aria-label') })),
-    }));
-}
-"""
+DELETE_CONFIRM_TEXT = re.compile(r"Are you sure you want to delete this shift", re.I)
+CONFIRM_RE = re.compile(r"^(Yes\b.*|Delete|Confirm|OK)$", re.I)
+CANCEL_RE = re.compile(r"^(No\b.*|Cancel|Keep\b.*)$", re.I)
 
 
 def delete_shift(
@@ -397,22 +387,38 @@ def delete_shift(
         _back_out(frame, page)
         raise ScheduleWriteError(f"expected one per-shift Delete in the pane, found {dels.count()}")
     dels.first.click(timeout=5000)
-    page.wait_for_timeout(1500)
-    print(f"[schedule_write] delete dialogs {frame.evaluate(DIALOGS_JS)}")
-    if dry_run:
-        for pat in (r"^\s*Cancel\s*$", r"^\s*No\b", r"^\s*Keep\b"):
-            btn = _visible_button(frame, pat)
-            if btn is not None:
-                btn.click(timeout=5000)
-                break
+    # The confirmation is a nested focus pane; its buttons live in shadow DOM,
+    # which role locators pierce. Scope to the innermost pane so nothing in the
+    # details pane (notably "Delete all schedules") can be matched.
+    confirm_pane = frame.locator("sdf-focus-pane").filter(has_text=DELETE_CONFIRM_TEXT).last
+    try:
+        confirm_pane.wait_for(state="visible", timeout=8000)
+    except Exception:
+        _back_out(frame, page)
+        raise ScheduleWriteError("delete confirmation did not appear")
+    buttons = confirm_pane.get_by_role("button")
+    names = [buttons.nth(i).get_attribute("aria-label") or buttons.nth(i).inner_text() for i in range(buttons.count())]
+    names = [" ".join((n or "").split()) for n in names]
+    print(f"[schedule_write] delete confirm buttons {names}")
+    yes = [i for i, n in enumerate(names) if CONFIRM_RE.match(n) and "all" not in n.lower()]
+    no = [i for i, n in enumerate(names) if CANCEL_RE.match(n)]
+    if dry_run or len(yes) != 1:
+        if no:
+            buttons.nth(no[0]).click(timeout=5000)
         else:
             page.keyboard.press("Escape")
         page.wait_for_timeout(1000)
         _back_out(frame, page)
+        if not dry_run:
+            raise ScheduleWriteError(f"delete confirmation buttons not recognised: {names}")
         if not _wait_drafts(frame, page, before, timeout_s=8.0):
             raise UnconfirmedSave(f"dry-run delete changed the draft count (expected {before})")
         return
-    raise ScheduleWriteError("delete confirmation not yet pinned — run with dry_run first")
+    buttons.nth(yes[0]).click(timeout=5000)
+    page.wait_for_timeout(1000)
+    _back_out(frame, page)
+    if not _wait_drafts(frame, page, before - 1):
+        raise UnconfirmedSave(f"ADP did not confirm deleting {employee} on {date_iso} {rng}")
 
 
 def publish_drafts(frame, page, *, dry_run: bool = False) -> int:

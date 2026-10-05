@@ -307,6 +307,114 @@ def create_open_shift(
         )
 
 
+# Marks the one draft shift of ``name`` on ``day`` (day-of-month) spanning ``rng``
+# ("2:00 PM - 8:30 PM") with data-jarvis-del. Day columns are matched to cells by x.
+FIND_SHIFT_JS = r"""
+([name, day, rng]) => {
+  const norm = e => (e.innerText || '').replace(/\s+/g, ' ').trim();
+  document.querySelectorAll('[data-jarvis-del]').forEach(e => e.removeAttribute('data-jarvis-del'));
+  const want = name.toLowerCase();
+  const dayRe = new RegExp('(^|\\D)' + day + '(\\D|$)');
+  const heads = [...document.querySelectorAll('.day-cell.column-header')].filter(h => dayRe.test(norm(h)));
+  if (heads.length !== 1) return { found: false, why: 'day header matches ' + heads.length };
+  const hb = heads[0].getBoundingClientRect(); const hx = hb.x + hb.width / 2;
+  const rows = [...document.querySelectorAll('.calendar-row')].filter(row => {
+    const n = row.querySelector('.worker-name'); const t = n ? norm(n).toLowerCase() : '';
+    return t === want || t.startsWith(want + ' ');
+  });
+  if (rows.length > 1) return { found: false, why: 'worker rows ' + rows.length };
+  if (!rows.length) {
+    const sc = document.querySelector('.calendar-view') || document.querySelector('.team-work-schedules-list');
+    if (sc) sc.scrollTop += 400;
+    return { found: false, why: 'worker row not rendered', scroll: true };
+  }
+  let cell = null, bd = 1e9;
+  for (const c of rows[0].querySelectorAll('team-schedule-calendar-day')) {
+    const b = c.getBoundingClientRect(); const d = Math.abs(b.x + b.width / 2 - hx);
+    if (d < bd) { bd = d; cell = c; }
+  }
+  if (!cell) return { found: false, why: 'no day cell' };
+  const shifts = [...cell.querySelectorAll('schedule-calendar-shifts')]
+    .filter(s => norm(s).includes(rng) && /draft/i.test(norm(s)));
+  if (shifts.length !== 1) return { found: false, why: 'matching draft shifts ' + shifts.length, cell: norm(cell) };
+  (shifts[0].querySelector('schedule-shift-range') || shifts[0]).setAttribute('data-jarvis-del', '1');
+  return { found: true, cell: norm(cell) };
+}
+"""
+
+PANE_TEXT_JS = r"""
+() => [...document.querySelectorAll('sdf-focus-pane')]
+  .filter(p => { const b = p.getBoundingClientRect(); return b.width > 0 && b.height > 0; })
+  .map(p => (p.innerText || '').replace(/\s+/g, ' ').trim()).join(' | ')
+"""
+
+# Every visible dialog-ish surface and its buttons, to pin the delete confirmation.
+DIALOGS_JS = r"""
+() => {
+  const norm = e => (e.innerText || '').replace(/\s+/g, ' ').trim();
+  const vis = e => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
+  return [...document.querySelectorAll('sdf-focus-pane, sdf-modal, sdf-alert, [role=dialog], [role=alertdialog]')]
+    .filter(vis).map(d => ({
+      tag: d.tagName, role: d.getAttribute('role'), text: norm(d).slice(0, 400),
+      buttons: [...d.querySelectorAll('button, sdf-button')].filter(vis)
+        .map(b => ({ tag: b.tagName, text: norm(b).slice(0, 40), aria: b.getAttribute('aria-label') })),
+    }));
+}
+"""
+
+
+def delete_shift(
+    frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int,
+    before: int, dry_run: bool = False,
+) -> None:
+    """Delete one assigned *draft* shift via its details pane (never "Delete all schedules").
+
+    ``before`` is the draft count the caller tracks (the toolbar count is hidden
+    while the pane is open). Confirmed only when ADP shows ``before - 1``.
+    """
+    _back_out(frame, page)
+    d = dt.date.fromisoformat(date_iso)
+    rng = f"{fmt_time(start_min)} - {fmt_time(end_min)}"
+    info: dict = {}
+    for _ in range(20):
+        info = frame.evaluate(FIND_SHIFT_JS, [employee, d.day, rng])
+        if info.get("found") or not info.get("scroll"):
+            break
+        page.wait_for_timeout(400)
+    if not info.get("found"):
+        raise ScheduleWriteError(f"draft {employee} {date_iso} {rng} not found in grid: {info.get('why')}")
+    frame.locator("[data-jarvis-del='1']").first.click(timeout=8000)
+    if not _wait_for(page, lambda: _pane_open(frame), 8.0):
+        raise ScheduleWriteError("shift details pane did not open")
+    page.wait_for_timeout(500)
+    pane = frame.evaluate(PANE_TEXT_JS)
+    expect = (f"{d:%b} {d.day}, {d.year}", rng, "Draft")
+    if not all(s in pane for s in expect) or employee.split(",")[0] not in pane:
+        _back_out(frame, page)
+        raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r}")
+    dels = frame.locator("sdf-focus-pane sdf-button[aria-label=' Delete ']")
+    if dels.count() != 1:
+        _back_out(frame, page)
+        raise ScheduleWriteError(f"expected one per-shift Delete in the pane, found {dels.count()}")
+    dels.first.click(timeout=5000)
+    page.wait_for_timeout(1500)
+    print(f"[schedule_write] delete dialogs {frame.evaluate(DIALOGS_JS)}")
+    if dry_run:
+        for pat in (r"^\s*Cancel\s*$", r"^\s*No\b", r"^\s*Keep\b"):
+            btn = _visible_button(frame, pat)
+            if btn is not None:
+                btn.click(timeout=5000)
+                break
+        else:
+            page.keyboard.press("Escape")
+        page.wait_for_timeout(1000)
+        _back_out(frame, page)
+        if not _wait_drafts(frame, page, before, timeout_s=8.0):
+            raise UnconfirmedSave(f"dry-run delete changed the draft count (expected {before})")
+        return
+    raise ScheduleWriteError("delete confirmation not yet pinned — run with dry_run first")
+
+
 def publish_drafts(frame, page, *, dry_run: bool = False) -> int:
     """Publish the shown week's drafts. Returns how many were pending."""
     pending = drafts_pending(frame)

@@ -116,5 +116,58 @@ class RunDrafts(unittest.TestCase):
         self.assertEqual(fq.updates, [])
 
 
+class RunDelete(unittest.TestCase):
+    W = datetime.date(2026, 9, 28)
+
+    def _run(self, latest, keys, delete_shift=None, dry_run=False):
+        updates = []
+
+        def fq(sql, params):
+            p = {n: v for n, _t, v in params}
+            if sql.startswith("UPDATE"):
+                updates.append((p["key"], p["push"], p["status"]))
+                return []
+            return latest
+
+        with mock.patch.object(w, "_query", fq), \
+             mock.patch.object(wb, "drafts_pending", mock.MagicMock(return_value=10)), \
+             mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
+             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
+             mock.patch.object(wb, "goto_week"), \
+             mock.patch.object(wb, "delete_shift", delete_shift or mock.MagicMock()) as ds:
+            rc = w.run_delete("palmetto", self.W, keys, headless=True, dry_run=dry_run)
+        return rc, ds, updates
+
+    @staticmethod
+    def _latest(key, status="drafted", employee="Doe, Alex"):
+        return {**_row(key, employee), "status": status, "push_id": "p2"}
+
+    def test_deletes_with_a_falling_baseline_and_marks_deleted(self):
+        rc, ds, updates = self._run([self._latest("a"), self._latest("b")], ["a", "b"])
+        self.assertEqual(rc, 0)
+        self.assertEqual([c.kwargs["before"] for c in ds.call_args_list], [10, 9])
+        self.assertEqual(updates, [("a", "p2", "deleted"), ("b", "p2", "deleted")])
+
+    def test_refuses_rows_that_are_not_assigned_drafts(self):
+        for latest in ([self._latest("a", status="published")], [self._latest("a", employee=None)], []):
+            rc, ds, updates = self._run(latest, ["a"])
+            self.assertEqual(rc, 2)
+            ds.assert_not_called()
+            self.assertEqual(updates, [])
+
+    def test_failure_stops_the_run(self):
+        boom = mock.MagicMock(side_effect=wb.UnconfirmedSave("count"))
+        rc, ds, updates = self._run([self._latest("a"), self._latest("b")], ["a", "b"], delete_shift=boom)
+        self.assertEqual(rc, 1)
+        self.assertEqual(ds.call_count, 1)
+        self.assertEqual(updates, [])
+
+    def test_dry_run_writes_nothing(self):
+        rc, ds, updates = self._run([self._latest("a")], ["a"], dry_run=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(ds.call_args.kwargs["dry_run"])
+        self.assertEqual(updates, [])
+
+
 if __name__ == "__main__":
     unittest.main()

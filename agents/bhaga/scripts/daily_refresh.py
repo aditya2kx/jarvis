@@ -2722,6 +2722,9 @@ def _run_refresh(run_id: str) -> int:
             argv += ["--publish", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
         elif write_mode == "inspect":
             argv += ["--inspect", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
+        elif write_mode == "delete":
+            argv += ["--delete", os.environ.get("BHAGA_SCHEDULE_DELETE_KEYS", ""),
+                     "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
         else:
             argv += ["--push-id", os.environ.get("BHAGA_SCHEDULE_PUSH_ID", "")]
         # Walks each wizard to its last step and backs out — a live selector check that saves nothing.

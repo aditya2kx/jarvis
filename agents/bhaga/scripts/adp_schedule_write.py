@@ -194,6 +194,58 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
     return 0
 
 
+def run_delete(store: str, week_start: dt.date, row_keys: list[str], *, headless: bool, dry_run: bool) -> int:
+    """Remove superseded draft shifts from ADP and mark their rows 'deleted'.
+
+    Only rows that are currently 'drafted' in ``week_start`` and assigned to an
+    employee are touched. Each delete must drop ADP's draft count by exactly one;
+    anything else stops the run.
+    """
+    latest = _query(
+        "SELECT * FROM {T} WHERE store = @store AND week_start = @week"
+        " QUALIFY ROW_NUMBER() OVER (PARTITION BY row_key ORDER BY updated_at DESC) = 1",
+        [("store", "STRING", store), ("week", "DATE", week_start)],
+    )
+    by_key = {r["row_key"]: r for r in latest}
+    todo = []
+    for key in row_keys:
+        row = by_key.get(key)
+        if row is None or row["status"] != "drafted" or not row["employee"]:
+            print(f"[schedule_write] delete refused {key}: {row and row['status']!r} (needs an assigned 'drafted' row)")
+            return 2
+        todo.append(row)
+    print(f"[schedule_write] delete week_start={week_start} rows={len(todo)} dry_run={dry_run}")
+    if not todo:
+        return 0
+
+    from skills.adp_run_automation import runner as r
+
+    with r.adp_session(store=store, headed=not headless) as (_ctx, page):
+        frame = r._open_team_schedule(page)
+        wb.goto_week(frame, page, week_start)
+        page.wait_for_timeout(1500)
+        expected = wb.drafts_pending(frame)
+        for row in todo:
+            started = time.monotonic()
+            try:
+                wb.delete_shift(
+                    frame, page, date_iso=row["date"].isoformat(), employee=row["employee"],
+                    start_min=row["start_min"], end_min=row["end_min"], before=expected, dry_run=dry_run,
+                )
+            except Exception as exc:  # noqa: BLE001 — stop: the next delete's baseline would be unknown
+                msg = f"{type(exc).__name__}: {exc}"[:400]
+                print(f"BREADCRUMB adp_schedule_delete row_key={row['row_key']} expected={expected} error={msg}")
+                return 1
+            print(
+                f"[schedule_write] {'checked' if dry_run else 'deleted'} {row['row_key']}"
+                f" in {time.monotonic() - started:.1f}s"
+            )
+            if not dry_run:
+                expected -= 1
+                _set_status(row["row_key"], row["push_id"], "deleted")
+    return 0
+
+
 def run_inspect(store: str, week_start: dt.date, *, headless: bool) -> int:
     """Read-only: the week's "Publish drafts (N)" count and its open shifts, as ADP shows them."""
     from skills.adp_run_automation import runner as r
@@ -222,10 +274,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--push-id")
     p.add_argument("--publish", action="store_true")
     p.add_argument("--inspect", action="store_true", help="read-only: draft count + open shifts for --week-start")
+    p.add_argument("--delete", help="';'-separated row_keys of drafted shifts to remove from ADP (--week-start)")
     p.add_argument("--week-start", type=dt.date.fromisoformat)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--headless", action="store_true")
     a = p.parse_args(argv)
+    if a.delete:
+        if not a.week_start or a.week_start.weekday() != 0:
+            p.error("--delete needs --week-start on a Monday")
+        keys = [k.strip() for k in a.delete.split(";") if k.strip()]
+        return run_delete(a.store, a.week_start, keys, headless=a.headless, dry_run=a.dry_run)
     if a.inspect:
         if not a.week_start or a.week_start.weekday() != 0:
             p.error("--inspect needs --week-start on a Monday")

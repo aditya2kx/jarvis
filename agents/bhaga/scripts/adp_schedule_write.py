@@ -268,21 +268,31 @@ def publish_message(week_start: dt.date, open_shifts: list[dict]) -> str:
     """
     week = _week_label(week_start)
     lines = [
-        f"Published **{week}** in ADP. Draft for the team — copy and post:",
+        f"Published **{week}** in ADP. Here's a draft for the team — copy and post:",
         "",
         "---",
         "",
-        f"Hi team! ADP shifts for the week of {week} are published. Please take a look and make sure "
-        "they match your availability, and let me know if there are any issues.",
+        f"Hi team! The schedule for **{week}** is now published in ADP. Thank you for all the hard work "
+        "and flexibility — it really shows.",
+        "",
+        "Please take a moment to look over your shifts and make sure they work with your availability. "
+        "If anything doesn't look right, just let me know and we'll sort it out together.",
         "",
     ]
     if open_shifts:
-        lines.append("Open shifts — reply here if you'd like to take one:")
+        lines += ["**Open shifts this week**", ""]
         for o in sorted(open_shifts, key=lambda x: (x["date"], x["start_min"])):
             d = o["date"]
             lines.append(f"- {d:%a %b} {d.day} · {_clock(o['start_min'])} – {_clock(o['end_min'])}")
+        lines += [
+            "",
+            "If you'd like to pick one up, please claim it in the ADP app — that's the quickest way to "
+            "lock it in. If you run into any trouble claiming it, reply in this thread and I'll add you.",
+            "",
+        ]
     else:
-        lines.append("There are no open shifts this week.")
+        lines += ["There are no open shifts this week.", ""]
+    lines.append("Thank you, team!")
     return "\n".join(lines)
 
 

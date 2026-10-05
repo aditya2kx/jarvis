@@ -228,11 +228,14 @@ class PublishMessage(unittest.TestCase):
             {"date": datetime.date(2026, 10, 17), "start_min": 870, "end_min": 1200},
             {"date": datetime.date(2026, 10, 13), "start_min": 900, "end_min": 1230},
         ])
-        self.assertIn("ADP shifts for the week of Oct 12–18 are published", msg)
-        self.assertIn("match your availability", msg)
+        self.assertIn("The schedule for **Oct 12–18** is now published in ADP", msg)
+        self.assertIn("work with your availability", msg)
+        self.assertIn("**Open shifts this week**\n\n- Tue Oct 13", msg)
+        self.assertIn("claim it in the ADP app", msg)
         self.assertLess(msg.index("Tue Oct 13 · 3:00 PM – 8:30 PM"), msg.index("Sat Oct 17 · 2:30 PM – 8:00 PM"))
 
     def test_no_open_shifts_and_month_boundary(self):
         msg = w.publish_message(datetime.date(2026, 10, 26), [])
         self.assertIn("Oct 26–Nov 1", msg)
         self.assertIn("no open shifts", msg)
+        self.assertNotIn("claim it", msg)

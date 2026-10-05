@@ -190,11 +190,11 @@ export function AdpScheduleFinalize({
       className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2.5"
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <h4 className="text-sm font-medium text-foreground">Send week of {range} to ADP</h4>
+        <h4 className="text-sm font-medium text-foreground">Send the suggested schedule for {range} to ADP</h4>
         <p className="text-xs text-muted-foreground">
           {toSave.length
-            ? `${toSave.length} draft shift${toSave.length === 1 ? "" : "s"} across ${days} day${days === 1 ? "" : "s"} · ${toSave.length - open} assigned · ${open} open · ${hoursOf(toSave).toFixed(1)}h. Covers the whole week, not just the selected day.`
-            : "Every draft shift of this week is already in ADP."}
+            ? `The shifts this page drafted for every day of the week (the “+N draft” on each day above): ${toSave.length} shifts — ${toSave.length - open} assigned, ${open} open — ${hoursOf(toSave).toFixed(1)}h. Not in ADP yet.`
+            : "Every suggested shift of this week is already in ADP."}
         </p>
         {rows.length ? (
           <div className="flex flex-wrap gap-1.5 text-[11px]">
@@ -220,7 +220,7 @@ export function AdpScheduleFinalize({
           title={disabledTitle ?? "Step 1 — employees don't see drafts"}
           onClick={() => setSheet("save")}
         >
-          {summary.queued > 0 ? "Saving to ADP…" : `1 · Save ${toSave.length ? `${toSave.length} shifts ` : ""}as ADP drafts`}
+          {summary.queued > 0 ? "Saving to ADP…" : "1 · Review & save as ADP drafts"}
         </Button>
         <Button
           size="sm"
@@ -239,7 +239,7 @@ export function AdpScheduleFinalize({
               <SheetHeader>
                 <SheetTitle>Save week of {range} to ADP as drafts</SheetTitle>
                 <SheetDescription>
-                  Creates these {toSave.length} shifts ({days} days) in ADP Team Schedule as drafts.
+                  {`Creates these ${toSave.length} suggested shifts (${days} days) in ADP Team Schedule as drafts.`}
                   Employees don&apos;t see drafts until you publish the week. Takes about 20–40 s per
                   shift; you can keep using the page.
                   {inAdp.length ? ` ${inAdp.length} shifts already in ADP are left alone.` : ""}

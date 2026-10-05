@@ -1997,6 +1997,24 @@ def _scrape_schedule_requests(page, frame) -> dict:
         return {"requests_error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
+def _week_label_jump_days(before: str, after: str) -> Optional[int]:
+    """Days between two "Week of Mon D, YYYY - ..." labels' start dates; None if unparseable."""
+    import re as _re
+    from datetime import datetime as _dt
+
+    def start(label: str):
+        m = _re.search(r"Week of\s+([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{4})", label)
+        if not m:
+            return None
+        try:
+            return _dt.strptime(f"{m.group(1)[:3]} {m.group(2)} {m.group(3)}", "%b %d %Y").date()
+        except ValueError:
+            return None
+
+    a, b = start(before), start(after)
+    return (b - a).days if a and b else None
+
+
 def _goto_next_week(page, frame) -> None:
     """Advance the schedule grid to the next week.
 
@@ -2045,6 +2063,11 @@ def _goto_next_week(page, frame) -> None:
         if now != before_label:
             label_changed = True
             print(f"[adp_schedule] step=advanced-week {before_label!r} -> {now!r}")
+            # Sunday evening CT (already Monday UTC) › lands two weeks on and the
+            # week in between is never read (2026-10-04 spike, 3/3 runs).
+            jump = _week_label_jump_days(before_label, now)
+            if jump is not None and jump != 7:
+                print(f"[adp_schedule] BREADCRUMB week_skip jump_days={jump} {before_label!r} -> {now!r}")
             break
     if not label_changed:
         raise RuntimeError(

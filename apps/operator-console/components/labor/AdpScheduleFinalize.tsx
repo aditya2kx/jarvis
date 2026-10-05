@@ -110,7 +110,6 @@ export function AdpScheduleFinalize({
   const summary = useMemo(() => summarizePush(rows), [rows]);
   const { toSave, inAdp } = useMemo(() => splitAgainstAdp(shifts, rows), [shifts, rows]);
   const drafted = rows.filter((r) => r.status === "drafted");
-  const openToPost = drafted.filter((r) => !r.employee).length;
   const busy = summary.queued > 0 || pollUntil > 0;
 
   useEffect(() => {
@@ -228,10 +227,7 @@ export function AdpScheduleFinalize({
                 <SheetTitle>Publish the week of {dayLabel(weekStart)}</SheetTitle>
                 <SheetDescription>
                   Publishes every ADP draft for this week (including any you added in ADP) — employees
-                  get notified in ADP Mobile.{" "}
-                  {openToPost
-                    ? `Then posts the ${openToPost} open shift${openToPost === 1 ? "" : "s"} to ClickUp · Shift Coverage & Trades.`
-                    : "Then posts a note to ClickUp · Shift Coverage & Trades (no open shifts)."}
+                  get notified in ADP Mobile.
                 </SheetDescription>
               </SheetHeader>
               <ShiftList

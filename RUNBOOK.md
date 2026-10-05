@@ -1666,8 +1666,8 @@ must rise by one, otherwise the row is `failed` with `UnconfirmedSave` and the r
 are `not attempted`) — look in ADP before re-saving, since that shift may exist. A person already scheduled that day is not in ADP's list, so
 that row fails with the names ADP did list. **Publish week** (enabled once a row is `drafted`) runs
 `BHAGA_ADP_SCHEDULE_WRITE=publish`: Publish drafts for that week — every draft, including ones added by
-hand in ADP — then the week's rows become `published` and the open shifts post to ClickUp
-**Shift Coverage & Trades** (a ClickUp failure is a breadcrumb, not a rollback). A failed publish
+hand in ADP — then the week's rows become `published`. Nothing is posted to ClickUp; the operator
+announces open shifts. A failed publish
 leaves rows `drafted` with `error='publish failed: …'`. Re-saving only sends failed / new shifts;
 a row_key already drafted is `skipped`. Dry run (fills each wizard, saves nothing):
 `BHAGA_ADP_CDP_URL=http://127.0.0.1:9333 python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --push-id <id> --dry-run`.

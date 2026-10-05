@@ -86,20 +86,5 @@ class RunDrafts(unittest.TestCase):
         self.assertEqual(fq.updates, [])
 
 
-class Message(unittest.TestCase):
-    def test_lists_open_shifts_in_order(self):
-        text = w.clickup_message(
-            datetime.date(2026, 9, 28),
-            4,
-            [_row("x", None, 780, 1260, datetime.date(2026, 10, 4)), _row("y", None, 600, 960)],
-        )
-        self.assertIn("week of Sep 28", text)
-        self.assertIn("(4 shifts)", text)
-        self.assertLess(text.index("Sat Oct 3 · 10 AM–4 PM"), text.index("Sun Oct 4 · 1 PM–9 PM"))
-
-    def test_no_open_shifts(self):
-        self.assertIn("No open shifts", w.clickup_message(datetime.date(2026, 9, 28), 1, []))
-
-
 if __name__ == "__main__":
     unittest.main()

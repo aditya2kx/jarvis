@@ -78,7 +78,7 @@ export async function saveDraftsToAdpAction(
   }
 }
 
-/** Publish the week's ADP drafts, then post its open shifts to ClickUp Shift Coverage & Trades. */
+/** Publish the week's ADP drafts (employees are notified in ADP Mobile). */
 export async function publishWeekAction(weekStart: string): Promise<ActionAck<{ weekStart: string }>> {
   try {
     requireScheduleWrite();
@@ -90,7 +90,7 @@ export async function publishWeekAction(weekStart: string): Promise<ActionAck<{ 
     return okAck({
       data: { weekStart },
       queued: ["adp-schedule-write"],
-      message: "Publishing the week in ADP — employees are notified, then open shifts post to ClickUp.",
+      message: "Publishing the week in ADP — employees are notified in ADP Mobile.",
     });
   } catch (e) {
     return failAck(e);

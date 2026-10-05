@@ -7,12 +7,11 @@ Two operator-confirmed modes, each started by one console click:
            as an ADP *draft* shift (assigned) or draft open shift (employee NULL).
            Rows whose row_key is already drafted/published are marked 'skipped'.
   publish  ... --publish --week-start 2026-09-28
-           Clicks ADP "Publish drafts" for that week, flips the week's 'drafted'
-           rows to 'published', and posts the open shifts to the ClickUp
-           Shift Coverage & Trades channel (store profile clickup.shift_coverage_channel).
+           Clicks ADP "Publish drafts" for that week and flips the week's 'drafted'
+           rows to 'published'. The operator announces open shifts themselves.
 
-``--dry-run`` walks each ADP wizard to its final step and backs out; BQ and
-ClickUp are left untouched. Cloud Run: daily_refresh early-exits here when
+``--dry-run`` walks each ADP wizard to its final step and backs out; BQ is
+left untouched. Cloud Run: daily_refresh early-exits here when
 ``BHAGA_ADP_SCHEDULE_WRITE`` is set (see that module).
 """
 
@@ -24,8 +23,6 @@ import sys
 from collections import defaultdict
 
 from skills.adp_run_automation import schedule_write_backend as wb
-
-DAY_FMT = "%a %b %-d"
 
 
 def _bq():
@@ -58,38 +55,6 @@ def _set_status(row_key: str, push_id: str, status: str, error: str | None = Non
 
 def week_start_of(date: dt.date) -> dt.date:
     return date - dt.timedelta(days=date.weekday())
-
-
-def clock(minutes: int) -> str:
-    return wb.fmt_time(minutes).replace(":00 ", " ")
-
-
-def clickup_message(week_start: dt.date, published: int, open_rows: list[dict]) -> str:
-    """Markdown for the Shift Coverage & Trades channel."""
-    head = (
-        f"**Schedule for the week of {week_start.strftime('%b %-d')} is published in ADP** "
-        f"({published} shift{'s' if published != 1 else ''})."
-    )
-    if not open_rows:
-        return head + " No open shifts this week."
-    lines = [
-        f"- {r['date'].strftime(DAY_FMT)} · {clock(r['start_min'])}–{clock(r['end_min'])}"
-        for r in sorted(open_rows, key=lambda r: (r["date"], r["start_min"]))
-    ]
-    return "\n".join(
-        [head, "", "**Open shifts up for grabs** — claim them in ADP Mobile (Schedule › Open shifts):", *lines]
-    )
-
-
-def _post_clickup(store: str, text: str) -> None:
-    from skills.clickup_chat import runner as clickup
-    from skills.store_profile.reader import _bootstrap_pointer
-
-    cfg = _bootstrap_pointer(store).get("clickup", {})
-    channel = (cfg.get("shift_coverage_channel") or {}).get("id")
-    if not channel:
-        raise RuntimeError("store profile has no clickup.shift_coverage_channel.id")
-    clickup.post_message(channel, text, team_id=cfg.get("team_id") or clickup.DEFAULT_TEAM_ID)
 
 
 def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> int:
@@ -186,20 +151,11 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
     print(f"[schedule_write] publish week_start={week_start} pending_drafts={pending} dry_run={dry_run}")
     if dry_run:
         return 0
-    rows = _query(
-        "SELECT * FROM {T} WHERE store = @store AND week_start = @week AND status = 'drafted'",
-        [("store", "STRING", store), ("week", "DATE", week_start)],
-    )
     _query(
         "UPDATE {T} SET status = 'published', error = NULL, updated_at = CURRENT_TIMESTAMP()"
         " WHERE store = @store AND week_start = @week AND status = 'drafted'",
         [("store", "STRING", store), ("week", "DATE", week_start)],
     )
-    try:
-        _post_clickup(store, clickup_message(week_start, pending, [x for x in rows if not x["employee"]]))
-    except Exception as exc:  # noqa: BLE001 — ADP is already published; the post is best-effort
-        print(f"BREADCRUMB adp_schedule_publish_clickup store={store} week_start={week_start} "
-              f"error={type(exc).__name__}: {exc}")
     return 0
 
 

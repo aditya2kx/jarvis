@@ -20,7 +20,7 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Payroll | Recognition bonus | `addRecognitionBonusAction` | — |
 | Payroll | Training quick-add (flag off) | `addTrainingShiftAction` | — |
 | Payroll | Add reimbursement | `addEmployeePerkAction` | — |
-| Payroll / Labor | Sync ADP | `syncAdpAction` / `pollAdpSyncAction` | Headless `BHAGA_ADP_SYNC_ALL` on Cloud Run (`bhaga-daily-refresh`): Timecard, Team Schedule (assigned + open), earnings, liability, pay rates in one login — never a payroll draft |
+| Payroll / Labor | Sync ADP | `syncAdpAction` / `pollAdpSyncAction` / `runningAdpSyncAction` (resumes the status after a reload) | Headless `BHAGA_ADP_SYNC_ALL` on Cloud Run (`bhaga-daily-refresh`): Timecard, Team Schedule (assigned + open), earnings, liability, pay rates in one login — never a payroll draft |
 | Labor | Save scheduling rules | `saveScheduleRulesAction` | Appends a `labor_schedule_rules` version (history kept) |
 | Labor | Save to ADP as drafts / Publish week | `saveDraftsToAdpAction`, `publishWeekAction` / `schedulePushStatusAction` | Behind `FEATURES.adpScheduleWrite` (`CONSOLE_ADP_SCHEDULE_WRITE=1`). Queues `labor_schedule_pushes` rows, then `BHAGA_ADP_SCHEDULE_WRITE` on Cloud Run creates ADP draft shifts; publish clicks ADP Publish drafts and posts open shifts to ClickUp Shift Coverage & Trades |
 | Labor | Approve unavailability request | `approveUnavailabilityAction` / `pollUnavailabilityApproveAction` | Behind `FEATURES.adpUnavailabilityApprove` (`CONSOLE_ADP_UNAVAIL_APPROVE=1`). `BHAGA_ADP_UNAVAIL_APPROVE` on Cloud Run clicks APPROVE on the one matching card in Team Schedule › Pending requests (never Reject, never retried), then the schedule-only refresh |

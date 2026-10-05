@@ -2,6 +2,7 @@ import "server-only";
 import { adpHoursScrapedAt } from "@/lib/bq/queries";
 import {
   getCloudRunExecutionStatus,
+  runningAdpSyncExecution,
   triggerAdpSync,
   type CloudRunExecutionStatus,
 } from "@/lib/bhaga/recompute";
@@ -40,6 +41,13 @@ export async function startAdpSync(
     message:
       "ADP sync queued in the background — usually 5–12 min. You can keep using the page.",
   };
+}
+
+/** A sync already running on Cloud Run (e.g. started before a page reload), with a baseline its hours must beat. */
+export async function runningAdpSync(): Promise<{ executionName: string; baselineScrapedAt: string } | null> {
+  const hit = await runningAdpSyncExecution();
+  // Same "YYYY-MM-DD HH:MM:SS" shape as the BQ scraped_at string, so they compare lexically.
+  return hit ? { executionName: hit.name, baselineScrapedAt: hit.createTime.replace("T", " ").slice(0, 19) } : null;
 }
 
 export type AdpSyncPoll = {

@@ -137,6 +137,38 @@ export async function hasRunningBhagaJob(): Promise<boolean> {
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Newest unfinished "Sync ADP" execution (by its BHAGA_ADP_SYNC_ALL override), so a reloaded page can keep watching it. */
+export async function runningAdpSyncExecution(): Promise<{ name: string; createTime: string } | null> {
+  const auth = new GoogleAuth({
+    scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+  });
+  const token = await (await auth.getClient()).getAccessToken();
+  if (!token.token) {
+    throw new Error("runningAdpSyncExecution: failed to obtain ADC access token");
+  }
+  const res = await fetch(`https://run.googleapis.com/v2/${adpJobResource()}/executions?pageSize=10`, {
+    headers: { Authorization: `Bearer ${token.token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`runningAdpSyncExecution: HTTP ${res.status} ${text.slice(0, 300)}`);
+  }
+  const json = (await res.json()) as {
+    executions?: {
+      name: string;
+      createTime: string;
+      completionTime?: string;
+      template?: { containers?: { env?: { name: string; value?: string }[] }[] };
+    }[];
+  };
+  const hit = (json.executions ?? []).find(
+    (e) =>
+      !e.completionTime &&
+      e.template?.containers?.some((c) => c.env?.some((v) => v.name === "BHAGA_ADP_SYNC_ALL" && v.value === "1")),
+  );
+  return hit ? { name: hit.name, createTime: hit.createTime } : null;
+}
+
 function adpSyncEnv(
   store: string,
   targetDate: string,

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   pollAdpSyncAction,
+  runningAdpSyncAction,
   syncAdpAction,
 } from "@/app/labor/actions";
 import { Button } from "@/components/ui/button";
@@ -140,6 +141,33 @@ export function SyncAdpButton({
     );
   }, [finishErr, finishOk]);
 
+  const watch = useCallback(
+    (executionName: string | null, baseline: string | null, message: string) => {
+      baselineRef.current = baseline;
+      executionRef.current = executionName;
+      startedAtRef.current = Date.now();
+      setPhase("running");
+      setStatusText(message);
+      void pollOnce();
+      pollTimerRef.current = setInterval(() => {
+        void pollOnce();
+      }, POLL_MS);
+    },
+    [pollOnce],
+  );
+
+  // A sync started before a reload keeps running on Cloud Run — pick its status back up.
+  useEffect(() => {
+    let cancelled = false;
+    void runningAdpSyncAction().then((ack) => {
+      if (cancelled || !ack.ok || !ack.data || pollTimerRef.current) return;
+      watch(ack.data.executionName, ack.data.baselineScrapedAt, "Syncing ADP… (started earlier)");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [watch]);
+
   const startSync = useCallback(async () => {
     if (phase === "starting" || phase === "running") return;
     stopPolling();
@@ -156,16 +184,8 @@ export function SyncAdpButton({
       return;
     }
     const data = ack.data;
-    baselineRef.current = data?.baselineScrapedAt ?? scrapedAt;
-    executionRef.current = data?.executionName ?? null;
-    startedAtRef.current = Date.now();
-    setPhase("running");
-    setStatusText(data?.message ?? "Syncing…");
-    void pollOnce();
-    pollTimerRef.current = setInterval(() => {
-      void pollOnce();
-    }, POLL_MS);
-  }, [phase, pollOnce, run, scrapedAt, stopPolling, targetDate]);
+    watch(data?.executionName ?? null, data?.baselineScrapedAt ?? scrapedAt, data?.message ?? "Syncing…");
+  }, [phase, run, scrapedAt, stopPolling, targetDate, watch]);
 
   const scrapedLabel = formatScraped(scrapedAt);
   const busy = phase === "starting" || phase === "running";

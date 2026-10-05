@@ -19,6 +19,7 @@ import { startScheduleWrite } from "@/lib/bhaga/schedule-write";
 import { chicagoTodayIso } from "@/lib/filters/range";
 import {
   pollAdpSync,
+  runningAdpSync,
   startAdpSync,
   type AdpSyncPoll,
   type AdpSyncStart,
@@ -146,7 +147,18 @@ export async function syncAdpAction(targetDate: string): Promise<ActionAck<AdpSy
   }
 }
 
-/** Poll BQ adp_shifts scraped_at (stamped last) + the Cloud Run execution. */
+/** A "Sync ADP" still running on Cloud Run, so a reloaded page resumes its status. */
+export async function runningAdpSyncAction(): Promise<
+  ActionAck<{ executionName: string; baselineScrapedAt: string } | null>
+> {
+  try {
+    return okAck({ data: await runningAdpSync() });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Poll BQ adp_shifts scraped_at + the Cloud Run execution. */
 export async function pollAdpSyncAction(opts: {
   baselineScrapedAt: string | null;
   executionName?: string | null;

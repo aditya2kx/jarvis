@@ -272,8 +272,7 @@ def publish_message(week_start: dt.date, open_shifts: list[dict]) -> str:
         "",
         "---",
         "",
-        f"Hi team! The schedule for **{week}** is now published in ADP. Thank you for all the hard work "
-        "and flexibility — it really shows.",
+        f"Hi team! The schedule for **{week}** is now published in ADP.",
         "",
         "Please take a moment to look over your shifts and make sure they work with your availability. "
         "If anything doesn't look right, just let me know and we'll sort it out together.",

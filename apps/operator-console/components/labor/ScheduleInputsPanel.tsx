@@ -290,7 +290,10 @@ const KINDS: { value: StaffRuleKind; label: string; unit: string; initial: numbe
   { value: "min_shifts_per_week", label: "At least … shifts / week", unit: "shifts / week · replaces Everyone", initial: 2 },
   { value: "max_shifts_per_period", label: "At most … shifts / pay period", unit: "shifts / pay period", initial: 1 },
   { value: "last_day", label: "Last working day", unit: "not drafted after this day", initial: 0 },
+  { value: "unavailable", label: "Unavailable on dates", unit: "not drafted these days · until they can mark it in ADP", initial: 0 },
 ];
+const isDateKind = (k: StaffRuleKind) => k === "last_day" || k === "unavailable";
+const todayCt = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
 const kindOrder = (k: StaffRuleKind) => KINDS.findIndex((x) => x.value === k);
 const valueMax = (k: StaffRuleKind) => (k === "max_day_hours" ? 16 : k === "min_shifts_per_week" ? 7 : 80);
 
@@ -911,13 +914,15 @@ export function ScheduleInputsPanel({
                           </SelectContent>
                         </Select>
                       )}
-                      {name && list.length < KINDS.length ? (
+                      {name ? (
                         <Button
                           size="xs"
                           variant="ghost"
                           className="ml-auto text-muted-foreground"
                           onClick={() => {
-                            const k = KINDS.find((x) => !list.some((r) => r.kind === x.value))!;
+                            const k =
+                              KINDS.find((x) => x.value !== "unavailable" && !list.some((r) => r.kind === x.value)) ??
+                              KINDS.find((x) => x.value === "unavailable")!;
                             onChange({
                               ...rules,
                               staffRules: [
@@ -927,7 +932,7 @@ export function ScheduleInputsPanel({
                                   employee: name,
                                   kind: k.value,
                                   value: k.initial,
-                                  ...(k.value === "last_day" ? { date: new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" }) } : {}),
+                                  ...(isDateKind(k.value) ? { date: todayCt() } : {}),
                                 },
                               ],
                             });
@@ -943,7 +948,13 @@ export function ScheduleInputsPanel({
                         <div key={r.id} className="flex flex-wrap items-center gap-2">
                           <Select
                             value={r.kind}
-                            onValueChange={(v) => v && setStaffRule(r.id, { kind: v as StaffRuleKind })}
+                            onValueChange={(v) =>
+                              v &&
+                              setStaffRule(r.id, {
+                                kind: v as StaffRuleKind,
+                                ...(isDateKind(v as StaffRuleKind) && !r.date ? { date: todayCt() } : {}),
+                              })
+                            }
                           >
                             <SelectTrigger className="h-7 w-56 text-xs" aria-label="Rule">
                               <SelectValue>{(v: StaffRuleKind) => KINDS.find((k) => k.value === v)?.label}</SelectValue>
@@ -956,7 +967,31 @@ export function ScheduleInputsPanel({
                               ))}
                             </SelectContent>
                           </Select>
-                          {r.kind === "last_day" ? (
+                          {r.kind === "unavailable" ? (
+                            <>
+                              <Input
+                                type="date"
+                                value={r.date ?? ""}
+                                onChange={(e) =>
+                                  setStaffRule(r.id, {
+                                    date: e.target.value,
+                                    ...(r.endDate && r.endDate < e.target.value ? { endDate: e.target.value } : {}),
+                                  })
+                                }
+                                className="h-7 w-36 text-xs tabular-nums"
+                                aria-label="First day unavailable"
+                              />
+                              <span className="text-xs text-muted-foreground">to</span>
+                              <Input
+                                type="date"
+                                min={r.date}
+                                value={r.endDate ?? r.date ?? ""}
+                                onChange={(e) => setStaffRule(r.id, { endDate: e.target.value })}
+                                className="h-7 w-36 text-xs tabular-nums"
+                                aria-label="Last day unavailable"
+                              />
+                            </>
+                          ) : r.kind === "last_day" ? (
                             <Input
                               type="date"
                               value={r.date ?? ""}

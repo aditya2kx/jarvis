@@ -9,6 +9,7 @@ import {
   DEFAULT_STAFFING,
   parseScheduleRules,
   minToTime,
+  ruleUnavailability,
   staffLimits,
   timeToMin,
   type DayRule,
@@ -351,5 +352,26 @@ describe("most hours per person", () => {
     expect(parseScheduleRules({ ...base, staffing: older }).staffing.maxWeekHours).toBe(40);
     expect(parseScheduleRules({ ...base, staffing: { ...DEFAULT_STAFFING, maxWeekHours: 30 } }).staffing.maxWeekHours).toBe(30);
     expect(() => parseScheduleRules({ ...base, staffing: { ...DEFAULT_STAFFING, maxWeekHours: 0 } })).toThrow();
+  });
+});
+
+describe("unavailable staff rule", () => {
+  const rule = { id: "k", employee: "Berding, Kenya N", kind: "unavailable" as const, value: 0, date: "2026-10-17", endDate: "2026-10-18" };
+
+  it("parses a date range and rejects a reversed one", () => {
+    const ok = parseScheduleRules({ dayRules: [], staffRules: [rule] });
+    expect(ok.staffRules[0]).toMatchObject({ date: "2026-10-17", endDate: "2026-10-18" });
+    const single = parseScheduleRules({ dayRules: [], staffRules: [{ ...rule, endDate: undefined }] });
+    expect(single.staffRules[0]!.endDate).toBe("2026-10-17");
+    expect(() =>
+      parseScheduleRules({ dayRules: [], staffRules: [{ ...rule, endDate: "2026-10-16" }] }),
+    ).toThrow(/from date on or before/);
+  });
+
+  it("becomes one all-day approved block per date and sets no limits", () => {
+    const rows = ruleUnavailability([rule]);
+    expect(rows.map((r) => r.first_date)).toEqual(["2026-10-17", "2026-10-18"]);
+    expect(rows.every((r) => r.all_day && r.status === "approved" && r.row_key.startsWith("rule|"))).toBe(true);
+    expect(staffLimits([rule]).size).toBe(0);
   });
 });

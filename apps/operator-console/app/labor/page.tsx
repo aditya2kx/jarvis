@@ -43,7 +43,7 @@ import { LaborCoveragePanel } from "@/components/labor/LaborCoveragePanel";
 import { PunchGapsPanel } from "@/components/labor/PunchGapsPanel";
 import { buildPunchGaps, mergePunchDays, type PunchGap } from "@/lib/labor/punch-gaps";
 import { scheduleRulesHistory } from "@/lib/labor/schedule-rules-store";
-import type { RulesVersion } from "@/lib/labor/schedule-inputs";
+import { ruleUnavailability, type RulesVersion } from "@/lib/labor/schedule-inputs";
 import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
 import { AdpAvailabilityCard } from "@/components/labor/AdpAvailabilityCard";
 import type { ScheduledShift } from "@/lib/labor/unavailability";
@@ -867,7 +867,12 @@ export default async function LaborPage({
 
           <CollapsibleSection id="availability" title="ADP availability">
           <AdpAvailabilityCard
-            rows={unavailability}
+            rows={[
+              ...unavailability,
+              ...ruleUnavailability(rulesHistory[0]?.rules.staffRules ?? []).map(
+                (r): UnavailabilityRow => ({ ...r, expires_at_ct: null, hours_left: null, scraped_at: null }),
+              ),
+            ]}
             shifts={upcomingShifts}
             roster={activeStaff ?? []}
             approveEnabled={FEATURES.adpUnavailabilityApprove}

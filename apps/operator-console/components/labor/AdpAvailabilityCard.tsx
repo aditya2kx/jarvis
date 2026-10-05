@@ -118,6 +118,9 @@ function ClashBadge({ rows, shifts }: { rows: UnavailabilityRow[]; shifts: Sched
   );
 }
 
+/** Entered as an "Unavailable on dates" scheduling rule, not read from ADP. */
+const fromRule = (r: UnavailabilityRow) => r.row_key.startsWith("rule|");
+
 const ROW = "flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm transition-colors hover:bg-muted/40";
 
 type View = "pending" | "approved" | "none" | "all";
@@ -234,11 +237,16 @@ export function AdpAvailabilityCard({
                   {p.lines.map((l) => (
                     <span key={`${l.weekdays.join("")}-${l.date}-${l.from_time}`} className="text-muted-foreground tabular-nums">
                       {lineText(l, lastWeekFrom, nextWeek)}
+                      {l.rows.every(fromRule) ? " · scheduling rule" : ""}
                     </span>
                   ))}
                 </span>
                 <ClashBadge rows={p.lines.flatMap((l) => l.rows)} shifts={shifts} />
-                <Badge variant="secondary">Approved</Badge>
+                {p.lines.every((l) => l.rows.every(fromRule)) ? (
+                  <Badge variant="outline">Scheduling rule</Badge>
+                ) : (
+                  <Badge variant="secondary">Approved</Badge>
+                )}
               </li>
             ))}
             {shownUnmarked.map((name) => (

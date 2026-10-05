@@ -5,6 +5,7 @@
  */
 
 import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
+import type { UnavailabilityInput } from "@/lib/labor/unavailability";
 
 /** How a day rule treats frozen delivery days. */
 export type DeliveryMode = "any" | "only" | "skip";
@@ -26,15 +27,18 @@ export type StaffRuleKind =
   | "max_day_hours"
   | "min_shifts_per_week"
   | "max_shifts_per_period"
-  | "last_day";
+  | "last_day"
+  | "unavailable";
 
 export type StaffRule = {
   id: string;
   employee: string;
   kind: StaffRuleKind;
   value: number;
-  /** `last_day` only: final working day (YYYY-MM-DD); never drafted after it. */
+  /** `last_day`: final working day. `unavailable`: first day off. (YYYY-MM-DD) */
   date?: string;
+  /** `unavailable` only: last day off, inclusive (defaults to `date`). */
+  endDate?: string;
 };
 
 export type StaffLimits = {
@@ -247,6 +251,7 @@ export function staffLimits(rules: StaffRule[]): Map<string, StaffLimits> {
   for (const r of rules) {
     if (!r.employee) continue;
     const cur = out.get(r.employee) ?? {};
+    if (r.kind === "unavailable") continue;
     if (r.kind === "last_day") {
       if (r.date && ISO_DATE.test(r.date)) cur.lastDay = r.date;
     } else if (!(r.value >= 0)) continue;
@@ -260,7 +265,14 @@ export function staffLimits(rules: StaffRule[]): Map<string, StaffLimits> {
 }
 
 const DELIVERY_MODES = new Set<string>(["any", "only", "skip"]);
-const KINDS = new Set<string>(["target_week_hours", "max_day_hours", "min_shifts_per_week", "max_shifts_per_period", "last_day"]);
+const KINDS = new Set<string>([
+  "target_week_hours",
+  "max_day_hours",
+  "min_shifts_per_week",
+  "max_shifts_per_period",
+  "last_day",
+  "unavailable",
+]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const isMin = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 24 * 60;
 
@@ -298,6 +310,14 @@ export function parseScheduleRules(raw: unknown): ScheduleRules {
     if (r.kind === "last_day") {
       if (!ISO_DATE.test(String(r.date ?? ""))) throw new Error(`Staff rule ${i + 1}: last day needs a date`);
       return { ...base, value: 0, date: String(r.date) };
+    }
+    if (r.kind === "unavailable") {
+      const from = String(r.date ?? "");
+      const to = String(r.endDate || from);
+      if (!ISO_DATE.test(from) || !ISO_DATE.test(to) || to < from) {
+        throw new Error(`Staff rule ${i + 1}: unavailable needs a from date on or before the to date`);
+      }
+      return { ...base, value: 0, date: from, endDate: to };
     }
     if (!(Number(r.value) >= 0) || Number(r.value) > 80) {
       throw new Error(`Staff rule ${i + 1}: value must be 0–80`);
@@ -382,4 +402,34 @@ export function moveItem<T>(list: readonly T[], from: number, to: number): T[] {
   const [item] = out.splice(from, 1);
   out.splice(t, 0, item!);
   return out;
+}
+
+/**
+ * `unavailable` staff rules as all-day unavailability, one entry per date, so the
+ * draft and the unavailability views treat them like an approved ADP entry.
+ */
+export function ruleUnavailability(rules: readonly StaffRule[]): (UnavailabilityInput & { row_key: string })[] {
+  const out: (UnavailabilityInput & { row_key: string })[] = [];
+  for (const r of rules) {
+    if (r.kind !== "unavailable" || !r.employee || !r.date || !ISO_DATE.test(r.date)) continue;
+    const end = r.endDate && r.endDate >= r.date ? r.endDate : r.date;
+    for (let d = r.date; d <= end; d = addDays(d, 1)) {
+      out.push({
+        row_key: `rule|${r.id}|${d}`,
+        employee: r.employee,
+        status: "approved",
+        first_date: d,
+        from_time: null,
+        to_time: null,
+        all_day: true,
+        repeat_weekday: null,
+        repeat_until: null,
+      });
+    }
+  }
+  return out;
+}
+
+function addDays(iso: string, n: number): string {
+  return new Date(Date.parse(`${iso}T12:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
 }

@@ -60,6 +60,7 @@ import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
 import {
   applyDayRules,
   DEFAULT_RULES,
+  ruleUnavailability,
   staffLimits,
   type DayRule,
   type RulesVersion,
@@ -959,6 +960,7 @@ export function LaborCoveragePanel({
   const buildDrafts = useCallback((r: ScheduleRules) => {
     if (!demand?.length) return null;
     const meal: MealRule = { afterMin: r.staffing.mealAfterMin, unpaidMin: r.staffing.unpaidMealMin };
+    const unavail = [...unavailability, ...ruleUnavailability(r.staffRules)];
     const inputs: NeedCtx = {
       staffing: r.staffing,
       dayRules: r.dayRules,
@@ -1043,7 +1045,7 @@ export function LaborCoveragePanel({
           (d) =>
             !done.has(d.iso) &&
             !d.busy.has(employee) &&
-            canWorkDay(a, d.iso, blocksOn(unavailability, d.iso).get(employee), r.staffing.minShiftMin),
+            canWorkDay(a, d.iso, blocksOn(unavail, d.iso).get(employee), r.staffing.minShiftMin),
         ).length;
       };
       const run = (d: (typeof state)[number], need: number[], maxShifts?: number, prefer?: DraftPreference) =>
@@ -1059,7 +1061,7 @@ export function LaborCoveragePanel({
           weekShifts,
           busy: d.busy,
           periodShifts: shiftsInPeriod(d.iso),
-          unavailable: blocksOn(unavailability, d.iso),
+          unavailable: blocksOn(unavail, d.iso),
           minShiftMin: r.staffing.minShiftMin,
           maxShiftMin: r.staffing.maxShiftMin,
           shiftTimes: r.staffing.shiftTimes,
@@ -1081,7 +1083,7 @@ export function LaborCoveragePanel({
             weekShifts,
             busy: d.busy,
             periodShifts: shiftsInPeriod(d.iso),
-            unavailable: blocksOn(unavailability, d.iso),
+            unavailable: blocksOn(unavail, d.iso),
             meal,
           });
           if (fill) d.shifts.push(fill);
@@ -1093,7 +1095,7 @@ export function LaborCoveragePanel({
       const slack = new Map(
         state.map((d) => [
           d.iso,
-          availableCount({ iso: d.iso, roster, unavailable: blocksOn(unavailability, d.iso), minShiftMin: r.staffing.minShiftMin }) -
+          availableCount({ iso: d.iso, roster, unavailable: blocksOn(unavail, d.iso), minShiftMin: r.staffing.minShiftMin }) -
             Math.max(0, ...d.floorNeed),
         ]),
       );

@@ -625,12 +625,6 @@ export interface LaborScheduledHoursRow {
   [key: string]: unknown;
 }
 
-const AVG_PT_WAGE_SQL = `SELECT AVG(wage_rate_dollars) AS rate
-       FROM ${fq("adp_wage_rates")}
-       WHERE wage_rate_dollars IS NOT NULL
-         AND NOT IFNULL(is_salaried, FALSE)
-         AND NOT IFNULL(excluded_from_labor_pct, FALSE)`;
-
 /** Current hourly rate per canonical name plus the average part-time rate, for pricing draft and open shifts. */
 export interface LaborWageRates {
   byName: Record<string, number>;
@@ -652,6 +646,12 @@ export async function laborWageRates(): Promise<LaborWageRates> {
     avgPartTime: avg[0]?.rate != null ? Number(avg[0].rate) : null,
   };
 }
+
+const AVG_PT_WAGE_SQL = `SELECT AVG(wage_rate_dollars) AS rate
+       FROM ${fq("adp_wage_rates")}
+       WHERE wage_rate_dollars IS NOT NULL
+         AND NOT IFNULL(is_salaried, FALSE)
+         AND NOT IFNULL(excluded_from_labor_pct, FALSE)`;
 
 /**
  * Latest date that actually has clocked hours, or null if none.

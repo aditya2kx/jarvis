@@ -38,6 +38,19 @@ function dayLabel(iso: string): string {
   });
 }
 
+/** "Oct 12–18", or "Oct 26 – Nov 1" across a month boundary. */
+export function weekRangeLabel(weekStart: string): string {
+  const [y, m, d] = weekStart.split("-").map(Number);
+  const start = new Date(y!, m! - 1, d!);
+  const end = new Date(y!, m! - 1, d! + 6);
+  const month = (x: Date) => x.toLocaleDateString("en-US", { month: "short" });
+  return start.getMonth() === end.getMonth()
+    ? `${month(start)} ${start.getDate()}–${end.getDate()}`
+    : `${month(start)} ${start.getDate()} – ${month(end)} ${end.getDate()}`;
+}
+
+const hoursOf = (shifts: PushShift[]) => shifts.reduce((a, s) => a + (s.endMin - s.startMin) / 60, 0);
+
 function ShiftList({ shifts }: { shifts: PushShift[] }) {
   const byDay = new Map<string, PushShift[]>();
   for (const s of [...shifts].sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin)) {
@@ -47,7 +60,12 @@ function ShiftList({ shifts }: { shifts: PushShift[] }) {
     <div className="flex flex-col gap-3 px-4">
       {[...byDay].map(([date, list]) => (
         <div key={date} className="flex flex-col gap-1">
-          <p className="text-xs font-medium text-muted-foreground">{dayLabel(date)}</p>
+          <p className="flex justify-between text-xs font-medium text-muted-foreground">
+            <span>{dayLabel(date)}</span>
+            <span className="tabular-nums">
+              {list.length} shift{list.length === 1 ? "" : "s"} · {hoursOf(list).toFixed(1)}h
+            </span>
+          </p>
           <ul className="flex flex-col divide-y rounded-md border">
             {list.map((s) => (
               <li
@@ -162,52 +180,66 @@ export function AdpScheduleFinalize({
   };
 
   const disabledTitle = enabled ? undefined : "ADP schedule writes are off (CONSOLE_ADP_SCHEDULE_WRITE)";
+  const range = weekRangeLabel(weekStart);
+  const days = new Set(toSave.map((s) => s.date)).size;
+  const open = toSave.filter((s) => !s.employee).length;
 
   return (
-    <div data-testid="adp-finalize" className="flex flex-col items-end gap-1.5">
-      <div className="flex flex-wrap items-center justify-end gap-2">
+    <div
+      data-testid="adp-finalize"
+      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2.5"
+    >
+      <div className="flex min-w-0 flex-col gap-1">
+        <h4 className="text-sm font-medium text-foreground">Send week of {range} to ADP</h4>
+        <p className="text-xs text-muted-foreground">
+          {toSave.length
+            ? `${toSave.length} draft shift${toSave.length === 1 ? "" : "s"} across ${days} day${days === 1 ? "" : "s"} · ${toSave.length - open} assigned · ${open} open · ${hoursOf(toSave).toFixed(1)}h. Covers the whole week, not just the selected day.`
+            : "Every draft shift of this week is already in ADP."}
+        </p>
+        {rows.length ? (
+          <div className="flex flex-wrap gap-1.5 text-[11px]">
+            {summary.queued ? <Badge variant="secondary">{summary.queued} saving</Badge> : null}
+            {drafted.length ? <Badge variant="outline">{drafted.length} ADP drafts</Badge> : null}
+            {summary.published ? <Badge variant="default">{summary.published} published</Badge> : null}
+            {summary.failed ? <Badge variant="destructive">{summary.failed} failed</Badge> : null}
+          </div>
+        ) : null}
+        {summary.errors.length ? (
+          <ul className="text-[11px] text-rose-600 dark:text-rose-400">
+            {[...new Set(summary.errors)].slice(0, 3).map((e) => (
+              <li key={e}>{e}</li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
           variant="outline"
           disabled={!enabled || busy || isPending || toSave.length === 0}
-          title={disabledTitle}
+          title={disabledTitle ?? "Step 1 — employees don't see drafts"}
           onClick={() => setSheet("save")}
         >
-          {summary.queued > 0 ? "Saving to ADP…" : `Save to ADP as drafts${toSave.length ? ` (${toSave.length})` : ""}`}
+          {summary.queued > 0 ? "Saving to ADP…" : `1 · Save ${toSave.length ? `${toSave.length} shifts ` : ""}as ADP drafts`}
         </Button>
         <Button
           size="sm"
           disabled={!enabled || busy || isPending || drafted.length === 0}
-          title={disabledTitle}
+          title={disabledTitle ?? (drafted.length ? "Step 2 — notifies employees" : "Save drafts first")}
           onClick={() => setSheet("publish")}
         >
-          {publishing ? "Publishing…" : "Publish week"}
+          {publishing ? "Publishing…" : `2 · Publish ${range}`}
         </Button>
       </div>
-      {rows.length ? (
-        <div className="flex flex-wrap justify-end gap-1.5 text-[11px]">
-          {summary.queued ? <Badge variant="secondary">{summary.queued} saving</Badge> : null}
-          {drafted.length ? <Badge variant="outline">{drafted.length} ADP drafts</Badge> : null}
-          {summary.published ? <Badge variant="default">{summary.published} published</Badge> : null}
-          {summary.failed ? <Badge variant="destructive">{summary.failed} failed</Badge> : null}
-        </div>
-      ) : null}
-      {summary.errors.length ? (
-        <ul className="max-w-sm text-right text-[11px] text-rose-600 dark:text-rose-400">
-          {[...new Set(summary.errors)].slice(0, 3).map((e) => (
-            <li key={e}>{e}</li>
-          ))}
-        </ul>
-      ) : null}
 
       <Sheet open={sheet != null} onOpenChange={(o) => !o && setSheet(null)}>
         <SheetContent className="w-full max-w-md overflow-y-auto">
           {sheet === "save" ? (
             <>
               <SheetHeader>
-                <SheetTitle>Save {toSave.length} shifts to ADP as drafts</SheetTitle>
+                <SheetTitle>Save week of {range} to ADP as drafts</SheetTitle>
                 <SheetDescription>
-                  Creates these in ADP Team Schedule as drafts for the week of {dayLabel(weekStart)}.
+                  Creates these {toSave.length} shifts ({days} days) in ADP Team Schedule as drafts.
                   Employees don&apos;t see drafts until you publish the week. Takes about 20–40 s per
                   shift; you can keep using the page.
                   {inAdp.length ? ` ${inAdp.length} shifts already in ADP are left alone.` : ""}
@@ -224,7 +256,7 @@ export function AdpScheduleFinalize({
           ) : sheet === "publish" ? (
             <>
               <SheetHeader>
-                <SheetTitle>Publish the week of {dayLabel(weekStart)}</SheetTitle>
+                <SheetTitle>Publish week of {range}</SheetTitle>
                 <SheetDescription>
                   Publishes every ADP draft for this week (including any you added in ADP) — employees
                   get notified in ADP Mobile.
@@ -240,7 +272,7 @@ export function AdpScheduleFinalize({
               />
               <SheetFooter>
                 <Button onClick={() => void publish()} disabled={isPending}>
-                  {isPending ? "Starting…" : "Publish week"}
+                  {isPending ? "Starting…" : `Publish ${range}`}
                 </Button>
                 <SheetClose render={<Button variant="outline">Cancel</Button>} />
               </SheetFooter>

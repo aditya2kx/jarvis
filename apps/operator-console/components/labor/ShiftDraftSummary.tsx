@@ -1,6 +1,5 @@
 "use client";
 
-import { AdpScheduleFinalize } from "@/components/labor/AdpScheduleFinalize";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -14,7 +13,6 @@ import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
 import { formatClockMin } from "@/lib/labor/coverage-model";
 import type { HoursBreakdown } from "@/lib/labor/draft-breakdown";
 import { daysLabel, type DayRule } from "@/lib/labor/schedule-inputs";
-import type { PushShift } from "@/lib/labor/schedule-push";
 import type { Availability, DraftShift } from "@/lib/labor/shift-draft";
 import { cn } from "@/lib/utils";
 
@@ -127,14 +125,9 @@ export function ShiftDraftSummary({
   breakdown,
   dayRules,
   goalHoursWeek,
-  weekShifts,
-  adpWriteEnabled,
 }: {
   dayLabel: string;
   shifts: DraftShift[];
-  /** Every draft shift of the week — what "Save to ADP as drafts" sends. */
-  weekShifts: PushShift[];
-  adpWriteEnabled: boolean;
   roster: Availability[];
   weekStart: string;
   existingHours: number;
@@ -185,7 +178,6 @@ export function ShiftDraftSummary({
             </p>
           ) : null}
         </div>
-        <AdpScheduleFinalize weekStart={weekStart} shifts={weekShifts} enabled={adpWriteEnabled} />
       </div>
 
       {breakdown ? (

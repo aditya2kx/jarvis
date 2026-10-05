@@ -64,6 +64,7 @@ import {
   type StaffingBasics,
 } from "@/lib/labor/schedule-inputs";
 import { payPeriodStartFor } from "@/lib/payroll/openPeriod";
+import { AdpScheduleFinalize } from "@/components/labor/AdpScheduleFinalize";
 import { DRAFT_COLOR, ShiftDraftSummary } from "@/components/labor/ShiftDraftSummary";
 import { useSuggestedHours } from "@/components/labor/SuggestedHoursContext";
 import type { OpenShift } from "@/lib/labor/open-shifts-insight";
@@ -1286,6 +1287,10 @@ export function LaborCoveragePanel({
           }}
         />
 
+        {weekDraft ? (
+          <AdpScheduleFinalize weekStart={weekDraft.weekStart} shifts={weekShifts} enabled={adpWriteEnabled} />
+        ) : null}
+
         <div className="flex flex-col gap-1">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-medium text-foreground">
@@ -1336,8 +1341,6 @@ export function LaborCoveragePanel({
             breakdown={weekDraft.breakdown}
             dayRules={rules.dayRules}
             goalHoursWeek={goalHoursWeek}
-            weekShifts={weekShifts}
-            adpWriteEnabled={adpWriteEnabled}
           />
         ) : null}
 

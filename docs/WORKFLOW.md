@@ -129,6 +129,17 @@ the GitHub issue number:
   as new requirements") from the text before slugging, so meta-instruction boilerplate does not
   dominate the slug.
 
+**Worktree directory.** `default_worktree_path()` names the sibling from the
+**main checkout** (`jarvis-wt-<slug>`), including when the command runs inside
+an existing worktree. A linked worktree's `.git` gitdir file points at
+`<main>/.git/worktrees/<id>`; the directory name comes from that main checkout,
+so successive tasks do not stack `-wt-` suffixes. The directory name is capped
+at 60 bytes and the absolute path must be ≤ 200 bytes (`create_worktree`
+rejects a longer `--worktree` as well). `scripts/check_worktree_path_length.py`
+(a hard `verify.py` gate on `--fast` and `--full`) fails if a path the helper
+would create exceeds that ceiling. Existing long folders are left in place;
+the gate does not scan them.
+
 The worktree base defaults to **`origin/main`** so new worktrees always start from
 clean main regardless of which branch the operator is on. Pass `--base <ref>`
 explicitly to inherit a different base (e.g. an in-flight framework PR).
@@ -426,6 +437,7 @@ GH Action (check_suite / issue_comment / pr-merged-lifecycle)
 | `scripts/dev_event_router.py` | Parse signals, idempotency, debounce, write inbox, update phase cache. **Inbox routing (obs 4b):** the pending/processed inbox is written to the **child worktree's** `metrics/pr_cost/` (from `cache["worktree_path"]`) so the child's `drain.sh` actually sees it — the daemon-side phase cache + `delivered_signals` dedup stay in the daemon repo. Falls back to the module dir when no worktree is recorded. **Unrouted fallback (Issue #140):** when the daemon-side phase cache is missing for a branch but a sibling worktree exists on disk, `_load_cache` reads and mirrors the worktree's own cache instead of returning `unrouted`. |
 | `scripts/dev_event_listener.py` | `catch-up`, `watch`, `dispatch`, `health`; macOS auto-open/focus worktree (osascript + `open -a Cursor` fallback; `LOCAL_EVENT_AUTO_OPEN`). GH API → `parse_signal` → `route_signal` → `pending.jsonl` write proven via non-dry-run catch-up run. `watch-all` polls open issues + open PRs + **recently-closed PRs (5 min window)**, so a signal that lands on a just-merged PR is still caught (Issue #140 defense-in-depth). All `gh` calls pass `--repo` (launchd `WorkingDirectory` is `$HOME`, so cwd cannot infer the git remote — Issue #186). `ensure-daemon` writes logs to `~/Library/Logs/jarvis/` (not `~/Documents/…`, which TCC kills with exit 78) and installs against the primary `jarvis` checkout even when invoked from a worktree. `health [--heal]` reports/repairs the `com.jarvis.devsignals` launchd daemon (parses both the legacy tab-separated and the modern plist-dict `launchctl list` output shapes; flags Documents log paths / exit 78). |
 | `scripts/check_no_main_progress_push.py` | Mechanical guard: block PROGRESS.md direct push to main |
+| `scripts/check_worktree_path_length.py` | Hard `verify.py` gate: a worktree path `default_worktree_path()` would create must stay ≤ 200 bytes, and the directory name ≤ 60 bytes, including when the current folder is already a linked worktree. Does not scan existing on-disk worktrees. |
 | `scripts/audit_stranded_issues.py` | Issue #123: `--report` (read-only) finds open issues whose implementing PR already merged, matched strictly by branch-slug `iNNN` or a `Closes/Fixes/Resolves #N` keyword (never a bare `#N`/`Refs #N` mention, to avoid false-positiving follow-up issues that merely reference their spawning PR). `--reconcile` posts a link comment + closes each stranded issue. |
 
 ### Signal format

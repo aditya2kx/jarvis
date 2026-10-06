@@ -248,11 +248,85 @@ def _current_branch(repo_root: Path) -> str:
         return "origin/main"
 
 
-def default_worktree_path(repo_root: Path, branch: str) -> Path:
-    """Sibling directory: ``../<repo>-wt-<branch-slug>``."""
-    repo_name = repo_root.name
+# Directory name and absolute path ceilings. 60 bytes keeps
+# ``jarvis-wt-<slug>`` short enough that Cursor can still mkdir a terminal
+# under the workspace. 200 bytes is the backstop under macOS NAME_MAX (255).
+MAX_WORKTREE_NAME_BYTES = 60
+MAX_WORKTREE_PATH_BYTES = 200
+
+
+def base_repo_name(repo_root: Path) -> str:
+    """Directory name of the main checkout, even when *repo_root* is a linked worktree.
+
+    A linked worktree's ``.git`` is a file (``gitdir: <main>/.git/worktrees/<id>``).
+    The main checkout is the parent of that ``.git`` directory. When ``.git`` is
+    missing or is itself a directory, use ``repo_root.name`` so a plain path
+    (unit tests, the main checkout) keeps its own folder name.
+    """
+    git_path = repo_root / ".git"
+    if not git_path.is_file():
+        return repo_root.name
+    try:
+        text = git_path.read_text(encoding="utf-8")
+    except OSError:
+        return repo_root.name
+    match = re.search(r"^gitdir:\s*(.+)$", text, re.MULTILINE)
+    if not match:
+        return repo_root.name
+    gitdir = Path(match.group(1).strip())
+    if not gitdir.is_absolute():
+        gitdir = (repo_root / gitdir).resolve()
+    # <main>/.git/worktrees/<id>
+    if gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
+        main = gitdir.parent.parent.parent
+        if main.name:
+            return main.name
+    return repo_root.name
+
+
+def worktree_dirname(base_name: str, branch: str) -> str:
+    """``<base>-wt-<slug>`` trimmed so the directory name is at most 60 bytes."""
     slug = L._slug(branch)
-    return repo_root.parent / f"{repo_name}-wt-{slug}"
+    prefix = f"{base_name}-wt-"
+    budget = MAX_WORKTREE_NAME_BYTES - len(prefix.encode("utf-8"))
+    if budget < 1:
+        trimmed = prefix.encode("utf-8")[:MAX_WORKTREE_NAME_BYTES]
+        return trimmed.decode("utf-8", errors="ignore").rstrip("-") or "wt"
+    raw = slug.encode("utf-8")
+    if len(raw) > budget:
+        slug = raw[:budget].decode("utf-8", errors="ignore").rstrip("-._") or "x"
+    name = f"{prefix}{slug}"
+    while len(name.encode("utf-8")) > MAX_WORKTREE_NAME_BYTES and name:
+        name = name[:-1]
+    return name.rstrip("-") or "wt"
+
+
+def _worktree_path_nbytes(path: Path) -> int:
+    absolute = path if path.is_absolute() else path.resolve()
+    return len(str(absolute).encode("utf-8"))
+
+
+def _reject_long_worktree_path(path: Path) -> None:
+    """Refuse a worktree path longer than 200 bytes."""
+    n = _worktree_path_nbytes(path)
+    if n > MAX_WORKTREE_PATH_BYTES:
+        raise SystemExit(
+            f"Worktree path is {n} bytes (limit {MAX_WORKTREE_PATH_BYTES}): {path}"
+        )
+
+
+def default_worktree_path(repo_root: Path, branch: str) -> Path:
+    """Sibling ``../<main-checkout>-wt-<slug>``.
+
+    The main checkout name is used even when *repo_root* is already a linked
+    worktree, so successive tasks do not stack ``-wt-`` onto the folder name.
+    The directory name is capped at 60 bytes. Raises SystemExit when the
+    absolute path would exceed 200 bytes.
+    """
+    dirname = worktree_dirname(base_repo_name(repo_root), branch)
+    path = repo_root.parent / dirname
+    _reject_long_worktree_path(path)
+    return path
 
 
 def create_worktree(
@@ -263,6 +337,7 @@ def create_worktree(
     base: str = "origin/main",
     dry_run: bool = False,
 ) -> None:
+    _reject_long_worktree_path(worktree_path)
     if worktree_path.exists():
         raise SystemExit(
             f"Worktree path already exists: {worktree_path}\n"
@@ -590,7 +665,10 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument(
         "--worktree",
         type=Path,
-        help="Worktree directory (default: ../<repo>-wt-<branch-slug> sibling)",
+        help=(
+            "Worktree directory (default: ../<main-checkout>-wt-<slug> sibling, "
+            "directory name capped at 60 bytes, absolute path capped at 200 bytes)"
+        ),
     )
     cli.add_argument(
         "--base", default=None,

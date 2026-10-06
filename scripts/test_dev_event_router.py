@@ -92,6 +92,21 @@ class TestDeriveWorktreePath(unittest.TestCase):
             with patch.object(R, "REPO_ROOT", Path(tmp) / "jarvis"):
                 self.assertIsNone(R._derive_worktree_path("fix/no-such-worktree"))
 
+    def test_stacked_root_resolves_main_checkout_dirname(self):
+        branch = "fix/i999-example"
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            tmp_path = Path(tmp)
+            gitdir = tmp_path / "jarvis" / ".git" / "worktrees" / "stacked"
+            gitdir.mkdir(parents=True)
+            stacked = tmp_path / ("jarvis-wt-" + ("x" * 40))
+            stacked.mkdir()
+            (stacked / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+            short = tmp_path / "jarvis-wt-fix-i999-example"
+            short.mkdir()
+            with patch.object(R, "REPO_ROOT", stacked):
+                found = R._derive_worktree_path(branch)
+            self.assertEqual(found, short)
+
 
 class TestRouteSignalDelivered(unittest.TestCase):
     def test_delivers_ci_failed(self):

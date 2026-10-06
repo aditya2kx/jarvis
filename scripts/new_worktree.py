@@ -12,7 +12,9 @@ Usage:
     # Optional: parent repo path (defaults to cwd if already a git repo)
     python3 scripts/new_worktree.py --branch fix/foo --repo /path/to/jarvis
 
-The worktree is created at ../jarvis-wt-<slug> next to the main repo by default.
+The worktree is created at ../<main-checkout>-wt-<slug> next to the main repo
+by default (directory name ≤ 60 bytes), even when this command runs inside an
+existing worktree.
 Stay in that directory for all git work; do not checkout other branches in the
 shared tree while parallel chats are open.
 """
@@ -20,14 +22,12 @@ shared tree while parallel chats are open.
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
 from pathlib import Path
 
-def _slug(branch: str) -> str:
-    out = re.sub(r"[^A-Za-z0-9]+", "-", branch.strip()).strip("-").lower()
-    return out[:48] or "work"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import new_requirement as N
 
 
 def _git_root(start: Path) -> Path:
@@ -45,13 +45,16 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument("--requirement", required=True, help="Requirement text for the cost brief")
     cli.add_argument("--repo", type=Path, help="Path to the main jarvis git checkout")
     cli.add_argument("--worktree-dir", type=Path,
-                     help="Explicit worktree path (default: sibling jarvis-wt-<slug>)")
+                     help="Explicit worktree path (default: sibling <main-checkout>-wt-<slug>, name ≤ 60 bytes)")
     cli.add_argument("--open", action="store_true", help="Open session launch.html in the browser")
     args = cli.parse_args(argv)
 
     repo = _git_root(args.repo or Path.cwd())
-    slug = _slug(args.branch)
-    wt_path = args.worktree_dir or (repo.parent / f"jarvis-wt-{slug}")
+    if args.worktree_dir:
+        N._reject_long_worktree_path(args.worktree_dir)
+        wt_path = args.worktree_dir
+    else:
+        wt_path = N.default_worktree_path(repo, args.branch)
 
     subprocess.run(
         ["git", "-C", str(repo), "fetch", "origin", "main"],

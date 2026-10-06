@@ -3,6 +3,7 @@
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -89,6 +90,51 @@ class TestNewRequirement(unittest.TestCase):
         root = Path("/Users/me/projects/jarvis")
         p = N.default_worktree_path(root, "fix/cost-ledger-decontamination")
         self.assertEqual(p, Path("/Users/me/projects/jarvis-wt-fix-cost-ledger-decontamination"))
+
+    def _linked_worktree(self, tmp: Path, folder_name: str) -> Path:
+        """A worktree folder whose .git file points at tmp/jarvis/.git."""
+        main = tmp / "jarvis"
+        gitdir = main / ".git" / "worktrees" / "linked"
+        gitdir.mkdir(parents=True)
+        linked = tmp / folder_name
+        linked.mkdir()
+        (linked / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+        return linked
+
+    def test_linked_worktree_uses_main_checkout_name(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            linked = self._linked_worktree(Path(tmp), "jarvis-i324")
+            p = N.default_worktree_path(linked, "fix/foo")
+            self.assertEqual(p, Path(tmp) / "jarvis-wt-fix-foo")
+
+    def test_stacked_worktree_does_not_append_another_wt(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            stacked_name = "jarvis-wt-fix-old-wt-fix-older"
+            linked = self._linked_worktree(Path(tmp), stacked_name)
+            p = N.default_worktree_path(linked, "fix/new-task")
+            self.assertEqual(p.name, "jarvis-wt-fix-new-task")
+            self.assertFalse(p.name.startswith(stacked_name))
+
+    def test_dirname_capped_at_60_bytes(self):
+        root = Path("/Users/me/projects/jarvis")
+        p = N.default_worktree_path(root, "fix/" + ("n" * 200))
+        self.assertLessEqual(len(p.name.encode("utf-8")), N.MAX_WORKTREE_NAME_BYTES)
+        self.assertTrue(p.name.startswith("jarvis-wt-"))
+
+    def test_rejects_absolute_path_over_200_bytes(self):
+        deep = Path("/" + ("d" * 190)) / "jarvis"
+        with self.assertRaises(SystemExit):
+            N.default_worktree_path(deep, "fix/short")
+
+    def test_create_worktree_rejects_explicit_long_path(self):
+        long = Path("/" + ("a" * 201))
+        with self.assertRaises(SystemExit):
+            N.create_worktree(
+                repo_root=Path("/tmp"),
+                branch="fix/x",
+                worktree_path=long,
+                dry_run=True,
+            )
 
     @patch("new_requirement.subprocess.run")
     def test_branch_exists(self, mock_run):

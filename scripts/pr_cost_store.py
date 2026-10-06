@@ -181,8 +181,9 @@ def save_record(rec: dict[str, Any]) -> None:
             job_config=_cfg([_p("k", key)])).result()
     c.query(f"DELETE FROM {_fq(_T_REVIEW)} WHERE pr_key=@k",
             job_config=_cfg([_p("k", key)])).result()
+    session_rows = []
     for s in b.get("sessions") or []:
-        row = {"pr_key": key, "session_uid": _session_uid(s),
+        session_rows.append({"pr_key": key, "session_uid": _session_uid(s),
                "ts": s.get("ts"), "model": s.get("model"),
                "tokens": int(s.get("tokens") or 0),
                "cost_usd": float(s.get("cost_usd") or 0),
@@ -192,10 +193,11 @@ def save_record(rec: dict[str, Any]) -> None:
                "output_tokens": _int_or_none(s.get("output_tokens")),
                "cache_read_input_tokens": _int_or_none(s.get("cache_read_input_tokens")),
                "cache_creation_input_tokens": _int_or_none(s.get("cache_creation_input_tokens")),
-               "note": s.get("note")}
-        _insert(c, _T_BUILD, row, _BUILD_COL_TYPES)
+               "note": s.get("note")})
+    _insert_many(c, _T_BUILD, session_rows, _BUILD_COL_TYPES)
+    run_rows = []
     for x in r.get("runs") or []:
-        row = {"pr_key": key, "review_uid": _review_uid(x),
+        run_rows.append({"pr_key": key, "review_uid": _review_uid(x),
                "ts": x.get("ts"), "model": x.get("model"),
                "turns": _int_or_none(x.get("turns")),
                "input_tokens": _int_or_none(x.get("input_tokens")),
@@ -204,8 +206,8 @@ def save_record(rec: dict[str, Any]) -> None:
                "cache_creation_input_tokens": _int_or_none(x.get("cache_creation_input_tokens")),
                "tokens": _int_or_none(x.get("tokens")),
                "cost_usd": float(x.get("cost_usd") or 0) if x.get("cost_usd") is not None else None,
-               "result": x.get("result"), "run_url": x.get("run_url")}
-        _insert(c, _T_REVIEW, row, _REVIEW_COL_TYPES)
+               "result": x.get("result"), "run_url": x.get("run_url")})
+    _insert_many(c, _T_REVIEW, run_rows, _REVIEW_COL_TYPES)
 
 
 def _int_or_none(v: Any) -> int | None:
@@ -338,13 +340,27 @@ def _cfg(params):
     return bigquery.QueryJobConfig(query_parameters=params)
 
 
-def _insert(c, table: str, row: dict[str, Any],
-            col_types: dict[str, str] | None = None) -> None:
+# BigQuery caps a query at 10,000 parameters; 13 columns x 300 rows stays well under.
+_INSERT_CHUNK_ROWS = 300
+
+
+def _insert_many(c, table: str, rows: list[dict[str, Any]],
+                 col_types: dict[str, str] | None = None) -> None:
+    """Multi-row DML INSERT (one job per chunk, not per row).
+
+    DML rather than streaming inserts: streamed rows can't be DELETEd for ~90 min,
+    which would break the next save_record's delete-then-insert.
+    """
     col_types = col_types or {}
-    cols = list(row.keys())
-    vals = ", ".join(f"@{k2}" for k2 in cols)
-    c.query(f"INSERT INTO {_fq(table)} ({', '.join(cols)}) VALUES ({vals})",
-            job_config=_cfg([_p(k2, row[k2], col_types.get(k2)) for k2 in cols])).result()
+    for start in range(0, len(rows), _INSERT_CHUNK_ROWS):
+        chunk = rows[start:start + _INSERT_CHUNK_ROWS]
+        cols = list(chunk[0].keys())
+        values, params = [], []
+        for i, row in enumerate(chunk):
+            values.append("(" + ", ".join(f"@{k2}__{i}" for k2 in cols) + ")")
+            params += [_p(f"{k2}__{i}", row[k2], col_types.get(k2)) for k2 in cols]
+        c.query(f"INSERT INTO {_fq(table)} ({', '.join(cols)}) VALUES {', '.join(values)}",
+                job_config=_cfg(params)).result()
 
 
 def bulk_load_records(records: list[dict[str, Any]]) -> None:

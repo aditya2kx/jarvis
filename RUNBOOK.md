@@ -1327,6 +1327,8 @@ It runs automatically on every PR via `.github/workflows/sandbox-e2e.yml` (and
 **Cost ledger lives in BigQuery (jarvis_dev), not in git:** the per-PR cost ledger is stored in
 `jarvis-bhaga-prod.jarvis_dev` (tables `pr_cost_pr`, `pr_cost_build_session`, `pr_cost_review_run`,
 view `vw_pr_cost`). There are no committed `PR-*.json` files or `report.html` in the repo.
+Each save replaces a PR's child rows using batched DML inserts; streaming inserts would block
+the next save's `DELETE`. See `docs/contributing/cost.md`.
 
 - **Pre-merge:** record build cost locally (`pr_cost_ledger.py capture-build` or `record-build`),
   then `validate --pr <n> --require-build`. The pre-commit hook (`bash scripts/install-git-hooks.sh`

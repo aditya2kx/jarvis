@@ -1,3 +1,7 @@
+## 2026-10-06 — status.py stops reporting the retired Sheets tabs as missing
+
+**Scope:** `status.py` checked the model sheet's `daily` / `tip_alloc_daily` tabs, last written 2026-06-13, so every verdict carried 2 false gaps. **Key changes:** the Sheets layer and its OAuth token fetch are removed; the doctor needs only BigQuery access. **Evidence:** 2026-10-05 verdict went from 8 missing targets to 6, the same 6 explained in the Oct 5 investigation (new pay period, no reviews since Sep 29, Oct 9 check date, future-only forecast view, no training shifts).
+
 ## 2026-10-06 — ADP signed in to an error page and the Oct 5 rerun timed out everywhere (Issue #370, PR #371)
 
 **Scope:** both reruns of 2026-10-05 logged in (one with an SMS code), then ADP showed `errorPage` / `notauthenticated` instead of the RUN dashboard. The bundle saved that page as its dashboard, so every step timed out for about 15 minutes and the bad session was persisted to GCS.

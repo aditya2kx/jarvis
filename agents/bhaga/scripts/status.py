@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """Read-only ops freshness checker for the BHAGA pipeline.
 
-Answers "did yesterday's run land in Sheets, BigQuery, and Grafana?" without
+Answers "did yesterday's run land in BigQuery and the console views?" without
 spelunking coordinates or hand-writing queries.  Run this first for any
 operational question about whether a nightly run completed — don't
 hand-investigate.
 
 Usage:
     # Check yesterday (default, America/Chicago):
-    BHAGA_SECRETS_BACKEND=gcp \\
-    BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \\
     python3 -m agents.bhaga.scripts.status --store palmetto
 
     # Check a specific date:
@@ -40,10 +38,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 # Enable BigQuery before the datastore module loads its gate check.
 os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
 
-from core.config_loader import project_dir, refresh_access_token, resolve_sheet_id
+from core.config_loader import project_dir
 from core.datastore import read_query
-from skills.bhaga_config.dates import coerce_iso_date
-from skills.tip_ledger_writer.writer import _read_tab
 
 _PROJECT = "jarvis-bhaga-prod"
 _DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
@@ -75,8 +71,9 @@ GRAFANA_DASHBOARD_URL = (
 #
 # (CI runs check_doc_freshness.py --strict which enforces editing this file
 # alongside schema changes.)
-
-SHEET_TABS: tuple[str, ...] = ("daily", "tip_alloc_daily")
+#
+# No Google Sheets layer: the pipeline stopped writing the model sheet on
+# 2026-06-13, so its tabs read as missing every day.
 
 CheckMode = Literal["exact", "iso_week", "period_coverage", "date_prefix", "refreshed_recently"]
 
@@ -391,7 +388,7 @@ def _iso_week(d: datetime.date) -> str:
 
 @dataclass
 class CheckResult:
-    layer: str        # "sheets" | "bq" | "grafana"
+    layer: str        # "bq" | "grafana"
     target: str
     present: bool
     rows: int | None = None
@@ -479,62 +476,6 @@ def _run_bq_target(t: Target, date: datetime.date, layer: str = "bq") -> CheckRe
     count = int(rows[0].get("c", 0) or 0)
     max_d = str(rows[0].get("m", "") or "").strip() or None
     return CheckResult(layer, t.table, count > 0, count, max_d, note=note)
-
-
-def _check_sheet_tab(
-    model_sid: str,
-    tab: str,
-    token: str,
-    date: datetime.date,
-) -> CheckResult:
-    """Check a model sheet tab for presence of the given date."""
-    try:
-        rows = _read_tab(model_sid, tab, token)
-    except Exception as exc:
-        return CheckResult("sheets", tab, False, None, None, note=f"ERROR: {exc}")
-
-    if not rows:
-        return CheckResult("sheets", tab, False, 0, None, note="tab empty or missing")
-
-    if tab == "config":
-        # Report data_window_end from the config tab.
-        dwe: str | None = None
-        for row in rows:
-            if row and len(row) > 1 and str(row[0]).strip() == "data_window_end":
-                dwe = coerce_iso_date(row[1])
-                break
-        target_iso = date.isoformat()
-        present = dwe == target_iso
-        return CheckResult(
-            "sheets", "config.data_window_end", present,
-            rows=None, max_date=dwe, note="data_window_end",
-        )
-
-    # General tab: find the header's "date" column and count matching rows.
-    header = [str(c).strip() for c in rows[0]] if rows else []
-    try:
-        date_col_idx = header.index("date")
-    except ValueError:
-        return CheckResult(
-            "sheets", tab, False, None, None,
-            note="'date' column not in header",
-        )
-
-    target_iso = date.isoformat()
-    data_rows = rows[1:]
-    matching = sum(
-        1
-        for r in data_rows
-        if len(r) > date_col_idx and coerce_iso_date(r[date_col_idx]) == target_iso
-    )
-    # Max date across all non-header rows (for the table display).
-    all_dates = [
-        coerce_iso_date(r[date_col_idx])
-        for r in data_rows
-        if len(r) > date_col_idx
-    ]
-    max_d = max((d for d in all_dates if d), default=None)
-    return CheckResult("sheets", tab, matching > 0, matching, max_d)
 
 
 def _check_schema_live() -> int:
@@ -665,24 +606,12 @@ def main(argv: list[str] | None = None) -> int:
     # Load store profile.
     profile_path = _STORE_PROFILE_DIR / f"{args.store}.json"
     try:
-        profile = json.loads(profile_path.read_text())
+        json.loads(profile_path.read_text())
     except FileNotFoundError:
         print(f"ERROR: store profile not found: {profile_path}")
         return 2
     except json.JSONDecodeError as exc:
         print(f"ERROR: could not parse store profile {profile_path}: {exc}")
-        return 2
-
-    model_sid = resolve_sheet_id("bhaga_model", profile)
-
-    try:
-        token = refresh_access_token(account=args.store)
-    except Exception as exc:
-        print(f"ERROR: could not obtain Sheets token: {exc}")
-        print(
-            "Hint: set BHAGA_SECRETS_BACKEND=gcp and "
-            "BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com"
-        )
         return 2
 
     results: list[CheckResult] = []
@@ -701,10 +630,6 @@ def main(argv: list[str] | None = None) -> int:
         ))
     except Exception as _exc:
         results.append(CheckResult("bq", "data_window_end", False, None, None, note=f"ERROR: {_exc}"))
-
-    # ── Layer 1: Google Sheets ────────────────────────────────────────────────
-    for tab in SHEET_TABS:
-        results.append(_check_sheet_tab(model_sid, tab, token, check_date))
 
     # ── Layer 2: BigQuery model + raw tables ──────────────────────────────────
     for t in BQ_TARGETS:
@@ -745,7 +670,7 @@ def main(argv: list[str] | None = None) -> int:
         if not missing:
             print(
                 f"  VERDICT: ALL PRESENT — {check_date.isoformat()} landed in"
-                " Sheets, BigQuery, and Grafana."
+                " BigQuery and the console views."
             )
         else:
             print(

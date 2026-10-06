@@ -62,5 +62,52 @@ class SelectCompany(unittest.TestCase):
         page.clicked.assert_not_called()
 
 
+class LandingPage:
+    """A page that ADP leaves on ``url``; ``goto`` lands on ``after_goto``."""
+
+    def __init__(self, url, after_goto=None):
+        self.url, self.after_goto, self.gotos = url, after_goto, []
+
+    def goto(self, url, **_kw):
+        self.gotos.append(url)
+        if self.after_goto:
+            self.url = self.after_goto
+
+    def wait_for_url(self, pattern, timeout=0):
+        if not pattern.search(self.url):
+            raise TimeoutError(self.url)
+
+
+ERROR_PAGE = "https://ngapps.adp.com/apps/run/errorPage"
+DASHBOARD = "https://runpayrollmain.adp.com/@t-1/v2/"
+
+
+class ConfirmDashboard(unittest.TestCase):
+    def setUp(self):
+        p = mock.patch.object(r, "_load_store_profile",
+                              return_value={"adp_run": {"tenant_uuid": "t-1"}})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_dashboard_is_left_alone(self):
+        page = LandingPage(DASHBOARD)
+        r._confirm_dashboard(page, store="palmetto")
+        self.assertEqual(page.gotos, [])
+
+    def test_error_page_reopens_the_tenant_dashboard(self):
+        page = LandingPage(ERROR_PAGE, after_goto=DASHBOARD)
+        r._confirm_dashboard(page, store="palmetto")
+        self.assertEqual(page.gotos, [DASHBOARD])
+        self.assertEqual(page.url, DASHBOARD)
+
+    def test_still_rejected_raises_once_with_the_url(self):
+        page = LandingPage(ERROR_PAGE)
+        with mock.patch.object(r, "_raise_with_evidence", side_effect=RuntimeError("off")) as rwe:
+            with self.assertRaises(RuntimeError):
+                r._confirm_dashboard(page, store="palmetto")
+        self.assertEqual(page.gotos, [DASHBOARD])
+        self.assertIn(ERROR_PAGE, rwe.call_args.kwargs["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

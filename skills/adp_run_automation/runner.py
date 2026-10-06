@@ -396,6 +396,37 @@ def _wait_for_login_form(page, *, max_retries: int = 2, _sleep_fn=None):
 def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
     _login(page, store=store, timeout_ms=timeout_ms)
     _select_company(page, store=store)
+    _confirm_dashboard(page, store=store)
+
+
+def _confirm_dashboard(page, *, store: str, wait_ms: int = 20_000) -> None:
+    """Leave the page on the RUN v2 dashboard, or raise one clear error.
+
+    Callers capture ``page.url`` as the dashboard to return to, so an off-dashboard
+    landing (ngapps ``errorPage``, hpayroll ``notauthenticated``) would otherwise be
+    persisted as the session and replayed by every later step, each timing out.
+    On 2026-10-06 that happened twice right after login: ADP ends a RUN session
+    when the same user signs in elsewhere.
+    """
+    if POST_LOGIN_URL_RE.search(page.url):
+        return
+    tenant = (_load_store_profile(store).get("adp_run") or {}).get("tenant_uuid", "")
+    print(f"[adp_login] BREADCRUMB adp_off_dashboard url={page.url} tenant={tenant or 'unset'}")
+    if tenant:
+        try:
+            page.goto(f"https://runpayrollmain.adp.com/@{tenant}/v2/",
+                      wait_until="domcontentloaded", timeout=60_000)
+            page.wait_for_url(POST_LOGIN_URL_RE, timeout=wait_ms)
+            print(f"[adp_login] step=dashboard-recovered url={page.url}")
+            return
+        except Exception:  # noqa: BLE001 — fall through to the evidence raise
+            pass
+    _raise_with_evidence(
+        page, store=store,
+        reason=f"ADP signed in but will not show the RUN dashboard (url={page.url}). "
+               f"Another sign-in for this ADP user most likely ended the session — "
+               f"close other ADP tabs, then rerun.",
+    )
 
 
 # RUN "MCA parent" company list: each row is an sdf-button[data-test-id=mca-list-row-link]

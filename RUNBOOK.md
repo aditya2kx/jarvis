@@ -1635,6 +1635,16 @@ same pattern as an OTP-wait timeout. The next nightly or `Retry-Dates` rerun re-
 A date where ADP was skipped has Square in BQ but missing `adp_shifts` → `trigger_dated_refresh.py`
 correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 
+**ADP signs in but shows an error page (2026-10-06).** ADP can accept the login (even the SMS
+code) and then land on `ngapps.adp.com/apps/run/errorPage` ("We can't find the page") or
+`hpayroll.adp.com/.../notauthenticated.aspx`. Both reruns of 2026-10-05 hit this. ADP ends a RUN
+session when the same user signs in somewhere else, so close every other ADP tab before a
+rerun. `_confirm_dashboard` (end of `_ensure_logged_in`) reopens
+`runpayrollmain.adp.com/@<adp_run.tenant_uuid>/v2/` once. If ADP still won't show the
+dashboard, it raises one error with screenshots instead of saving the error page as the session
+and timing out on every step. Grep `BREADCRUMB adp_off_dashboard` (followed by
+`step=dashboard-recovered` when the reopen worked).
+
 **ADP Timecard pay-period selection (2026-07-17).** Nightly mode must select the **single**
 pay period that contains `target_date` — not Select All. The runner enumerates Pay Period
 dropdown options in Python (Playwright `name=` filters miss ADP's custom accessible names),

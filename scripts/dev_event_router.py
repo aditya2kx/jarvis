@@ -104,16 +104,22 @@ def _processed_path(branch: str, cache: dict | None = None) -> Path:
 # ---------------------------------------------------------------------------
 
 def _derive_worktree_path(branch: str) -> Path | None:
-    """Best-effort sibling worktree path for ``branch`` (``../<repo>-wt-<slug>``
-    convention, matches ``new_requirement.py`` / ``dev_event_listener._worktree_path_for``).
+    """Sibling worktree for ``branch`` (``../<main-checkout>-wt-<slug>``).
 
-    Returns None when no such directory exists on disk.
+    Uses ``new_requirement.default_worktree_path`` so lookup matches the capped
+    name creation writes. Returns None when that directory is absent or the
+    path would exceed the length ceiling.
     """
     if not branch:
         return None
-    slug = _slug(branch)
-    repo_name = REPO_ROOT.name.split("-wt-")[0] if "-wt-" in REPO_ROOT.name else REPO_ROOT.name
-    candidate = REPO_ROOT.parent / f"{repo_name}-wt-{slug}"
+    try:
+        scripts_dir = str(Path(__file__).resolve().parent)
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import new_requirement as _nr
+        candidate = _nr.default_worktree_path(REPO_ROOT, branch)
+    except SystemExit:
+        return None
     return candidate if candidate.is_dir() else None
 
 

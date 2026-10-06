@@ -150,6 +150,12 @@ GATES: list[Gate] = [
         hard=True,
         modes={"fast", "full"},
     ),
+    Gate(
+        name="worktree-path-length",
+        argv=["python3", "scripts/check_worktree_path_length.py"],
+        hard=True,
+        modes={"fast", "full"},
+    ),
 ]
 
 # Names of CI scripts this local harness must cover (used by test_ci_parity).

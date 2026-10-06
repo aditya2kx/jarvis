@@ -30,11 +30,18 @@ export type HoursPerPersonChartRow = {
   fulltime: number | null;
   parttime_sched: number | null;
   fulltime_sched: number | null;
+  /** ADP open (unassigned) shift hours — only on the "Open shifts" row. */
+  open?: number | null;
+  /** Suggested draft shift hours (not yet in ADP). */
+  suggested?: number | null;
   combined: number;
   tooltipEntries: HoursPerPersonTooltipEntry[];
 };
 
-export type HoursPerPersonSeries = { key: string; label: string; color: string };
+export type HoursPerPersonSeries = { key: string; label: string; color: string; pattern?: "hatch" };
+
+export const OPEN_ROW = "Open shifts (ADP)";
+export const UNASSIGNED_ROW = "Unassigned (draft)";
 
 type Bucket = "parttime" | "fulltime";
 
@@ -224,4 +231,49 @@ export function personHoursByGrain(opts: {
       fulltime_scheduled_hours: orNull(s.sched.fulltime / div),
     };
   });
+}
+
+/**
+ * Stack ADP open shifts and suggested draft shifts on the per-person chart the
+ * way "Labor hours by …" stacks them: open (violet hatch) on its own row,
+ * drafts (teal hatch) on the person they're suggested for, unassigned drafts
+ * on their own row. Rows re-sort by the new total.
+ */
+export function withOpenAndDraft(
+  chart: { rows: HoursPerPersonChartRow[]; series: HoursPerPersonSeries[] },
+  draftByPerson: ReadonlyMap<string, number>,
+  openHours: number,
+): { rows: HoursPerPersonChartRow[]; series: HoursPerPersonSeries[] } {
+  const rows = chart.rows.map((r) => ({ ...r, tooltipEntries: [...r.tooltipEntries] }));
+  const byName = new Map(rows.map((r) => [r.employee, r]));
+  const row = (employee: string) => {
+    let r = byName.get(employee);
+    if (!r) {
+      r = { employee, parttime: null, fulltime: null, parttime_sched: null, fulltime_sched: null, combined: 0, tooltipEntries: [] };
+      byName.set(employee, r);
+      rows.push(r);
+    }
+    return r;
+  };
+  if (openHours > 0) {
+    const r = row(OPEN_ROW);
+    r.open = round1(openHours);
+    r.tooltipEntries.push({ label: "Open (unassigned)", value: formatHours(r.open), color: LABOR_CHART_COLORS.openShift });
+  }
+  for (const [name, hours] of draftByPerson) {
+    if (!(hours > 0)) continue;
+    const r = row(name || UNASSIGNED_ROW);
+    r.suggested = round1((r.suggested ?? 0) + hours);
+  }
+  for (const r of rows) {
+    if (!r.suggested) continue;
+    r.tooltipEntries.push({ label: "Suggested (draft)", value: formatHours(r.suggested), color: LABOR_CHART_COLORS.draftShift });
+    if (r.combined > 0) r.tooltipEntries.push({ label: "Total with suggested", value: formatHours(round1(r.combined + r.suggested)) });
+  }
+  const total = (r: HoursPerPersonChartRow) => r.combined + (r.open ?? 0) + (r.suggested ?? 0);
+  rows.sort((a, b) => total(b) - total(a) || a.employee.localeCompare(b.employee));
+  const series = [...chart.series];
+  if (rows.some((r) => r.open)) series.push({ key: "open", label: "Open (unassigned)", color: LABOR_CHART_COLORS.openShift, pattern: "hatch" });
+  if (rows.some((r) => r.suggested)) series.push({ key: "suggested", label: "Suggested (draft)", color: LABOR_CHART_COLORS.draftShift, pattern: "hatch" });
+  return { rows, series };
 }

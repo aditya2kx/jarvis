@@ -1,11 +1,14 @@
 import {
   adpHoursScrapedAt,
-  adpScheduleHorizonEnd,
+  adpUnavailability,
+  adpDirectoryRoster,
   adpScheduleScrapedAt,
+  adpScheduleHorizonEnd,
   laborActualShiftDays,
   laborActualsThrough,
   laborByGrain,
   laborConcurrentByGrain,
+  laborDemandProfile,
   laborHoursPerPersonDaily,
   laborOpenShiftDays,
   laborOpenShiftHoursByGrain,
@@ -14,20 +17,36 @@ import {
   laborScheduledHoursByGrain,
   laborScheduledShiftDays,
   laborSoloHoursPerPerson,
+  laborWageRates,
   storeConfig,
+  type LaborWageRates,
+  upcomingRestockDates,
+  type UnavailabilityRow,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey, formatCents } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
-import { BarChartCard } from "@/components/charts/BarChartCard";
+import { FEATURES } from "@/lib/config/features";
+import type { DemandCell } from "@/lib/labor/staffing-need";
+import { HoursPerPersonCard } from "@/components/labor/HoursPerPersonCard";
+import { OpenShiftsCard } from "@/components/labor/OpenShiftsCard";
+import { CollapsibleSection } from "@/components/shell/CollapsibleSection";
+import { weekStartOf } from "@/lib/labor/week-options";
+import { upcomingPushRows } from "@/lib/labor/schedule-push-store";
+import type { PushRow } from "@/lib/labor/schedule-push";
 import { LaborHoursChart } from "@/components/labor/LaborHoursChart";
+import { LaborWagesChart } from "@/components/labor/LaborWagesChart";
+import { SuggestedHoursProvider } from "@/components/labor/SuggestedHoursContext";
 import { LaborWeeklyHoursGoal } from "@/components/labor/LaborWeeklyHoursGoal";
 import { LaborConcurrentChart } from "@/components/labor/LaborConcurrentChart";
 import { LaborCoveragePanel } from "@/components/labor/LaborCoveragePanel";
 import { PunchGapsPanel } from "@/components/labor/PunchGapsPanel";
 import { buildPunchGaps, mergePunchDays, type PunchGap } from "@/lib/labor/punch-gaps";
-import { SyncClockedHoursButton } from "@/components/labor/SyncClockedHoursButton";
-import { SyncScheduledShiftsButton } from "@/components/labor/SyncScheduledShiftsButton";
+import { scheduleRulesHistory } from "@/lib/labor/schedule-rules-store";
+import { ruleUnavailability, type RulesVersion } from "@/lib/labor/schedule-inputs";
+import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
+import { AdpAvailabilityCard } from "@/components/labor/AdpAvailabilityCard";
+import type { ScheduledShift } from "@/lib/labor/unavailability";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { FilterMultiSelect } from "@/components/filters/FilterMultiSelect";
@@ -39,6 +58,7 @@ import {
   GRAINS,
   chicagoTodayIso,
   enumerateBucketStarts,
+  shiftCalendarDate,
   formatBucket,
   wantsCustom,
   type DateWindow,
@@ -70,6 +90,7 @@ import {
   periodIncludesToday,
   scheduleTakesOverFrom,
   scheduledShiftWindow,
+  forwardHorizonEnd,
 } from "@/lib/labor/actual-schedule-windows";
 import {
   aggregateScheduledDays,
@@ -90,6 +111,7 @@ import {
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/tables/DataTable";
 import type {
+  AdpRosterRow,
   LaborActualShiftDayRow,
   LaborConcurrentRow,
   LaborDailyRow,
@@ -168,7 +190,10 @@ export default async function LaborPage({
   let goalLaborHoursWeek: number | undefined;
   let personActualDays: PersonDayHours[] = [];
   let personScheduledDays: PersonDayHours[] = [];
-  let scheduleScrapedAt: string | null = null;
+  let weeklyActualDays: PersonDayHours[] = [];
+  let weeklyScheduledDays: PersonDayHours[] = [];
+  let weeklyOpenDays: { date: string; hours: number }[] = [];
+  let weeklyRange = { start: "", end: "" };
   let hoursScrapedAt: string | null = null;
   let coverageActuals: LaborActualShiftDayRow[] = [];
   let coverageScheduled: LaborScheduledShiftDayRow[] = [];
@@ -176,14 +201,23 @@ export default async function LaborPage({
   let openHoursRows: LaborOpenShiftHoursRow[] = [];
   let coverageOpen: LaborOpenShiftDayRow[] = [];
   let punchGaps: PunchGap[] = [];
+  let coverageDemand: DemandCell[] = [];
+  let deliveryDates: string[] = [];
+  let rulesHistory: RulesVersion[] = [];
+  let unavailability: UnavailabilityRow[] = [];
+  let scheduleReadAt: string | null = null;
+  let upcomingShifts: ScheduledShift[] = [];
+  let adpRosterRows: AdpRosterRow[] = [];
+  let wageRates: LaborWageRates = { byName: {}, avgPartTime: null };
+  let savedPushRows: PushRow[] = [];
   let error: string | undefined;
   try {
     // When Period includes today, extend charts through the latest ADP scheduled
-    // date (any Aggregation) — not just Period end.
-    const scheduleHorizonEnd = includesToday
-      ? await adpScheduleHorizonEnd().catch(() => null)
-      : null;
+    // date or FORWARD_WEEKS ahead, whichever is later (any Aggregation).
     const todayIso = chicagoTodayIso();
+    const scheduleHorizonEnd = includesToday
+      ? forwardHorizonEnd(todayIso, await adpScheduleHorizonEnd().catch(() => null))
+      : null;
     // Hand off from actual to scheduled where the punches actually end, not at
     // a fixed "yesterday" — otherwise the evening's freshly-ingested hours are
     // overdrawn by their own schedule. Falls back to today if unreadable.
@@ -193,7 +227,20 @@ export default async function LaborPage({
     );
     punchWin = actualPunchWindow(win, boundaryIso);
     chartWin = laborChartWindow(win, todayIso, scheduleHorizonEnd);
-    const schedWin = scheduledShiftWindow(win, boundaryIso, scheduleHorizonEnd);
+    const schedWin = scheduledShiftWindow(win, boundaryIso, scheduleHorizonEnd, todayIso);
+    // Hours per person has its own week picker: last 8 weeks through the later of the charts' end and the forward horizon.
+    const forward =
+      scheduleHorizonEnd ?? forwardHorizonEnd(todayIso, await adpScheduleHorizonEnd().catch(() => null));
+    const weeklyHorizon = chartWin.end > forward ? chartWin.end : forward;
+    const weeklyWin: DateWindow = {
+      start: weekStartOf(shiftCalendarDate(todayIso, "day", -7 * 8)),
+      end: weeklyHorizon,
+      label: "Hours per person",
+      preset: "custom",
+    };
+    weeklyRange = { start: weeklyWin.start, end: weeklyWin.end };
+    const weeklyPunchWin = actualPunchWindow(weeklyWin, boundaryIso);
+    const weeklySchedWin = scheduledShiftWindow(weeklyWin, boundaryIso, weeklyHorizon, todayIso);
     // Charts: Hour grain omits schedule stacks (#227). Coverage is day-level —
     // show ADP schedule whenever the schedule window is non-null (any Aggregation;
     // future-only Periods included) — Issue #243.
@@ -221,7 +268,6 @@ export default async function LaborPage({
       schedHours,
       schedDays,
       coverageSchedDays,
-      scraped,
       hoursScraped,
       actualShiftDays,
       solo,
@@ -230,6 +276,18 @@ export default async function LaborPage({
       gapRows,
       gapCoworkers,
       punchDays,
+      demand,
+      restockDates,
+      rulesVersions,
+      unavailRows,
+      scheduleRead,
+      upcomingRows,
+      weeklyActual,
+      weeklySched,
+      weeklyOpen,
+      directoryRoster,
+      rates,
+      pushRows,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -254,7 +312,6 @@ export default async function LaborPage({
             () => [],
           )
         : Promise.resolve([]),
-      adpScheduleScrapedAt().catch(() => null),
       adpHoursScrapedAt().catch(() => null),
       punchWin ? laborActualShiftDays(punchWin).catch(() => []) : Promise.resolve([]),
       // Solo hours are punch-derived, so they only exist for days already
@@ -271,11 +328,45 @@ export default async function LaborPage({
       laborPunchGaps(win, DEFAULT_STORE).catch(() => []),
       laborActualShiftDays(win).catch(() => []),
       laborPunchDays(win, DEFAULT_STORE).catch(() => []),
+      laborDemandProfile(todayIso).catch(() => []),
+      upcomingRestockDates(DEFAULT_STORE, todayIso).catch(() => []),
+      scheduleRulesHistory(DEFAULT_STORE).catch(() => []),
+      adpUnavailability(DEFAULT_STORE).catch(() => []),
+      adpScheduleScrapedAt().catch(() => null),
+      laborScheduledShiftDays(
+        { start: todayIso, end: shiftCalendarDate(todayIso, "day", 56), label: "Next 8 weeks", preset: "custom" },
+        { store: DEFAULT_STORE, excludePto: true },
+      ).catch(() => []),
+      weeklyPunchWin ? laborHoursPerPersonDaily(weeklyPunchWin).catch(() => []) : Promise.resolve([]),
+      weeklySchedWin
+        ? laborScheduledShiftDays(weeklySchedWin, { store: DEFAULT_STORE, excludePto }).catch(() => [])
+        : Promise.resolve([]),
+      weeklySchedWin ? laborOpenShiftDays(weeklySchedWin).catch(() => []) : Promise.resolve([]),
+      adpDirectoryRoster(DEFAULT_STORE).catch(() => []),
+      laborWageRates().catch(() => ({ byName: {}, avgPartTime: null })),
+      upcomingPushRows(DEFAULT_STORE, weekStartOf(todayIso)).catch(() => []),
     ]);
+    savedPushRows = pushRows;
+    adpRosterRows = directoryRoster;
+    wageRates = rates;
+    weeklyOpenDays = weeklyOpen.map((r) => ({ date: r.date, hours: Number(r.scheduled_hours) || 0 }));
+    weeklyActualDays = weeklyActual;
+    weeklyScheduledDays = weeklySched.map((r) => ({
+      date: r.date,
+      employee: r.employee,
+      labor_bucket: r.labor_bucket,
+      hours: r.scheduled_hours,
+    }));
     punchGaps = mergePunchDays(buildPunchGaps(gapRows, gapCoworkers), punchDays, gapCoworkers);
+    rulesHistory = rulesVersions;
+    unavailability = unavailRows;
+    scheduleReadAt = scheduleRead;
+    upcomingShifts = upcomingRows;
     soloRows = solo;
     openHoursRows = openHours;
     coverageOpen = openDays;
+    coverageDemand = demand;
+    deliveryDates = restockDates;
     rows = labor;
     concurrentRows = concurrent;
     scheduledHoursRows = schedHours;
@@ -284,7 +375,6 @@ export default async function LaborPage({
     scheduledConcurrentByBucket = chartSchedule
       ? rollConcurrentToGrain(aggregateScheduledDays(schedDays), grain)
       : [];
-    scheduleScrapedAt = scraped;
     hoursScrapedAt = hoursScraped;
     goalLaborHoursWeek = goalFromConfig(config, "goal_labor_hours_week");
     personActualDays = perPersonDays;
@@ -312,6 +402,8 @@ export default async function LaborPage({
           hourly_pct: r.hourly_pct != null ? Number(r.hourly_pct) : null,
           fulltime_pct: r.fulltime_pct != null ? Number(r.fulltime_pct) : null,
           net_sales: r.net_sales != null ? Number(r.net_sales) : null,
+          parttime_cost: r.hourly_labor_cost != null ? Number(r.hourly_labor_cost) : null,
+          fulltime_cost: r.fulltime_labor_cost != null ? Number(r.fulltime_labor_cost) : null,
         },
       ] as const;
     }),
@@ -327,6 +419,8 @@ export default async function LaborPage({
             r.parttime_hours != null ? Number(Number(r.parttime_hours).toFixed(1)) : null,
           fulltime_scheduled_hours:
             r.fulltime_hours != null ? Number(Number(r.fulltime_hours).toFixed(1)) : null,
+          parttime_sched_cost: r.parttime_cost != null ? Number(r.parttime_cost) : null,
+          fulltime_sched_cost: r.fulltime_cost != null ? Number(r.fulltime_cost) : null,
         },
       ] as const;
     }),
@@ -389,11 +483,29 @@ export default async function LaborPage({
     };
   });
 
+  const wagesChartData = bucketIsos.map((iso) => {
+    const a = actualByBucket.get(iso);
+    const s = schedHoursByBucket.get(iso);
+    const openHours = openByBucket.get(iso)?.open_hours ?? null;
+    return {
+      date: formatBucket(iso, grain, grain === "day" ? { weekday: true } : undefined),
+      bucket_iso: iso,
+      parttime_cost: a?.parttime_cost ?? null,
+      fulltime_cost: a?.fulltime_cost ?? null,
+      net_sales: a?.net_sales ?? null,
+      parttime_sched_cost: s?.parttime_sched_cost ?? null,
+      fulltime_sched_cost: s?.fulltime_sched_cost ?? null,
+      open_cost:
+        openHours != null && wageRates.avgPartTime != null ? openHours * wageRates.avgPartTime : null,
+    };
+  });
+
   const concurrentChartData = bucketIsos.map((iso) => {
     const a = concurrentActualByBucket.get(iso);
     const s = concurrentSchedByBucket.get(iso);
     return {
       date: formatBucket(iso, grain, grain === "day" ? { weekday: true } : undefined),
+      bucket_iso: iso,
       parttime_concurrent: a?.parttime_concurrent ?? null,
       fulltime_concurrent: a?.fulltime_concurrent ?? null,
       total_concurrent: a?.total_concurrent ?? null,
@@ -409,7 +521,6 @@ export default async function LaborPage({
     laborTypes,
     win.end,
   );
-  const perPersonHasSchedule = perPersonChart.series.some((s) => s.key.endsWith("_sched"));
   // Picker lists whoever has hours under the current filters; a stale or
   // missing `person` falls back to the top of the per-person chart.
   const personOptions = perPersonChart.rows.map((r) => ({
@@ -487,6 +598,17 @@ export default async function LaborPage({
       : showStat
         ? "Sum across Period"
         : undefined;
+  // Anyone scheduled in ADP plus every hourly person the ADP Directory lists as Active; a Directory
+  // status other than Active (Terminated, Leave of absence) drops even the scheduled.
+  // Empty means both reads failed — keep the unfiltered roster then.
+  const statusOf = new Map(adpRosterRows.map((r) => [r.employee, r.employment_status?.toLowerCase() ?? null]));
+  const staffNames = [
+    ...new Set([
+      ...upcomingShifts.map((s) => s.employee),
+      ...adpRosterRows.filter((r) => r.employment_status?.toLowerCase() === "active").map((r) => r.employee),
+    ]),
+  ].filter((name) => (statusOf.get(name) ?? "active") === "active");
+  const activeStaff = staffNames.length ? staffNames : undefined;
 
   return (
     <div className="flex flex-col gap-4">
@@ -614,14 +736,13 @@ export default async function LaborPage({
               }}
             />
             <LaborWeeklyHoursGoal current={goalLaborHoursWeek} />
-            <SyncClockedHoursButton
+            <SyncAdpButton
               lastScrapedAt={hoursScrapedAt}
               targetDate={clockedHoursTargetDate({
                 todayIso: chicagoTodayIso(),
                 coverageDay: sp.day,
               })}
             />
-            <SyncScheduledShiftsButton lastScrapedAt={scheduleScrapedAt} />
           </>
         }
       />
@@ -669,13 +790,11 @@ export default async function LaborPage({
           apply here, so scheduled shifts still show when Aggregation is Hour (or any
           other grain) whenever ADP has them in the schedule window. Scroll the chips when
           the range is long. Use{" "}
-          <span className="font-medium text-foreground">Sync scheduled shifts</span> after
-          editing the ADP schedule, and{" "}
-          <span className="font-medium text-foreground">Sync clocked hours</span> after
-          punch-out fixes (Timecard plus Team Schedule, so open shifts refresh too — does
-          not re-scrape pay rates). Status under
-          each button shows starting / syncing / done / error without blocking the rest
-          of the page. Hover a sync button when idle for last-synced time. Paid PTO is included in
+          <span className="font-medium text-foreground">Sync ADP</span> after editing the
+          ADP schedule or fixing punches — one ADP login refreshes clocked hours, assigned
+          and open shifts, payroll earnings and pay rates. Status under the button shows
+          starting / syncing / done / error without blocking the rest of the page. Hover it
+          when idle for last-synced time. Paid PTO is included in
           scheduled hours by default (matches ADP); use the PTO filter to exclude it.
           Per-person hours stack clocked hours with scheduled hours (slate) for the
           days not yet ingested, through Period end. Pick a{" "}
@@ -688,7 +807,8 @@ export default async function LaborPage({
       {error ? (
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
-        <>
+        <SuggestedHoursProvider>
+          <CollapsibleSection id="labor-hours" title="Labor hours">
           <LaborHoursChart
             data={chartData}
             laborTypes={laborTypes}
@@ -697,47 +817,87 @@ export default async function LaborPage({
             unit={chartUnit}
             titlePrefix={statPrefix}
             subtitle={statSubtitle}
+            stat={stat === "avg" ? "avg" : "total"}
+            period={{ start: chartWin.start, end: chartWin.end }}
           />
+          </CollapsibleSection>
 
+          <CollapsibleSection id="labor-wages" title="Labor wages">
+          <LaborWagesChart
+            data={wagesChartData}
+            rates={wageRates}
+            laborTypes={laborTypes}
+            grain={grain}
+            titlePrefix={statPrefix}
+            subtitle={statSubtitle}
+            stat={stat === "avg" ? "avg" : "total"}
+            period={{ start: chartWin.start, end: chartWin.end }}
+          />
+          </CollapsibleSection>
+
+          <CollapsibleSection id="concurrent" title="On the floor">
           <LaborConcurrentChart
             data={concurrentChartData}
             laborTypes={laborTypes}
             grain={grain}
             titlePrefix={statPrefix}
             subtitle={statSubtitle}
+            stat={stat === "avg" ? "avg" : "total"}
+            period={{ start: chartWin.start, end: chartWin.end }}
           />
+          </CollapsibleSection>
 
+          <CollapsibleSection id="coverage" title="Coverage & shift draft">
           <LaborCoveragePanel
             win={chartWin}
             actuals={coverageActuals}
             scheduled={coverageScheduled}
             open={coverageOpen}
             laborTypes={laborTypes}
+            demand={coverageDemand}
+            goalHoursWeek={goalLaborHoursWeek}
+            deliveryDates={deliveryDates}
+            rulesHistory={rulesHistory}
+            unavailability={unavailability}
+            activeStaff={activeStaff}
+            savedPushRows={savedPushRows}
+            adpWriteEnabled={FEATURES.adpScheduleWrite}
           />
+          </CollapsibleSection>
 
-          <div data-testid="labor-hours-per-person" className="flex flex-col gap-2">
-            <BarChartCard
-              title={`Hours per person — ${win.start} → ${win.end}`}
-              subtitle={
-                perPersonHasSchedule
-                  ? "Clocked hours + ADP scheduled for days not yet ingested"
-                  : undefined
-              }
-              data={perPersonChart.rows}
-              xKey="employee"
-              series={perPersonChart.series}
-              stacked
-              valueFormat="number"
-              height={Math.min(420, Math.max(220, perPersonChart.rows.length * 28))}
-            />
-            {!perPersonChart.rows.length ? (
-              <p className="text-sm text-muted-foreground">
-                No clocked or scheduled hours in this Period.
-              </p>
-            ) : null}
-          </div>
+          <CollapsibleSection id="availability" title="ADP availability">
+          <AdpAvailabilityCard
+            rows={[
+              ...unavailability,
+              ...ruleUnavailability(rulesHistory[0]?.rules.staffRules ?? []).map(
+                (r): UnavailabilityRow => ({ ...r, expires_at_ct: null, hours_left: null, scraped_at: null }),
+              ),
+            ]}
+            shifts={upcomingShifts}
+            roster={activeStaff ?? []}
+            approveEnabled={FEATURES.adpUnavailabilityApprove}
+            lastReadAt={scheduleReadAt}
+            todayIso={chicagoTodayIso()}
+          />
+          </CollapsibleSection>
+
+          <CollapsibleSection id="hours-per-person" title="Hours per person">
+          <HoursPerPersonCard
+            actual={weeklyActualDays}
+            scheduled={weeklyScheduledDays}
+            open={weeklyOpenDays}
+            laborTypes={laborTypes}
+            todayIso={chicagoTodayIso()}
+            range={weeklyRange}
+          />
+          </CollapsibleSection>
+
+          <CollapsibleSection id="open-shifts" title="Open shifts">
+          <OpenShiftsCard todayIso={chicagoTodayIso()} />
+          </CollapsibleSection>
 
           {selectedPerson ? (
+            <CollapsibleSection id="one-person" title="One person">
             <div data-testid="labor-hours-one-person" className="flex flex-col gap-2">
               {personChartSupportsGrain(grain) ? (
                 <LaborHoursChart
@@ -775,16 +935,17 @@ export default async function LaborPage({
                 </p>
               )}
             </div>
+            </CollapsibleSection>
           ) : null}
 
           {punchGaps.length ? (
-            <PunchGapsPanel gaps={punchGaps} periodLabel={`${win.start} → ${win.end}`} />
+            <CollapsibleSection id="punch-gaps" title="Punch gaps">
+          <PunchGapsPanel gaps={punchGaps} periodLabel={`${win.start} → ${win.end}`} />
+          </CollapsibleSection>
           ) : null}
 
+          <CollapsibleSection id="solo" title={`Solo vs team hours — ${win.start} → ${win.end}`}>
           <div className="flex flex-col gap-2">
-            <h2 className="text-sm font-medium text-muted-foreground">
-              Solo vs team hours — {win.start} → {win.end}
-            </h2>
             {soloSummary.rows.length ? (
               <>
                 <DataTable
@@ -835,7 +996,8 @@ export default async function LaborPage({
               </p>
             ) : null}
           </div>
-        </>
+          </CollapsibleSection>
+        </SuggestedHoursProvider>
       )}
     </div>
   );

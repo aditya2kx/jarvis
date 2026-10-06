@@ -1,22 +1,28 @@
 ---
-description: New-requirement intake — always run /jarvis-new-task to start a new requirement; never implement a new requirement inline.
+description: New-requirement intake — keep working in the current worktree by default; start a new worktree only when the operator explicitly asks (/jarvis-new-task).
 alwaysApply: true
 ---
 
 # New-requirement intake
 
 <!-- canonical:intake -->
-**When the operator signals a new requirement mid-session, the agent MUST invoke the `/jarvis-new-task` Cursor Skill (which runs `scripts/new_requirement.py`) to spin up an isolated worktree, branch, tracking issue, and brief — and MUST NEVER implement the requirement inline in the current chat.**
+**By default the agent continues every operator request in the current chat, worktree and branch; it spins up a new worktree only when the operator explicitly asks for one — by typing `/jarvis-new-task` or saying "new task" / "new worktree" / "separate PR".**
 
-## The front door: `/jarvis-new-task`
+## Default: same workspace
 
-Type `/jarvis-new-task` followed by a one-line requirement description:
+- Treat a mid-session request as part of the current work, even when it looks like a new topic.
+  Do not redirect the operator to `/jarvis-new-task`, do not refuse to implement, and do not
+  stop to ask whether it should be split out.
+- If the request needs code that lives in **another** worktree (e.g. the page the operator is
+  looking at is served from a sibling worktree), make the change where that code lives rather
+  than declining or re-creating it — and say which worktree you edited.
+- Mention at most once, in the closing summary, if the extra scope will make the PR noticeably
+  harder to review; the operator decides whether to split.
 
-```
-/jarvis-new-task add multi-date support to the Slack command
-```
+## Explicit opt-in: `/jarvis-new-task`
 
-This invokes the `.cursor/skills/jarvis-new-task/SKILL.md` skill, which runs:
+Only when the operator types `/jarvis-new-task <requirement>` (or explicitly asks for a new
+task / worktree / separate PR) does the agent run:
 
 ```bash
 python3 scripts/new_requirement.py --requirement "<operator's text>"
@@ -28,27 +34,19 @@ The script:
 3. Opens Cursor in a new window with a jam-mode deeplink
 4. Creates a GitHub tracking issue and seeds the phase cache in both repos
 
-**After `/jarvis-new-task` fires, stop.** The agent must NOT ask clarifying questions before running — the front door accepts rough text; refinement happens in the jam gate of the new chat space.
-
-## Agent behaviour (soft guidance — does NOT block)
-
-If the agent notices a mid-session message that looks like a new, distinct requirement:
-
-- **Suggest** (never demand): "This sounds like a new requirement — want me to run `/jarvis-new-task <text>`?"
-- Do **not** block the turn or raise an error.
-- Do **not** implement it inline regardless of whether the operator explicitly typed `/jarvis-new-task`.
-
-The agent owns the "never inline" constraint; the operator owns the explicit invocation decision.
+**After `/jarvis-new-task` fires, stop.** No clarifying questions before running — refinement
+happens in the jam gate of the new chat space.
 
 ## Why this rule exists
 
-Implementing a new requirement in an existing chat's branch:
-- Mixes unrelated concerns in one diff (CI, review, rollback all become harder)
-- Loses the phase-tracking, cost attribution, and evidence trail that `new_requirement.py` provides
-- Violates the worktree isolation invariant that lets concurrent PRs co-exist
+Assuming every new topic needs its own worktree bounced the operator out of their flow and
+blocked small follow-ups (2026-10-03, Issue #337: a table-polish request was redirected to
+`/jarvis-new-task` instead of being done). Worktree isolation is still the right tool for
+genuinely separate work — the operator opts into it explicitly.
 
 ## See also
 
 - `.cursor/skills/jarvis-new-task/SKILL.md` — the `/jarvis-new-task` Cursor Skill
 - `self-drive.mdc` — self-drive rule and operator-reserved gates
-- `jarvis-hard-lessons.mdc` §19 — "Every new requirement MUST start in an isolated worktree"
+- `jarvis-hard-lessons.mdc` §19 — worktrees are opt-in
+- `user-preferences.mdc` #32

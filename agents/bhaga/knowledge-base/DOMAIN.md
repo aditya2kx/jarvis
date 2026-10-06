@@ -105,8 +105,20 @@ functions of `update_model_sheet.py` / `forecast.py` for the labor / tip-alloc /
    Slacks a one-time "blind streak" alert (Issue #348) — the rate is stale until the
    next check's earnings load. Rate = the card labelled **Default rate** (a second
    unlabelled card, e.g. $16.25 rate 2, is never the base).
-   Operator Console **Sync clocked hours** re-scrapes Timecard + Team Schedule
-   (`BHAGA_ADP_TIMECARD_ONLY`); it never runs this pay_info path.
+   Operator Console **Sync ADP** (`BHAGA_ADP_SYNC_ALL`, Issue #337) re-scrapes
+   Timecard, Team Schedule, Earnings, Liability and this pay_info path in one login.
+
+**Unavailability** (`adp_unavailability`, Issue #337): times an employee can't work,
+from ADP Team Schedule — pending requests (Pending requests → Unavailability, which
+expire unless approved) and approved blocks in the grid. A weekly repeat carries
+`repeat_weekday` + `repeat_until`. The shift draft avoids both pending and approved
+entries; nothing here affects pay or tips.
+
+**Needed headcount** (Labor → Staffing coverage, Issue #337): ⌈median Payment orders for that
+weekday + hour over the last 8 weeks ÷ orders one person handles per hour⌉, never below the
+minimum while staffed, then day & time rules override their window. The inputs are the versioned
+**Staffing basics** in `labor_schedule_rules` (default 4 orders/person, min 1, 6:30 AM–8:30 PM,
+4.5 h shortest shift) — distinct from `saturation_orders_per_labor_hour` (a model-sheet warning flag).
 
 **Open shifts** (`adp_open_shifts`, Issue #342): Team Schedule slots with no employee
 assigned — one row per `(date, slot_index)` with `shift_range` and ADP paid

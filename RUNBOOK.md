@@ -261,7 +261,7 @@ Consequences until that is resolved:
 rate-2 lines never landed in ADP, `Total pay` will read short of the ADP Preview gross by exactly the
 premium and `/payroll` flags it under the headline. A green match means ADP has the premium.
 
-**After fixing punches in ADP, one sync is not enough.** **Sync clocked hours** runs the Timecard
+**After fixing punches in ADP, one sync is not enough.** **Sync ADP** runs the Timecard
 scrape and upserts `adp_shifts` / `adp_punches`, then returns — it does **not** run
 `materialize_model_bq`. So corrected punches land in raw tables while `model_solo_hours_daily` still
 describes the old ones, and the premium on `/payroll` is computed from the stale copy. Always follow a
@@ -587,6 +587,15 @@ gcloud secrets versions add <name> --data-file=- --project jarvis-bhaga-prod
 The nightly job **no longer sends a READY-handshake Slack message before starting**. It proceeds
 directly to the ADP/Square scrapes. When the previous run's ADP session is restored successfully, ADP
 recognises the device and no OTP challenge fires.
+
+### ADP multi-company login (Houston + Austin on one account)
+
+Since Houston payroll was added to the same ADP login (2026-10), sign-in lands on a **Companies**
+list instead of the dashboard. `runner._ensure_logged_in` logs in, then `_select_company` opens the
+row whose `Client ID` equals the store profile's `adp_run.iid` (Palmetto Austin = 30109821; logs
+`[adp_login] step=select-company iid=…` / `step=company-open`). It waits up to 15 s for the client IDs
+to render and raises with a screenshot when not exactly one row matches — never guesses a company.
+Single-company logins skip the step.
 
 ### ADP trusted-device session (`_session/adp-palmetto.json`)
 
@@ -1610,12 +1619,15 @@ as a safety net. If punches/shifts are missing for dates, add
 If Timecard **Select All** (or a closed period) loads with **zero** `adp_shifts` rows for
 `refresh_date`, `clear_adp_reports_if_shifts_missing` **clears** Firestore `adp_reports`
 (`BREADCRUMB adp_shifts_missing_refresh_date`) so the next run retries ADP instead of skipping. Operator Console Labor overlays Team Schedule
-on past days only when that date has no punches. **Sync clocked hours** (Labor + Payroll) re-scrapes
-Timecard plus Team Schedule in one login (`BHAGA_ADP_TIMECARD_ONLY=1` → `download_adp_bundle(
-include_earnings=False, include_extras=False)`; skips pay_info / token hourlies / Payroll Liability)
-for yesterday, a past coverage chip, or a closed pay-period end — same OTP path as nightly. A Team
-Schedule failure there only logs `WARN: schedule refresh failed` and still loads clocked hours; a
-Timecard failure fails the sync.
+on past days only when that date has no punches. **Sync ADP** (Labor + Payroll; Issue #337 replaced the
+separate Sync clocked hours / Sync scheduled shifts buttons) re-scrapes everything in one login:
+`BHAGA_ADP_SYNC_ALL=1` → `download_adp_bundle(include_earnings=True, include_extras=True)` — Timecard,
+Team Schedule (shifts, open shifts, unavailability), Earnings and Hours, Payroll Liability and pay_info
+rates — for yesterday, a past coverage chip, or a closed pay-period end. It never builds a payroll
+draft. Same OTP path as nightly. The console also sets `BHAGA_ADP_TIMECARD_ONLY=1`, so an image
+without `BHAGA_ADP_SYNC_ALL` support falls back to the older Timecard + Schedule sync. A failed
+Schedule / Earnings / pay_info scrape only logs a WARN and skips loading that source (a stale file is
+never reloaded); a Timecard failure fails the sync.
 
 **ADP open shifts (Issue #342).** The Team Schedule's first row, "Open Shifts N Shifts, HH:MM HRS",
 holds unassigned slots; the grid shows only a per-day count, so `runner._scrape_open_shifts` clicks
@@ -1625,10 +1637,78 @@ touches Create / Claim / Publish. Rows land in `bhaga.adp_open_shifts` (migratio
 `(date, slot_index)`), purged per scraped `week_start` so a slot filled in ADP disappears on the next
 scrape; a week whose extract failed (`open_shifts_error` in the Schedule JSON) keeps its old rows.
 ADP footer totals exclude open shifts, so they never double-count `adp_scheduled_daily`. Refreshed by
-the nightly (bundle), **Sync scheduled shifts**, and **Sync clocked hours**. Load failures surface as
+the nightly (bundle) and **Sync ADP**. Load failures surface as
 an isolated `adp_schedule` PARTIAL (`BREADCRUMB raw_load_failed source=adp_schedule`). Reconcile
 warnings (`adp_open_shifts reconcile week_start=…`) mean the parsed slots disagree with the row label.
 Check: `bq query 'SELECT * FROM bhaga.adp_open_shifts ORDER BY date, slot_index'`.
+
+**ADP unavailability + scheduling rules (Issue #337).** Every Team Schedule scrape (nightly bundle and
+**Sync ADP**) also opens **Pending requests → Unavailability**, reads each request (name, date, time
+range, weekly repeat, "expires"), clicks **Back** and Escape — read-only, it never clicks Approve or
+Reject. Approved blocks come from the grid cells. Rows land in `bhaga.adp_unavailability` (migration
+077; pending rows are replaced whenever the requests read succeeds, approved rows per scraped week) and
+the per-type pending counts in `bhaga.adp_schedule_requests`. A request that is never approved expires in
+ADP and never reaches the schedule; the Labor page's **Availability in ADP** card flags anything expiring
+within 48h and any scheduled shift that overlaps an entry. The shift draft treats pending and approved
+entries alike. Scheduling rules (staff hour targets / shift caps / last working day, day & time headcounts) are stored per
+store in `bhaga.labor_schedule_rules` (migration 076): every **Save rules** appends `version+1`, the
+newest version is live, older versions stay as history (the panel's **History** list can restore one).
+A save based on a stale version is refused. Check:
+`bq query 'SELECT store, version, created_by, created_at, note FROM bhaga.labor_schedule_rules ORDER BY version DESC'`.
+The rules also carry **Staffing basics** (versioned the same way; versions saved before them load the
+defaults and are labeled "before staffing basics"): orders one person handles per hour (default 4),
+minimum people while staffed (1), staffed hours (6:30 AM–8:30 PM, open/close duties included) and the
+shortest draft shift (4.5 h — ADP's shortest regular shift). The **Needed** line is
+⌈median orders for that weekday + hour over the last 8 weeks ÷ orders per person⌉, never below the
+minimum, then day & time rules replace it in their window (e.g. closing duties: 2 people 7:30–8:30 PM).
+The weekly hours goal is a ceiling for order-driven draft shifts, not a target. Drafts start tomorrow.
+ADP open shifts count once (as coverage and hours); the draft only suggests who should take each one
+(free for the whole slot, within hour/shift caps). Those suggestions are assigned in ADP by hand —
+**Save to ADP as drafts** leaves them out, since it can only create new shifts.
+A daytime **Sync ADP** loads Timecard rows only through its target day (never today's in-progress punches).
+
+**Draft shifts → ADP (Issue #337, flag `CONSOLE_ADP_SCHEDULE_WRITE=1` on the console service).** The
+draft card's **Save to ADP as drafts** opens a drawer listing the week's shifts not yet in ADP; its
+confirm inserts one `labor_schedule_pushes` row per shift (migration 078, status `queued`, one
+`push_id`) and starts `BHAGA_ADP_SCHEDULE_WRITE=drafts` (laptop: `adp_schedule_write.py` directly).
+Each shift goes through Actions › Create shift (employee picked from ADP's "Unscheduled employees" list
+by display name) or Create open shift, then **Save as draft**; the toolbar's "Publish drafts (N)" count
+must reach the count the job expects (it tracks the count itself, so a lagging toolbar never confirms
+the wrong shift). If it doesn't within 20 s, the job reloads the grid and re-reads the count: one more
+draft → the shift exists (`drafted`); no new draft → nothing was saved (`failed`, run continues); any
+other count → `UnconfirmedSave` and the run **stops** (the rest are `not attempted`) — look in ADP
+before re-saving. ADP updates the count late for open shifts, which is what the reload covers.
+Read-only check of a week (draft count + open shifts): `BHAGA_ADP_SCHEDULE_WRITE=inspect
+BHAGA_SCHEDULE_WEEK_START=<Mon>` on the job, or `adp_schedule_write --inspect --week-start <Mon>`. A person already scheduled that day is not in ADP's list, so
+that row fails with the names ADP did list. **Publish week** (enabled once a row is `drafted`) runs
+`BHAGA_ADP_SCHEDULE_WRITE=publish`: Publish drafts for that week — every draft, including ones added by
+hand in ADP — then the week's rows become `published`. If the toolbar count never reads 0 after the
+confirm, the job re-reads the week's grid and treats the publish as done only when no row is left
+`drafted` (else `PublishUnconfirmed`, rows stay `drafted`). A console publish then DMs the operator in
+ClickUp (`notify_published`, team_pulse's DM user) a ready-to-post team note listing the week's ADP
+open shifts — nothing is posted to the team (`BREADCRUMB adp_publish_dm` if the DM fails). **Publishing
+in ADP directly also works:** every Team Schedule load (nightly, Sync ADP, after any console write)
+reads each shift's `DRAFT` tag and each day's open-shift `Drafts: N` and flips matching `drafted` rows
+to `published` (`reconcile_published`, `[schedule_write] reconcile … newly_published=N`,
+`BREADCRUMB adp_publish_reconcile` on error); no DM in that case. A failed publish
+leaves rows `drafted` with `error='publish failed: …'`. Re-saving only sends failed / new shifts;
+a row_key already drafted is `skipped`. Dry run (fills each wizard, saves nothing):
+`BHAGA_ADP_CDP_URL=http://127.0.0.1:9333 python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --push-id <id> --dry-run`.
+Check: `bq query 'SELECT date, employee, start_min, end_min, status, error FROM bhaga.labor_schedule_pushes ORDER BY requested_at DESC LIMIT 40'`.
+Every save / delete / publish ends by re-scraping that week into `adp_scheduled_shifts` /
+`adp_open_shifts` (`[schedule_write] schedule refreshed …`, `BREADCRUMB adp_schedule_refresh` if not),
+so the console shows ADP's state without a Sync. Other job modes (`BHAGA_SCHEDULE_WEEK_START=<Mon>`):
+`BHAGA_ADP_SCHEDULE_WRITE=refresh` (read-only re-scrape of the week) and `=delete` with
+`BHAGA_SCHEDULE_DELETE_KEYS=<row_key,…>` — removes superseded **assigned drafts** only (refuses any key
+whose latest row isn't an assigned `drafted` one), verifies the pane shows that date/time/name and that
+ADP's draft count drops by exactly one, stops on anything else, marks rows `deleted`. Always run it
+with `BHAGA_SCHEDULE_DRY_RUN=1` first (opens the shift, cancels the confirm). Never "Delete all".
+**Paid hours:** ADP removes a 30-min unpaid meal from shifts over 6 h; the console's draft, saved
+shifts and scheduled lanes use paid hours (Staffing basics "Unpaid meal … min on shifts longer than …
+h") and the scraper stores exact per-day paid hours, so the week total matches ADP.
+**Unavailable on dates** (staff rule, from–to): for people who can't enter unavailability in ADP; the
+draft treats it as approved all-day unavailability and the Unavailability card lists it as
+"Scheduling rule". A saved week stays locked — fix an affected saved shift with delete + a new draft.
 
 **ADP local attach — one OTP per live ADP session (Issue #342).** Every fresh browser process is a new
 ADP login (`SMSESSION` is a session cookie), and ADP's risk engine texts a code for most of them. For

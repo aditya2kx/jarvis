@@ -3,6 +3,7 @@
 import { failAck, okAck, type ActionAck } from "@/lib/actions/types";
 import { FEATURES } from "@/lib/config/features";
 import { DEFAULT_STORE, operatorEmail } from "@/lib/auth/identity";
+import { revalidatePath } from "next/cache";
 import { punchGapFor } from "@/lib/bq/queries";
 import { recordPunchGapDecision } from "@/lib/bq/writes";
 import {
@@ -11,18 +12,24 @@ import {
   validateDecision,
   type DecisionInput,
 } from "@/lib/labor/punch-gaps";
+import { saveScheduleRules } from "@/lib/labor/schedule-rules-store";
+import { queueDraftPush, weekPushRows } from "@/lib/labor/schedule-push-store";
+import { validatePushShifts, type PushRow } from "@/lib/labor/schedule-push";
+import { startScheduleWrite } from "@/lib/bhaga/schedule-write";
+import { runningAdpExecution } from "@/lib/bhaga/recompute";
+import { chicagoTodayIso } from "@/lib/filters/range";
 import {
-  pollAdpScheduleSync,
-  startAdpScheduleSync,
-  type ScheduleSyncPoll,
-  type ScheduleSyncStart,
-} from "@/lib/bhaga/schedule-sync";
+  pollAdpSync,
+  runningAdpSync,
+  startAdpSync,
+  type AdpSyncPoll,
+  type AdpSyncStart,
+} from "@/lib/bhaga/adp-sync";
 import {
-  pollAdpTimecardSync,
-  startAdpTimecardSync,
-  type HoursSyncPoll,
-  type HoursSyncStart,
-} from "@/lib/bhaga/hours-sync";
+  pollUnavailabilityApprove,
+  startUnavailabilityApprove,
+  type UnavailabilityApprovePoll,
+} from "@/lib/bhaga/unavailability-approve";
 import {
   pollPunchFixApply,
   startPunchFixApply,
@@ -30,58 +37,151 @@ import {
   type PunchFixStart,
 } from "@/lib/bhaga/punch-fix";
 
-/** Start schedule sync (local scrape when BYPASS_IAP, else Cloud Run). */
-export async function syncScheduledShiftsAction(): Promise<
-  ActionAck<ScheduleSyncStart>
+/** Append a new scheduling-rules version (older versions stay as history). */
+export async function saveScheduleRulesAction(
+  rules: unknown,
+  baseVersion: number,
+  note?: string,
+): Promise<ActionAck<{ version: number }>> {
+  try {
+    const by = await operatorEmail();
+    const version = await saveScheduleRules(DEFAULT_STORE, rules, baseVersion, by, note?.trim() || undefined);
+    revalidatePath("/labor");
+    return okAck({ data: { version }, message: `Rules saved (version ${version}).` });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+function requireScheduleWrite(): void {
+  if (!FEATURES.adpScheduleWrite) {
+    throw new Error("Saving shifts to ADP is turned off (CONSOLE_ADP_SCHEDULE_WRITE).");
+  }
+}
+
+/** Queue the week's draft shifts and start the ADP job that saves them as ADP drafts. */
+export async function saveDraftsToAdpAction(
+  weekStart: string,
+  shifts: unknown,
+): Promise<ActionAck<{ pushId: string; count: number }>> {
+  try {
+    requireScheduleWrite();
+    const valid = validatePushShifts(weekStart, shifts, chicagoTodayIso());
+    const pushId = await queueDraftPush(DEFAULT_STORE, weekStart, valid, await operatorEmail());
+    await startScheduleWrite(DEFAULT_STORE, { mode: "drafts", pushId });
+    // The week now has a saved plan; re-render so it locks to what was just sent.
+    revalidatePath("/labor");
+    return okAck({
+      data: { pushId, count: valid.length },
+      queued: ["adp-schedule-write"],
+      message: `Saving ${valid.length} shifts to ADP as drafts — about 7 s each. Employees can't see drafts until you publish.`,
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Publish the week's ADP drafts (employees are notified in ADP Mobile). */
+export async function publishWeekAction(weekStart: string): Promise<ActionAck<{ weekStart: string }>> {
+  try {
+    requireScheduleWrite();
+    const rows = await weekPushRows(DEFAULT_STORE, weekStart);
+    if (!rows.some((r) => r.status === "drafted")) {
+      throw new Error("Nothing saved to ADP for this week yet — save drafts first.");
+    }
+    await startScheduleWrite(DEFAULT_STORE, { mode: "publish", weekStart });
+    return okAck({
+      data: { weekStart },
+      queued: ["adp-schedule-write"],
+      message: "Publishing the week in ADP — employees are notified in ADP Mobile.",
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Latest ADP push state for a week (poll target for both steps). */
+export type ScheduleWriteRun = { mode: "drafts" | "publish"; pushId?: string; weekStart?: string };
+
+/** The week's push rows plus the ADP schedule-write job still running, if any (survives a reload). */
+export async function schedulePushStatusAction(
+  weekStart: string,
+): Promise<ActionAck<{ rows: PushRow[]; running: ScheduleWriteRun | null }>> {
+  try {
+    const [rows, hit] = await Promise.all([
+      weekPushRows(DEFAULT_STORE, weekStart),
+      runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE"),
+    ]);
+    const mode = hit?.env.BHAGA_ADP_SCHEDULE_WRITE;
+    const running: ScheduleWriteRun | null =
+      hit && (mode === "drafts" || mode === "publish")
+        ? { mode, pushId: hit.env.BHAGA_SCHEDULE_PUSH_ID, weekStart: hit.env.BHAGA_SCHEDULE_WEEK_START }
+        : null;
+    return okAck({ data: { rows, running } });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Approve one pending ADP unavailability request (headless Cloud Run job). */
+export async function approveUnavailabilityAction(
+  rowKey: string,
+): Promise<ActionAck<{ executionName: string }>> {
+  try {
+    if (!FEATURES.adpUnavailabilityApprove) {
+      throw new Error("Approving in ADP is turned off (CONSOLE_ADP_UNAVAIL_APPROVE).");
+    }
+    if (typeof rowKey !== "string" || !rowKey) throw new Error("Missing request.");
+    const data = await startUnavailabilityApprove(DEFAULT_STORE, rowKey, await operatorEmail());
+    return okAck({
+      data,
+      queued: ["adp-unavail-approve"],
+      message: "Approving in ADP — about 5–10 min including the schedule refresh.",
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+export async function pollUnavailabilityApproveAction(opts: {
+  rowKey: string;
+  executionName?: string | null;
+}): Promise<ActionAck<UnavailabilityApprovePoll>> {
+  try {
+    return okAck({ data: await pollUnavailabilityApprove(opts) });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Start "Sync ADP" — every ADP read in one Cloud Run login. */
+export async function syncAdpAction(targetDate: string): Promise<ActionAck<AdpSyncStart>> {
+  try {
+    const data = await startAdpSync(DEFAULT_STORE, targetDate);
+    return okAck({ data, queued: ["adp-sync"], message: data.message });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** A "Sync ADP" still running on Cloud Run, so a reloaded page resumes its status. */
+export async function runningAdpSyncAction(): Promise<
+  ActionAck<{ executionName: string; baselineScrapedAt: string } | null>
 > {
   try {
-    const data = await startAdpScheduleSync(DEFAULT_STORE);
-    return okAck({
-      data,
-      queued: ["adp-scheduled-shifts"],
-      message: data.message,
-    });
+    return okAck({ data: await runningAdpSync() });
   } catch (e) {
     return failAck(e);
   }
 }
 
-/** Poll BQ scraped_at (+ Cloud Run execution when cloud mode). */
-export async function pollScheduledShiftsSyncAction(opts: {
+/** Poll BQ adp_shifts scraped_at + the Cloud Run execution. */
+export async function pollAdpSyncAction(opts: {
   baselineScrapedAt: string | null;
   executionName?: string | null;
-}): Promise<ActionAck<ScheduleSyncPoll>> {
+}): Promise<ActionAck<AdpSyncPoll>> {
   try {
-    const data = await pollAdpScheduleSync(opts);
-    return okAck({ data });
-  } catch (e) {
-    return failAck(e);
-  }
-}
-
-/** Start Timecard scrape (local when BYPASS_IAP, else Cloud Run). Skips pay_info. */
-export async function syncClockedHoursAction(
-  targetDate: string,
-): Promise<ActionAck<HoursSyncStart>> {
-  try {
-    const data = await startAdpTimecardSync(DEFAULT_STORE, targetDate);
-    return okAck({
-      data,
-      queued: ["adp-clocked-hours"],
-      message: data.message,
-    });
-  } catch (e) {
-    return failAck(e);
-  }
-}
-
-/** Poll BQ adp_shifts scraped_at (+ Cloud Run execution when cloud mode). */
-export async function pollClockedHoursSyncAction(opts: {
-  baselineScrapedAt: string | null;
-  executionName?: string | null;
-}): Promise<ActionAck<HoursSyncPoll>> {
-  try {
-    const data = await pollAdpTimecardSync(opts);
+    const data = await pollAdpSync(opts);
     return okAck({ data });
   } catch (e) {
     return failAck(e);

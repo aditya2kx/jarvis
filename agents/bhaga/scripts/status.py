@@ -146,6 +146,10 @@ BQ_TARGETS: list[Target] = [
     # "empty" is the healthy state whenever every shift is filled — a freshness
     # target would false-alarm. Its scrape rides adp_scheduled_shifts (same JSON,
     # same load), which is the freshness signal. Intentionally NOT a BQ_TARGETS entry.
+    # migrations 076-078 (Issue #337): labor_schedule_rules / labor_schedule_pushes are
+    # operator-input tables (rows only on a console save) and adp_unavailability /
+    # adp_schedule_requests are empty whenever nobody has asked for time off — same
+    # class as 073 / 030. Their scrape rides adp_scheduled_shifts. NOT BQ_TARGETS entries.
     # migration 084 (Issue #356): adp_timecard_gaps is empty whenever every punch is
     # complete (same false-alarm class as adp_open_shifts; its read rides the Timecard
     # login, whose freshness signal is adp_shifts) and punch_gap_decisions is

@@ -394,6 +394,63 @@ def _wait_for_login_form(page, *, max_retries: int = 2, _sleep_fn=None):
 
 
 def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
+    _login(page, store=store, timeout_ms=timeout_ms)
+    _select_company(page, store=store)
+
+
+# RUN "MCA parent" company list: each row is an sdf-button[data-test-id=mca-list-row-link]
+# next to a "Client ID: <iid>" span (live DOM 2026-10-05).
+COMPANY_ROW_JS = r"""
+(iid) => {
+  const vis = e => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
+  const links = [...document.querySelectorAll('[data-test-id="mca-list-row-link"]')].filter(vis);
+  if (!links.length) return { list: false };
+  const re = new RegExp('Client ID:\\s*' + iid + '(\\D|$)');
+  const hits = links.filter(a => re.test((a.parentElement && a.parentElement.innerText) || ''));
+  document.querySelectorAll('[data-jarvis-company]').forEach(e => e.removeAttribute('data-jarvis-company'));
+  if (hits.length === 1) hits[0].setAttribute('data-jarvis-company', '1');
+  return { list: true, rows: hits.length, link: hits.length === 1 };
+}
+"""
+
+
+def _select_company(page, *, store: str, wait_s: float = 6.0) -> None:
+    """Multi-company logins land on a "Companies" list: open this store's company.
+
+    Matched by the ADP client ID (store profile ``adp_run.iid``), never by name
+    or position — picking the wrong company would read or write another store.
+    """
+    iid = (_load_store_profile(store).get("adp_run") or {}).get("iid", "")
+    deadline = time.monotonic() + wait_s
+    info = page.evaluate(COMPANY_ROW_JS, iid)
+    while not info["list"] and time.monotonic() < deadline:
+        page.wait_for_timeout(500)
+        info = page.evaluate(COMPANY_ROW_JS, iid)
+    if not info["list"]:
+        return
+    # Row links render before their "Client ID" text; wait for the match to settle.
+    rows_deadline = time.monotonic() + 15.0
+    while iid and not info["link"] and time.monotonic() < rows_deadline:
+        page.wait_for_timeout(500)
+        info = page.evaluate(COMPANY_ROW_JS, iid)
+    if not iid or not info["link"]:
+        _raise_with_evidence(
+            page, store=store,
+            reason=f"ADP shows a company list but no single row for client ID {iid!r} "
+                   f"(rows matched: {info['rows']}). Set adp_run.iid in the store profile.",
+        )
+    print(f"[adp_login] step=select-company iid={iid}")
+    page.locator("[data-jarvis-company='1']").first.click(timeout=10_000)
+    gone = time.monotonic() + 30.0
+    while page.evaluate(COMPANY_ROW_JS, iid)["list"]:
+        if time.monotonic() > gone:
+            _raise_with_evidence(page, store=store, reason=f"ADP company {iid} did not open from the company list")
+        page.wait_for_timeout(500)
+    page.wait_for_load_state("domcontentloaded")
+    print(f"[adp_login] step=company-open url={page.url}")
+
+
+def _login(page, *, store: str, timeout_ms: int = 60_000) -> None:
     """Open ADP and complete a FRESH login using keychain creds.
 
     Stateless: assumes no cookies (ephemeral browser context). Flow:
@@ -1894,6 +1951,141 @@ def _scrape_open_shifts(page, frame, *, week_label: str) -> dict:
         return {"open_shifts_error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
+_REQUEST_BUTTONS_JS = r"""
+() => [...document.querySelectorAll('button, sdf-button, [role=button]')]
+  .map(b => (b.innerText || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
+  .filter(t => /request|pending/i.test(t)).slice(0, 12)
+"""
+
+
+def _open_unavailability_requests(page, frame):
+    """Team Schedule › Pending requests › Unavailability Requests (read-only clicks).
+
+    Returns ``(pane, list_text, unavailability_text)``; the text is "" when ADP
+    lists no unavailability row. ADP renders ``#schedule-request-button`` only
+    while something is pending, so a rendered toolbar (``publish-cta``) without it
+    means zero pending. Otherwise raises with the toolbar's request-ish buttons.
+    """
+    import re as _re
+
+    pane = frame.locator("sdf-focus-pane")
+    opener = frame.locator("#schedule-request-button")
+    try:
+        frame.locator("[data-e2e=publish-cta]").first.wait_for(state="attached", timeout=15_000)
+        page.wait_for_timeout(1_500)
+    except Exception:  # noqa: BLE001 — fall through to the click's own error
+        pass
+    if not opener.count() and frame.locator("[data-e2e=publish-cta]").count():
+        print("[adp_schedule] no Pending requests button — ADP has nothing pending")
+        return pane, "", ""
+    try:
+        opener.first.click(timeout=8_000)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            seen = frame.evaluate(_REQUEST_BUTTONS_JS)
+        except Exception:  # noqa: BLE001
+            seen = "?"
+        raise RuntimeError(f"Pending requests button not found (request-ish buttons: {seen}): {exc}") from exc
+    page.wait_for_timeout(1_500)
+    list_text = pane.first.inner_text(timeout=8_000)
+    unavail_text = ""
+    row = pane.locator(".vdl-list-view__content", has_text=_re.compile(r"Unavailability", _re.I))
+    if row.count():
+        row.first.click(timeout=8_000)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(400)
+            unavail_text = pane.first.inner_text(timeout=5_000)
+            if _re.search(r"Unavailability\s+(update|request)|Total\s+0", unavail_text, _re.I):
+                break
+    return pane, list_text, unavail_text
+
+
+def _ensure_show_unavailability(page, frame) -> None:
+    """Turn on Filter › Display › Show Unavailability (off by default).
+
+    A per-manager view preference — without it the grid never draws approved
+    unavailability. Never raises: the schedule read proceeds either way.
+    """
+    import re as _re
+
+    try:
+        frame.get_by_text("Filter", exact=True).first.click(timeout=8_000)
+        page.wait_for_timeout(1_200)
+        box = frame.locator("[data-id=team-schedule-display-preferences-show-unavailability]").first
+        if box.get_attribute("aria-checked", timeout=5_000) == "true":
+            print("[adp_schedule] Show Unavailability already on")
+            page.keyboard.press("Escape")
+        else:
+            box.click(timeout=5_000)
+            frame.get_by_role("button", name=_re.compile(r"^\s*Apply\s*$")).first.click(timeout=5_000)
+            print("[adp_schedule] turned on Show Unavailability")
+        page.wait_for_timeout(2_500)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_schedule] WARN: could not turn on Show Unavailability: {type(exc).__name__}: {exc}"[:300])
+        try:
+            page.keyboard.press("Escape")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _scrape_schedule_requests(page, frame) -> dict:
+    """Read Team Schedule › Pending requests: per-type counts + unavailability cards (Issue #337).
+
+    Read-only: clicks only "Pending requests", the "Unavailability Requests" row
+    and "Back" — never Approve / Reject. Never raises; on failure returns
+    ``requests_error`` so the loader leaves stored requests untouched.
+    """
+    try:
+        pane, list_text, unavail_text = _open_unavailability_requests(page, frame)
+        if unavail_text:
+            pane.get_by_text("Back", exact=True).first.click(timeout=5_000)
+            page.wait_for_timeout(500)
+        if list_text:
+            page.keyboard.press("Escape")
+        print(f"[adp_schedule] requests pane read ({len(unavail_text)} chars of unavailability)")
+        return {"list_text": list_text, "unavailability_text": unavail_text}
+    except Exception as exc:  # noqa: BLE001 — additive channel
+        print(f"[adp_schedule] WARN: requests pane read failed: {type(exc).__name__}: {exc}")
+        try:
+            page.keyboard.press("Escape")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"requests_error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def _week_label_jump_days(before: str, after: str) -> Optional[int]:
+    """Days between two "Week of Mon D, YYYY - ..." labels' start dates; None if unparseable."""
+    import re as _re
+    from datetime import datetime as _dt
+
+    def start(label: str):
+        m = _re.search(r"Week of\s+([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{4})", label)
+        if not m:
+            return None
+        try:
+            return _dt.strptime(f"{m.group(1)[:3]} {m.group(2)} {m.group(3)}", "%b %d %Y").date()
+        except ValueError:
+            return None
+
+    a, b = start(before), start(after)
+    return (b - a).days if a and b else None
+
+
+def _wait_week_label_change(page, label, before: str, seconds: float) -> Optional[str]:
+    """Poll the week label until it differs from ``before``; None on timeout."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(300)
+        try:
+            now = label.inner_text(timeout=2_000).strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if now != before:
+            return now
+    return None
+
+
 def _goto_next_week(page, frame) -> None:
     """Advance the schedule grid to the next week.
 
@@ -1931,23 +2123,29 @@ def _goto_next_week(page, frame) -> None:
         page.mouse.click(box["x"] + box["width"] + 16, box["y"] + box["height"] / 2)
 
     # Phase 1: label must change (confirms the nav fired).
-    deadline = time.monotonic() + 12.0
-    label_changed = False
-    while time.monotonic() < deadline:
-        page.wait_for_timeout(300)
-        try:
-            now = label.inner_text(timeout=2_000).strip()
-        except Exception:  # noqa: BLE001
-            now = before_label
-        if now != before_label:
-            label_changed = True
-            print(f"[adp_schedule] step=advanced-week {before_label!r} -> {now!r}")
-            break
-    if not label_changed:
+    now = _wait_week_label_change(page, label, before_label, 12.0)
+    if now is None:
         raise RuntimeError(
             f"Next-week navigation did not change the week label (still {before_label!r}). "
             "Chevron position may have drifted."
         )
+    print(f"[adp_schedule] step=advanced-week {before_label!r} -> {now!r}")
+    # Sunday evening CT (already Monday UTC) the first › lands two weeks on; one ‹
+    # lands on the skipped week and later › clicks behave (2026-10-04, 3/3 runs).
+    jump = _week_label_jump_days(before_label, now)
+    if jump is not None and jump > 7:
+        print(f"[adp_schedule] BREADCRUMB week_skip jump_days={jump} {before_label!r} -> {now!r}")
+        skipped = now
+        try:
+            # A DOM click; a coordinate click on the ‹ did nothing in the spike.
+            frame.locator('[aria-label="Select previous week"]').first.evaluate("el => el.click()", timeout=5_000)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[adp_schedule] WARN: previous-week click failed: {type(exc).__name__}: {exc}"[:300])
+        back = _wait_week_label_change(page, label, skipped, 8.0)
+        if back is not None and _week_label_jump_days(before_label, back) == 7:
+            print(f"[adp_schedule] step=week-skip-corrected {skipped!r} -> {back!r}")
+        else:
+            print(f"[adp_schedule] BREADCRUMB week_skip_uncorrected now={back or skipped!r}")
 
     # Phase 2: footer totals must re-render. Poll until they differ from the
     # pre-nav snapshot; if they never differ within the settle window the two
@@ -1964,11 +2162,12 @@ def _goto_next_week(page, frame) -> None:
     print("[adp_schedule] step=totals-settle-timeout (assuming identical-week totals)")
 
 
-def _schedule_within_session(page, *, weeks: int = None) -> list[dict]:
+def _schedule_within_session(page, *, weeks: int = None) -> tuple[list[dict], dict]:
     """Scrape consecutive weeks of Team Schedule totals (cap + stop-on-stall).
 
     Pre-condition: `page` is on the v2 ADP RUN dashboard (POST_LOGIN_URL_RE).
-    Returns a list of per-week raw payloads (see schedule_backend.build_schedule_records).
+    Returns per-week raw payloads (see schedule_backend.build_schedule_records)
+    plus the Pending requests pane read (``_scrape_schedule_requests``).
 
     Issue #230: managers often publish (or leave in draft) weeks beyond
     current+next. We advance the › chevron until the week label stops changing
@@ -1979,6 +2178,9 @@ def _schedule_within_session(page, *, weeks: int = None) -> list[dict]:
 
     weeks = min(weeks or sb.DEFAULT_WEEKS, sb.MAX_SCHEDULE_WEEKS)
     frame = _open_team_schedule(page)
+    # Read on the opening week, before the chevrons move the grid.
+    requests = _scrape_schedule_requests(page, frame)
+    _ensure_show_unavailability(page, frame)
     payloads: list[dict] = []
     for i in range(weeks):
         payloads.append(_scrape_one_week(page, frame))
@@ -1989,10 +2191,10 @@ def _schedule_within_session(page, *, weeks: int = None) -> list[dict]:
         except RuntimeError as exc:
             print(f"[adp_schedule] stop advancing weeks after {len(payloads)}: {exc}")
             break
-    return payloads
+    return payloads, requests
 
 
-def _write_schedule_json(payloads: list[dict], *, store: str) -> pathlib.Path:
+def _write_schedule_json(payloads: list[dict], *, store: str, requests: Optional[dict] = None) -> pathlib.Path:
     """Persist the scraped week payloads as Schedule-<today>.json in DOWNLOADS_DIR.
 
     Mirrors the timecard/earnings "drop a file in downloads/, parse it later in
@@ -2008,6 +2210,7 @@ def _write_schedule_json(payloads: list[dict], *, store: str) -> pathlib.Path:
             "scraped_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
             "store": store,
             "weeks": payloads,
+            "requests": requests or {"requests_error": "not scraped"},
         },
         indent=2,
     ))
@@ -2193,8 +2396,8 @@ def download_schedule(
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        payloads = _schedule_within_session(page, weeks=weeks)
-        return _write_schedule_json(payloads, store=store)
+        payloads, requests = _schedule_within_session(page, weeks=weeks)
+        return _write_schedule_json(payloads, store=store, requests=requests)
 
 
 def download_payroll_liability(
@@ -2647,8 +2850,8 @@ def download_adp_bundle(
                         print(f"[adp_bundle] schedule: UNEXPECTED session lapse "
                               f"(url={page.url}); re-running login")
                         _ensure_logged_in(page, store=store)
-                payloads = _schedule_within_session(page, weeks=schedule_weeks)
-                path = _write_schedule_json(payloads, store=store)
+                payloads, requests = _schedule_within_session(page, weeks=schedule_weeks)
+                path = _write_schedule_json(payloads, store=store, requests=requests)
                 result["schedule_json"] = path
                 _mark_run_step_done(
                     "adp_schedule", refresh_date=target_date,
@@ -2756,6 +2959,14 @@ def download_adp_bundle(
             except Exception as exc:  # noqa: BLE001
                 print(f"[adp_bundle] pay_info BQ puncher union skipped: {exc}")
 
+            try:
+                page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
+                page.wait_for_timeout(1500)
+                result["directory_roster"] = pib.directory_roster(page)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[adp_bundle] BREADCRUMB directory_roster failed: "
+                      f"{type(exc).__name__}: {exc}")
+
             if names:
                 print(f"[adp_bundle] pay_info refresh for {len(names)}: {names}")
                 page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
@@ -2766,6 +2977,7 @@ def download_adp_bundle(
                 )
                 path = pib.write_pay_info_json(
                     rates, store=store, errors=scrape_errors, attempted=names,
+                    directory=result.get("directory_roster"),
                 )
                 result["pay_info_json"] = path
                 print(f"[adp_bundle] pay_info OK → {path} ({len(rates)} rates)")

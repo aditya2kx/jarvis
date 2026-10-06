@@ -28,7 +28,7 @@ import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { payPeriodKey } from "@/lib/payroll/periodKey";
 import { rowMatchesLaborType } from "@/lib/payroll/laborBucket";
 import { PayrollDraftButton } from "@/components/payroll/PayrollDraftButton";
-import { SyncClockedHoursButton } from "@/components/labor/SyncClockedHoursButton";
+import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
 import { chicagoTodayIso } from "@/lib/filters/range";
 import { hasRunningBhagaJob } from "@/lib/bhaga/recompute";
 import { clockedHoursTargetDate } from "@/lib/labor/actual-schedule-windows";
@@ -410,7 +410,7 @@ export default async function PayrollPage({
               />
             ) : null}
             {periodEnd ? (
-              <SyncClockedHoursButton
+              <SyncAdpButton
                 lastScrapedAt={hoursScrapedAt}
                 targetDate={clockedHoursTargetDate({
                   todayIso: chicagoTodayIso(),

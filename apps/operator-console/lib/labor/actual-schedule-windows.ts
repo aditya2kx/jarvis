@@ -3,6 +3,7 @@ import {
   shiftCalendarDate,
   type DateWindow,
 } from "@/lib/filters/range";
+import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
 
 /** Period overlaps Chicago today (schedule overlay is eligible). */
 export function periodIncludesToday(win: DateWindow, todayIso = chicagoTodayIso()): boolean {
@@ -59,6 +60,24 @@ export function extendEndForScheduleHorizon(
   return scheduleHorizonEnd > periodEnd ? scheduleHorizonEnd : periodEnd;
 }
 
+/** Full Mon–Sun weeks ahead of today that a Period including today always shows. */
+export const FORWARD_WEEKS = 3;
+
+/**
+ * Forward horizon for a Period that includes today: the later of the ADP
+ * schedule horizon and the Sunday ending the week `FORWARD_WEEKS` out, so draft
+ * weeks stay visible beyond what ADP has published.
+ */
+export function forwardHorizonEnd(
+  todayIso: string,
+  scheduleHorizonEnd: string | null | undefined,
+  weeks = FORWARD_WEEKS,
+): string {
+  const ahead = shiftCalendarDate(todayIso, "day", weeks * 7);
+  const sunday = shiftCalendarDate(ahead, "day", 6 - isoWeekdayMon0(ahead));
+  return extendEndForScheduleHorizon(sunday, scheduleHorizonEnd);
+}
+
 /**
  * Chart spine window: when Period includes today, extend through available
  * scheduled shifts (any Aggregation). Past-only Periods are unchanged.
@@ -76,20 +95,20 @@ export function laborChartWindow(
 
 /**
  * Scheduled shifts window: from `boundaryIso` through Period end, extended to
- * the ADP schedule horizon when the Period reaches it.
+ * the ADP schedule horizon when the Period includes today (same test as
+ * `laborChartWindow`, so the chart spine and the schedule always agree).
  *
- * Returns null when the Period ends before the boundary — which is the case
- * every evening once the day's punches land: nothing in the Period is still a
- * forecast, so no schedule is drawn.
+ * Returns null when nothing in the Period or horizon is at/after the boundary —
+ * e.g. a Period ending today, once today's punches land, with no horizon.
  */
 export function scheduledShiftWindow(
   win: DateWindow,
   boundaryIso = chicagoTodayIso(),
   scheduleHorizonEnd: string | null = null,
+  todayIso = chicagoTodayIso(),
 ): DateWindow | null {
-  if (win.end < boundaryIso) return null;
   const start = win.start > boundaryIso ? win.start : boundaryIso;
-  const end = periodIncludesToday(win, boundaryIso)
+  const end = periodIncludesToday(win, todayIso)
     ? extendEndForScheduleHorizon(win.end, scheduleHorizonEnd)
     : win.end;
   if (start > end) return null;

@@ -181,6 +181,8 @@ export function laborByGrain(
          ) AS total_hours,
          SAFE_DIVIDE(COALESCE(l.hourly_hours, 0), ${div}) AS hourly_hours,
          SAFE_DIVIDE(COALESCE(l.fulltime_hours, 0), ${div}) AS fulltime_hours,
+         SAFE_DIVIDE(COALESCE(l.hourly_labor_cost, 0), ${div}) AS hourly_labor_cost,
+         SAFE_DIVIDE(COALESCE(l.fulltime_labor_cost, 0), ${div}) AS fulltime_labor_cost,
          CAST(NULL AS FLOAT64) AS hours_per_item,
          SAFE_DIVIDE(COALESCE(s.orders, 0), ${div}) AS orders,
          CAST(NULL AS FLOAT64) AS items_sold,
@@ -234,6 +236,8 @@ export function laborByGrain(
          SAFE_DIVIDE(a.hourly_hours + a.fulltime_hours, p.n_days) AS total_hours,
          SAFE_DIVIDE(a.hourly_hours, p.n_days) AS hourly_hours,
          SAFE_DIVIDE(a.fulltime_hours, p.n_days) AS fulltime_hours,
+         SAFE_DIVIDE(a.hourly_labor_cost, p.n_days) AS hourly_labor_cost,
+         SAFE_DIVIDE(a.fulltime_labor_cost, p.n_days) AS fulltime_labor_cost,
          SAFE_DIVIDE(a.hourly_hours + a.fulltime_hours, NULLIF(a.items_sold, 0)) AS hours_per_item,
          SAFE_DIVIDE(a.orders, p.n_days) AS orders,
          SAFE_DIVIDE(a.items_sold, p.n_days) AS items_sold,
@@ -257,6 +261,8 @@ export function laborByGrain(
        SUM(hourly_hours) + SUM(fulltime_hours) AS total_hours,
        SUM(hourly_hours) AS hourly_hours,
        SUM(fulltime_hours) AS fulltime_hours,
+       SUM(hourly_labor_cost) AS hourly_labor_cost,
+       SUM(fulltime_labor_cost) AS fulltime_labor_cost,
        SAFE_DIVIDE(SUM(hourly_hours) + SUM(fulltime_hours), SUM(items_sold)) AS hours_per_item,
        SAFE_DIVIDE(SUM(hourly_hours), SUM(items_sold)) AS hourly_hours_per_item,
        SAFE_DIVIDE(SUM(fulltime_hours), SUM(items_sold)) AS fulltime_hours_per_item,
@@ -613,8 +619,39 @@ export interface LaborScheduledHoursRow {
   parttime_hours: number;
   fulltime_hours: number;
   total_hours: number;
+  /** Scheduled hours × each person's rate on that date (avg part-time rate when unpriced). */
+  parttime_cost: number;
+  fulltime_cost: number;
   [key: string]: unknown;
 }
+
+/** Current hourly rate per canonical name plus the average part-time rate, for pricing draft and open shifts. */
+export interface LaborWageRates {
+  byName: Record<string, number>;
+  avgPartTime: number | null;
+}
+
+export async function laborWageRates(): Promise<LaborWageRates> {
+  const [rows, avg] = await Promise.all([
+    q<{ name: string; rate: number }>(
+      `SELECT canonical_name AS name, ANY_VALUE(wage_rate_dollars) AS rate
+       FROM ${fq("adp_wage_rates")}
+       WHERE IFNULL(canonical_name, '') != '' AND wage_rate_dollars IS NOT NULL
+       GROUP BY canonical_name`,
+    ),
+    q<{ rate: number | null }>(AVG_PT_WAGE_SQL),
+  ]);
+  return {
+    byName: Object.fromEntries(rows.map((r) => [r.name, Number(r.rate)])),
+    avgPartTime: avg[0]?.rate != null ? Number(avg[0].rate) : null,
+  };
+}
+
+const AVG_PT_WAGE_SQL = `SELECT AVG(wage_rate_dollars) AS rate
+       FROM ${fq("adp_wage_rates")}
+       WHERE wage_rate_dollars IS NOT NULL
+         AND NOT IFNULL(is_salaried, FALSE)
+         AND NOT IFNULL(excluded_from_labor_pct, FALSE)`;
 
 /**
  * Latest date that actually has clocked hours, or null if none.
@@ -668,10 +705,24 @@ export function laborScheduledHoursByGrain(
          s.scheduled_hours,
          0
        )) AS fulltime_hours,
-       SUM(s.scheduled_hours) AS total_hours
+       SUM(s.scheduled_hours) AS total_hours,
+       SUM(IF(
+         IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+         0,
+         s.scheduled_hours * COALESCE(er.wage_rate_dollars, w.wage_rate_dollars, avg_pt.rate)
+       )) AS parttime_cost,
+       SUM(IF(
+         IFNULL(w.is_salaried, FALSE) OR IFNULL(w.excluded_from_labor_pct, FALSE),
+         s.scheduled_hours * IFNULL(COALESCE(er.wage_rate_dollars, w.wage_rate_dollars), 0),
+         0
+       )) AS fulltime_cost
      FROM ${fq("adp_scheduled_shifts")} s
      LEFT JOIN ${fq("adp_wage_rates")} w
        ON w.employee_id = s.employee_id
+     LEFT JOIN ${fq("vw_wage_rate_effective")} er
+       ON er.employee_id = s.employee_id
+      AND s.date BETWEEN er.effective_from AND er.effective_to
+     CROSS JOIN (${AVG_PT_WAGE_SQL}) avg_pt
      WHERE s.date BETWEEN @start AND @end
        AND IFNULL(s.scheduled_hours, 0) > 0
        ${ptoClause}
@@ -961,7 +1012,91 @@ export function laborActualShiftDays(
   );
 }
 
-/** Max scraped_at for schedule tables (Sync button freshness). */
+export type UnavailabilityRow = {
+  row_key: string;
+  employee: string;
+  status: "pending" | "approved";
+  first_date: string;
+  from_time: string | null;
+  to_time: string | null;
+  all_day: boolean;
+  repeat_weekday: number | null;
+  repeat_until: string | null;
+  expires_at_ct: string | null;
+  /** Hours until ADP expires the request (negative = expired), Central time. */
+  hours_left: number | null;
+  scraped_at: string | null;
+};
+
+export type AdpRosterRow = { employee: string; employment_status: string | null };
+
+/**
+ * Latest ADP People Directory snapshot (every status, nightly — migration 085), names resolved
+ * like the schedule, salaried / labor-excluded staff dropped. A person is Active if any of their
+ * Directory records is (ADP keeps a terminated record beside a rehire's active one).
+ */
+export function adpDirectoryRoster(store: string): Promise<AdpRosterRow[]> {
+  return q<AdpRosterRow>(
+    `WITH snap AS (
+       SELECT employee_name, employment_status
+       FROM ${fq("adp_directory_status")}
+       WHERE store = @store
+       QUALIFY scraped_at_utc = MAX(scraped_at_utc) OVER ()
+     )
+     SELECT COALESCE(al.canonical_name, s.employee_name) AS employee,
+            IF(LOGICAL_OR(s.employment_status = 'Active'), 'Active', ANY_VALUE(s.employment_status)) AS employment_status
+     FROM snap s
+     LEFT JOIN ${fq("employee_aliases")} al ON al.store = @store AND al.raw_name = s.employee_name
+     WHERE COALESCE(al.canonical_name, s.employee_name) NOT IN (
+       SELECT canonical_name FROM ${fq("adp_wage_rates")}
+       WHERE canonical_name IS NOT NULL
+         AND (IFNULL(is_salaried, FALSE) OR IFNULL(excluded_from_labor_pct, FALSE))
+     )
+     GROUP BY employee
+     ORDER BY employee`,
+    { store },
+  );
+}
+
+/** ADP unavailability (pending requests + approved blocks), names resolved like the schedule. */
+export function adpUnavailability(store: string): Promise<UnavailabilityRow[]> {
+  return q<UnavailabilityRow>(
+    `SELECT
+       u.row_key,
+       COALESCE(al.canonical_name, NULLIF(TRIM(u.raw_employee_name), ''), u.employee_name) AS employee,
+       u.status,
+       CAST(u.first_date AS STRING) AS first_date,
+       u.from_time,
+       u.to_time,
+       IFNULL(u.all_day, FALSE) AS all_day,
+       u.repeat_weekday,
+       CAST(u.repeat_until AS STRING) AS repeat_until,
+       CAST(u.expires_at_ct AS STRING) AS expires_at_ct,
+       DATETIME_DIFF(u.expires_at_ct, CURRENT_DATETIME('America/Chicago'), MINUTE) / 60 AS hours_left,
+       CAST(u.scraped_at_utc AS STRING) AS scraped_at
+     FROM ${fq("adp_unavailability")} u
+     LEFT JOIN ${fq("employee_aliases")} al
+       ON al.store = @store AND al.raw_name = TRIM(u.raw_employee_name)
+     WHERE COALESCE(u.repeat_until, u.first_date) >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 28 DAY)
+       -- ADP drops a pending request once it expires unapproved.
+       AND NOT (u.status = 'pending' AND u.expires_at_ct <= CURRENT_DATETIME('America/Chicago'))
+     ORDER BY employee, first_date`,
+    { store },
+  );
+}
+
+/** Whether a stored unavailability request is still pending (and not expired). */
+export async function unavailabilityStillPending(rowKey: string): Promise<boolean> {
+  const rows = await q<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM ${fq("adp_unavailability")}
+     WHERE row_key = @key AND status = 'pending'
+       AND (expires_at_ct IS NULL OR expires_at_ct > CURRENT_DATETIME('America/Chicago'))`,
+    { key: rowKey },
+  );
+  return Number(rows[0]?.n ?? 0) > 0;
+}
+
+/** Last Team Schedule read — the same run reads the Pending requests pane. */
 export function adpScheduleScrapedAt(): Promise<string | null> {
   return q<{ scraped: string | null }>(
     `SELECT CAST(MAX(scraped_at_utc) AS STRING) AS scraped
@@ -969,7 +1104,7 @@ export function adpScheduleScrapedAt(): Promise<string | null> {
   ).then((rows) => rows[0]?.scraped ?? null);
 }
 
-/** Max scraped_at on clocked hours (Sync clocked hours button). */
+/** Max scraped_at on clocked hours — the Sync ADP run stamps this last. */
 export function adpHoursScrapedAt(): Promise<string | null> {
   return q<{ scraped: string | null }>(
     `SELECT CAST(MAX(scraped_at_utc) AS STRING) AS scraped
@@ -2108,6 +2243,60 @@ export function storeConfig(store: string): Promise<StoreConfigRow[]> {
     `SELECT * FROM ${fq("store_config")} WHERE store=@store ORDER BY key`,
     { store },
   );
+}
+
+/**
+ * Median Payment orders per weekday (0 = Mon … 6 = Sun) × local hour over the
+ * `weeks` weeks before `asOfIso` — one catering rush can't lift a whole weekday.
+ * Only days that had orders count (a closed day isn't a zero day); an hour with
+ * no orders on an open day counts as 0. Interpolated median, so a tie between
+ * two middle days lands on the higher side of ⌈÷ orders per person⌉. Issue #337.
+ */
+export function laborDemandProfile(
+  asOfIso: string,
+  weeks = 8,
+): Promise<{ dow: number; hour: number; orders: number }[]> {
+  return q(
+    `WITH o AS (
+       SELECT
+         COALESCE(ops_date_local, date_local) AS d,
+         COALESCE(
+           ops_hour_local,
+           EXTRACT(HOUR FROM DATETIME(
+             TIMESTAMP(COALESCE(NULLIF(ops_at_local_iso, ''), created_at_local_iso)),
+             'America/Chicago'))
+         ) AS hr,
+         COUNT(*) AS n
+       FROM ${fq("square_transactions")}
+       WHERE event_type = 'Payment'
+         AND COALESCE(ops_date_local, date_local)
+           BETWEEN DATE_SUB(@asOf, INTERVAL @days DAY) AND DATE_SUB(@asOf, INTERVAL 1 DAY)
+       GROUP BY 1, 2
+     ),
+     grid AS (
+       SELECT DISTINCT o.d, h FROM o CROSS JOIN UNNEST(GENERATE_ARRAY(0, 23)) AS h
+     ),
+     cells AS (
+       SELECT
+         MOD(EXTRACT(DAYOFWEEK FROM g.d) + 5, 7) AS dow,
+         g.h AS hour,
+         PERCENTILE_CONT(COALESCE(o.n, 0), 0.5)
+           OVER (PARTITION BY EXTRACT(DAYOFWEEK FROM g.d), g.h) AS orders
+       FROM grid g LEFT JOIN o ON o.d = g.d AND o.hr = g.h
+     )
+     SELECT DISTINCT dow, hour, orders FROM cells WHERE orders > 0`,
+    { asOf: dateParam(asOfIso), days: intParam(weeks * 7) },
+  );
+}
+
+/** Frozen delivery dates on or after `fromIso` (dates only; no time window stored). */
+export async function upcomingRestockDates(store: string, fromIso: string): Promise<string[]> {
+  const rows = await q<{ d: string }>(
+    `SELECT CAST(delivery_date AS STRING) AS d FROM ${fq("inventory_restock_schedule")}
+     WHERE store = @store AND delivery_date >= @from ORDER BY delivery_date`,
+    { store, from: dateParam(fromIso) },
+  );
+  return rows.map((r) => r.d);
 }
 
 export interface OrderAssistantRow {

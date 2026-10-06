@@ -73,6 +73,16 @@ describe("the Sep 7 week, as the operator saw it", () => {
     expect(actualPunchWindow(next, boundary)).toBeNull();
   });
 
+  it("still shows the schedule ahead for a Period ending today once today's punches land", () => {
+    // 2026-10-04: "Last 30 days" ended today, today's punches were already in
+    // BQ, and the whole ADP schedule ahead vanished from coverage and chart.
+    const boundary = scheduleTakesOverFrom(TODAY, TODAY);
+    expect(scheduledShiftWindow(week, boundary, "2026-09-20", TODAY)).toMatchObject({
+      start: "2026-09-14",
+      end: "2026-09-20",
+    });
+  });
+
   it("keeps showing schedule for today when punches have not arrived yet", () => {
     const boundary = scheduleTakesOverFrom(TODAY, "2026-09-12");
     expect(actualPunchWindow(week, boundary)?.end).toBe("2026-09-12");

@@ -564,3 +564,48 @@ class TestReportBlindStreaks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDirectoryStatus(unittest.TestCase):
+    """The draft roster reads the nightly ADP Directory snapshot (every status)."""
+
+    def test_directory_roster_scrolls_until_list_stops_growing(self):
+        pages = [
+            [{"name": "Garcia, Jacob", "status": "Active"}],
+            [{"name": "Garcia, Jacob", "status": "Active"}, {"name": "Flores, Juan", "status": "Terminated"}],
+        ]
+        calls = iter(pages + [pages[-1]] * 5)
+        page = mock.MagicMock()
+        with mock.patch.object(pib, "_open_people_home"), \
+             mock.patch.object(pib, "_directory_candidates", side_effect=lambda _p: next(calls)):
+            rows = pib.directory_roster(page)
+        self.assertEqual(rows, [
+            {"name": "Flores, Juan", "status": "Terminated"},
+            {"name": "Garcia, Jacob", "status": "Active"},
+        ])
+
+    def test_snapshot_rows_share_scrape_time_and_drop_blank_status(self):
+        rows = pib.directory_status_rows({
+            "store": "palmetto",
+            "scraped_at_utc": "2026-10-04T22:59:38Z",
+            "directory": [
+                {"name": "Johnson,  Dolce J", "status": "Active"},
+                {"name": "Flores, Juan", "status": "Terminated"},
+                {"name": "Quyen Nguyen", "status": ""},
+                {"name": " ", "status": "Active"},
+            ],
+        })
+        self.assertEqual(rows, [
+            {"store": "palmetto", "employee_name": "Johnson, Dolce J",
+             "employment_status": "Active", "scraped_at_utc": "2026-10-04T22:59:38Z"},
+            {"store": "palmetto", "employee_name": "Flores, Juan",
+             "employment_status": "Terminated", "scraped_at_utc": "2026-10-04T22:59:38Z"},
+            {"store": "palmetto", "employee_name": "Quyen Nguyen",
+             "employment_status": None, "scraped_at_utc": "2026-10-04T22:59:38Z"},
+        ])
+
+    def test_no_directory_writes_nothing(self):
+        self.assertEqual(pib.directory_status_rows({"scraped_at_utc": "x", "rates": []}), [])
+        with mock.patch("core.datastore.load_rows") as load:
+            self.assertEqual(pib.write_directory_status_bq({"scraped_at_utc": "x"}), 0)
+        load.assert_not_called()

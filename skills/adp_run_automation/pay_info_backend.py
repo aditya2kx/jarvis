@@ -519,6 +519,31 @@ def _directory_candidates(page) -> list[dict]:
         return []
 
 
+def directory_roster(page, *, max_scrolls: int = 30) -> list[dict]:
+    """Every Directory row (all statuses) as ``{"name", "status"}``. Read-only.
+
+    The list is virtualized, so scroll the last row into view until the set of
+    names stops growing.
+    """
+    _open_people_home(page)
+    seen: dict[str, str] = {}
+    for _ in range(max_scrolls):
+        before = len(seen)
+        for c in _directory_candidates(page):
+            seen[c["name"]] = c.get("status") or ""
+        if len(seen) == before and before:
+            break
+        page.evaluate(
+            """() => { const n = document.querySelectorAll('[aria-label^="Go to the profile page for"]');
+                       if (n.length) n[n.length - 1].scrollIntoView({block: 'end'}); }"""
+        )
+        page.wait_for_timeout(800)
+    rows = [{"name": n, "status": s} for n, s in sorted(seen.items())]
+    print(f"[pay_info] directory_roster n={len(rows)} "
+          f"{json.dumps({r['name']: r['status'] for r in rows})}")
+    return rows
+
+
 def _wait_for_directory_results(page, needle: str, *, timeout_ms: int = 15_000) -> None:
     """Wait until the Directory list reflects the search, then settle.
 
@@ -810,6 +835,7 @@ def write_pay_info_json(
     store: str = "palmetto",
     errors: Optional[dict[str, str]] = None,
     attempted: Optional[list[str]] = None,
+    directory: Optional[list[dict]] = None,
 ) -> pathlib.Path:
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     path = DOWNLOADS_DIR / f"PayInfoRates-{datetime.date.today().isoformat()}.json"
@@ -821,6 +847,7 @@ def write_pay_info_json(
                 "rates": rates,
                 "errors": errors or {},
                 "attempted": attempted or [r.get("employee_name") for r in rates],
+                "directory": directory or [],
             },
             indent=2,
         )
@@ -1156,6 +1183,40 @@ def outcome_rows(payload: dict) -> list[dict]:
             rows.append({"employee_id": name, "scraped_at_utc": scraped_at,
                          "ok": False, "error": str(errors[name])[:300]})
     return rows
+
+
+def directory_status_rows(payload: dict) -> list[dict]:
+    """One ``adp_directory_status`` row per Directory entry, stamped with the scrape time."""
+    store = payload.get("store") or "palmetto"
+    ts = payload.get("scraped_at_utc")
+    return [
+        {
+            "store": store,
+            "employee_name": " ".join(d["name"].split()),
+            "employment_status": (d.get("status") or "").strip() or None,
+            "scraped_at_utc": ts,
+        }
+        for d in payload.get("directory") or []
+        if ts and (d.get("name") or "").strip()
+    ]
+
+
+def write_directory_status_bq(payload: dict) -> int:
+    """Append tonight's Directory snapshot (re-loading the same JSON is a no-op)."""
+    os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+    from core.datastore import ensure_schema, load_rows  # noqa: PLC0415
+
+    rows = directory_status_rows(payload)
+    if not rows:
+        print("[pay_info] BREADCRUMB directory_status_empty — roster keeps the previous snapshot")
+        return 0
+    ensure_schema()
+    return load_rows(
+        "adp_directory_status",
+        rows,
+        merge_keys=["store", "employee_name", "scraped_at_utc"],
+        column_bq_types={"scraped_at_utc": "TIMESTAMP", "employment_status": "STRING"},
+    )
 
 
 def record_pay_info_outcomes(payload: dict) -> int:

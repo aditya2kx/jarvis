@@ -8,6 +8,8 @@ import type { Grain } from "@/lib/filters/range";
 import { showsFullTime, showsPartTime } from "@/lib/filters/labor-type";
 import type { LaborChartUnit } from "@/lib/filters/labor-chart-unit";
 import { grainDisplayLabel } from "@/lib/filters/range";
+import { useSuggestedHours } from "@/components/labor/SuggestedHoursContext";
+import { bucketDaily } from "@/lib/labor/suggested-buckets";
 
 export type LaborHoursChartRow = {
   date: string;
@@ -28,7 +30,28 @@ export type LaborHoursChartRow = {
   /** ADP open (unassigned) shift hours — same days as scheduled; no PT/FT split. */
   open_hours?: number | null;
   open_slots?: number | null;
+  /** Hours of unpublished draft shifts in ADP Team Schedule — not counted in scheduled hours; no PT/FT split. */
+  draft_hours?: number | null;
+  /** Hours of shifts the draft suggests (not yet in ADP) — from the coverage panel. */
+  suggested_hours?: number | null;
 };
+
+/** Roll per-day suggested hours into each row's bucket (averaged when the chart shows an average). */
+export function withSuggestedHours(
+  rows: LaborHoursChartRow[],
+  byDay: ReadonlyMap<string, number>,
+  grain: Grain = "week",
+  average = false,
+  win: { start: string; end: string } = { start: "", end: "" },
+): LaborHoursChartRow[] {
+  if (!byDay.size || !rows.length) return rows;
+  const sums = bucketDaily(byDay, new Set(rows.map((r) => r.bucket_iso)), grain, average, win);
+  if (!sums.size) return rows;
+  return rows.map((r) => {
+    const h = sums.get(r.bucket_iso);
+    return h ? { ...r, suggested_hours: Number(h.toFixed(1)) } : r;
+  });
+}
 
 export type LaborTooltipEntry = {
   label: string;
@@ -183,6 +206,7 @@ const PT = LABOR_CHART_COLORS.parttimeActual;
 const FT = LABOR_CHART_COLORS.fulltimeActual;
 const PT_S = LABOR_CHART_COLORS.parttimeScheduled;
 const FT_S = LABOR_CHART_COLORS.fulltimeScheduled;
+const DRAFT = LABOR_CHART_COLORS.draftShift;
 
 /**
  * Tooltip: actual (bars) + scheduled (hover only) + combined total vs weekly Goal.
@@ -279,8 +303,26 @@ export function laborTooltipContent(
     entries.push({ label: "Total if filled", value: formatHours(totalIfFilled) });
   }
 
+  const draftHrs = row.draft_hours ?? null;
+  const hasDraft = draftHrs != null && draftHrs > 0 && (ptOn || ftOn);
+  const totalWithDraft = hasDraft ? sumNullable(totalIfFilled ?? combined ?? actualHrs ?? schedHrs, draftHrs) : null;
+  if (hasDraft) {
+    entries.push({ label: "Draft in ADP", value: formatHours(draftHrs), color: DRAFT });
+    entries.push({ label: "Total with ADP drafts", value: formatHours(totalWithDraft) });
+  }
+
+  const suggestedHrs = row.suggested_hours ?? null;
+  const hasSuggested = suggestedHrs != null && suggestedHrs > 0 && (ptOn || ftOn);
+  const totalWithSuggested = hasSuggested
+    ? sumNullable(totalWithDraft ?? totalIfFilled ?? combined ?? actualHrs ?? schedHrs, suggestedHrs)
+    : null;
+  if (hasSuggested) {
+    entries.push({ label: "Suggested (draft)", value: formatHours(suggestedHrs), color: DRAFT });
+    entries.push({ label: "Total with suggested", value: formatHours(totalWithSuggested) });
+  }
+
   const lines: string[] = [];
-  if ((hasSched || hasOpen) && !hasActual && opts?.salesHints !== false) {
+  if ((hasSched || hasOpen || hasDraft || hasSuggested) && !hasActual && opts?.salesHints !== false) {
     lines.push("Scheduled — no labor % (no Square sales yet)");
   }
   if (
@@ -289,11 +331,12 @@ export function laborTooltipContent(
     !Number.isNaN(Number(goalLaborHoursWeek))
   ) {
     const goalHrs = Number(goalLaborHoursWeek);
-    const vsGoalHrs = totalIfFilled ?? combined ?? actualHrs ?? schedHrs;
+    const vsGoalHrs =
+      totalWithSuggested ?? totalWithDraft ?? totalIfFilled ?? combined ?? actualHrs ?? schedHrs;
     const ofGoal = pctOfHoursGoal(vsGoalHrs, goalHrs);
     // Completed weeks only (no scheduled remainder): also show what 230 hrs
     // would be as % of that week's Square net sales.
-    const completedWeek = hasActual && !hasSched && !hasOpen;
+    const completedWeek = hasActual && !hasSched && !hasOpen && !hasDraft && !hasSuggested;
     const scoped = scopedLaborMetrics(row, laborTypes);
     const ofSales = completedWeek
       ? goalHoursAsSalesPct(goalHrs, scoped.hours, scoped.laborPct)
@@ -318,7 +361,7 @@ export function laborTooltipContent(
  * only — different chart.)
  */
 export function LaborHoursChart({
-  data,
+  data: rawData,
   laborTypes,
   grain,
   goalLaborHoursWeek,
@@ -327,6 +370,8 @@ export function LaborHoursChart({
   subtitle,
   person,
   headerRight,
+  stat,
+  period,
 }: {
   data: LaborHoursChartRow[];
   laborTypes: string[] | null;
@@ -338,8 +383,22 @@ export function LaborHoursChart({
   /** Single-person view: titled by name, no store-level sales hints (pass no goal). */
   person?: string;
   headerRight?: ReactNode;
+  /** Average vs Total rollup (weekday / entire-period views) and the Period, for suggested hours. */
+  stat?: "avg" | "total";
+  period?: { start: string; end: string };
 }) {
+  const { byDay: suggestedByDay } = useSuggestedHours();
   const { chartData, series, title, stacked, goal, goalLabel, valueFormat } = useMemo(() => {
+    const data =
+      person || unit === "pct"
+        ? rawData
+        : withSuggestedHours(
+            rawData,
+            suggestedByDay,
+            grain,
+            stat === "avg" && (grain === "weekday" || grain === "all"),
+            period,
+          );
     const pt = showsPartTime(laborTypes);
     const ft = showsFullTime(laborTypes);
     const neither = !pt && !ft;
@@ -366,6 +425,9 @@ export function LaborHoursChart({
       );
     const hasAnyOpen =
       !pctMode && !person && data.some((r) => r.open_hours != null && r.open_hours > 0);
+    const hasAnyDraft =
+      !pctMode && !person && data.some((r) => r.draft_hours != null && r.draft_hours > 0);
+    const hasAnySuggested = data.some((r) => r.suggested_hours != null && r.suggested_hours > 0);
 
     const series: Series[] = [];
     if (!neither) {
@@ -405,6 +467,12 @@ export function LaborHoursChart({
             pattern: "hatch",
           });
         }
+        if (hasAnyDraft) {
+          series.push({ key: "draft", label: "Draft in ADP", color: DRAFT, pattern: "outline" });
+        }
+        if (hasAnySuggested) {
+          series.push({ key: "suggested", label: "Suggested (draft)", color: DRAFT, pattern: "hatch" });
+        }
       }
     }
 
@@ -418,6 +486,8 @@ export function LaborHoursChart({
           parttime_sched: null,
           fulltime_sched: null,
           open: null,
+          draft: null,
+          suggested: null,
           tooltipEntries: tip.entries,
           tooltipLines: tip.lines,
         };
@@ -432,6 +502,8 @@ export function LaborHoursChart({
         parttime_sched: pt ? (r.parttime_scheduled_hours ?? null) : null,
         fulltime_sched: ft ? (r.fulltime_scheduled_hours ?? null) : null,
         open: hasAnyOpen ? (r.open_hours ?? null) : null,
+        draft: hasAnyDraft && (pt || ft) ? (r.draft_hours ?? null) : null,
+        suggested: hasAnySuggested && (pt || ft) ? (r.suggested_hours ?? null) : null,
         tooltipEntries: tip.entries,
         tooltipLines: tip.lines,
       };
@@ -466,7 +538,7 @@ export function LaborHoursChart({
       goalLabel: showGoal ? `Goal ${Number(goalLaborHoursWeek)} hrs` : undefined,
       valueFormat: pctMode ? ("percent" as const) : ("number" as const),
     };
-  }, [data, grain, goalLaborHoursWeek, laborTypes, person, titlePrefix, unit]);
+  }, [rawData, suggestedByDay, grain, goalLaborHoursWeek, laborTypes, person, titlePrefix, unit, stat, period]);
 
   if (series.length === 0) {
     return (

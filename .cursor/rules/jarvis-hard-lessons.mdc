@@ -31,7 +31,7 @@ These are mistakes that actually happened.  Check before every multi-step task.
 16. **High bar for external tool/package recommendations:** 100+ stars, multiple contributors, active maintenance.
 17. **Build Gmail as a Jarvis skill** (raw API calls like `google_drive/`), not an MCP dependency.
 18. **Opening or pushing to a PR obligates you to babysit it to merge-ready — automatically, without being asked.**  Read the `babysit` skill immediately after `gh pr create`.  Also commit the cost ledger (`pr_cost_ledger.py sync`) as part of babysitting.
-19. **Every new requirement MUST start in an isolated worktree + new Cursor chat.** See `new-requirement-intake.mdc` for the full front-door rule and trigger phrases.
+19. **New worktrees are opt-in.** Keep working in the current worktree unless the operator explicitly asks for a new task (`/jarvis-new-task`). See `new-requirement-intake.mdc`.
 20. **PR descriptions MUST use the 6-section template verbatim** — CI fails otherwise. Never `--body` with free-form text.  Always use `gh pr create --base main --fill`.
 21. **The agent NEVER merges a PR.** Your job ends at *merge-ready*.  Never run `gh pr merge`.
 22. **Every GitHub API call must use the bot token** (`jarvis-agent-bot328`), never `ADI_TOKEN` except for owner-only admin operations.

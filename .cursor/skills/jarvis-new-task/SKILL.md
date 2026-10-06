@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # jarvis-new-task
 
-Use this skill when the operator signals a new, separate requirement that should live on its own branch and worktree.
+Use this skill only when the operator explicitly asks for a new task / worktree (typing `/jarvis-new-task`). Otherwise follow-up requests continue in the current worktree — see `new-requirement-intake.mdc`.
 
 ## How to invoke
 

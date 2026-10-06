@@ -191,6 +191,8 @@ First calibration must happen during a live session with the user logged in to A
 
 `credential_handle` is a parameter. Each shop registers its own ADP RUN login under a distinct handle (`adp_run_austin`, `adp_run_houston`, ...). The skill itself contains no shop-specific logic.
 
+One login can also hold several companies (multi-company account). After login, `_select_company` opens the company whose `Client ID` matches the store profile's `adp_run.iid`, and fails loudly unless exactly one row matches (RUNBOOK § ADP multi-company login).
+
 ## Future migration
 
 If ADP ever opens RUN to direct API access at non-Marketplace pricing, this skill is re-implemented behind the same `pull_daily_hours(...)` interface — no caller changes required. Per `jarvis.md` § Conventions: "browser automation is a stepping stone, not the destination."

@@ -21,8 +21,11 @@ export interface Series {
   stackId?: string;
   /** Dual-axis: absolute series stay on left; % change uses right. */
   yAxisId?: "left" | "right";
-  /** BarChartCard only: diagonal hatch + dashed outline instead of a solid fill. */
-  pattern?: "hatch";
+  /**
+   * BarChartCard only: `hatch` = diagonal hatch + dashed outline; `outline` = faint
+   * fill + dashed outline (proposed, not yet booked).
+   */
+  pattern?: "hatch" | "outline";
 }
 
 export type LineValueFormat = "dollars" | "percent" | "number";

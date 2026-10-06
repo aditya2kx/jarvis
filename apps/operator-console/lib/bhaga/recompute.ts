@@ -135,35 +135,59 @@ export async function hasRunningBhagaJob(): Promise<boolean> {
   return (json.executions ?? []).some((e) => !e.completionTime);
 }
 
-function adpScheduleOnlyEnv(store: string): { name: string; value: string }[] {
-  return [
-    { name: "BHAGA_ADP_SCHEDULE_ONLY", value: "1" },
-    { name: "BHAGA_IGNORE_HALT", value: "1" },
-    { name: "BHAGA_SKIP_SQUARE", value: "1" },
-    { name: "BHAGA_SKIP_KDS", value: "1" },
-    { name: "BHAGA_STORE", value: store },
-  ];
-}
-
-/**
- * Enqueue ADP Team Schedule scrape + BQ upsert only (Issue #213).
- * Job short-circuits via BHAGA_ADP_SCHEDULE_ONLY in daily_refresh.py.
- * Returns the Cloud Run execution resource name for status polling.
- */
-export async function triggerAdpScheduleSync(
-  store: string,
-): Promise<{ executionName: string }> {
-  if (!store) throw new Error("triggerAdpScheduleSync: store is required");
-  return runJob(adpScheduleOnlyEnv(store), `triggerAdpScheduleSync(store=${store})`);
-}
-
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-function adpTimecardOnlyEnv(
+/** Newest unfinished "Sync ADP" execution (by its BHAGA_ADP_SYNC_ALL override), so a reloaded page can keep watching it. */
+/** Latest unfinished execution of the ADP job whose env sets ``envName`` (to ``value``, if given). */
+export async function runningAdpExecution(
+  envName: string,
+  value?: string,
+): Promise<{ name: string; createTime: string; env: Record<string, string> } | null> {
+  const auth = new GoogleAuth({
+    scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+  });
+  const token = await (await auth.getClient()).getAccessToken();
+  if (!token.token) {
+    throw new Error("runningAdpExecution: failed to obtain ADC access token");
+  }
+  const res = await fetch(`https://run.googleapis.com/v2/${adpJobResource()}/executions?pageSize=10`, {
+    headers: { Authorization: `Bearer ${token.token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`runningAdpExecution: HTTP ${res.status} ${text.slice(0, 300)}`);
+  }
+  const json = (await res.json()) as {
+    executions?: {
+      name: string;
+      createTime: string;
+      completionTime?: string;
+      template?: { containers?: { env?: { name: string; value?: string }[] }[] };
+    }[];
+  };
+  for (const e of json.executions ?? []) {
+    if (e.completionTime) continue;
+    const env = Object.fromEntries(
+      (e.template?.containers ?? []).flatMap((c) => c.env ?? []).map((x) => [x.name, x.value ?? ""]),
+    );
+    if (env[envName] && (value == null || env[envName] === value)) {
+      return { name: e.name, createTime: e.createTime, env };
+    }
+  }
+  return null;
+}
+
+export async function runningAdpSyncExecution(): Promise<{ name: string; createTime: string } | null> {
+  return runningAdpExecution("BHAGA_ADP_SYNC_ALL", "1");
+}
+
+function adpSyncEnv(
   store: string,
   targetDate: string,
 ): { name: string; value: string }[] {
   return [
+    // TIMECARD_ONLY keeps an image that predates SYNC_ALL on the short path.
+    { name: "BHAGA_ADP_SYNC_ALL", value: "1" },
     { name: "BHAGA_ADP_TIMECARD_ONLY", value: "1" },
     { name: "BHAGA_IGNORE_HALT", value: "1" },
     { name: "BHAGA_SKIP_SQUARE", value: "1" },
@@ -174,20 +198,21 @@ function adpTimecardOnlyEnv(
 }
 
 /**
- * Enqueue ADP Timecard scrape + BQ shifts/punches only (Issue #267).
- * Skips pay_info. Short-circuits via BHAGA_ADP_TIMECARD_ONLY.
+ * Enqueue the console "Sync ADP" run (Issue #337): one ADP login for Timecard,
+ * Team Schedule (assigned + open), earnings, liability and pay rates — never a
+ * payroll draft. Short-circuits via BHAGA_ADP_SYNC_ALL in daily_refresh.py.
  */
-export async function triggerAdpTimecardSync(
+export async function triggerAdpSync(
   store: string,
   targetDate: string,
 ): Promise<{ executionName: string }> {
-  if (!store) throw new Error("triggerAdpTimecardSync: store is required");
+  if (!store) throw new Error("triggerAdpSync: store is required");
   if (!ISO_DATE.test(targetDate)) {
-    throw new Error("triggerAdpTimecardSync: targetDate must be YYYY-MM-DD");
+    throw new Error("triggerAdpSync: targetDate must be YYYY-MM-DD");
   }
   return runJob(
-    adpTimecardOnlyEnv(store, targetDate),
-    `triggerAdpTimecardSync(store=${store} date=${targetDate})`,
+    adpSyncEnv(store, targetDate),
+    `triggerAdpSync(store=${store} date=${targetDate})`,
     adpJobResource(),
   );
 }
@@ -206,7 +231,9 @@ export async function triggerPunchFixApply(
   if (!decisionIds.length) throw new Error("triggerPunchFixApply: nothing to write");
   return runJob(
     [
-      ...adpTimecardOnlyEnv(store, targetDate).filter((e) => e.name !== "BHAGA_ADP_TIMECARD_ONLY"),
+      ...adpSyncEnv(store, targetDate).filter(
+        (e) => e.name !== "BHAGA_ADP_TIMECARD_ONLY" && e.name !== "BHAGA_ADP_SYNC_ALL",
+      ),
       { name: "BHAGA_PUNCH_FIX_APPLY_ONLY", value: "1" },
       { name: "BHAGA_PUNCH_FIX_WRITEBACK", value: "1" },
       { name: "BHAGA_PUNCH_FIX_DECISION_IDS", value: decisionIds.join(",") },
@@ -214,6 +241,45 @@ export async function triggerPunchFixApply(
     `triggerPunchFixApply(store=${store} n=${decisionIds.length})`,
     adpJobResource(),
   );
+}
+
+/**
+ * Enqueue an ADP Team Schedule write (Issue #337): create a push's draft shifts,
+ * or publish a week's drafts. Short-circuits via BHAGA_ADP_SCHEDULE_WRITE.
+ */
+export async function triggerAdpScheduleWrite(
+  store: string,
+  job: { mode: "drafts"; pushId: string } | { mode: "publish"; weekStart: string },
+): Promise<{ executionName: string }> {
+  if (!store) throw new Error("triggerAdpScheduleWrite: store is required");
+  const env = [
+    { name: "BHAGA_ADP_SCHEDULE_WRITE", value: job.mode },
+    { name: "BHAGA_IGNORE_HALT", value: "1" },
+    { name: "BHAGA_STORE", value: store },
+    job.mode === "drafts"
+      ? { name: "BHAGA_SCHEDULE_PUSH_ID", value: job.pushId }
+      : { name: "BHAGA_SCHEDULE_WEEK_START", value: job.weekStart },
+  ];
+  return runJob(env, `triggerAdpScheduleWrite(store=${store} mode=${job.mode})`, adpJobResource());
+}
+
+/**
+ * Labor "Approve" (Issue #337): approve one pending ADP unavailability request,
+ * then refresh the schedule. Short-circuits via BHAGA_ADP_UNAVAIL_APPROVE.
+ */
+export async function triggerAdpUnavailabilityApprove(
+  store: string,
+  rowKey: string,
+  requestedBy: string,
+): Promise<{ executionName: string }> {
+  if (!store) throw new Error("triggerAdpUnavailabilityApprove: store is required");
+  const env = [
+    { name: "BHAGA_ADP_UNAVAIL_APPROVE", value: rowKey },
+    { name: "BHAGA_REQUESTED_BY", value: requestedBy },
+    { name: "BHAGA_IGNORE_HALT", value: "1" },
+    { name: "BHAGA_STORE", value: store },
+  ];
+  return runJob(env, `triggerAdpUnavailabilityApprove(store=${store})`, adpJobResource());
 }
 
 function payrollDraftOnlyEnv(

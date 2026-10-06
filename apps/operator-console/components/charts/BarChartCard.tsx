@@ -44,7 +44,7 @@ function formatTick(value: number, format: BarValueFormat): string {
   if (format === "number") {
     const n = Number(value);
     if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
-    return `${Math.round(n)}`;
+    return Number.isInteger(n) ? `${n}` : n.toFixed(1);
   }
   const n = Number(value);
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
@@ -109,7 +109,7 @@ function SortedBarTooltip({
       className="rounded-md border border-border px-2.5 py-2 text-xs shadow-md"
       style={{ background: "var(--popover)", color: "var(--popover-foreground)" }}
     >
-      <p className="mb-1.5 font-medium">{String(label ?? "").replace(/\n/g, " · ")}</p>
+      <p className="mb-1.5 font-medium">{String(label ?? "").replace(/,\n/g, ", ").replace(/\n/g, " · ")}</p>
       <ul className="flex flex-col gap-1">
         {useCustom
           ? entryList.map((row) => (
@@ -288,15 +288,17 @@ export function BarChartCard({
               const useSigned = signedValueColors?.dataKey === s.key;
               const color = s.color ?? chartColorAt(i);
               const hatch = s.pattern === "hatch";
+              const outline = s.pattern === "outline";
               return (
                 <Bar
                   key={s.key}
                   dataKey={s.key}
                   name={s.label}
                   fill={hatch ? `url(#${patternPrefix}-${s.key})` : color}
-                  stroke={hatch ? color : undefined}
-                  strokeWidth={hatch ? 1 : undefined}
-                  strokeDasharray={hatch ? "3 2" : undefined}
+                  fillOpacity={outline ? 0.15 : undefined}
+                  stroke={hatch || outline ? color : undefined}
+                  strokeWidth={hatch ? 1 : outline ? 1.5 : undefined}
+                  strokeDasharray={hatch ? "3 2" : outline ? "4 3" : undefined}
                   radius={stackId && i < series.length - 1 ? 0 : 2}
                   stackId={stackId}
                 >

@@ -9,6 +9,7 @@ import {
   pctOfHoursGoal,
   scopedLaborMetrics,
   weeklyHoursGoalApplicable,
+  withSuggestedHours,
 } from "@/components/labor/LaborHoursChart";
 import { GOAL_FIELDS } from "@/lib/kpi/goal-fields";
 import {
@@ -263,5 +264,83 @@ describe("laborTooltipContent — open shifts (Issue #342)", () => {
 describe("GOAL_FIELDS labor hours", () => {
   it("includes weekly labor hours goal", () => {
     expect(GOAL_FIELDS.find((f) => f.key === "goal_labor_hours_week")?.kind).toBe("hours");
+  });
+});
+
+describe("ADP draft hours (Issue #337)", () => {
+  it("adds Draft + Total with draft to the tooltip, and Goal compares the total with draft", () => {
+    const row = {
+      date: "Wk of Oct 5", bucket_iso: "2026-10-05",
+      total_hours: null, parttime_hours: null, fulltime_hours: null,
+      labor_pct: null, hourly_pct: null, fulltime_pct: null, net_sales: null,
+      parttime_scheduled_hours: 150, fulltime_scheduled_hours: 40,
+      open_hours: 20, open_slots: 3, draft_hours: 14,
+    };
+    const tip = laborTooltipContent(row, 230, "week", null);
+    expect(tip.entries.slice(-2).map((e) => [e.label, e.value])).toEqual([
+      ["Draft in ADP", "14"],
+      ["Total with ADP drafts", "224"],
+    ]);
+    expect(tip.lines).toContain("Goal 230 hrs (97.4% of goal)");
+  });
+});
+
+describe("withSuggestedHours", () => {
+  const row = (bucket_iso: string) => ({
+    date: bucket_iso,
+    bucket_iso,
+    total_hours: null,
+    parttime_hours: null,
+    fulltime_hours: null,
+    labor_pct: null,
+    hourly_pct: null,
+    fulltime_pct: null,
+    net_sales: null,
+    parttime_scheduled_hours: 100,
+    fulltime_scheduled_hours: 0,
+  });
+
+  it("sums suggested day hours into their week bucket", () => {
+    const rows = withSuggestedHours(
+      [row("2026-10-05"), row("2026-10-12")],
+      new Map([
+        ["2026-10-13", 8.5],
+        ["2026-10-18", 4.5],
+        ["2026-10-01", 9],
+      ]),
+    );
+    expect(rows.map((r) => r.suggested_hours)).toEqual([undefined, 13]);
+  });
+
+  it("adds suggested hours to the total measured against the goal", () => {
+    const [r] = withSuggestedHours([row("2026-10-12")], new Map([["2026-10-13", 13]]));
+    const tip = laborTooltipContent(r!, 230, "week", null);
+    expect(tip.entries).toContainEqual(expect.objectContaining({ label: "Suggested (draft)", value: "13" }));
+    expect(tip.entries).toContainEqual({ label: "Total with suggested", value: "113" });
+    expect(tip.lines).toContain("Goal 230 hrs (49.1% of goal)");
+  });
+});
+
+describe("suggested hours by weekday", () => {
+  it("puts each day in its own weekday and averages over the Period's days", async () => {
+    const { bucketDaily } = await import("@/lib/labor/suggested-buckets");
+    const { enumerateBucketStarts, truncateToGrain } = await import("@/lib/filters/range");
+    const win = { start: "2026-10-05", end: "2026-10-18", label: "", preset: "custom" as const };
+    const buckets = new Set(enumerateBucketStarts(win, "weekday"));
+    const out = bucketDaily(
+      new Map([
+        ["2026-10-12", 28],
+        ["2026-10-18", 42],
+        ["2026-10-11", 9],
+      ]),
+      buckets,
+      "weekday",
+      true,
+      win,
+    );
+    // Two Mondays and two Sundays in the Period → averages, not everything piled on Sunday.
+    expect(out.get(truncateToGrain("2026-10-12", "weekday"))).toBe(14);
+    expect(out.get(truncateToGrain("2026-10-18", "weekday"))).toBe(25.5);
+    expect(bucketDaily(new Map([["2026-10-12", 4]]), buckets, "hour", false, win).size).toBe(0);
   });
 });

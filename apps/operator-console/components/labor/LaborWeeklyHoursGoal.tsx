@@ -73,7 +73,7 @@ export function LaborWeeklyHoursGoal({
               }}
               className="h-7 pr-7 text-xs"
             />
-            <span className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center text-[10px] text-muted-foreground">
+            <span className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center text-[11px] text-muted-foreground">
               hrs
             </span>
           </div>
@@ -110,7 +110,7 @@ export function LaborWeeklyHoursGoal({
         </button>
       )}
       {error ? (
-        <span className="max-w-[8rem] truncate text-[10px] text-destructive" title={error}>
+        <span className="max-w-[8rem] truncate text-[11px] text-destructive" title={error}>
           {error}
         </span>
       ) : null}

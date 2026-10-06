@@ -232,7 +232,8 @@ def draft_packet_totals(
     packet = packet_from_view_rows(rows)
     try:
         rate = _solo_premium_rate(store) if solo_rate2_enabled() else 0.0
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_payroll_draft] BREADCRUMB packet_totals_no_premium_rate {exc!r}")
         rate = 0.0
     hours = round(sum(float(r.get("hours_worked") or 0) for r in rows), 2)
     gross = round(
@@ -512,6 +513,17 @@ def run_draft(
     result["preview_gross"] = live.get("preview_gross")
     result["saved"] = False
     result["approved"] = False
+    if result["preview_hours"] is None:
+        # No Preview reached: the keyed totals are unknown, so storing them
+        # would mark a broken draft current and stop every re-run.
+        record_payroll_draft_run(
+            store=store,
+            period_start=period_start,
+            period_end=period_end,
+            status="fail",
+            error="no_preview",
+        )
+        return result
     record_payroll_draft_run(
         store=store,
         period_start=period_start,
@@ -999,26 +1011,32 @@ def _click_resume_if_present(page) -> bool:
     return False
 
 
-def wizard_period_label(iso_date: str) -> str:
-    """How the wizard header prints a date: ``Oct 4, 2026``."""
+def home_period_label(iso_date: str) -> str:
+    """How Payroll Home's Upcoming payroll row prints a date: ``10/04/2026``."""
     from datetime import date
 
-    d = date.fromisoformat(iso_date)
-    return f"{d:%b} {d.day}, {d.year}"
+    return date.fromisoformat(iso_date).strftime("%m/%d/%Y")
 
 
-def _wizard_shows_period(page, period_start: str, period_end: str) -> bool:
-    """True when the open wizard's Pay period header is this period."""
+def _active_payroll_is_period(page, period_start: str, period_end: str) -> bool:
+    """True when Payroll Home's In Progress row is this pay period.
+
+    Read before Resume: once opened, ADP's import prompt covers the wizard's
+    period header, and the prompt's choice is itself a write.
+    """
     if not _iso(period_start) or not _iso(period_end):
         return False
     try:
-        text = page.locator("body").inner_text(timeout=5_000)
-    except Exception:  # noqa: BLE001
+        # The Upcoming payroll table renders seconds after the tiles.
+        active = page.locator("[data-test-id^='active-payroll-']").first
+        active.wait_for(state="visible", timeout=20_000)
+        text = f"{active.get_attribute('aria-label') or ''} {active.inner_text()}"
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_payroll_draft] active_payroll_row unreadable {exc!r}")
         return False
-    return (
-        wizard_period_label(period_start) in text
-        and wizard_period_label(period_end) in text
-    )
+    text = " ".join(str(text or "").split())
+    print(f"[adp_payroll_draft] active_payroll_row {text!r}")
+    return home_period_label(period_start) in text and home_period_label(period_end) in text
 
 
 def _click_start_if_present(page) -> bool:
@@ -2355,19 +2373,32 @@ def _dismiss_early_run_modal(page) -> None:
     page.wait_for_timeout(2_000)
 
 
+_ADP_NOTICE_HEADINGS = (
+    "Something isn't quite right",
+    # Informational, e.g. "Hours entered for X are more than their standard 30";
+    # it covers the grid until acknowledged (live 2026-10-06).
+    "Something you should be aware of",
+)
+
+
 def _dismiss_adp_error_dialog(page) -> bool:
-    """OK/Close on ADP 'Something isn't quite right'. Never Save."""
-    try:
-        if not page.get_by_text("Something isn't quite right").first.is_visible():
-            return False
-    except Exception:  # noqa: BLE001
+    """OK/Close on an ADP error or notice pane. Never Save."""
+    heading = ""
+    for text in _ADP_NOTICE_HEADINGS:
+        try:
+            if page.get_by_text(text).first.is_visible():
+                heading = text
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    if not heading:
         return False
     for name in (r"^OK$", r"^Close$", r"^Got it$"):
         btn = page.get_by_role("button", name=re.compile(name, re.I)).first
         try:
             if btn.is_visible():
                 abort_if_forbidden_label(btn.inner_text() or "OK")
-                print("[adp_payroll_draft] BREADCRUMB dismiss ADP error dialog")
+                print(f"[adp_payroll_draft] BREADCRUMB dismiss ADP dialog {heading!r}")
                 btn.click()
                 page.wait_for_timeout(1_500)
                 return True
@@ -2378,8 +2409,12 @@ def _dismiss_adp_error_dialog(page) -> bool:
     return True
 
 
-def _import_with_cancel_retry(page, *, allow_start: bool) -> None:
-    """If Import is blocked (error modal / stuck wizard), Cancel and Start again."""
+def _import_with_cancel_retry(page, *, allow_start: bool, resume_only: bool = False) -> None:
+    """If Import is blocked (error modal / stuck wizard), Cancel and Start again.
+
+    ``resume_only`` never Deletes: the draft is the operator's, so a retry only
+    reopens it from Payroll Home.
+    """
     last: Exception | None = None
     for attempt in range(1, 4):
         try:
@@ -2392,10 +2427,11 @@ def _import_with_cancel_retry(page, *, allow_start: bool) -> None:
                 f"[adp_payroll_draft] BREADCRUMB import_fail attempt={attempt}/3 "
                 f"({exc}); cancel and retry"
             )
-            _click_delete_in_progress(page)
+            if not resume_only:
+                _click_delete_in_progress(page)
             _open_payroll_home(page)
-            if allow_start:
-                _click_start_if_present(page)
+            if resume_only or allow_start:
+                (_click_resume_if_present if resume_only else _click_start_if_present)(page)
                 try:
                     _wait_wizard_ready(page)
                 except Exception as wait_exc:  # noqa: BLE001
@@ -2495,6 +2531,7 @@ def _click_import_not_finish(page) -> None:
 
 def _click_preview_only(page) -> None:
     """Preview payroll button on Enter payroll. Never Save / Finish Later / Approve."""
+    _dismiss_adp_error_dialog(page)
     _dismiss_early_run_modal(page)
     btn = page.locator("[data-test-id='pdeNextButton']").first
     try:
@@ -2649,6 +2686,7 @@ def _fill_grid_amount(
     returns the employee's first row, which is wrong for anyone paid at two
     rates.
     """
+    _dismiss_adp_error_dialog(page)
     idx = row_index if row_index is not None else _row_index_for_employee(page, employee)
     if idx is None:
         print(f"[adp_payroll_draft] no_cell {employee} {col_id} {{'ok': False, 'why': 'no_name'}}")
@@ -2877,6 +2915,23 @@ def run_live_preview(
         shots.append(screenshot_preview(page, "home"))
         _dismiss_adp_error_dialog(page)
         if resume_only:
+            # ADP sometimes lands on another page first; reopen before deciding
+            # that nothing is In Progress.
+            period_ok = False
+            for attempt in range(3):
+                if attempt:
+                    _open_payroll_home(page)
+                    _dismiss_adp_error_dialog(page)
+                period_ok = _active_payroll_is_period(page, period_start, period_end)
+                if period_ok:
+                    break
+            if not period_ok:
+                print(
+                    "[adp_payroll_draft] BREADCRUMB resume_only_wrong_period "
+                    f"store={store} want={period_start}..{period_end} — no In "
+                    "Progress payroll for this period; left untouched"
+                )
+                return {"skipped": "no_in_progress_draft", "screenshots": shots}
             if not _click_resume_if_present(page):
                 print(
                     "[adp_payroll_draft] BREADCRUMB resume_only_no_draft "
@@ -2888,14 +2943,6 @@ def run_live_preview(
                 _wait_wizard_ready(page)
             except Exception as exc:  # noqa: BLE001
                 print(f"[adp_payroll_draft] wizard wait ({exc}); continuing")
-            shots.append(screenshot_preview(page, "after-resume"))
-            if not _wizard_shows_period(page, period_start, period_end):
-                print(
-                    "[adp_payroll_draft] BREADCRUMB resume_only_wrong_period "
-                    f"store={store} want={period_start}..{period_end} — the "
-                    "In Progress payroll is another period; left untouched"
-                )
-                return {"skipped": "in_progress_is_other_period", "screenshots": shots}
         elif allow_start:
             started = _click_start_if_present(page)
             if started:
@@ -2909,7 +2956,9 @@ def run_live_preview(
         fill_ok = True
         try:
             _dismiss_adp_error_dialog(page)
-            _import_with_cancel_retry(page, allow_start=allow_start)
+            _import_with_cancel_retry(
+                page, allow_start=allow_start, resume_only=resume_only
+            )
             shots.append(screenshot_preview(page, "after-import"))
             ours = {
                 r.employee: round(r.regular_hours + r.ot_hours, 2) for r in packet

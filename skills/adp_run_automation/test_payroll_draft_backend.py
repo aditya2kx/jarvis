@@ -11,7 +11,9 @@ from skills.adp_run_automation.payroll_draft_backend import (
     _attribute_grid_rows,
     _paginate_timecard_hours,
     abort_if_forbidden_label,
-    _wizard_shows_period,
+    _active_payroll_is_period,
+    _dismiss_adp_error_dialog,
+    _import_with_cancel_retry,
     classify_rate2_state,
     draft_packet_totals,
     expected_gross_dollars,
@@ -27,7 +29,7 @@ from skills.adp_run_automation.payroll_draft_backend import (
     solo_premium_keying_lines,
     solo_rate2_enabled,
     wage_guardrail_failures,
-    wizard_period_label,
+    home_period_label,
 )
 
 
@@ -268,6 +270,15 @@ class TestGuardrails(unittest.TestCase):
         self.assertEqual(ok["packet_hours"], 12.5)
         self.assertEqual(ok["packet_pay"], round(122.0 + 68.63 + 15.0, 2))
 
+    def test_no_preview_records_fail_without_packet_totals(self):
+        _out, _p, record = self._live_run(
+            {"preview_hours": None, "preview_gross": None, "screenshots": []},
+            resume_only=True,
+        )
+        last = record.call_args_list[-1].kwargs
+        self.assertEqual((last["status"], last["error"]), ("fail", "no_preview"))
+        self.assertNotIn("packet_hours", last)
+
     def test_resume_only_with_nothing_in_progress_records_no_draft(self):
         out, preview, record = self._live_run(
             {"skipped": "no_in_progress_draft", "screenshots": []},
@@ -281,30 +292,92 @@ class TestGuardrails(unittest.TestCase):
         )
 
 
-class TestWizardPeriodGuard(unittest.TestCase):
+class TestActivePayrollPeriodGuard(unittest.TestCase):
     """A resume-only re-run must open this period's draft, not another one."""
 
-    def _page(self, text):
+    def _page(self, aria):
         from unittest.mock import MagicMock
 
         page = MagicMock()
-        page.locator.return_value.inner_text.return_value = text
+        row = page.locator.return_value.first
+        row.get_attribute.return_value = aria
+        row.inner_text.return_value = ""
         return page
 
-    def test_label_matches_wizard_header(self):
-        self.assertEqual(wizard_period_label("2026-10-04"), "Oct 4, 2026")
-        self.assertEqual(wizard_period_label("2026-09-21"), "Sep 21, 2026")
+    def test_label_matches_payroll_home(self):
+        self.assertEqual(home_period_label("2026-10-04"), "10/04/2026")
 
     def test_this_period_is_accepted(self):
-        page = self._page("Pay period Sep 21, 2026 → Oct 4, 2026 Check date Oct 9, 2026")
-        self.assertTrue(_wizard_shows_period(page, "2026-09-21", "2026-10-04"))
+        # aria-label read live from ADP Payroll Home 2026-10-06
+        page = self._page("clickable Regular 10/09/2026 09/21/2026 10/04/2026 Biweekly 10/08/2026")
+        self.assertTrue(_active_payroll_is_period(page, "2026-09-21", "2026-10-04"))
 
     def test_other_period_is_refused(self):
-        page = self._page("Pay period Oct 5, 2026 → Oct 18, 2026")
-        self.assertFalse(_wizard_shows_period(page, "2026-09-21", "2026-10-04"))
+        page = self._page("clickable Regular 10/23/2026 10/05/2026 10/18/2026 Biweekly")
+        self.assertFalse(_active_payroll_is_period(page, "2026-09-21", "2026-10-04"))
+
+    def test_no_in_progress_row_is_refused(self):
+        page = self._page("")
+        page.locator.return_value.first.wait_for.side_effect = TimeoutError("none")
+        self.assertFalse(_active_payroll_is_period(page, "2026-09-21", "2026-10-04"))
 
     def test_bad_dates_are_refused(self):
-        self.assertFalse(_wizard_shows_period(self._page("x"), "", "2026-10-04"))
+        self.assertFalse(_active_payroll_is_period(self._page("x"), "", "2026-10-04"))
+
+
+class TestDismissAdpNotice(unittest.TestCase):
+    """ADP's standard-hours notice covered the grid and blocked every later fill."""
+
+    def _page(self, heading):
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+
+        def by_text(text):
+            m = MagicMock()
+            m.first.is_visible.return_value = text == heading
+            return m
+
+        page.get_by_text.side_effect = by_text
+        btn = page.get_by_role.return_value.first
+        btn.is_visible.return_value = True
+        btn.inner_text.return_value = "OK"
+        return page, btn
+
+    def test_standard_hours_notice_is_acknowledged(self):
+        page, btn = self._page("Something you should be aware of")
+        self.assertTrue(_dismiss_adp_error_dialog(page))
+        btn.click.assert_called_once()
+
+    def test_error_pane_is_acknowledged(self):
+        page, btn = self._page("Something isn't quite right")
+        self.assertTrue(_dismiss_adp_error_dialog(page))
+        btn.click.assert_called_once()
+
+    def test_no_pane_clicks_nothing(self):
+        page, btn = self._page(None)
+        self.assertFalse(_dismiss_adp_error_dialog(page))
+        btn.click.assert_not_called()
+
+
+class TestImportRetryNeverDeletesOnResume(unittest.TestCase):
+    def test_resume_only_retry_reopens_without_delete(self):
+        from unittest.mock import MagicMock
+
+        B = "skills.adp_run_automation.payroll_draft_backend"
+        with (
+            patch(f"{B}._dismiss_adp_error_dialog"),
+            patch(f"{B}._click_import_not_finish", side_effect=[TimeoutError("x"), None]),
+            patch(f"{B}._click_delete_in_progress") as delete,
+            patch(f"{B}._open_payroll_home"),
+            patch(f"{B}._click_resume_if_present") as resume,
+            patch(f"{B}._click_start_if_present") as start,
+            patch(f"{B}._wait_wizard_ready"),
+        ):
+            _import_with_cancel_retry(MagicMock(), allow_start=False, resume_only=True)
+        delete.assert_not_called()
+        start.assert_not_called()
+        resume.assert_called_once()
 
 
 class TestDraftPacketTotals(unittest.TestCase):

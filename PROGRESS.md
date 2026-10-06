@@ -1,3 +1,11 @@
+## 2026-10-06 — ADP signed in to an error page and the Oct 5 rerun timed out everywhere (Issue #370, PR #371)
+
+**Scope:** both reruns of 2026-10-05 logged in (one with an SMS code), then ADP showed `errorPage` / `notauthenticated` instead of the RUN dashboard. The bundle saved that page as its dashboard, so every step timed out for about 15 minutes and the bad session was persisted to GCS.
+
+**Key changes:** `_confirm_dashboard` (end of `_ensure_logged_in`) reopens `runpayrollmain.adp.com/@<tenant_uuid>/v2/` once, else raises one clear error with screenshots. ADP ends a RUN session when the same user signs in elsewhere, so other ADP tabs stay closed during a rerun.
+
+**Evidence:** prod log of `bhaga-daily-refresh-5bl4z` (before), 4 unit tests; live proof is the post-merge Oct 5 rerun.
+
 ## 2026-10-05 — A punch fix said "written" on /labor while /payroll still lacked the hours (Issue #358, PR #359)
 
 **Scope:** Cimino's Oct 4 clock-out was written to ADP from `/labor` and marked `applied`, but ADP's Timecard export lagged the save, so `adp_punches` and `/payroll` never got the 7 h. The badge reflected the decision row, not the hours.

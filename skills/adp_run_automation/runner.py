@@ -419,8 +419,9 @@ def _confirm_dashboard(page, *, store: str, wait_ms: int = 20_000) -> None:
             page.wait_for_url(POST_LOGIN_URL_RE, timeout=wait_ms)
             print(f"[adp_login] step=dashboard-recovered url={page.url}")
             return
-        except Exception:  # noqa: BLE001 — fall through to the evidence raise
-            pass
+        except Exception as exc:  # noqa: BLE001 — fall through to the evidence raise
+            print(f"[adp_login] BREADCRUMB adp_dashboard_reopen_failed "
+                  f"url={page.url} error={type(exc).__name__}: {exc}")
     _raise_with_evidence(
         page, store=store,
         reason=f"ADP signed in but will not show the RUN dashboard (url={page.url}). "

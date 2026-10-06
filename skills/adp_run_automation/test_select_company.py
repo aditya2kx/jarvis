@@ -108,6 +108,15 @@ class ConfirmDashboard(unittest.TestCase):
         self.assertEqual(page.gotos, [DASHBOARD])
         self.assertIn(ERROR_PAGE, rwe.call_args.kwargs["reason"])
 
+    def test_tenant_unset_raises_without_goto(self):
+        page = LandingPage(ERROR_PAGE, after_goto=DASHBOARD)
+        with mock.patch.object(r, "_load_store_profile", return_value={"adp_run": {}}), \
+                mock.patch.object(r, "_raise_with_evidence", side_effect=RuntimeError("off")) as rwe:
+            with self.assertRaises(RuntimeError):
+                r._confirm_dashboard(page, store="palmetto")
+        self.assertEqual(page.gotos, [])
+        self.assertIn(ERROR_PAGE, rwe.call_args.kwargs["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

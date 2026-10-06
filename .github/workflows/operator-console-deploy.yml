@@ -105,12 +105,15 @@ jobs:
       # for now; a Google Groups (admin/operator) model is a documented
       # follow-up — see RUNBOOK.md §17.
       - name: Grant operator IAP access
+        # Soft per member: a deleted/invalid account warns and is skipped, so the
+        # others are still granted and a stale email never turns the deploy red.
         run: |
-          for member in "user:adi@mypalmetto.co" "user:aditya.2ky@gmail.com" "user:lindsay@mypalmetto.co"; do
+          for member in "user:adi@mypalmetto.co" "user:aditya.2ky@gmail.com"; do
             gcloud iap web add-iam-policy-binding \
               --resource-type=cloud-run --service=${{ env.SERVICE }} \
               --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} \
-              --member="$member" --role="roles/iap.httpsResourceAccessor"
+              --member="$member" --role="roles/iap.httpsResourceAccessor" \
+              || echo "::warning::IAP grant failed for $member (account missing or invalid) — skipped"
           done
 
       - name: Record deploy event (BQ)

@@ -275,8 +275,16 @@ surfaces compare, per date, the worked minutes in `model_solo_hours_daily` again
 `adp_punches`:
 
 - `/payroll` marks the **Solo wages** card stale and names the affected dates.
-- The draft prints `BREADCRUMB solo_hours_stale` and refuses to key rate-2 (`solo_rate2_skipped
-  why=solo_hours_stale`), even with the flag on.
+- The draft first re-materializes the stale dates itself (`BREADCRUMB solo_hours_rebuild dates=…`,
+  `daily_refresh._rebuild_stale_solo_hours`) and loads the packet after, so tips and the premium are
+  current. Only if that rebuild fails does it print `BREADCRUMB solo_hours_stale` and refuse to key
+  rate-2 (`solo_rate2_skipped why=solo_hours_stale`), even with the flag on.
+
+**One person's overlapping punches are not drift.** ADP pays every entry in full; attribution counts
+the union. Both checks subtract those minutes (`punch_self_overlaps` / `soloCoverageGap`), because a
+rebuild can never reconcile them (2026-09-22: Dolce's 15:00–15:30 Admin entry inside her 11:11–15:30
+shift read stale on every run and blocked the premium for everyone). The draft Slacks each overlap
+(`BREADCRUMB punch_overlap`) as paid time to correct in ADP Timecards — it is never netted out of pay.
 
 Minutes, not timestamps: `scraped_at_utc` is stamped only by the sync-button path, so it is NULL for
 everything the nightly ingested and a "built before last scrape" test would pass on most dates.

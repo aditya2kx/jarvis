@@ -414,8 +414,10 @@ def run_draft(
             f"perk={row['misc_reimbursement_dollars']}"
             + (f" solo_premium_hours={solo}" if solo > 0 else "")
         )
+    overlaps = punch_self_overlaps(period_start, period_end)
+    result["punch_overlaps"] = overlaps
     solo_gap = (
-        solo_coverage_gap(period_start, period_end)
+        solo_coverage_gap(period_start, period_end, overlaps=overlaps)
         if any(float(p.solo_premium_hours or 0) > 0 for p in packet)
         else []
     )
@@ -437,6 +439,7 @@ def run_draft(
         raise RuntimeError(
             "[adp_payroll_draft] BREADCRUMB refused_start need --allow-prod-draft"
         )
+    _slack_punch_overlaps(f"{period_start}..{period_end}", overlaps)
     record_payroll_draft_run(
         store=store,
         period_start=period_start,
@@ -609,7 +612,12 @@ def _merge_solo_hours(
     return rows
 
 
-def solo_coverage_gap(period_start: str, period_end: str) -> list[str]:
+def solo_coverage_gap(
+    period_start: str,
+    period_end: str,
+    *,
+    overlaps: list[dict[str, Any]] | None = None,
+) -> list[str]:
     """Period dates whose solo hours do not reflect the current punches (#309).
 
     Solo hours are a separate materialization from the punches they derive from,
@@ -638,6 +646,12 @@ def solo_coverage_gap(period_start: str, period_end: str) -> list[str]:
 
     In-scope only for BQ: this proves solo hours match the punches *in BQ*. It
     cannot know whether BQ matches ADP — that is what the Timecard scrape is for.
+
+    ``overlaps`` (from :func:`punch_self_overlaps`) are minutes the punches pay
+    twice but attribution rightly counts once; without subtracting them a date
+    with one person's overlapping entries reads stale forever, and no rebuild
+    can clear it (live 2026-09-22: Dolce's Admin half-hour inside her shift
+    blocked the premium for every eligible employee).
     """
     from core.datastore import fq, read_query
 
@@ -652,7 +666,7 @@ def solo_coverage_gap(period_start: str, period_end: str) -> list[str]:
             "  SELECT date, SUM(total_minutes) AS solo_min"
             f"  FROM {fq('model_solo_hours_daily')} GROUP BY date"
             ") "
-            "SELECT FORMAT_DATE('%Y-%m-%d', p.date) AS d "
+            "SELECT FORMAT_DATE('%Y-%m-%d', p.date) AS d, p.punch_min, s.solo_min "
             "FROM p LEFT JOIN s USING (date) "
             "WHERE s.date IS NULL OR ABS(s.solo_min - p.punch_min) > 1 "
             "ORDER BY 1"
@@ -662,7 +676,66 @@ def solo_coverage_gap(period_start: str, period_end: str) -> list[str]:
         # point is to refuse to key money we cannot vouch for.
         print(f"[adp_payroll_draft] BREADCRUMB solo_coverage_unknown {exc}")
         return ["unknown"]
-    return [str(r.get("d")) for r in rows or []]
+    twice: dict[str, int] = {}
+    for o in overlaps or []:
+        twice[o["date"]] = twice.get(o["date"], 0) + int(o["minutes"])
+    gap = []
+    for r in rows or []:
+        d = str(r.get("d"))
+        pm, sm = r.get("punch_min"), r.get("solo_min")
+        if pm is not None and sm is not None and twice.get(d):
+            if abs(float(sm) - (float(pm) - twice[d])) <= 1:
+                continue
+        gap.append(d)
+    return gap
+
+
+def punch_self_overlaps(period_start: str, period_end: str) -> list[dict[str, Any]]:
+    """``{date, employee, minutes}`` where one person's punches overlap each other.
+
+    ADP pays both entries, so this is paid time nobody worked — surfaced for the
+    operator to correct in ADP Timecards, never silently netted out of pay.
+    """
+    from core.datastore import fq, read_query
+    from skills.bhaga_labor.solo_shift import intervals_from_punches, overlap_minutes
+
+    try:
+        rows = read_query(
+            "SELECT FORMAT_DATE('%Y-%m-%d', date) AS date, "
+            "COALESCE(canonical_name, employee_id) AS canonical_name, in_time, out_time "
+            f"FROM {fq('adp_punches')} "
+            f"WHERE date BETWEEN DATE '{period_start}' AND DATE '{period_end}'"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_payroll_draft] BREADCRUMB punch_overlap_unknown {exc}")
+        return []
+    out: list[dict[str, Any]] = []
+    for date, by_emp in sorted(intervals_from_punches(rows or []).items()):
+        for employee, intervals in sorted(by_emp.items()):
+            minutes = overlap_minutes(intervals)
+            if minutes > 0:
+                out.append({"date": date, "employee": employee, "minutes": minutes})
+    return out
+
+
+def _slack_punch_overlaps(period: str, overlaps: list[dict[str, Any]]) -> None:
+    if not overlaps:
+        return
+    lines = [
+        f"• {o['employee']} {o['date']}: {o['minutes']} min paid twice"
+        for o in overlaps
+    ]
+    print(f"[adp_payroll_draft] BREADCRUMB punch_overlap n={len(overlaps)} {lines}")
+    try:
+        from agents.bhaga.notify import info_ping
+
+        info_ping(
+            f"ADP payroll draft {period}: overlapping punches — ADP pays the "
+            "same minutes twice. Fix the entry in ADP Timecards, then Sync ADP "
+            "and re-run the draft.\n" + "\n".join(lines)
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_payroll_draft] BREADCRUMB slack_failed {exc}")
 
 
 def _iso(s: str) -> bool:

@@ -2119,6 +2119,11 @@ export function payrollSoloPremium(
  *
  * This proves solo hours match the punches *in BQ*; whether BQ matches ADP is the
  * Timecard scrape's job.
+ *
+ * Minutes one person's own punches cover twice (`o.twice`) are subtracted: ADP
+ * pays both entries but attribution counts the time once, so without this a
+ * self-overlap reads stale forever (2026-09-22, Dolce's Admin half-hour inside
+ * her shift). Mirrors `punch_self_overlaps` in `payroll_draft_backend.py`.
  */
 export async function soloCoverageGap(
   periodStart: string,
@@ -2134,10 +2139,32 @@ export async function soloCoverageGap(
        SELECT date, SUM(total_minutes) AS solo_min
        FROM ${fq("model_solo_hours_daily")}
        GROUP BY date
+     ), iv AS (
+       SELECT date, COALESCE(canonical_name, employee_id) AS emp,
+         TIME_DIFF(COALESCE(SAFE.PARSE_TIME('%H:%M', in_time), SAFE.PARSE_TIME('%H:%M:%S', in_time)), TIME '00:00:00', MINUTE) AS st,
+         TIME_DIFF(COALESCE(SAFE.PARSE_TIME('%H:%M', out_time), SAFE.PARSE_TIME('%H:%M:%S', out_time)), TIME '00:00:00', MINUTE) AS en0
+       FROM ${fq("adp_punches")}
+       WHERE date BETWEEN @periodStart AND @periodEnd
+     ), ord AS (
+       SELECT date, emp, st, IF(en0 <= st, en0 + 1440, en0) AS en
+       FROM iv WHERE st IS NOT NULL AND en0 IS NOT NULL
+     ), isl AS (
+       SELECT *, COUNTIF(prev_end IS NULL OR st > prev_end) OVER (
+         PARTITION BY date, emp ORDER BY st, en ROWS UNBOUNDED PRECEDING) AS g
+       FROM (
+         SELECT *, MAX(en) OVER (
+           PARTITION BY date, emp ORDER BY st, en
+           ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS prev_end
+         FROM ord)
+     ), o AS (
+       SELECT date, SUM(raw - span) AS twice
+       FROM (SELECT date, emp, g, SUM(en - st) AS raw, MAX(en) - MIN(st) AS span
+             FROM isl GROUP BY date, emp, g)
+       GROUP BY date
      )
      SELECT FORMAT_DATE('%Y-%m-%d', p.date) AS d
-     FROM p LEFT JOIN s USING (date)
-     WHERE s.date IS NULL OR ABS(s.solo_min - p.punch_min) > 1
+     FROM p LEFT JOIN s USING (date) LEFT JOIN o USING (date)
+     WHERE s.date IS NULL OR ABS(s.solo_min - (p.punch_min - IFNULL(o.twice, 0))) > 1
      ORDER BY 1`,
     { periodStart: dateParam(periodStart), periodEnd: dateParam(periodEnd) },
   );

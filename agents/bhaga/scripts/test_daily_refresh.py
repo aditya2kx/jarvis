@@ -2282,7 +2282,9 @@ class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
             clear=False,
         ), mock.patch(
             "skills.adp_run_automation.payroll_draft_backend.run_draft",
-        ) as run_draft:
+        ) as run_draft, mock.patch.object(
+            dr, "_rebuild_stale_solo_hours", return_value=[],
+        ) as rebuild:
             dr._maybe_run_period_end_payroll_draft(
                 store="palmetto",
                 refresh_date=datetime.date(2026, 8, 31),
@@ -2290,11 +2292,48 @@ class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
                 dry_run=False,
             )
             run_draft.assert_called_once()
+            rebuild.assert_called_once_with("palmetto", "2026-08-24", "2026-09-06")
             kwargs = run_draft.call_args.kwargs
             self.assertEqual(kwargs["period_start"], "2026-08-24")
             self.assertEqual(kwargs["period_end"], "2026-09-06")
             self.assertTrue(kwargs["allow_start"])
             self.assertTrue(kwargs["allow_prod_draft"])
+
+
+class TestRebuildStaleSoloHours(unittest.TestCase):
+    """The draft refreshes stale solo hours itself instead of skipping rate 2."""
+
+    PB = "skills.adp_run_automation.payroll_draft_backend"
+
+    def _run(self, gap, materialize_effect=None):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch(f"{self.PB}.punch_self_overlaps", return_value=[]), \
+             mock.patch(f"{self.PB}.solo_coverage_gap", return_value=gap), \
+             mock.patch(
+                 "agents.bhaga.scripts.materialize_model_bq.materialize",
+                 side_effect=materialize_effect,
+             ) as mat:
+            out = dr._rebuild_stale_solo_hours("palmetto", "2026-09-21", "2026-10-04")
+        return out, mat
+
+    def test_stale_dates_are_rematerialized_before_the_draft(self):
+        out, mat = self._run(["2026-09-22"])
+        mat.assert_called_once_with("palmetto", dates=["2026-09-22"])
+        self.assertEqual(out, ["2026-09-22"])
+
+    def test_current_solo_hours_skip_the_rebuild(self):
+        out, mat = self._run([])
+        mat.assert_not_called()
+        self.assertEqual(out, [])
+
+    def test_unknown_coverage_is_not_a_date_to_rebuild(self):
+        out, mat = self._run(["unknown"])
+        mat.assert_not_called()
+
+    def test_failed_rebuild_leaves_the_gap_for_the_draft_to_report(self):
+        out, _ = self._run(["2026-09-22"], materialize_effect=RuntimeError("bq"))
+        self.assertEqual(out, [])
 
 
 class TestPayrollDraftOnlyEarlyExit(unittest.TestCase):

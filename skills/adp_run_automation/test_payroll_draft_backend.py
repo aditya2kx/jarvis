@@ -1570,6 +1570,56 @@ class TestSoloCoverageGap(unittest.TestCase):
                 solo_coverage_gap("2026-09-07", "2026-09-20"), ["unknown"]
             )
 
+    def test_a_self_overlap_is_not_stale(self):
+        # Live 2026-09-22: Dolce's 15:00-15:30 Admin entry sits inside her
+        # 11:11-15:30 shift. Punches pay 1433 min, attribution rightly counts
+        # 1403; reading that as stale blocked the premium for everyone.
+        from skills.adp_run_automation.payroll_draft_backend import solo_coverage_gap
+
+        row = {"d": "2026-09-22", "punch_min": 1433.0, "solo_min": 1403}
+        overlap = [{"date": "2026-09-22", "employee": "Johnson, Dolce", "minutes": 30}]
+        with patch("core.datastore.read_query", return_value=[row]):
+            self.assertEqual(
+                solo_coverage_gap("2026-09-21", "2026-10-04", overlaps=overlap), [],
+            )
+            self.assertEqual(
+                solo_coverage_gap("2026-09-21", "2026-10-04"), ["2026-09-22"],
+            )
+
+    def test_an_overlap_does_not_hide_real_drift_on_the_same_date(self):
+        from skills.adp_run_automation.payroll_draft_backend import solo_coverage_gap
+
+        row = {"d": "2026-09-22", "punch_min": 1433.0, "solo_min": 1300}
+        overlap = [{"date": "2026-09-22", "employee": "Johnson, Dolce", "minutes": 30}]
+        with patch("core.datastore.read_query", return_value=[row]):
+            self.assertEqual(
+                solo_coverage_gap("2026-09-21", "2026-10-04", overlaps=overlap),
+                ["2026-09-22"],
+            )
+
+
+class TestPunchSelfOverlaps(unittest.TestCase):
+    def test_finds_the_minutes_one_person_is_paid_twice(self):
+        from skills.adp_run_automation.payroll_draft_backend import punch_self_overlaps
+
+        rows = [
+            {"date": "2026-09-22", "canonical_name": "Johnson, Dolce", "in_time": "06:50", "out_time": "10:42"},
+            {"date": "2026-09-22", "canonical_name": "Johnson, Dolce", "in_time": "11:11", "out_time": "15:30"},
+            {"date": "2026-09-22", "canonical_name": "Johnson, Dolce", "in_time": "15:00", "out_time": "15:30"},
+            {"date": "2026-09-22", "canonical_name": "Krause, Lindsay", "in_time": "08:00", "out_time": "16:00"},
+        ]
+        with patch("core.datastore.read_query", return_value=rows):
+            self.assertEqual(
+                punch_self_overlaps("2026-09-21", "2026-10-04"),
+                [{"date": "2026-09-22", "employee": "Johnson, Dolce", "minutes": 30}],
+            )
+
+    def test_unreadable_punches_report_no_overlaps(self):
+        from skills.adp_run_automation.payroll_draft_backend import punch_self_overlaps
+
+        with patch("core.datastore.read_query", side_effect=RuntimeError("bq")):
+            self.assertEqual(punch_self_overlaps("2026-09-21", "2026-10-04"), [])
+
 
 class TestSoloRate2IsGatedOnTheHoursGuardrail(unittest.TestCase):
     """The hours split must not run on a grid that disagrees with the console.

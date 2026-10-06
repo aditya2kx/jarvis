@@ -468,6 +468,36 @@ def _explicit_payroll_period_from_env() -> tuple[datetime.date, datetime.date] |
     return start, end
 
 
+def _rebuild_stale_solo_hours(store: str, period_start: str, period_end: str) -> list[str]:
+    """Re-materialize period dates whose solo hours lag the punches.
+
+    The draft-only job skips the model refresh, so a punch synced after the last
+    materialize left the premium unkeyed until someone re-ran it by hand. A failed
+    rebuild leaves the gap in place and the draft reports it, never keys on it.
+    """
+    from skills.adp_run_automation.payroll_draft_backend import (  # noqa: PLC0415
+        punch_self_overlaps,
+        solo_coverage_gap,
+    )
+
+    gap = solo_coverage_gap(
+        period_start, period_end,
+        overlaps=punch_self_overlaps(period_start, period_end),
+    )
+    dates = [d for d in gap if d != "unknown"]
+    if not dates:
+        return []
+    print(f"[adp_payroll_draft] BREADCRUMB solo_hours_rebuild dates={','.join(dates)}")
+    try:
+        from agents.bhaga.scripts import materialize_model_bq as _mmb  # noqa: PLC0415
+
+        _mmb.materialize(store, dates=dates)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_payroll_draft] BREADCRUMB solo_hours_rebuild_failed {exc!r}")
+        return []
+    return dates
+
+
 def _maybe_run_period_end_payroll_draft(
     *,
     store: str,
@@ -523,6 +553,7 @@ def _maybe_run_period_end_payroll_draft(
         run_draft,
     )
 
+    _rebuild_stale_solo_hours(store, ps.isoformat(), pe.isoformat())
     return run_draft(
         store=store,
         period_start=ps.isoformat(),

@@ -553,12 +553,16 @@ def _worktree_path_for(branch: str) -> Path | None:
         return Path(cache["worktree_path"])
     if not branch:
         return None
-    # Derive using new_requirement.default_worktree_path convention
-    # ../jarvis-wt-<slug>
-    slug = _slug(branch)
-    repo_name = REPO_ROOT.name.split("-wt-")[0] if "-wt-" in REPO_ROOT.name else REPO_ROOT.name
-    default = REPO_ROOT.parent / f"{repo_name}-wt-{slug}"
-    if default.exists():
+    # Same capped ``../<main-checkout>-wt-<slug>`` path creation uses.
+    try:
+        scripts_dir = str(Path(__file__).resolve().parent)
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import new_requirement as _nr
+        default = _nr.default_worktree_path(REPO_ROOT, branch)
+    except SystemExit:
+        return None
+    if default.is_dir():
         return default
     return None
 

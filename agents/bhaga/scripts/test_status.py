@@ -94,6 +94,8 @@ def _mock_read_query(responses: dict[str, list[dict]]):
     all_targets = status.BQ_TARGETS + status.GRAFANA_VIEWS
 
     def _fake_read_query(sql: str) -> list[dict]:
+        if "punch_gap_decisions" in sql:
+            return []  # every punch fix already in hours
         for t in all_targets:
             if f".{t.table}`" in sql or f".{t.table} " in sql:
                 key = f"{t.table}:{t.mode}"
@@ -508,3 +510,23 @@ class TestDateColumnsExistInSchemaSql:
             f"Update the Target registry in agents/bhaga/scripts/status.py "
             f"to use the current column name."
         )
+
+
+class TestPunchFixesInHours:
+    """Issue #358: a punch fix saved in ADP but absent from adp_punches is missing."""
+
+    def test_present_when_every_fix_is_loaded(self, monkeypatch):
+        monkeypatch.setattr(status, "read_query", lambda sql: [])
+        r = status._check_punch_fixes_in_hours("palmetto")
+        assert r.present and r.rows == 0
+
+    def test_missing_names_the_lagging_fixes(self, monkeypatch):
+        seen: list[str] = []
+        monkeypatch.setattr(
+            status, "read_query",
+            lambda sql: seen.append(sql) or [{"decision_id": "d1", "status": "applied"}],
+        )
+        r = status._check_punch_fixes_in_hours("palmetto")
+        assert not r.present and r.rows == 1
+        assert "Sync ADP" in r.note
+        assert "punch_gap_decisions" in seen[0] and "'palmetto'" in seen[0]

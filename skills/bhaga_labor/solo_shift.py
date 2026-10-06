@@ -128,6 +128,17 @@ def merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
+def overlap_minutes(intervals: list[tuple[int, int]]) -> int:
+    """Minutes one employee's own punches cover twice.
+
+    ADP pays every entry in full, while attribution counts the union, so a
+    punch inside another of the same person's punches is paid hours with no
+    floor time behind them.
+    """
+    raw = sum(end - start for start, end in intervals if end > start)
+    return raw - sum(end - start for start, end in merge_intervals(intervals))
+
+
 def _boundaries(by_employee: dict[str, list[tuple[int, int]]]) -> list[int]:
     """Sorted distinct minute marks where occupancy can change."""
     marks: set[int] = set()

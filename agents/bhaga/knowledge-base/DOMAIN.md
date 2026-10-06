@@ -356,6 +356,8 @@ Frozen `model_labor_daily` dollars are not a presentation source (Issue #267).
   or from labor % says nothing about whether a colleague is physically in the shop.
 - **`team_minutes` / `team_hours`** — everything else, including sub-threshold solo slivers. Those
   are folded in rather than dropped, which is what makes `solo + team == total` hold exactly.
+  `total` is the **union** of the employee's punches: an entry inside another of their own entries
+  counts once here while ADP pays it twice (`overlap_minutes`; flagged by the payroll draft).
 - **`remote_minutes` / `remote_hours`** (migration 072) — a **subset of `team_minutes`**, not a fourth
   bucket. A shift worked away from the shop is not floor coverage: it is excluded from occupancy, so
   it neither masks a coworker's solo block nor earns solo minutes of its own, and the hours are still

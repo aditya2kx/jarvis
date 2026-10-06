@@ -8,6 +8,7 @@ import {
   sortPunchGaps,
   writableToAdp,
   isOpenGap,
+  isWrittenToAdp,
   decisionLabel,
   decisionTimes,
   summarizePunchGaps,
@@ -251,6 +252,25 @@ describe("open view", () => {
     expect(label("recorded")).toBe("Accepted");
     expect(label("applied")).toBe("Written to ADP");
     expect(label("dismissed")).toBe("Dismissed");
+  });
+
+  it("keeps a fix saved in ADP but missing from hours open, locked and unsendable", () => {
+    const gaps = buildPunchGaps(
+      [
+        row({
+          employee_id: "lagging",
+          decision_id: "d1",
+          decision_action: "accept",
+          decision_out_time: "20:30",
+          decision_status: "not_in_hours",
+        }),
+      ],
+      [],
+    );
+    expect(isOpenGap(gaps[0])).toBe(true);
+    expect(decisionLabel(gaps[0])).toBe("In ADP, not in hours yet");
+    expect(isWrittenToAdp(gaps[0].decision?.status)).toBe(true);
+    expect(writableToAdp(gaps)).toEqual([]);
   });
 });
 

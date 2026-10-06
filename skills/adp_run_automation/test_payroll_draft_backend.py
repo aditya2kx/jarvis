@@ -11,7 +11,11 @@ from skills.adp_run_automation.payroll_draft_backend import (
     _attribute_grid_rows,
     _paginate_timecard_hours,
     abort_if_forbidden_label,
+    _active_payroll_is_period,
+    _dismiss_adp_error_dialog,
+    _import_with_cancel_retry,
     classify_rate2_state,
+    draft_packet_totals,
     expected_gross_dollars,
     extra_rate_line_hours,
     solo_premium_uplift_dollars,
@@ -25,6 +29,7 @@ from skills.adp_run_automation.payroll_draft_backend import (
     solo_premium_keying_lines,
     solo_rate2_enabled,
     wage_guardrail_failures,
+    home_period_label,
 )
 
 
@@ -231,6 +236,161 @@ class TestGuardrails(unittest.TestCase):
         self.assertEqual(out["preview_url"], live["preview_url"])
         self.assertEqual(out["preview_hours"], 458.97)
         self.assertEqual(out["preview_gross"], 8999.06)
+
+    def _live_run(self, live, **kw):
+        B = "skills.adp_run_automation.payroll_draft_backend"
+        with (
+            patch(f"{B}.run_live_preview", return_value=live) as preview,
+            patch(f"{B}.record_payroll_draft_run") as record,
+            patch(f"{B}.punch_self_overlaps", return_value=[]),
+            patch(f"{B}._solo_premium_rate", return_value=16.25),
+        ):
+            out = run_draft(
+                store="palmetto",
+                period_start="2026-09-21",
+                period_end="2026-10-04",
+                dry_run=False,
+                allow_prod_draft=True,
+                view_rows=[
+                    {"employee": "A", "hours_worked": 8, "ot_hours": 0,
+                     "wage_rate_dollars": 15.25, "tips_allocated": 10.0},
+                    {"employee": "B", "hours_worked": 4.5, "ot_hours": 0,
+                     "wage_rate_dollars": 15.25, "tips_allocated": 5.0},
+                ],
+                **kw,
+            )
+        return out, preview, record
+
+    def test_ok_run_records_the_totals_it_keyed(self):
+        _out, _p, record = self._live_run(
+            {"preview_hours": 12.5, "preview_gross": 205.63, "screenshots": []}
+        )
+        ok = record.call_args_list[-1].kwargs
+        self.assertEqual(ok["status"], "ok")
+        self.assertEqual(ok["packet_hours"], 12.5)
+        self.assertEqual(ok["packet_pay"], round(122.0 + 68.63 + 15.0, 2))
+
+    def test_no_preview_records_fail_without_packet_totals(self):
+        _out, _p, record = self._live_run(
+            {"preview_hours": None, "preview_gross": None, "screenshots": []},
+            resume_only=True,
+        )
+        last = record.call_args_list[-1].kwargs
+        self.assertEqual((last["status"], last["error"]), ("fail", "no_preview"))
+        self.assertNotIn("packet_hours", last)
+
+    def test_resume_only_with_nothing_in_progress_records_no_draft(self):
+        out, preview, record = self._live_run(
+            {"skipped": "no_in_progress_draft", "screenshots": []},
+            resume_only=True,
+        )
+        self.assertIs(preview.call_args.kwargs["resume_only"], True)
+        self.assertEqual(out["skipped"], "no_in_progress_draft")
+        self.assertEqual(
+            [c.kwargs["status"] for c in record.call_args_list],
+            ["running", "no_draft"],
+        )
+
+
+class TestActivePayrollPeriodGuard(unittest.TestCase):
+    """A resume-only re-run must open this period's draft, not another one."""
+
+    def _page(self, aria):
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        row = page.locator.return_value.first
+        row.get_attribute.return_value = aria
+        row.inner_text.return_value = ""
+        return page
+
+    def test_label_matches_payroll_home(self):
+        self.assertEqual(home_period_label("2026-10-04"), "10/04/2026")
+
+    def test_this_period_is_accepted(self):
+        # aria-label read live from ADP Payroll Home 2026-10-06
+        page = self._page("clickable Regular 10/09/2026 09/21/2026 10/04/2026 Biweekly 10/08/2026")
+        self.assertTrue(_active_payroll_is_period(page, "2026-09-21", "2026-10-04"))
+
+    def test_other_period_is_refused(self):
+        page = self._page("clickable Regular 10/23/2026 10/05/2026 10/18/2026 Biweekly")
+        self.assertFalse(_active_payroll_is_period(page, "2026-09-21", "2026-10-04"))
+
+    def test_no_in_progress_row_is_refused(self):
+        page = self._page("")
+        page.locator.return_value.first.wait_for.side_effect = TimeoutError("none")
+        self.assertFalse(_active_payroll_is_period(page, "2026-09-21", "2026-10-04"))
+
+    def test_bad_dates_are_refused(self):
+        self.assertFalse(_active_payroll_is_period(self._page("x"), "", "2026-10-04"))
+
+
+class TestDismissAdpNotice(unittest.TestCase):
+    """ADP's standard-hours notice covered the grid and blocked every later fill."""
+
+    def _page(self, heading):
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+
+        def by_text(text):
+            m = MagicMock()
+            m.first.is_visible.return_value = text == heading
+            return m
+
+        page.get_by_text.side_effect = by_text
+        btn = page.get_by_role.return_value.first
+        btn.is_visible.return_value = True
+        btn.inner_text.return_value = "OK"
+        return page, btn
+
+    def test_standard_hours_notice_is_acknowledged(self):
+        page, btn = self._page("Something you should be aware of")
+        self.assertTrue(_dismiss_adp_error_dialog(page))
+        btn.click.assert_called_once()
+
+    def test_error_pane_is_acknowledged(self):
+        page, btn = self._page("Something isn't quite right")
+        self.assertTrue(_dismiss_adp_error_dialog(page))
+        btn.click.assert_called_once()
+
+    def test_no_pane_clicks_nothing(self):
+        page, btn = self._page(None)
+        self.assertFalse(_dismiss_adp_error_dialog(page))
+        btn.click.assert_not_called()
+
+
+class TestImportRetryNeverDeletesOnResume(unittest.TestCase):
+    def test_resume_only_retry_reopens_without_delete(self):
+        from unittest.mock import MagicMock
+
+        B = "skills.adp_run_automation.payroll_draft_backend"
+        with (
+            patch(f"{B}._dismiss_adp_error_dialog"),
+            patch(f"{B}._click_import_not_finish", side_effect=[TimeoutError("x"), None]),
+            patch(f"{B}._click_delete_in_progress") as delete,
+            patch(f"{B}._open_payroll_home"),
+            patch(f"{B}._click_resume_if_present") as resume,
+            patch(f"{B}._click_start_if_present") as start,
+            patch(f"{B}._wait_wizard_ready"),
+        ):
+            _import_with_cancel_retry(MagicMock(), allow_start=False, resume_only=True)
+        delete.assert_not_called()
+        start.assert_not_called()
+        resume.assert_called_once()
+
+
+class TestDraftPacketTotals(unittest.TestCase):
+    def test_gross_includes_the_solo_premium(self):
+        rows = [{"employee": "A", "hours_worked": 8, "ot_hours": 0,
+                 "wage_rate_dollars": 15.25, "solo_eligible": True, "solo_hours": 2}]
+        B = "skills.adp_run_automation.payroll_draft_backend"
+        with patch(f"{B}._solo_premium_rate", return_value=16.25):
+            hours, with_premium = draft_packet_totals("palmetto", rows)
+        with patch.dict("os.environ", {"BHAGA_ADP_SOLO_RATE2": "0"}):
+            _h, without = draft_packet_totals("palmetto", rows)
+        self.assertEqual(hours, 8.0)
+        self.assertAlmostEqual(with_premium - without, 2.0, places=2)
 
 
 class TestSoloPremiumHours(unittest.TestCase):
@@ -523,16 +683,16 @@ class TestRate2Split(unittest.TestCase):
 
 
 class TestSoloRate2Flag(unittest.TestCase):
-    """The split rewrites live payroll hours, so it must be opt-in."""
+    """The premium is part of the payroll: every draft keys it, with a kill switch."""
 
-    def test_off_by_default(self):
+    def test_on_by_default(self):
         with patch.dict("os.environ", {}, clear=True):
-            self.assertFalse(solo_rate2_enabled())
+            self.assertTrue(solo_rate2_enabled())
 
-    def test_on_only_for_truthy_values(self):
+    def test_off_only_for_falsy_values(self):
         for val, want in (
-            ("1", True), ("true", True), ("YES", True),
-            ("0", False), ("", False), ("no", False),
+            ("1", True), ("", True), ("YES", True),
+            ("0", False), ("false", False), ("no", False), ("OFF", False),
         ):
             with patch.dict("os.environ", {"BHAGA_ADP_SOLO_RATE2": val}, clear=True):
                 self.assertIs(solo_rate2_enabled(), want, val)
@@ -1569,6 +1729,56 @@ class TestSoloCoverageGap(unittest.TestCase):
             self.assertEqual(
                 solo_coverage_gap("2026-09-07", "2026-09-20"), ["unknown"]
             )
+
+    def test_a_self_overlap_is_not_stale(self):
+        # Live 2026-09-22: Dolce's 15:00-15:30 Admin entry sits inside her
+        # 11:11-15:30 shift. Punches pay 1433 min, attribution rightly counts
+        # 1403; reading that as stale blocked the premium for everyone.
+        from skills.adp_run_automation.payroll_draft_backend import solo_coverage_gap
+
+        row = {"d": "2026-09-22", "punch_min": 1433.0, "solo_min": 1403}
+        overlap = [{"date": "2026-09-22", "employee": "Johnson, Dolce", "minutes": 30}]
+        with patch("core.datastore.read_query", return_value=[row]):
+            self.assertEqual(
+                solo_coverage_gap("2026-09-21", "2026-10-04", overlaps=overlap), [],
+            )
+            self.assertEqual(
+                solo_coverage_gap("2026-09-21", "2026-10-04"), ["2026-09-22"],
+            )
+
+    def test_an_overlap_does_not_hide_real_drift_on_the_same_date(self):
+        from skills.adp_run_automation.payroll_draft_backend import solo_coverage_gap
+
+        row = {"d": "2026-09-22", "punch_min": 1433.0, "solo_min": 1300}
+        overlap = [{"date": "2026-09-22", "employee": "Johnson, Dolce", "minutes": 30}]
+        with patch("core.datastore.read_query", return_value=[row]):
+            self.assertEqual(
+                solo_coverage_gap("2026-09-21", "2026-10-04", overlaps=overlap),
+                ["2026-09-22"],
+            )
+
+
+class TestPunchSelfOverlaps(unittest.TestCase):
+    def test_finds_the_minutes_one_person_is_paid_twice(self):
+        from skills.adp_run_automation.payroll_draft_backend import punch_self_overlaps
+
+        rows = [
+            {"date": "2026-09-22", "canonical_name": "Johnson, Dolce", "in_time": "06:50", "out_time": "10:42"},
+            {"date": "2026-09-22", "canonical_name": "Johnson, Dolce", "in_time": "11:11", "out_time": "15:30"},
+            {"date": "2026-09-22", "canonical_name": "Johnson, Dolce", "in_time": "15:00", "out_time": "15:30"},
+            {"date": "2026-09-22", "canonical_name": "Krause, Lindsay", "in_time": "08:00", "out_time": "16:00"},
+        ]
+        with patch("core.datastore.read_query", return_value=rows):
+            self.assertEqual(
+                punch_self_overlaps("2026-09-21", "2026-10-04"),
+                [{"date": "2026-09-22", "employee": "Johnson, Dolce", "minutes": 30}],
+            )
+
+    def test_unreadable_punches_report_no_overlaps(self):
+        from skills.adp_run_automation.payroll_draft_backend import punch_self_overlaps
+
+        with patch("core.datastore.read_query", side_effect=RuntimeError("bq")):
+            self.assertEqual(punch_self_overlaps("2026-09-21", "2026-10-04"), [])
 
 
 class TestSoloRate2IsGatedOnTheHoursGuardrail(unittest.TestCase):

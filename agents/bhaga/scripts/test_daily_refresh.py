@@ -2098,10 +2098,12 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
                  ) as dl, \
                  mock.patch("agents.bhaga.scripts.daily_refresh.subprocess.run") as run, \
                  mock.patch.object(dr, "_stamp_adp_hours_scraped_at") as stamp, \
+                 mock.patch.object(dr, "_refresh_stale_payroll_drafts") as refresh, \
                  mock.patch.object(
                      dr, "_load_profile", side_effect=AssertionError("must not load profile"),
                  ):
                 rc = dr.main()
+            self.refresh = refresh
         return rc, dl, run, stamp
 
     def test_timecard_only_downloads_and_backfills(self):
@@ -2125,6 +2127,8 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         # Never loads past the target day — today's punches are still in progress.
         self.assertEqual(skip[skip.index("--end") + 1], "2026-08-23")
         stamp.assert_called_once_with(datetime.date(2026, 8, 10), datetime.date(2026, 8, 23))
+        # Hours moved under an In Progress draft → the draft is re-run.
+        self.refresh.assert_called_once_with("palmetto")
 
     def test_schedule_failure_still_loads_clocked_hours(self):
         rc, _dl, run, stamp = self._run({
@@ -2167,6 +2171,64 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         skip = run.call_args.args[0]
         self.assertIn("adp_rates", skip)
         self.assertNotIn("adp_liability", skip)
+
+
+class TestPunchFixResync(unittest.TestCase):
+    """Issue #358: after a console punch fix the resync reloads the latest fix's
+    pay period from the export the write job verified — not "yesterday"."""
+
+    def _run(self, counts):
+        import pathlib
+        import tempfile
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        argv = ["daily_refresh", "--store", "palmetto", "--date", "2026-10-06", "--no-slack"]
+        with tempfile.TemporaryDirectory() as td:
+            fake_dl = pathlib.Path(td)
+            cached = fake_dl / f"Timecard-{dr._today_ct().isoformat()}.xlsx"
+            cached.write_bytes(b"x")
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.dict(os.environ, {"BHAGA_PUNCH_FIX_APPLY_ONLY": "1",
+                                              "BHAGA_STORE": "palmetto"}, clear=False), \
+                 mock.patch("agents.bhaga.scripts.punch_fix_apply.run_from_env",
+                            return_value=counts), \
+                 mock.patch("skills.adp_run_automation.runner.DOWNLOADS_DIR", fake_dl), \
+                 mock.patch("skills.adp_run_automation.runner.download_adp_bundle",
+                            return_value={"timecard_xlsx": cached, "timecards_ui_json": cached,
+                                          "errors": {}}) as dl, \
+                 mock.patch("agents.bhaga.scripts.daily_refresh.subprocess.run") as run, \
+                 mock.patch.object(dr, "_stamp_adp_hours_scraped_at") as stamp, \
+                 mock.patch.object(dr, "_refresh_stale_payroll_drafts"):
+                os.environ.pop("BHAGA_ADP_TIMECARD_ONLY", None)
+                try:
+                    rc = dr.main()
+                finally:
+                    os.environ.pop("BHAGA_ADP_TIMECARD_ONLY", None)
+                kept = cached.exists()
+        return rc, dl, run, stamp, kept
+
+    def test_resync_targets_latest_fix_and_reuses_verified_export(self):
+        rc, dl, run, stamp, kept = self._run(
+            {"applied": 1, "max_date": datetime.date(2026, 10, 4), "export_on_disk": True})
+        self.assertEqual(rc, 0)
+        self.assertTrue(kept)
+        self.assertEqual(dl.call_args.kwargs["target_date"], datetime.date(2026, 10, 4))
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--refresh-date") + 1], "2026-10-04")
+        self.assertEqual(cmd[cmd.index("--end") + 1], "2026-10-06")
+        stamp.assert_called_once_with(datetime.date(2026, 9, 21), datetime.date(2026, 10, 4))
+
+    def test_unverified_write_forces_a_fresh_export(self):
+        _rc, dl, _run, _stamp, kept = self._run(
+            {"already_resolved": 1, "max_date": datetime.date(2026, 10, 4)})
+        self.assertFalse(kept)
+        self.assertEqual(dl.call_args.kwargs["target_date"], datetime.date(2026, 10, 4))
+
+    def test_nothing_written_skips_resync(self):
+        rc, dl, run, _stamp, _kept = self._run({"applied": 0, "failed": 1})
+        self.assertEqual(rc, 0)
+        dl.assert_not_called()
+        run.assert_not_called()
 
 
 class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
@@ -2225,7 +2287,9 @@ class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
             clear=False,
         ), mock.patch(
             "skills.adp_run_automation.payroll_draft_backend.run_draft",
-        ) as run_draft:
+        ) as run_draft, mock.patch.object(
+            dr, "_rebuild_stale_solo_hours", return_value=[],
+        ) as rebuild:
             dr._maybe_run_period_end_payroll_draft(
                 store="palmetto",
                 refresh_date=datetime.date(2026, 8, 31),
@@ -2233,11 +2297,119 @@ class TestPeriodEndPayrollDraftBounds(unittest.TestCase):
                 dry_run=False,
             )
             run_draft.assert_called_once()
+            rebuild.assert_called_once_with("palmetto", "2026-08-24", "2026-09-06")
             kwargs = run_draft.call_args.kwargs
             self.assertEqual(kwargs["period_start"], "2026-08-24")
             self.assertEqual(kwargs["period_end"], "2026-09-06")
             self.assertTrue(kwargs["allow_start"])
             self.assertTrue(kwargs["allow_prod_draft"])
+
+
+class TestRebuildStaleSoloHours(unittest.TestCase):
+    """The draft refreshes stale solo hours itself instead of skipping rate 2."""
+
+    PB = "skills.adp_run_automation.payroll_draft_backend"
+
+    def _run(self, gap, materialize_effect=None):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch(f"{self.PB}.punch_self_overlaps", return_value=[]), \
+             mock.patch(f"{self.PB}.solo_coverage_gap", return_value=gap), \
+             mock.patch(
+                 "agents.bhaga.scripts.materialize_model_bq.materialize",
+                 side_effect=materialize_effect,
+             ) as mat:
+            out = dr._rebuild_stale_solo_hours("palmetto", "2026-09-21", "2026-10-04")
+        return out, mat
+
+    def test_stale_dates_are_rematerialized_before_the_draft(self):
+        out, mat = self._run(["2026-09-22"])
+        mat.assert_called_once_with("palmetto", dates=["2026-09-22"])
+        self.assertEqual(out, ["2026-09-22"])
+
+    def test_current_solo_hours_skip_the_rebuild(self):
+        out, mat = self._run([])
+        mat.assert_not_called()
+        self.assertEqual(out, [])
+
+    def test_unknown_coverage_is_not_a_date_to_rebuild(self):
+        out, mat = self._run(["unknown"])
+        mat.assert_not_called()
+
+    def test_failed_rebuild_leaves_the_gap_for_the_draft_to_report(self):
+        out, _ = self._run(["2026-09-22"], materialize_effect=RuntimeError("bq"))
+        self.assertEqual(out, [])
+
+
+class TestRefreshStalePayrollDrafts(unittest.TestCase):
+    """Issue #358: a draft keyed from hours that later moved is re-run, resume only."""
+
+    DRAFT = {"period_start": "2026-09-21", "period_end": "2026-10-04",
+             "packet_hours": 393.05, "packet_pay": 9876.0}
+
+    def _run(self, now, drafts=None, env=None):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        B = "skills.adp_run_automation.payroll_draft_backend"
+        with mock.patch.dict(os.environ, env or {}, clear=False), \
+             mock.patch.object(dr, "_open_payroll_drafts",
+                               return_value=[self.DRAFT] if drafts is None else drafts), \
+             mock.patch("agents.bhaga.scripts.materialize_model_bq.materialize") as mat, \
+             mock.patch(f"{B}._load_view_rows", return_value=[{"employee": "A"}]), \
+             mock.patch(f"{B}.draft_packet_totals", return_value=now), \
+             mock.patch(f"{B}.run_draft", return_value={"ok": 1}) as run:
+            out = dr._refresh_stale_payroll_drafts("palmetto")
+        return out, mat, run
+
+    def test_unchanged_totals_leave_the_draft_alone(self):
+        out, mat, run = self._run((393.05, 9876.0))
+        self.assertEqual(out, [])
+        run.assert_not_called()
+        dates = mat.call_args.kwargs["dates"]
+        self.assertEqual((dates[0], dates[-1], len(dates)), ("2026-09-21", "2026-10-04", 14))
+
+    def test_moved_hours_resume_the_draft_and_never_start_one(self):
+        out, _mat, run = self._run((401.05, 10010.0))
+        self.assertEqual(out, [{"ok": 1}])
+        kw = run.call_args.kwargs
+        self.assertEqual((kw["period_start"], kw["period_end"]), ("2026-09-21", "2026-10-04"))
+        self.assertIs(kw["resume_only"], True)
+        self.assertIs(kw["allow_start"], False)
+        self.assertIs(kw["keep_draft"], True)
+
+    def test_moved_pay_alone_is_stale(self):
+        _out, _mat, run = self._run((393.05, 9891.56))
+        run.assert_called_once()
+
+    def test_kill_switch(self):
+        out, mat, run = self._run(
+            (401.0, 1.0), env={"BHAGA_PAYROLL_DRAFT_AUTO_REFRESH": "0"})
+        self.assertEqual(out, [])
+        mat.assert_not_called()
+        run.assert_not_called()
+
+    def test_no_open_draft_does_nothing(self):
+        out, mat, run = self._run((401.0, 1.0), drafts=[])
+        self.assertEqual(out, [])
+        mat.assert_not_called()
+        run.assert_not_called()
+
+    def test_failed_check_never_raises(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        with mock.patch.object(dr, "_open_payroll_drafts", side_effect=RuntimeError("bq")):
+            self.assertEqual(dr._refresh_stale_payroll_drafts("palmetto"), [])
+
+    def test_failed_rerun_never_raises(self):
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        B = "skills.adp_run_automation.payroll_draft_backend"
+        with mock.patch.object(dr, "_open_payroll_drafts", return_value=[self.DRAFT]), \
+             mock.patch("agents.bhaga.scripts.materialize_model_bq.materialize"), \
+             mock.patch(f"{B}._load_view_rows", return_value=[]), \
+             mock.patch(f"{B}.draft_packet_totals", return_value=(1.0, 1.0)), \
+             mock.patch(f"{B}.run_draft", side_effect=RuntimeError("adp")):
+            self.assertEqual(dr._refresh_stale_payroll_drafts("palmetto"), [])
 
 
 class TestPayrollDraftOnlyEarlyExit(unittest.TestCase):

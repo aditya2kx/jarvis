@@ -75,6 +75,19 @@ class TestMergeIntervals(unittest.TestCase):
         self.assertEqual(merge_intervals([(600, 600)]), [])
 
 
+class TestOverlapMinutes(unittest.TestCase):
+    def test_an_entry_inside_another_counts_once_as_overlap(self):
+        from skills.bhaga_labor.solo_shift import overlap_minutes
+
+        self.assertEqual(overlap_minutes([(671, 930), (900, 930)]), 30)
+
+    def test_split_shift_and_touching_punches_do_not_overlap(self):
+        from skills.bhaga_labor.solo_shift import overlap_minutes
+
+        self.assertEqual(overlap_minutes([(410, 642), (671, 930)]), 0)
+        self.assertEqual(overlap_minutes([(600, 660), (660, 720)]), 0)
+
+
 class TestSoloAttribution(unittest.TestCase):
     def attribute(self, intervals, rates, date=DATE, config=CONFIG):
         return {r.employee: r for r in attribute_day(date, intervals, rates, config)}

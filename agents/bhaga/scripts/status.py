@@ -399,6 +399,21 @@ class CheckResult:
     note: str = ""
 
 
+def _check_punch_fixes_in_hours(store: str) -> CheckResult:
+    """Punch fixes saved in ADP but absent from adp_punches (Issue #358) are
+    missing from hours, labor and payroll — fail until a resync loads them."""
+    try:
+        from agents.bhaga.scripts.punch_fix_apply import missing_from_hours_sql
+
+        rows = read_query(missing_from_hours_sql(store))
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("bq", "punch_fixes_in_hours", False, note=f"ERROR: {exc}")
+    return CheckResult(
+        "bq", "punch_fixes_in_hours", not rows, rows=len(rows),
+        note="written fixes missing from adp_punches — Sync ADP" if rows else "",
+    )
+
+
 def _run_bq_target(t: Target, date: datetime.date, layer: str = "bq") -> CheckResult:
     """Execute a single BQ freshness query for the given target and date."""
     fq = f"`{_PROJECT}.{_DATASET}.{t.table}`"
@@ -694,6 +709,7 @@ def main(argv: list[str] | None = None) -> int:
     # ── Layer 2: BigQuery model + raw tables ──────────────────────────────────
     for t in BQ_TARGETS:
         results.append(_run_bq_target(t, check_date, layer="bq"))
+    results.append(_check_punch_fixes_in_hours(args.store))
 
     # ── Layer 3: Grafana BI contract views ────────────────────────────────────
     for t in GRAFANA_VIEWS:

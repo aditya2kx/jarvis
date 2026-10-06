@@ -452,6 +452,35 @@ gcloud run jobs execute bhaga-daily-refresh --project jarvis-bhaga-prod --region
   --update-env-vars "BHAGA_ADP_TIMECARD_ONLY=1,BHAGA_IGNORE_HALT=1,BHAGA_SKIP_SQUARE=1,BHAGA_SKIP_KDS=1,BHAGA_STORE=palmetto,REFRESH_DATE=$(TZ=America/Chicago date +%F)"
 ```
 
+### Monthly recognition (Issue #369)
+
+Operator Console `/automations/monthly-recognition`. Pick a payroll cycle; the page shows the
+award month's MVP + High Five winners from the ClickUp **#monthly-recognition** results reply,
+each with first/last/email, card count and a "why" drafted by Gemini from **#monthly-recognition**
+nominations, **#running-austin-palmetto** and **Shift Coverage & Trades** (automation posts such as
+checklist shout-outs are excluded). **Reshape with a prompt** rewrites the whole post; a rewrite
+that drops an @mention is rejected. Nothing posts to the team — **DM me the post to forward**
+sends two ClickUp DMs to the operator (gift-card summary, then the clean post to forward).
+
+- **Data:** ClickUp chat is copied into BQ `clickup_chat_messages` / `clickup_members`
+  (migration 087) by **Sync now** or automatically when the page loads > 1 h after the last sync
+  (`clickup_sync_runs`). Page renders from BQ only.
+- **Gift cards** (flag `CONSOLE_RECOGNITION_GIFT_CARDS`, `docs/FEATURE_FLAGS.md`): Square digital
+  cards at the store's location, activated with the comp instrument, verified by read-back,
+  emailed per winner. Ledger `recognition_gift_cards` stores `gan_last4` only — the full GAN
+  exists only in the outgoing email. A failed card shows **Retry failed**; never re-run by hand.
+  Grep `[recognition] BREADCRUMB step=` in the console logs for the failing step + key.
+- **Bought by hand:** **I already issued these** writes ledger rows with status `external`
+  (no Square call) so the console never issues that month again.
+- **Secrets** (console runtime SA `887772634501-compute@` has `secretAccessor` on each):
+  `square_palmetto_oauth` (needs `GIFTCARDS_READ GIFTCARDS_WRITE`; page shows a red notice if
+  missing) and `gmail_sender_palmetto` (send-only grant for `adi@mypalmetto.co`). Re-grant:
+  ```bash
+  python3 scripts/gcp_access_probe.py
+  BHAGA_SECRETS_BACKEND=gcp python3 -m skills.square_api.grant --store palmetto
+  python3 apps/operator-console/scripts/gmail_sender_grant.py
+  ```
+
 ### Team pulse (Issue #216)
 
 Webhook image must include `agents/bhaga/scripts` + `skills/clickup_chat` + `core`

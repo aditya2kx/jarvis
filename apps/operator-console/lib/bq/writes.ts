@@ -1091,6 +1091,7 @@ export async function insertAutomationPost(row: {
       trigger: row.trigger,
       by: row.updated_by,
     },
+    { channel_id: "STRING", message_id: "STRING" },
   );
 }
 

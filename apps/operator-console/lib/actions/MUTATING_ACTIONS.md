@@ -31,6 +31,8 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Accounting | Sync now | `syncPlaidNowAction` | Plaid sync |
 | Accounting | Overrides / taxonomy / rules | `setTxnCategoryOverrideAction`, `upsertTaxonomyNodeAction`, `setTaxonomyNodeEnabledAction`, `setCategoryRuleEnabledAction`, `setTaxonomyExcludeAction`, `dryRunRuleAction`, `previewRuleMatchesAction`, `commitRuleFromTxnAction`, `revertRuleEvidenceAction`, `reapplyPlaidCategoriesAction`, `setPlaidInternalAction` | — |
 | Automations | Team pulse save / preview / post once | `saveTeamPulseConfigAction`, `previewTeamPulseAction`, `postTeamPulseOnceAction` | — |
+| Automations | Monthly recognition sync / Gemini draft / reshape by prompt / DM draft / mark issued by hand | `syncRecognitionSourcesAction`, `previewRecognitionAction`, `reshapeRecognitionPostAction`, `dmRecognitionDraftAction`, `markGiftCardsIssuedAction` | — (sync copies ClickUp chat into BQ `clickup_chat_messages`; the draft is DM'd to the operator to forward — nothing posts to the team channel; "mark issued" writes `recognition_gift_cards` rows with status `external`, no Square call) |
+| Automations | Monthly recognition Approve & issue / $1 test card | `approveRecognitionAction`, `sendTestGiftCardAction` | Behind `FEATURES.recognitionGiftCards` (`CONSOLE_RECOGNITION_GIFT_CARDS=1`). Square create + ACTIVATE + read-back per card (`recognition_gift_cards` ledger, idempotency key per card), one Gmail per recipient, recap ClickUp DM. Failed rows are never auto-retried — "Retry failed" resumes from the recorded state |
 
 Canonical machine-readable list: [`registry.ts`](./registry.ts).
 Gate: `python3 scripts/check_operator_console_actions.py`.

@@ -65,6 +65,14 @@ export const MUTATING_ACTIONS = [
   { name: "saveTeamPulseConfigAction", page: "automations", heavy: null },
   { name: "previewTeamPulseAction", page: "automations", heavy: null },
   { name: "postTeamPulseOnceAction", page: "automations", heavy: null },
+  // Monthly recognition (Issue #369)
+  { name: "syncRecognitionSourcesAction", page: "automations", heavy: null },
+  { name: "previewRecognitionAction", page: "automations", heavy: null },
+  { name: "dmRecognitionDraftAction", page: "automations", heavy: null },
+  { name: "approveRecognitionAction", page: "automations", heavy: "square-gift-cards" },
+  { name: "sendTestGiftCardAction", page: "automations", heavy: "square-gift-cards" },
+  { name: "reshapeRecognitionPostAction", page: "automations", heavy: null },
+  { name: "markGiftCardsIssuedAction", page: "automations", heavy: null },
 ] as const;
 
 export type MutatingActionName = (typeof MUTATING_ACTIONS)[number]["name"];

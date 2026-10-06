@@ -82,6 +82,11 @@
       "id": "8cr6661-1617",
       "name": "Shift Coverage & Trades"
     },
+    "recognition_channel": {
+      "id": "8cr6661-2837",
+      "name": "monthly-recognition",
+      "_doc": "Monthly MVP / High Five nomination threads + results (Issue #369). Mirrored in apps/operator-console/lib/config/stores.ts RECOGNITION."
+    },
     "credential_handle": "jarvis-clickup-palmetto-pat",
     "_doc": "Source channel where the upstream Google-review automation posts each new review. Read by skills/clickup_chat via PAT in Keychain."
   },

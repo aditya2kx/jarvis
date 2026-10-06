@@ -180,12 +180,17 @@ class TestTableIsolation(unittest.TestCase):
         (tmp / "Schedule-2026-09-23.json").write_text(json.dumps({"weeks": []}))
         result_json = tmp / "result.json"
         loaded: list[str] = []
+        self.scopes: dict[str, str] = {}
 
         def _load(table, rows, **_kw):
             if table == "adp_shifts" and shifts_error:
                 raise shifts_error
             loaded.append(table)
             return len(rows)
+
+        def _replace(table, rows, *, scope_col, **kw):
+            self.scopes[table] = scope_col
+            return _load(table, rows, **kw)
 
         argv = ["backfill_from_downloads", "--store", "palmetto", "--skip", "square",
                 "--skip", "adp_liability", "--skip", "adp_rates",
@@ -213,6 +218,7 @@ class TestTableIsolation(unittest.TestCase):
              mock.patch.object(bfd.schedule_backend, "reconcile_employee_vs_footer",
                                return_value=[]), \
              mock.patch.object(bfd, "load_rows", side_effect=_load), \
+             mock.patch.object(bfd, "replace_rows_scoped", side_effect=_replace), \
              mock.patch.object(bfd, "_ds_load_rows"), \
              mock.patch("agents.bhaga.scripts.punch_fix_apply.reconcile_not_in_hours",
                         return_value=0), \
@@ -227,6 +233,11 @@ class TestTableIsolation(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIsNone(failures)
         self.assertIn("adp_shifts", loaded)
+
+    def test_timecard_replaces_each_exported_date(self):
+        """An entry deleted in ADP must leave BQ: upserts kept a removed one forever."""
+        self._run()
+        self.assertEqual(self.scopes, {"adp_shifts": "date", "adp_punches": "date"})
 
     def test_isolated_failure_is_partial_and_keeps_the_timecard(self):
         rc, loaded, failures = self._run(schedule_error=RuntimeError("schedule boom"))

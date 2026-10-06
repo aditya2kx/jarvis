@@ -245,8 +245,14 @@ premium). After every **Sync ADP** / punch-fix resync and every verified nightly
 
 - **Resume only** — it never starts a payroll. Nothing In Progress (already submitted) →
   `BREADCRUMB resume_only_no_draft`, status `no_draft`, and it stops for that period.
-- **Same period only** — the wizard header must read this period's dates (`Sep 21, 2026 → Oct 4, 2026`)
-  or it leaves the draft untouched (`BREADCRUMB resume_only_wrong_period`).
+- **Same period only** — Payroll Home's In Progress row must read this period's dates
+  (`09/21/2026 10/04/2026`) before Resume, or it leaves the draft untouched
+  (`BREADCRUMB resume_only_wrong_period`). An import retry reopens the draft; it never Deletes.
+- A run that reaches no Preview records `fail` / `no_preview`, so the next sync tries again.
+- ADP's "Something you should be aware of" notice (e.g. hours above an employee's standard) is
+  acknowledged with OK before each fill; left open it blocks the rest of the grid.
+- **Stay out of the ADP payroll while a draft runs.** ADP lets one session edit a payroll at a
+  time; a second tab makes Import fail with "Something isn't quite right" (2026-10-06).
 - Failures are breadcrumbed (`draft_refresh_failed`) and never fail the nightly or the sync.
 - `BHAGA_PAYROLL_DRAFT_AUTO_REFRESH=0` on the job turns it off.
 

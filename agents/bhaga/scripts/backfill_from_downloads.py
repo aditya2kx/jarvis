@@ -361,8 +361,12 @@ def main() -> int:
                 if args.dry_run:
                     print(f"  DRY: would load {len(bq_rows)} shift rows into BQ")
                 else:
-                    n = load_rows("adp_shifts", bq_rows, merge_keys=["date", "employee_id"],
-                                 column_bq_types=_TS_TYPES)
+                    # The export is the whole timecard for each date it covers: an
+                    # entry deleted in ADP must leave BQ too, which an upsert never
+                    # does (a removed 15:00–15:30 entry kept reading as a double-
+                    # paid overlap, 2026-10-06).
+                    n = replace_rows_scoped("adp_shifts", bq_rows, scope_col="date",
+                                            column_bq_types=_TS_TYPES)
                     print(f"  adp_shifts (BQ): {n} rows upserted")
                     summaries.append({"table": "adp_shifts", "rows": n})
 
@@ -372,9 +376,8 @@ def main() -> int:
                 if args.dry_run:
                     print(f"  DRY: would load {len(bq_rows)} punch rows into BQ")
                 else:
-                    n = load_rows("adp_punches", bq_rows,
-                                  merge_keys=["date", "employee_id", "punch_index"],
-                                  column_bq_types=_TS_TYPES)
+                    n = replace_rows_scoped("adp_punches", bq_rows, scope_col="date",
+                                            column_bq_types=_TS_TYPES)
                     print(f"  adp_punches (BQ): {n} rows upserted")
                     summaries.append({"table": "adp_punches", "rows": n})
                     from agents.bhaga.scripts import punch_fix_apply as pfa

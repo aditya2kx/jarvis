@@ -43,27 +43,7 @@ import core.store_config as _store_config_mod
 _FIXED_DATE = datetime.date(2026, 6, 3)
 _FIXED_ISO = "2026-06-03"
 
-_FAKE_PROFILE = {
-    "google_sheets": {
-        "bhaga_model": {"spreadsheet_id": "FAKE_MODEL_SID"},
-    }
-}
-
-# Minimal Sheet rows: header + one data row for the target date.
-def _make_sheet_config_rows(dwe: str = _FIXED_ISO) -> list[list]:
-    return [
-        ["key", "value", "notes"],
-        ["data_window_end", dwe, ""],
-        ["saturation_orders_per_labor_hour", "3.5", ""],
-    ]
-
-
-def _make_sheet_data_rows(date: str = _FIXED_ISO) -> list[list]:
-    return [
-        ["date", "gross_sales", "tip_pool"],
-        [date, "1200.00", "180.00"],
-    ]
-
+_FAKE_PROFILE: dict = {}
 
 # Canned BQ row for a single COUNT(*)/MAX query.
 def _bq_row(count: int = 1, max_d: str | None = _FIXED_ISO) -> list[dict]:
@@ -105,13 +85,6 @@ def _mock_read_query(responses: dict[str, list[dict]]):
     return _fake_read_query
 
 
-def _mock_read_tab(tab_data: dict[str, list[list]]):
-    """Return a _read_tab mock that returns rows keyed by tab name."""
-    def _fake(spreadsheet_id: str, tab: str, token: str) -> list[list]:
-        return tab_data.get(tab, [])
-    return _fake
-
-
 # ── Behavior tests ────────────────────────────────────────────────────────────
 
 
@@ -119,16 +92,8 @@ class TestMainGreenPath:
     """All layers present → exit 0."""
 
     def test_returns_zero_when_all_present(self, monkeypatch):
-        tab_data = {
-            "config": _make_sheet_config_rows(),
-            "daily": _make_sheet_data_rows(),
-            "tip_alloc_daily": _make_sheet_data_rows(),
-        }
         bq_responses = _make_full_bq_responses(_FIXED_DATE)
 
-        monkeypatch.setattr(status, "refresh_access_token", lambda account=None: "tok")
-        monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "FAKE_MODEL_SID")
-        monkeypatch.setattr(status, "_read_tab", _mock_read_tab(tab_data))
         monkeypatch.setattr(status, "read_query", _mock_read_query(bq_responses))
         monkeypatch.setattr(_store_config_mod, "resolve_data_window_end", lambda store: _FIXED_ISO)
         monkeypatch.setattr(
@@ -140,16 +105,8 @@ class TestMainGreenPath:
         assert rc == 0
 
     def test_json_output_ok_verdict(self, monkeypatch, capsys):
-        tab_data = {
-            "config": _make_sheet_config_rows(),
-            "daily": _make_sheet_data_rows(),
-            "tip_alloc_daily": _make_sheet_data_rows(),
-        }
         bq_responses = _make_full_bq_responses(_FIXED_DATE)
 
-        monkeypatch.setattr(status, "refresh_access_token", lambda account=None: "tok")
-        monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "FAKE_MODEL_SID")
-        monkeypatch.setattr(status, "_read_tab", _mock_read_tab(tab_data))
         monkeypatch.setattr(status, "read_query", _mock_read_query(bq_responses))
         monkeypatch.setattr(_store_config_mod, "resolve_data_window_end", lambda store: _FIXED_ISO)
         monkeypatch.setattr(
@@ -164,22 +121,14 @@ class TestMainGreenPath:
         assert captured["date"] == _FIXED_ISO
         assert "grafana_dashboard" in captured
         assert all(r["present"] for r in captured["results"])
+        assert {r["layer"] for r in captured["results"]} <= {"bq", "grafana"}
 
 
 class TestMissingLayerReturnsOne:
     """Any missing layer → exit 1."""
 
-    def _base_tab_data(self) -> dict[str, list[list]]:
-        return {
-            "config": _make_sheet_config_rows(),
-            "daily": _make_sheet_data_rows(),
-            "tip_alloc_daily": _make_sheet_data_rows(),
-        }
 
     def _run(self, monkeypatch, bq_responses: dict) -> int:
-        monkeypatch.setattr(status, "refresh_access_token", lambda account=None: "tok")
-        monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "FAKE_MODEL_SID")
-        monkeypatch.setattr(status, "_read_tab", _mock_read_tab(self._base_tab_data()))
         monkeypatch.setattr(status, "read_query", _mock_read_query(bq_responses))
         monkeypatch.setattr(
             pathlib.Path, "read_text",
@@ -205,9 +154,6 @@ class TestMissingLayerReturnsOne:
     def test_bq_data_window_end_mismatch(self, monkeypatch):
         """data_window_end derived one day behind check_date → rc=1."""
         bq = _make_full_bq_responses()
-        monkeypatch.setattr(status, "refresh_access_token", lambda account=None: "tok")
-        monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "FAKE_MODEL_SID")
-        monkeypatch.setattr(status, "_read_tab", _mock_read_tab(self._base_tab_data()))
         monkeypatch.setattr(status, "read_query", _mock_read_query(bq))
         # resolve_data_window_end returns yesterday's date — one day behind check_date
         monkeypatch.setattr(_store_config_mod, "resolve_data_window_end", lambda store: "2026-06-02")
@@ -222,9 +168,6 @@ class TestMissingLayerReturnsOne:
         bq = _make_full_bq_responses()
         bq["model_daily:exact"] = _bq_row_empty()
 
-        monkeypatch.setattr(status, "refresh_access_token", lambda account=None: "tok")
-        monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "FAKE_MODEL_SID")
-        monkeypatch.setattr(status, "_read_tab", _mock_read_tab(self._base_tab_data()))
         monkeypatch.setattr(status, "read_query", _mock_read_query(bq))
         monkeypatch.setattr(
             pathlib.Path, "read_text",
@@ -247,14 +190,6 @@ class TestIsoWeekMode:
             captured_sql.append(sql)
             return _bq_row()
 
-        tab_data = {
-            "config": _make_sheet_config_rows(),
-            "daily": _make_sheet_data_rows(),
-            "tip_alloc_daily": _make_sheet_data_rows(),
-        }
-        monkeypatch.setattr(status, "refresh_access_token", lambda account=None: "tok")
-        monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "sid")
-        monkeypatch.setattr(status, "_read_tab", _mock_read_tab(tab_data))
         monkeypatch.setattr(status, "read_query", _spy)
         monkeypatch.setattr(
             pathlib.Path, "read_text",
@@ -294,14 +229,6 @@ class TestPeriodCoverageMode:
             captured.append(sql)
             return _bq_row()
 
-        tab_data = {
-            "config": _make_sheet_config_rows(),
-            "daily": _make_sheet_data_rows(),
-            "tip_alloc_daily": _make_sheet_data_rows(),
-        }
-        monkeypatch.setattr(status, "refresh_access_token", lambda account=None: "tok")
-        monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "sid")
-        monkeypatch.setattr(status, "_read_tab", _mock_read_tab(tab_data))
         monkeypatch.setattr(status, "read_query", _spy)
         monkeypatch.setattr(
             pathlib.Path, "read_text",
@@ -335,14 +262,6 @@ class TestDefaultDateYesterdayCT:
             captured_dates.append(date)
             return status.CheckResult(layer, t.table, True, 1, date.isoformat())
 
-        tab_data = {
-            "config": _make_sheet_config_rows(dwe="2026-06-03"),
-            "daily": _make_sheet_data_rows(),
-            "tip_alloc_daily": _make_sheet_data_rows(),
-        }
-        monkeypatch.setattr(status, "refresh_access_token", lambda account=None: "tok")
-        monkeypatch.setattr(status, "resolve_sheet_id", lambda k, p: "sid")
-        monkeypatch.setattr(status, "_read_tab", _mock_read_tab(tab_data))
         monkeypatch.setattr(status, "_run_bq_target", _spy)
         monkeypatch.setattr(
             pathlib.Path, "read_text",

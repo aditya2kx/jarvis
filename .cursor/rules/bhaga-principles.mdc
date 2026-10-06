@@ -68,7 +68,7 @@ Read these first and derive proposals from them (see also AGENTS.md § consult-f
 - **Leave a breadcrumb on every failure** — a precise, greppable one-line cause distinct from library
   noise, plus enough state (refresh_date/window, attempt `N/M`, evidence path, skipped/cleared markers)
   to diagnose from Cloud Run logs + Firestore alone on another machine.
-- **Run `status` first for any operational question about whether a run landed.** Before hand-investigating whether yesterday's incremental run landed in Sheets, BigQuery, and Grafana, run `python3 -m agents.bhaga.scripts.status --store palmetto` — it prints a compact freshness table across all three layers and exits nonzero if any layer is missing the date. Don't re-derive coordinates or hand-write queries.
+- **Run `status` first for any operational question about whether a run landed.** Before hand-investigating whether yesterday's incremental run landed in BigQuery and the console views, run `python3 -m agents.bhaga.scripts.status --store palmetto` — it prints a compact freshness table across both layers and exits nonzero if any layer is missing the date. Don't re-derive coordinates or hand-write queries.
 
 ## Recovery & resilience (2026-05-31 incident class)
 

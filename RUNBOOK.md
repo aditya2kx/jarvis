@@ -1877,8 +1877,6 @@ gcloud scheduler jobs resume bhaga-nightly --location=us-central1   # after prod
 Before hand-investigating whether a run landed, use the read-only doctor CLI:
 
 ```bash
-BHAGA_SECRETS_BACKEND=gcp \
-BHAGA_IMPERSONATE_SA=bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com \
 python3 -m agents.bhaga.scripts.status --store palmetto
 # or for a specific date:
 python3 -m agents.bhaga.scripts.status --store palmetto --date 2026-06-03
@@ -1888,9 +1886,11 @@ python3 -m agents.bhaga.scripts.status --store palmetto --json
 python3 -m agents.bhaga.scripts.status --store palmetto --check-schema
 ```
 
-It prints a compact freshness table across Sheets, BigQuery, and BI contract views
+It prints a compact freshness table across BigQuery and BI contract views
 (`GRAFANA_VIEWS` — Operator Console) and exits nonzero if any layer is missing the date —
-so it is usable in scripts and alerts.  Don't hand-investigate; run this first.
+so it is usable in scripts and alerts.  Don't hand-investigate; run this first. It no longer
+checks the model sheet's `daily` / `tip_alloc_daily` tabs, which stopped updating on
+2026-06-13 and read as missing every day. It needs only BigQuery access (ADC), no Sheets token.
 
 **Anti-drift contract:** `status.py` keeps a declarative registry (`BQ_TARGETS`,
 `GRAFANA_VIEWS`) that must track `core/migrations/*.sql`.  Sync is enforced by:

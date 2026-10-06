@@ -2400,7 +2400,10 @@ gcloud iap web add-iam-policy-binding \
   --member=user:NEW@EMAIL --role=roles/iap.httpsResourceAccessor
 ```
 Deploy also re-asserts members from `.github/workflows/operator-console-deploy.yml`
-(`adi@mypalmetto.co`, `aditya.2ky@gmail.com`, `lindsay@mypalmetto.co` as of Issue #206).
+(`adi@mypalmetto.co`, `aditya.2ky@gmail.com`; `lindsay@mypalmetto.co` removed 2026-10-06 after the
+account was deleted). Each grant is soft: an account that no longer exists logs a `::warning::` and is
+skipped, so the rest are still granted and the deploy stays green. Grants made by hand (e.g.
+`texasgm@mypalmetto.co`, `george@getopen.com`) are untouched by deploys.
 Any Google account works — no domain restriction, since IAP's IAM is the sole gate. IAM changes
 can take up to a couple of minutes to propagate; if a just-granted account still sees "no access",
 visit `<service-url>?gcp-iap-mode=CLEAR_LOGIN_COOKIE` to force IAP to re-check the current session

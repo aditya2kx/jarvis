@@ -104,8 +104,12 @@ def _make_fake_store():
                 for name, t in tables.items():
                     if name in s:
                         if job_config and hasattr(job_config, "query_parameters"):
-                            row = {p.name: p.value for p in job_config.query_parameters}
-                            t.insert(row)
+                            rows: dict[str, dict] = {}
+                            for p in job_config.query_parameters:
+                                col, _, idx = p.name.rpartition("__")
+                                rows.setdefault(idx, {})[col] = p.value
+                            for row in rows.values():
+                                t.insert(row)
                         break
                 return FakeResult([])
             elif s.startswith("DELETE FROM"):
@@ -277,6 +281,34 @@ class TestSaveLoadRoundTrip(unittest.TestCase):
         self.assertEqual(len(loaded["build"]["sessions"]), 2)
         self.assertEqual(loaded["build"]["sessions"][0]["tokens"], 1000)
         self.assertAlmostEqual(loaded["build"]["sessions"][1]["cost_usd"], 1.50)
+
+    def test_save_batches_session_inserts(self):
+        rec = self._make_rec(103)
+        template = rec["build"]["sessions"][0]
+        rec["build"]["sessions"] = [
+            {**template, "ts": f"2026-01-01T{i // 60:02d}:{i % 60:02d}:00Z", "cost_usd": i / 100}
+            for i in range(650)
+        ]
+        with patch.object(self.fake_client, "query", wraps=self.fake_client.query) as q:
+            S.save_record(rec)
+        build_inserts = [c for c in q.call_args_list
+                         if c.args[0].startswith(f"INSERT INTO {S._fq(S._T_BUILD)}")]
+        self.assertEqual(len(build_inserts), 3)  # 300 + 300 + 50, not 650 jobs
+        loaded = S.load_record(
+            103,
+            lambda pr: {"pr_number": pr, "build": {"sessions": [], "conversation_ids": []}, "review": {"runs": []}},
+        )
+        self.assertEqual(len(loaded["build"]["sessions"]), 650)
+        self.assertAlmostEqual(sum(s["cost_usd"] for s in loaded["build"]["sessions"]),
+                               sum(i / 100 for i in range(650)))
+
+    def test_save_with_no_sessions_skips_insert(self):
+        rec = self._make_rec(104)
+        rec["build"]["sessions"] = []
+        with patch.object(self.fake_client, "query", wraps=self.fake_client.query) as q:
+            S.save_record(rec)
+        self.assertFalse(any(c.args[0].startswith(f"INSERT INTO {S._fq(S._T_BUILD)}")
+                             for c in q.call_args_list))
 
     def test_save_load_review_runs(self):
         rec = self._make_rec(102)

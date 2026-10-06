@@ -75,6 +75,9 @@ jobs:
       # is provisioned once, not here.
       - name: Deploy to Cloud Run
         run: |
+          # --update-env-vars, not --set-env-vars: feature flags such as
+          # CONSOLE_ADP_SCHEDULE_WRITE are runtime config set on the service
+          # (docs/FEATURE_FLAGS.md), and --set-env-vars would wipe them on every deploy.
           gcloud run deploy ${{ env.SERVICE }} \
             --image ${{ env.REGISTRY }}/operator-console:${{ github.sha }} \
             --region ${{ env.REGION }} \
@@ -83,7 +86,7 @@ jobs:
             --iap \
             --memory 512Mi \
             --min-instances 1 \
-            --set-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga,PLAID_ENV=production,PLAID_WEBHOOK_URL=https://bhaga-webhook-4yl5izovxq-uc.a.run.app/plaid/webhook \
+            --update-env-vars BQ_PROJECT=${{ env.PROJECT_ID }},BQ_DATASET=bhaga,PLAID_ENV=production,PLAID_WEBHOOK_URL=https://bhaga-webhook-4yl5izovxq-uc.a.run.app/plaid/webhook \
             --set-secrets GEMINI_TOKEN=operator-console-gemini-token:latest,PLAID_CLIENT_ID=plaid_client_id:latest,PLAID_SECRET=plaid_secret:latest,CLICKUP_PAT=jarvis-clickup-palmetto-pat:latest
 
       # Sticky tags (e.g. pr234 preview) can leave % traffic on an old revision so

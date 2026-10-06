@@ -2208,7 +2208,9 @@ class TestPunchFixResync(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(kept)
         self.assertEqual(dl.call_args.kwargs["target_date"], datetime.date(2026, 10, 4))
-        self.assertIn("2026-10-04", run.call_args.args[0])
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--refresh-date") + 1], "2026-10-04")
+        self.assertEqual(cmd[cmd.index("--end") + 1], "2026-10-06")
         stamp.assert_called_once_with(datetime.date(2026, 9, 21), datetime.date(2026, 10, 4))
 
     def test_unverified_write_forces_a_fresh_export(self):

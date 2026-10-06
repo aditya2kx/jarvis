@@ -17,6 +17,16 @@ git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #N ledger"
 
 The `pr-cost-gate.yml` CI check reads BQ — zero build cost is a hard failure.
 
+Every ledger write (`set-meta`, `capture-build`, `dedup-sessions`, …) re-saves the
+whole PR record: delete its child rows, then re-insert them with one multi-row DML
+`INSERT` per 300 rows (Issue #361). Keep this DML rather than streaming inserts,
+because streamed rows can't be `DELETE`d for about 90 minutes and the next save
+would fail.
+
+If a second PR comes out of the same chat, capture its build cost with an explicit
+`capture-build --start/--end` window rather than `--conversation-id`. Binding the
+same conversation to both PRs bills its sessions twice, and `validate` rejects that.
+
 View cost data: https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
 
 ### How build cost is attributed to a PR

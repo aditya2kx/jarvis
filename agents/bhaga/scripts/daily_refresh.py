@@ -498,6 +498,98 @@ def _rebuild_stale_solo_hours(store: str, period_start: str, period_end: str) ->
     return dates
 
 
+def _open_payroll_drafts(store: str) -> list[dict]:
+    """Ok drafts for unpaid periods that closed in the last 10 days."""
+    from core.datastore import fq, read_query  # noqa: PLC0415
+
+    return read_query(
+        f"""
+        SELECT FORMAT_DATE('%F', d.period_start) AS period_start,
+               FORMAT_DATE('%F', d.period_end) AS period_end,
+               d.packet_hours, d.packet_pay
+        FROM {fq('payroll_draft_runs')} d
+        LEFT JOIN {fq('vw_model_period_summary')} s
+          ON s.period_start = d.period_start AND s.period_end = d.period_end
+        WHERE d.store = '{store}' AND d.status = 'ok'
+          AND d.packet_hours IS NOT NULL AND s.adp_total_paid IS NULL
+          AND d.period_end >= DATE_SUB(CURRENT_DATE('America/Chicago'), INTERVAL 10 DAY)
+        ORDER BY d.period_end
+        """
+    )
+
+
+def _refresh_stale_payroll_drafts(store: str) -> list[dict]:
+    """Re-run an In Progress ADP draft whose console totals moved since it ran.
+
+    A punch fix or late timecard after the Monday draft left ADP keyed from the
+    old hours until someone pressed the button again. Resume only: a submitted
+    payroll (nothing In Progress) or another period's draft is left untouched.
+    ``BHAGA_PAYROLL_DRAFT_AUTO_REFRESH=0`` turns it off. Never raises.
+    """
+    if os.environ.get("BHAGA_PAYROLL_DRAFT_AUTO_REFRESH", "").strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        return []
+    os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+    try:
+        drafts = _open_payroll_drafts(store)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[adp_payroll_draft] BREADCRUMB draft_refresh_check_failed {exc!r}")
+        return []
+    from skills.adp_run_automation.payroll_draft_backend import (  # noqa: PLC0415
+        _load_view_rows,
+        draft_packet_totals,
+        run_draft,
+    )
+
+    results: list[dict] = []
+    for d in drafts:
+        ps, pe = d["period_start"], d["period_end"]
+        try:
+            # Tips and solo hours follow the hours; the timecard-only sync
+            # loads hours without the model, so rebuild the period first.
+            from agents.bhaga.scripts import materialize_model_bq as _mmb  # noqa: PLC0415
+
+            start = datetime.date.fromisoformat(ps)
+            days = (datetime.date.fromisoformat(pe) - start).days + 1
+            _mmb.materialize(
+                store,
+                dates=[(start + datetime.timedelta(days=i)).isoformat() for i in range(days)],
+            )
+            rows = _load_view_rows(ps, pe)
+            hours, pay = draft_packet_totals(store, rows)
+            if (
+                abs(hours - float(d["packet_hours"] or 0)) < 0.005
+                and abs(pay - float(d["packet_pay"] or 0)) < 0.005
+            ):
+                continue
+            print(
+                f"[adp_payroll_draft] BREADCRUMB draft_stale period={ps}..{pe} "
+                f"keyed={d['packet_hours']}h/${d['packet_pay']} now={hours}h/${pay} "
+                "— re-running the In Progress draft"
+            )
+            results.append(
+                run_draft(
+                    store=store,
+                    period_start=ps,
+                    period_end=pe,
+                    dry_run=False,
+                    allow_prod_draft=True,
+                    keep_draft=True,
+                    view_rows=rows,
+                    hold_seconds=0,
+                    allow_start=False,
+                    resume_only=True,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[adp_payroll_draft] BREADCRUMB draft_refresh_failed "
+                f"period={ps}..{pe} err={exc!r}"
+            )
+    return results
+
+
 def _maybe_run_period_end_payroll_draft(
     *,
     store: str,
@@ -2965,6 +3057,7 @@ def _run_refresh(run_id: str) -> int:
         stamp_start = refresh_date - datetime.timedelta(days=13)
         _stamp_adp_hours_scraped_at(stamp_start, refresh_date)
         print("[adp-timecard-only] BQ upsert complete")
+        _refresh_stale_payroll_drafts(args.store)
         return 0
 
     # Monday 07:00 CT ``bhaga-payroll-draft`` + /payroll button: Start→Preview
@@ -4010,6 +4103,8 @@ def _run_refresh(run_id: str) -> int:
                 f"ADP Earnings: {artifacts['adp_earnings_xlsx'].name if artifacts['adp_earnings_xlsx'] else '(skipped — not Mon/Tue)'}"
             ),
         )
+    if not args.dry_run and model_verified_ok:
+        _refresh_stale_payroll_drafts(args.store)
     return 0
 
 

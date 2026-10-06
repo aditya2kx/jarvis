@@ -11,7 +11,9 @@ from skills.adp_run_automation.payroll_draft_backend import (
     _attribute_grid_rows,
     _paginate_timecard_hours,
     abort_if_forbidden_label,
+    _wizard_shows_period,
     classify_rate2_state,
+    draft_packet_totals,
     expected_gross_dollars,
     extra_rate_line_hours,
     solo_premium_uplift_dollars,
@@ -25,6 +27,7 @@ from skills.adp_run_automation.payroll_draft_backend import (
     solo_premium_keying_lines,
     solo_rate2_enabled,
     wage_guardrail_failures,
+    wizard_period_label,
 )
 
 
@@ -231,6 +234,90 @@ class TestGuardrails(unittest.TestCase):
         self.assertEqual(out["preview_url"], live["preview_url"])
         self.assertEqual(out["preview_hours"], 458.97)
         self.assertEqual(out["preview_gross"], 8999.06)
+
+    def _live_run(self, live, **kw):
+        B = "skills.adp_run_automation.payroll_draft_backend"
+        with (
+            patch(f"{B}.run_live_preview", return_value=live) as preview,
+            patch(f"{B}.record_payroll_draft_run") as record,
+            patch(f"{B}.punch_self_overlaps", return_value=[]),
+            patch(f"{B}._solo_premium_rate", return_value=16.25),
+        ):
+            out = run_draft(
+                store="palmetto",
+                period_start="2026-09-21",
+                period_end="2026-10-04",
+                dry_run=False,
+                allow_prod_draft=True,
+                view_rows=[
+                    {"employee": "A", "hours_worked": 8, "ot_hours": 0,
+                     "wage_rate_dollars": 15.25, "tips_allocated": 10.0},
+                    {"employee": "B", "hours_worked": 4.5, "ot_hours": 0,
+                     "wage_rate_dollars": 15.25, "tips_allocated": 5.0},
+                ],
+                **kw,
+            )
+        return out, preview, record
+
+    def test_ok_run_records_the_totals_it_keyed(self):
+        _out, _p, record = self._live_run(
+            {"preview_hours": 12.5, "preview_gross": 205.63, "screenshots": []}
+        )
+        ok = record.call_args_list[-1].kwargs
+        self.assertEqual(ok["status"], "ok")
+        self.assertEqual(ok["packet_hours"], 12.5)
+        self.assertEqual(ok["packet_pay"], round(122.0 + 68.63 + 15.0, 2))
+
+    def test_resume_only_with_nothing_in_progress_records_no_draft(self):
+        out, preview, record = self._live_run(
+            {"skipped": "no_in_progress_draft", "screenshots": []},
+            resume_only=True,
+        )
+        self.assertIs(preview.call_args.kwargs["resume_only"], True)
+        self.assertEqual(out["skipped"], "no_in_progress_draft")
+        self.assertEqual(
+            [c.kwargs["status"] for c in record.call_args_list],
+            ["running", "no_draft"],
+        )
+
+
+class TestWizardPeriodGuard(unittest.TestCase):
+    """A resume-only re-run must open this period's draft, not another one."""
+
+    def _page(self, text):
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        page.locator.return_value.inner_text.return_value = text
+        return page
+
+    def test_label_matches_wizard_header(self):
+        self.assertEqual(wizard_period_label("2026-10-04"), "Oct 4, 2026")
+        self.assertEqual(wizard_period_label("2026-09-21"), "Sep 21, 2026")
+
+    def test_this_period_is_accepted(self):
+        page = self._page("Pay period Sep 21, 2026 → Oct 4, 2026 Check date Oct 9, 2026")
+        self.assertTrue(_wizard_shows_period(page, "2026-09-21", "2026-10-04"))
+
+    def test_other_period_is_refused(self):
+        page = self._page("Pay period Oct 5, 2026 → Oct 18, 2026")
+        self.assertFalse(_wizard_shows_period(page, "2026-09-21", "2026-10-04"))
+
+    def test_bad_dates_are_refused(self):
+        self.assertFalse(_wizard_shows_period(self._page("x"), "", "2026-10-04"))
+
+
+class TestDraftPacketTotals(unittest.TestCase):
+    def test_gross_includes_the_solo_premium(self):
+        rows = [{"employee": "A", "hours_worked": 8, "ot_hours": 0,
+                 "wage_rate_dollars": 15.25, "solo_eligible": True, "solo_hours": 2}]
+        B = "skills.adp_run_automation.payroll_draft_backend"
+        with patch(f"{B}._solo_premium_rate", return_value=16.25):
+            hours, with_premium = draft_packet_totals("palmetto", rows)
+        with patch.dict("os.environ", {"BHAGA_ADP_SOLO_RATE2": "0"}):
+            _h, without = draft_packet_totals("palmetto", rows)
+        self.assertEqual(hours, 8.0)
+        self.assertAlmostEqual(with_premium - without, 2.0, places=2)
 
 
 class TestSoloPremiumHours(unittest.TestCase):
@@ -523,16 +610,16 @@ class TestRate2Split(unittest.TestCase):
 
 
 class TestSoloRate2Flag(unittest.TestCase):
-    """The split rewrites live payroll hours, so it must be opt-in."""
+    """The premium is part of the payroll: every draft keys it, with a kill switch."""
 
-    def test_off_by_default(self):
+    def test_on_by_default(self):
         with patch.dict("os.environ", {}, clear=True):
-            self.assertFalse(solo_rate2_enabled())
+            self.assertTrue(solo_rate2_enabled())
 
-    def test_on_only_for_truthy_values(self):
+    def test_off_only_for_falsy_values(self):
         for val, want in (
-            ("1", True), ("true", True), ("YES", True),
-            ("0", False), ("", False), ("no", False),
+            ("1", True), ("", True), ("YES", True),
+            ("0", False), ("false", False), ("no", False), ("OFF", False),
         ):
             with patch.dict("os.environ", {"BHAGA_ADP_SOLO_RATE2": val}, clear=True):
                 self.assertIs(solo_rate2_enabled(), want, val)

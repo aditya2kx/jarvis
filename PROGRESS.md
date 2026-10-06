@@ -4,6 +4,8 @@
 
 **Key changes:** the write job re-downloads the Timecard export in the same login (up to 3 read-only downloads) and calls a fix `applied` only once it is in the export; otherwise `not_in_hours`, locked. Every load reconciles `not_in_hours` rows whose punch arrived. `/labor` and `/payroll` show one shared notice from the same query, and `status.py` checks `punch_fixes_in_hours`.
 
+**Payroll draft follow-through:** the solo premium (rate 2) is now keyed by every draft by default, with `BHAGA_ADP_SOLO_RATE2=0` as the kill switch. A person's own overlapping punches no longer read as stale solo hours; they are Slacked instead. Each draft stores the totals it keyed (migration 086). After a Sync ADP or a nightly, a draft whose totals moved is re-run, resume only, and only when the wizard shows the same period. An ADP spike showed **Skip import** keeps the keyed split, so the operator flow is Run payroll → Skip import → Preview → approve.
+
 **Evidence:** sandbox replay of the incident (notice shown, then cleared after the punches load and reconcile runs); prod `/payroll` Sep 21 at 385.05 h with Cimino 17.25. The other 34.57 h gap to ADP was Skyler and Tina, hand-keyed in ADP (out of scope).
 
 ## 2026-10-05 — Shift scheduling: the console plans the week and ADP gets it, drafts to published (Issue #337, PR #360)

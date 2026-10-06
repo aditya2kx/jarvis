@@ -70,15 +70,17 @@ def abort_if_forbidden_label(label: str) -> None:
 def solo_rate2_enabled() -> bool:
     """Whether the draft keys the solo premium itself instead of printing it.
 
-    Off by default: the split rewrites Regular hours on a live payroll draft, so
-    a selector drift that filled the wrong row would produce a wrong paycheck
-    rather than an error. Flip it on per run once the live split has been proven
-    against the grid, and see ``docs/FEATURE_FLAGS.md``.
+    On by default: the premium is part of the payroll, so every draft — the
+    Monday run, the /payroll button and the stale-draft re-run — keys it, and the
+    per-employee Preview gross check catches a split that landed on the wrong
+    row. ``BHAGA_ADP_SOLO_RATE2=0`` on the job is the kill switch; see
+    ``docs/FEATURE_FLAGS.md``.
     """
-    return os.environ.get("BHAGA_ADP_SOLO_RATE2", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
+    return os.environ.get("BHAGA_ADP_SOLO_RATE2", "").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
     }
 
 
@@ -217,6 +219,26 @@ def expected_gross_dollars(row: "PayrollPacketRow", *, premium_rate: float) -> f
         + row.misc_reimbursement_dollars,
         2,
     )
+
+
+def draft_packet_totals(
+    store: str, rows: list[dict[str, Any]]
+) -> tuple[float, float]:
+    """(hours, gross incl. solo premium) a draft keys from these view rows.
+
+    Stored on each ok run; when a later load moves either, the In Progress
+    draft no longer matches the console and is re-run (#358).
+    """
+    packet = packet_from_view_rows(rows)
+    try:
+        rate = _solo_premium_rate(store) if solo_rate2_enabled() else 0.0
+    except Exception:  # noqa: BLE001
+        rate = 0.0
+    hours = round(sum(float(r.get("hours_worked") or 0) for r in rows), 2)
+    gross = round(
+        sum(expected_gross_dollars(row, premium_rate=rate) for row in packet), 2
+    )
+    return hours, gross
 
 
 def packet_from_view_rows(rows: list[dict[str, Any]]) -> list[PayrollPacketRow]:
@@ -385,11 +407,14 @@ def run_draft(
     view_rows: list[dict[str, Any]] | None = None,
     hold_seconds: int = 180,
     allow_start: bool = False,
+    resume_only: bool = False,
 ) -> dict[str, Any]:
     """Build the payroll packet. Live ADP Start is gated; dry-run never Starts.
 
     Default leaves the In Progress worksheet for the operator to review/submit.
     Never Approve/Save. ``keep_draft=False`` Deletes (cleanup only).
+    ``resume_only`` refreshes an existing In Progress draft and never starts a
+    payroll — with none to resume it records ``no_draft`` and stops.
     """
     rows = view_rows if view_rows is not None else _load_view_rows(
         period_start, period_end
@@ -439,6 +464,7 @@ def run_draft(
         raise RuntimeError(
             "[adp_payroll_draft] BREADCRUMB refused_start need --allow-prod-draft"
         )
+    packet_hours, packet_pay = draft_packet_totals(store, rows)
     _slack_punch_overlaps(f"{period_start}..{period_end}", overlaps)
     record_payroll_draft_run(
         store=store,
@@ -456,6 +482,7 @@ def run_draft(
             period_end=period_end,
             delete_after=not keep_draft,
             solo_gap=solo_gap,
+            resume_only=resume_only,
         )
     except Exception as exc:
         record_payroll_draft_run(
@@ -466,6 +493,16 @@ def run_draft(
             error=repr(exc),
         )
         raise
+    if live.get("skipped"):
+        result["skipped"] = live["skipped"]
+        record_payroll_draft_run(
+            store=store,
+            period_start=period_start,
+            period_end=period_end,
+            status="no_draft",
+            error=live["skipped"],
+        )
+        return result
     result["started"] = live.get("started", False)
     result["deleted"] = live.get("deleted", False)
     result["guardrail_fails"] = live.get("guardrail_fails", [])
@@ -482,6 +519,8 @@ def run_draft(
         status="ok",
         preview_hours=result["preview_hours"],
         preview_gross=result["preview_gross"],
+        packet_hours=packet_hours,
+        packet_pay=packet_pay,
     )
     return result
 
@@ -511,9 +550,14 @@ def record_payroll_draft_run(
     preview_url: str = "",
     preview_hours: float | None = None,
     preview_gross: float | None = None,
+    packet_hours: float | None = None,
+    packet_pay: float | None = None,
     error: str = "",
 ) -> None:
     """MERGE latest draft status for a period. Best-effort; never raises.
+
+    ``packet_*`` are the console totals the run keyed from; a later load that
+    moves them is what makes the draft out of date (migration 086).
 
     ``running`` omits totals so a prior Preview snapshot stays until the new
     run finishes. Preview URLs are session hashes and are not stored for UI.
@@ -537,6 +581,8 @@ def record_payroll_draft_run(
             "finished_at_utc": "TIMESTAMP",
             "preview_hours": "FLOAT64",
             "preview_gross": "FLOAT64",
+            "packet_hours": "FLOAT64",
+            "packet_pay": "FLOAT64",
         }
         if status == "running":
             row["started_at_utc"] = now
@@ -547,6 +593,10 @@ def record_payroll_draft_run(
                 row["preview_hours"] = float(preview_hours)
             if preview_gross is not None:
                 row["preview_gross"] = float(preview_gross)
+            if packet_hours is not None:
+                row["packet_hours"] = float(packet_hours)
+            if packet_pay is not None:
+                row["packet_pay"] = float(packet_pay)
             if preview_url:
                 row["preview_url"] = preview_url
         load_rows(
@@ -923,8 +973,8 @@ def _click_visible_text(page, text: str) -> bool:
     return False
 
 
-def _click_start_if_present(page) -> bool:
-    """Click Payroll Home 'Run payroll' or Resume (ADP RUN v2)."""
+def _click_resume_if_present(page) -> bool:
+    """Open the In Progress payroll (Resume / active row). Never starts one."""
     import re
 
     resume = page.get_by_role("button", name=re.compile(r"Resume", re.I)).first
@@ -946,6 +996,37 @@ def _click_start_if_present(page) -> bool:
         return True
     except Exception:
         pass
+    return False
+
+
+def wizard_period_label(iso_date: str) -> str:
+    """How the wizard header prints a date: ``Oct 4, 2026``."""
+    from datetime import date
+
+    d = date.fromisoformat(iso_date)
+    return f"{d:%b} {d.day}, {d.year}"
+
+
+def _wizard_shows_period(page, period_start: str, period_end: str) -> bool:
+    """True when the open wizard's Pay period header is this period."""
+    if not _iso(period_start) or not _iso(period_end):
+        return False
+    try:
+        text = page.locator("body").inner_text(timeout=5_000)
+    except Exception:  # noqa: BLE001
+        return False
+    return (
+        wizard_period_label(period_start) in text
+        and wizard_period_label(period_end) in text
+    )
+
+
+def _click_start_if_present(page) -> bool:
+    """Click Payroll Home 'Run payroll' or Resume (ADP RUN v2)."""
+    import re
+
+    if _click_resume_if_present(page):
+        return True
 
     tile = page.locator("[data-test-id='PAYRUN_REGULAR-tile']").first
     try:
@@ -2756,6 +2837,7 @@ def run_live_preview(
     period_end: str = "",
     delete_after: bool = False,
     solo_gap: list[str] | None = None,
+    resume_only: bool = False,
 ) -> dict[str, Any]:
     """Login → Run payroll → hours guardrail → Import/fill → Preview → leave draft.
 
@@ -2794,7 +2876,27 @@ def run_live_preview(
         payroll_home_url = page.url
         shots.append(screenshot_preview(page, "home"))
         _dismiss_adp_error_dialog(page)
-        if allow_start:
+        if resume_only:
+            if not _click_resume_if_present(page):
+                print(
+                    "[adp_payroll_draft] BREADCRUMB resume_only_no_draft "
+                    f"store={store} period={period_start}..{period_end} — "
+                    "nothing In Progress (submitted?); not starting a payroll"
+                )
+                return {"skipped": "no_in_progress_draft", "screenshots": shots}
+            try:
+                _wait_wizard_ready(page)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[adp_payroll_draft] wizard wait ({exc}); continuing")
+            shots.append(screenshot_preview(page, "after-resume"))
+            if not _wizard_shows_period(page, period_start, period_end):
+                print(
+                    "[adp_payroll_draft] BREADCRUMB resume_only_wrong_period "
+                    f"store={store} want={period_start}..{period_end} — the "
+                    "In Progress payroll is another period; left untouched"
+                )
+                return {"skipped": "in_progress_is_other_period", "screenshots": shots}
+        elif allow_start:
             started = _click_start_if_present(page)
             if started:
                 try:

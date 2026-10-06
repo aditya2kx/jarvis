@@ -217,40 +217,42 @@ gcloud scheduler jobs describe bhaga-payroll-draft --location=us-central1
 Employees on the eligible base rate earn a higher rate for hours they worked **alone**. BHAGA computes
 those hours. There are two ways they reach ADP:
 
-| | `BHAGA_ADP_SOLO_RATE2=1` | default (flag off) |
+| | default (on) | `BHAGA_ADP_SOLO_RATE2=0` (kill switch) |
 |---|---|---|
-| Who keys the rate-2 line | the payroll draft | the operator |
+| Who keys the rate-2 line | every draft — Monday run, `/payroll` button, stale-draft re-run | the operator |
 | When | after the hours guardrail passes, before Preview | during the normal payroll review |
 | Failure mode | reported per employee (`BREADCRUMB solo_rate2_failed`), never retried | none — nothing is typed |
 
-The flag is **off** by default because this is the only path that rewrites *hours* on a live draft
-(every other fill is a money column), so a selector drift pays the wrong number rather than erroring.
-Approve/Submit/Save remain forbidden either way — the operator still submits.
+The premium is part of the payroll, so the split is **on** by default (Issue #358). It is the only
+path that rewrites *hours* on a live draft, so the per-employee Preview gross check is what catches a
+selector drift; `BHAGA_ADP_SOLO_RATE2=0` on the job turns it off without a deploy. Approve/Submit/Save
+remain forbidden either way — the operator still submits.
 
-**Opening the draft in ADP undoes the split, and `Skip import` does not prevent it.** The re-import
-restores every base row to its full total and leaves the rate-2 lines untouched, so the draft then
-overstates hours by exactly the premium hours. It is silent — each row looks plausible alone and only
-the Totals cell moves.
+**Operator flow:** ADP → Run payroll → **Skip import** → Preview payroll → verify against `/payroll` →
+Approve. Nothing to key by hand.
 
-Measured live 2026-09-21, in this order:
+**`Skip import` keeps the draft as keyed** (spike 2026-10-06, Issue #331 comment): a grid edit survived
+leaving the draft and re-entering through Skip import. **`Import latest timecards` does not** — it
+restores every base row to its full total and leaves the rate-2 lines attached, so hours are overstated
+by exactly the premium (seen 2026-09-21: `384.57h` = `368.42 + 16.15`). Never choose Import on a keyed
+draft; if hours changed, the system re-runs the draft (below).
 
-1. A run finished reconciled at 16:24; ADP's own Preview read `371.30h / $7,554.64`.
-2. The operator opened the draft and chose **`Skip import`** (both controls exist and are distinct:
-   `Skip import [Payroll]` and `Import latest timecards [Update]`).
-3. The grid nonetheless read `384.57h` = `368.42 + 16.15` — every base row back at full with all six
-   premium lines still attached, about $246 of overpay.
+**Out-of-date drafts re-run themselves.** Each ok run stores the console totals it keyed from
+(`payroll_draft_runs.packet_hours` / `packet_pay`, migration 086 — hours and gross including the
+premium). After every **Sync ADP** / punch-fix resync and every verified nightly,
+`daily_refresh._refresh_stale_payroll_drafts` re-materializes each such period that closed in the last
+10 days and, if either total moved, re-runs the draft (`BREADCRUMB draft_stale keyed=… now=…`):
 
-So ADP syncs timecards on entry regardless of that button. **Do not rely on `Skip`.** This invalidates
-the "automation keys the premium, operator reviews then approves" flow outright: whoever opens the
-draft last must be the one who approves it, and opening is what breaks it. Tracked in Issue #331.
+- **Resume only** — it never starts a payroll. Nothing In Progress (already submitted) →
+  `BREADCRUMB resume_only_no_draft`, status `no_draft`, and it stops for that period.
+- **Same period only** — the wizard header must read this period's dates (`Sep 21, 2026 → Oct 4, 2026`)
+  or it leaves the draft untouched (`BREADCRUMB resume_only_wrong_period`).
+- Failures are breadcrumbed (`draft_refresh_failed`) and never fail the nightly or the sync.
+- `BHAGA_PAYROLL_DRAFT_AUTO_REFRESH=0` on the job turns it off.
 
-Consequences until that is resolved:
+`/payroll` shows the same thing to the operator: the amber `±X vs last Preview` under Hours / Total
+pay means ADP is behind the console; `Matches last Preview` means it is current.
 
-- **Review in `/payroll`, never in the ADP grid.** The console matched the Preview exactly before the
-  re-import, and reading it costs nothing.
-- **After opening, the six base rows must be reduced by each employee's solo hours** before Approve, or
-  the premium is paid on top of unreduced base rows. B5 says prefer the system, but there is currently
-  no path that survives an operator visit — re-running only moves the breakage to the next open.
 - **ADP's `Regular Hours` column excludes OT**, so it reads lower than the console's `Total hours` by
   the OT figure. On 2026-09-21 that was 2.88h — a real difference, not a fault. Compare against the
   Preview gross, not the grid's Totals cell.
@@ -264,8 +266,9 @@ premium and `/payroll` flags it under the headline. A green match means ADP has 
 **After fixing punches in ADP, one sync is not enough.** **Sync ADP** runs the Timecard
 scrape and upserts `adp_shifts` / `adp_punches`, then returns — it does **not** run
 `materialize_model_bq`. So corrected punches land in raw tables while `model_solo_hours_daily` still
-describes the old ones, and the premium on `/payroll` is computed from the stale copy. Always follow a
-punch fix with the materialize command below. (A restored *coworker* punch moves minutes from solo to
+describes the old ones, and the premium on `/payroll` is computed from the stale copy. With a draft In
+Progress the stale-draft re-run above materializes the period itself; otherwise follow a punch fix
+with the materialize command below. (A restored *coworker* punch moves minutes from solo to
 team, so this can overpay as well as underpay.)
 
 **Staleness guard.** Solo hours are materialized separately from the punches they derive from, so they

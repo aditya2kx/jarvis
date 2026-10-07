@@ -78,6 +78,26 @@ export default async function AutomationsPage() {
           </Card>
         </Link>
       )}
+
+      <Link
+        href="/automations/monthly-recognition"
+        className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Card className="transition-colors hover:bg-muted/40">
+          <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
+            <div>
+              <CardTitle className="text-base">Monthly recognition</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                MVP + High Five winners from #monthly-recognition → Square gift cards, email, and the team post
+              </p>
+            </div>
+            <Badge variant="secondary">On demand</Badge>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            Pick a payroll cycle; review winners, context, and the draft before anything is sent.
+          </CardContent>
+        </Card>
+      </Link>
     </div>
   );
 }

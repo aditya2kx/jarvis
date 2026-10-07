@@ -313,6 +313,10 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 054 (Issue #216): automations + automation_posts for Team Pulse
     # ClickUp schedule/history. Console-only config — not model_* / no Grafana panel;
     # no new BQ_TARGETS/GRAFANA_VIEWS (same class as recognition_bonuses / 033).
+    # migration 087 (Issue #369): clickup_chat_messages / clickup_members /
+    # clickup_sync_runs (ClickUp chat copy for the console Monthly recognition page)
+    # + recognition_gift_cards (Square gift-card idempotency ledger). Console-only;
+    # freshness is the page's own "last synced" — no new BQ_TARGETS/GRAFANA_VIEWS.
     # migration 055 (Issue #225): inventory_order_tub_overrides + rewrite
     # tvf_order_reco_slot1 / tvf_order_reco_slot_n for Manual pins on Estimated
     # dates. Console /inventory drawer — not model_* / no Grafana panel; freshness

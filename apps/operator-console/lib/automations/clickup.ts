@@ -106,6 +106,67 @@ export async function listWorkspaceMembers(
   return out;
 }
 
+/** Workspace members with email — Monthly recognition gift-card recipients. */
+export async function listWorkspaceMembersWithEmail(
+  workspaceId = DEFAULT_WORKSPACE_ID,
+): Promise<{ userId: string; username: string; email: string | null }[]> {
+  const data = (await clickupFetch("/api/v2/team")) as {
+    teams?: { id: string | number; members?: { user?: Record<string, unknown> }[] }[];
+  };
+  const team = (data.teams ?? []).find((t) => String(t.id) === String(workspaceId));
+  return (team?.members ?? [])
+    .map((m) => m.user ?? {})
+    .filter((u) => u.id)
+    .map((u) => ({
+      userId: String(u.id),
+      username: String(u.username ?? "").trim(),
+      email: String(u.email ?? "").trim() || null,
+    }));
+}
+
+export type ClickUpChatMessage = {
+  id: string;
+  date: number;
+  user_id?: string | number;
+  content?: string;
+  replies_count?: number;
+  parent_message?: string;
+};
+
+/** One page of a channel's top-level messages, newest first. */
+export async function listChannelMessagesPage(
+  channelId: string,
+  cursor: string | null,
+  workspaceId = DEFAULT_WORKSPACE_ID,
+): Promise<{ messages: ClickUpChatMessage[]; nextCursor: string | null }> {
+  const qs = new URLSearchParams({ limit: "50" });
+  if (cursor) qs.set("cursor", cursor);
+  const data = (await clickupFetch(
+    `/api/v3/workspaces/${workspaceId}/chat/channels/${channelId}/messages?${qs}`,
+  )) as { data?: ClickUpChatMessage[]; next_cursor?: string };
+  return { messages: data.data ?? [], nextCursor: data.next_cursor ?? null };
+}
+
+/** All replies in a thread (paginated). */
+export async function listReplies(
+  messageId: string,
+  workspaceId = DEFAULT_WORKSPACE_ID,
+): Promise<ClickUpChatMessage[]> {
+  const out: ClickUpChatMessage[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 10; page++) {
+    const qs = new URLSearchParams({ limit: "50" });
+    if (cursor) qs.set("cursor", cursor);
+    const data = (await clickupFetch(
+      `/api/v3/workspaces/${workspaceId}/chat/messages/${messageId}/replies?${qs}`,
+    )) as { data?: ClickUpChatMessage[]; next_cursor?: string };
+    out.push(...(data.data ?? []));
+    cursor = data.next_cursor ?? null;
+    if (!cursor) break;
+  }
+  return out;
+}
+
 export async function ensureDmChannel(
   userIds: string[],
   workspaceId = DEFAULT_WORKSPACE_ID,

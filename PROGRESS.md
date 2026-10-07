@@ -1,3 +1,11 @@
+## 2026-10-06 — Monthly recognition: winners, a grounded post and gift cards from one console page (Issue #369)
+
+**Scope:** `/automations/monthly-recognition` reads the MVP + High Five results from ClickUp #monthly-recognition for the payroll cycle's award month, shows each winner's name, email and card count, and drafts the team post with a "why" grounded in that month's ClickUp chat (automation posts excluded). The operator can reshape the post with a prompt; it is DM'd to them to forward — nothing posts to the team.
+
+**Key changes:** migration 087 (`clickup_chat_messages`, `clickup_members`, `clickup_sync_runs`, `recognition_gift_cards`); Sync now + auto-sync when > 1 h stale; Square Gift Cards create → activate → read-back → Gmail per winner, behind `CONSOLE_RECOGNITION_GIFT_CARDS`, keyed so a re-click never issues twice; "I already issued these" for hand-bought cards. Square grant gained `GIFTCARDS_READ/WRITE PAYOUTS_READ`; new send-only Gmail grant for adi@mypalmetto.co (`gmail_sender_palmetto`).
+
+**Evidence:** September 2026 resolves to Linhchi Huynh (MVP), Kenya Berding and Dolce Johnson (High Five) from the results reply; localhost walkthrough by the operator; 706 console tests incl. resume-without-duplicates and hand-bought cards.
+
 ## 2026-10-06 — status.py stops reporting the retired Sheets tabs as missing
 
 **Scope:** `status.py` checked the model sheet's `daily` / `tip_alloc_daily` tabs, last written 2026-06-13, so every verdict carried 2 false gaps. **Key changes:** the Sheets layer and its OAuth token fetch are removed; the doctor needs only BigQuery access. **Evidence:** 2026-10-05 verdict went from 8 missing targets to 6, the same 6 explained in the Oct 5 investigation (new pay period, no reviews since Sep 29, Oct 9 check date, future-only forecast view, no training shifts).

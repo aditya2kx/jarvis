@@ -51,4 +51,10 @@ export const FEATURES = {
    * Pending requests. Server-evaluated only.
    */
   adpUnavailabilityApprove: process.env.CONSOLE_ADP_UNAVAIL_APPROVE === "1",
+  /**
+   * Issue #369 — Monthly recognition "Approve & issue": creates + activates real
+   * Square gift cards and emails them. Off = preview, draft DM and channel post
+   * still work; no money moves. Server-evaluated only.
+   */
+  recognitionGiftCards: process.env.CONSOLE_RECOGNITION_GIFT_CARDS === "1",
 } as const;

@@ -49,7 +49,9 @@ REDIRECT_PATH = "/callback"
 REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}{REDIRECT_PATH}"
 OAUTH_SCOPES = (
     "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ ITEMS_READ "
-    "EMPLOYEES_READ REPORTING_READ"
+    "EMPLOYEES_READ REPORTING_READ "
+    # Issue #369: console Monthly recognition gift cards + load-fee check in payouts.
+    "GIFTCARDS_READ GIFTCARDS_WRITE PAYOUTS_READ"
 )
 # Production Application ID for the Jarvis Square app.
 APP_ID = "sq0idp-Hcto2eTRUUFBAyhRtxCSGg"

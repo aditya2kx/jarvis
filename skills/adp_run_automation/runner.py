@@ -405,8 +405,6 @@ def _confirm_dashboard(page, *, store: str, wait_ms: int = 20_000) -> None:
     Callers capture ``page.url`` as the dashboard to return to, so an off-dashboard
     landing (ngapps ``errorPage``, hpayroll ``notauthenticated``) would otherwise be
     persisted as the session and replayed by every later step, each timing out.
-    On 2026-10-06 that happened twice right after login: ADP ends a RUN session
-    when the same user signs in elsewhere.
     """
     if POST_LOGIN_URL_RE.search(page.url):
         return
@@ -425,8 +423,8 @@ def _confirm_dashboard(page, *, store: str, wait_ms: int = 20_000) -> None:
     _raise_with_evidence(
         page, store=store,
         reason=f"ADP signed in but will not show the RUN dashboard (url={page.url}). "
-               f"Another sign-in for this ADP user most likely ended the session — "
-               f"close other ADP tabs, then rerun.",
+               f"ADP ended the session; if every run does this, check the image's pinned "
+               f"Chrome (RUNBOOK: The cloud image pins Chrome).",
     )
 
 

@@ -6,6 +6,22 @@
 
 **Evidence:** September 2026 resolves to Linhchi Huynh (MVP), Kenya Berding and Dolce Johnson (High Five) from the results reply; localhost walkthrough by the operator; 706 console tests incl. resume-without-duplicates and hand-bought cards.
 
+## 2026-10-06 — Chrome 155 got every cloud ADP session ended; the image now pins Chrome 154 (Issue #372)
+
+**Scope:** from the 19:08Z deploy on, every cloud run lost its ADP session within a minute of login, or got "Application Error" at sign-in. The operator was out of ADP, and clearing the saved cookies did not help. The split was exact: runs on images with Chrome 154.0.8037.97 worked, and runs on images with 155.0.8059.39 failed. **Key changes:** the `Dockerfile` installs `google-chrome-stable` at a pinned `ARG CHROME_VERSION=154.0.8037.97` instead of the unpinned patchright installer, and a test fails if the pin is removed. **Evidence:** Cloud Build of the pinned image installs and launches Chrome 154; the live proof is the post-merge forced-scrape rerun of Oct 5.
+
+## 2026-10-06 — Chrome 155 got every cloud ADP session ended; the image now pins Chrome 154 (Issue #372)
+
+**Scope:** from the 19:08Z deploy on, every cloud run lost its ADP session within a minute of login, or got "Application Error" at sign-in. The operator was out of ADP, and clearing the saved cookies did not help. The split was exact: runs on images with Chrome 154.0.8037.97 worked, and runs on images with 155.0.8059.39 failed. **Key changes:** the `Dockerfile` installs `google-chrome-stable` at a pinned `ARG CHROME_VERSION=154.0.8037.97` instead of the unpinned patchright installer, and a test fails if the pin is removed. **Evidence:** Cloud Build of the pinned image installs and launches Chrome 154; the live proof is the post-merge forced-scrape rerun of Oct 5.
+
+## 2026-10-06 — Chrome 155 got every cloud ADP session ended; the image now pins Chrome 154 (Issue #372)
+
+**Scope:** from the 19:08Z deploy on, every cloud run lost its ADP session within a minute of login, or got "Application Error" at sign-in. The operator was out of ADP, and clearing the saved cookies did not help. The split was exact: runs on images with Chrome 154.0.8037.97 worked, and runs on images with 155.0.8059.39 failed. **Key changes:** the `Dockerfile` installs `google-chrome-stable` at a pinned `ARG CHROME_VERSION=154.0.8037.97` instead of the unpinned patchright installer, and a test fails if the pin is removed. **Evidence:** Cloud Build of the pinned image installs and launches Chrome 154; the live proof is the post-merge forced-scrape rerun of Oct 5.
+
+## 2026-10-06 — Chrome 155 got every cloud ADP session ended; the image now pins Chrome 154 (Issue #372)
+
+**Scope:** from the 19:08Z deploy on, every cloud run lost its ADP session within a minute of login, or got "Application Error" at sign-in. The operator was out of ADP, and clearing the saved cookies did not help. The split was exact: runs on images with Chrome 154.0.8037.97 worked, and runs on images with 155.0.8059.39 failed. **Key changes:** the `Dockerfile` installs `google-chrome-stable` at a pinned `ARG CHROME_VERSION=154.0.8037.97` instead of the unpinned patchright installer, and a test fails if the pin is removed. **Evidence:** Cloud Build of the pinned image installs and launches Chrome 154; the live proof is the post-merge forced-scrape rerun of Oct 5.
+
 ## 2026-10-06 — status.py stops reporting the retired Sheets tabs as missing
 
 **Scope:** `status.py` checked the model sheet's `daily` / `tip_alloc_daily` tabs, last written 2026-06-13, so every verdict carried 2 false gaps. **Key changes:** the Sheets layer and its OAuth token fetch are removed; the doctor needs only BigQuery access. **Evidence:** 2026-10-05 verdict went from 8 missing targets to 6, the same 6 explained in the Oct 5 investigation (new pay period, no reviews since Sep 29, Oct 9 check date, future-only forecast view, no training shifts).

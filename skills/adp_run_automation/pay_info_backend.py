@@ -299,7 +299,7 @@ def clear_directory_status_filter(page) -> bool:
         ) or []
         clicks = status_filter_clicks(states)
         for tid in clicks:
-            page.locator(f'[data-test-id="{tid}"]').first.click(timeout=5_000)
+            _tick_filter_checkbox(page, tid)
             page.wait_for_timeout(500)
         # No Apply button: Escape closes the pane and the list re-queries.
         page.keyboard.press("Escape")
@@ -313,6 +313,47 @@ def clear_directory_status_filter(page) -> bool:
         print(f"[pay_info] status-filter clear failed (non-fatal): "
               f"{type(exc).__name__}: {exc}")
         return False
+
+
+_CHECKBOX_DIAG_JS = """(tid) => [...document.querySelectorAll(`[data-test-id="${tid}"]`)].map(b => {
+  const r = b.getBoundingClientRect();
+  const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+  return {tag: b.tagName.toLowerCase(), aria_checked: b.getAttribute('aria-checked'),
+          disabled: b.hasAttribute('disabled'), box: [r.x, r.y, r.width, r.height].map(Math.round),
+          visible: b.offsetParent !== null,
+          hit: hit ? (hit.tagName.toLowerCase() + '.' + String(hit.className || '').slice(0, 60)) : null};
+})"""
+
+_CHECKBOX_JS_CLICK = """(tid) => {
+  const b = [...document.querySelectorAll(`[data-test-id="${tid}"]`)]
+    .find(x => x.offsetParent !== null) || document.querySelector(`[data-test-id="${tid}"]`);
+  if (!b) return null;
+  const inner = b.shadowRoot && b.shadowRoot.querySelector('input,[role="checkbox"]');
+  (inner || b).click();
+  return b.getAttribute('aria-checked');
+}"""
+
+
+def _tick_filter_checkbox(page, tid: str) -> None:
+    """Tick one Status checkbox; fall back to a DOM click when Playwright's click times out.
+
+    A Playwright click waits for the element to be visible, stable and the topmost
+    hit target. On 2026-10-07 that wait timed out on every attempt, leaving the
+    Directory on Active only. The DOM click skips those checks; whether it worked is
+    judged afterwards by the status badges, not by the click.
+    """
+    try:
+        page.locator(f'[data-test-id="{tid}"]').locator("visible=true").first.click(timeout=5_000)
+        return
+    except Exception as exc:  # noqa: BLE001
+        try:
+            diag = page.evaluate(_CHECKBOX_DIAG_JS, tid)
+        except Exception:  # noqa: BLE001
+            diag = None
+        print(f"[pay_info] BREADCRUMB directory_status_checkbox_click_failed tid={tid} "
+              f"error={type(exc).__name__} dom={diag}")
+    after = page.evaluate(_CHECKBOX_JS_CLICK, tid)
+    print(f"[pay_info] directory status checkbox dom-click tid={tid} aria_checked={after}")
 
 
 _FILTER_CHECKBOX_PREFIX = "aeed-filter-checkbox-"

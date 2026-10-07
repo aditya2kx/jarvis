@@ -72,6 +72,11 @@ throughout, and an alert that is wrong nightly is one you stop reading.
   Terminated + Leave of absence before searching (roster 14 → 20). Filtering by
   employment status is wrong by construction here: a terminated employee still has
   hours in their final period, and hours are what require a rate.
+  On 2026-10-07 Playwright's click on those checkboxes timed out on every attempt
+  (Issue #379). `_tick_filter_checkbox()` now falls back to a DOM click and logs
+  `BREADCRUMB directory_status_checkbox_click_failed … dom=[…]` (box, visibility,
+  topmost element at its centre) so the next layout change is diagnosable from logs.
+  Success is still judged by the `aeed-filter-badge-*` badges.
 - **ADP fires a full-viewport "Session Timeout" modal on idle.**
   `div.message-box-outer`, `position: fixed`, `z-index: 20000`. It intercepts pointer
   events, producing exactly `TimeoutError: Locator.click: Timeout 10000ms exceeded`,

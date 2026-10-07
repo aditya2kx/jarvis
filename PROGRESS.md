@@ -1,3 +1,7 @@
+## 2026-10-07 — pay_info sees inactive employees again: the Directory status checkbox gets a DOM-click fallback (Issue #379)
+
+**Scope:** on the 2026-10-07 run every Playwright click on the Directory's Terminated / Leave of absence checkboxes timed out, so the list stayed on Active only and five inactive employees with recent punches were `not in Directory`. Every earlier run cleared the filter. No rate was lost (all five were read on 10-06). **Key changes:** `_tick_filter_checkbox()` clicks the visible checkbox and, on a timeout, logs `BREADCRUMB directory_status_checkbox_click_failed` with the checkbox's box, visibility and topmost element, then DOM-clicks it; the badges still decide success. **Evidence:** unit tests for both paths; sandbox `full-live` scrape with the filter badges and the five resolved.
+
 ## 2026-10-06 — Monthly recognition: winners, a grounded post and gift cards from one console page (Issue #369)
 
 **Scope:** `/automations/monthly-recognition` reads the MVP + High Five results from ClickUp #monthly-recognition for the payroll cycle's award month, shows each winner's name, email and card count, and drafts the team post with a "why" grounded in that month's ClickUp chat (automation posts excluded). The operator can reshape the post with a prompt; it is DM'd to them to forward — nothing posts to the team.
@@ -5,18 +9,6 @@
 **Key changes:** migration 087 (`clickup_chat_messages`, `clickup_members`, `clickup_sync_runs`, `recognition_gift_cards`); Sync now + auto-sync when > 1 h stale; Square Gift Cards create → activate → read-back → Gmail per winner, behind `CONSOLE_RECOGNITION_GIFT_CARDS`, keyed so a re-click never issues twice; "I already issued these" for hand-bought cards. Square grant gained `GIFTCARDS_READ/WRITE PAYOUTS_READ`; new send-only Gmail grant for adi@mypalmetto.co (`gmail_sender_palmetto`).
 
 **Evidence:** September 2026 resolves to Linhchi Huynh (MVP), Kenya Berding and Dolce Johnson (High Five) from the results reply; localhost walkthrough by the operator; 706 console tests incl. resume-without-duplicates and hand-bought cards.
-
-## 2026-10-06 — Chrome 155 got every cloud ADP session ended; the image now pins Chrome 154 (Issue #372)
-
-**Scope:** from the 19:08Z deploy on, every cloud run lost its ADP session within a minute of login, or got "Application Error" at sign-in. The operator was out of ADP, and clearing the saved cookies did not help. The split was exact: runs on images with Chrome 154.0.8037.97 worked, and runs on images with 155.0.8059.39 failed. **Key changes:** the `Dockerfile` installs `google-chrome-stable` at a pinned `ARG CHROME_VERSION=154.0.8037.97` instead of the unpinned patchright installer, and a test fails if the pin is removed. **Evidence:** Cloud Build of the pinned image installs and launches Chrome 154; the live proof is the post-merge forced-scrape rerun of Oct 5.
-
-## 2026-10-06 — Chrome 155 got every cloud ADP session ended; the image now pins Chrome 154 (Issue #372)
-
-**Scope:** from the 19:08Z deploy on, every cloud run lost its ADP session within a minute of login, or got "Application Error" at sign-in. The operator was out of ADP, and clearing the saved cookies did not help. The split was exact: runs on images with Chrome 154.0.8037.97 worked, and runs on images with 155.0.8059.39 failed. **Key changes:** the `Dockerfile` installs `google-chrome-stable` at a pinned `ARG CHROME_VERSION=154.0.8037.97` instead of the unpinned patchright installer, and a test fails if the pin is removed. **Evidence:** Cloud Build of the pinned image installs and launches Chrome 154; the live proof is the post-merge forced-scrape rerun of Oct 5.
-
-## 2026-10-06 — Chrome 155 got every cloud ADP session ended; the image now pins Chrome 154 (Issue #372)
-
-**Scope:** from the 19:08Z deploy on, every cloud run lost its ADP session within a minute of login, or got "Application Error" at sign-in. The operator was out of ADP, and clearing the saved cookies did not help. The split was exact: runs on images with Chrome 154.0.8037.97 worked, and runs on images with 155.0.8059.39 failed. **Key changes:** the `Dockerfile` installs `google-chrome-stable` at a pinned `ARG CHROME_VERSION=154.0.8037.97` instead of the unpinned patchright installer, and a test fails if the pin is removed. **Evidence:** Cloud Build of the pinned image installs and launches Chrome 154; the live proof is the post-merge forced-scrape rerun of Oct 5.
 
 ## 2026-10-06 — Chrome 155 got every cloud ADP session ended; the image now pins Chrome 154 (Issue #372)
 

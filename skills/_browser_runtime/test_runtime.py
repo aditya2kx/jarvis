@@ -631,3 +631,13 @@ def test_attach_cdp_opens_a_tab_only_when_none_exist(monkeypatch):
     with runtime.attach_cdp("http://127.0.0.1:9333") as (_c, page):
         assert page is ctx.created[0]
     assert not page.closed
+
+
+def test_cloud_image_pins_the_chrome_version():
+    """An unpinned install pulled Chrome 155 and ADP's bot defense ended every session (#372)."""
+    import pathlib
+    import re
+
+    dockerfile = (pathlib.Path(__file__).resolve().parents[2] / "Dockerfile").read_text()
+    assert re.search(r"^ARG CHROME_VERSION=\d+\.\d+\.\d+\.\d+$", dockerfile, re.M)
+    assert "patchright install chrome" not in dockerfile

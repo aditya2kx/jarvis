@@ -1666,13 +1666,23 @@ correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 
 **ADP signs in but shows an error page (2026-10-06).** ADP can accept the login (even the SMS
 code) and then land on `ngapps.adp.com/apps/run/errorPage` ("We can't find the page") or
-`hpayroll.adp.com/.../notauthenticated.aspx`. Both reruns of 2026-10-05 hit this. ADP ends a RUN
-session when the same user signs in somewhere else, so close every other ADP tab before a
-rerun. `_confirm_dashboard` (end of `_ensure_logged_in`) reopens
+`hpayroll.adp.com/.../notauthenticated.aspx`. Every rerun of 2026-10-05 hit this. The cause was the
+browser, not a second sign-in (Issue #372, below). `_confirm_dashboard` (end of `_ensure_logged_in`) reopens
 `runpayrollmain.adp.com/@<adp_run.tenant_uuid>/v2/` once. If ADP still won't show the
 dashboard, it raises one error with screenshots instead of saving the error page as the session
 and timing out on every step. Grep `BREADCRUMB adp_off_dashboard` (followed by
 `step=dashboard-recovered` when the reopen worked).
+
+**The cloud image pins Chrome (Issue #372, 2026-10-06).** The image used to take whatever Chrome
+was current at build time. The 19:08Z build on 2026-10-06 moved it from 154.0.8037.97 to
+155.0.8059.39, and from then on ADP's bot defense ended every cloud session within a minute of
+login, or refused it with "Application Error. Please try again later" after the User ID step.
+Every run on 154 had worked. The `Dockerfile` now installs `google-chrome-stable` at
+`ARG CHROME_VERSION`, prints `Google Chrome <version>` in the build log, and
+`test_cloud_image_pins_the_chrome_version` fails if the pin is removed. To move to a newer
+Chrome: bump `CHROME_VERSION`, deploy, then run
+`python3 scripts/trigger_dated_refresh.py --date <yesterday> --force-scrape` and confirm
+`earnings prep: session alive` and `schedule OK`. If the session dies, revert the bump.
 
 **ADP Timecard pay-period selection (2026-07-17).** Nightly mode must select the **single**
 pay period that contains `target_date` — not Select All. The runner enumerates Pay Period

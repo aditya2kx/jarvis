@@ -355,6 +355,36 @@ class TestStatusFilterClicks(unittest.TestCase):
         self.assertEqual(status_filter_clicks(states), [])
 
 
+class TestTickFilterCheckbox(unittest.TestCase):
+    T = "aeed-filter-checkbox-Terminated"
+
+    def _page(self, click_error=None):
+        page = mock.MagicMock()
+        target = page.locator.return_value.locator.return_value.first
+        target.click.side_effect = click_error
+        page.evaluate.side_effect = [[{"tag": "sdf-checkbox", "visible": False}], "true"]
+        return page, target
+
+    def test_playwright_click_used_when_it_works(self):
+        page, target = self._page()
+        pib._tick_filter_checkbox(page, self.T)
+        page.locator.assert_called_once_with(f'[data-test-id="{self.T}"]')
+        page.locator.return_value.locator.assert_called_once_with("visible=true")
+        target.click.assert_called_once()
+        page.evaluate.assert_not_called()
+
+    def test_click_timeout_falls_back_to_dom_click(self):
+        """2026-10-07: every Playwright click on the Status checkboxes timed out."""
+        page, _ = self._page(click_error=TimeoutError("Locator.click: Timeout 5000ms exceeded."))
+        with mock.patch("builtins.print") as out:
+            pib._tick_filter_checkbox(page, self.T)
+        self.assertEqual([c.args for c in page.evaluate.call_args_list],
+                         [(pib._CHECKBOX_DIAG_JS, self.T), (pib._CHECKBOX_JS_CLICK, self.T)])
+        printed = " ".join(str(c.args[0]) for c in out.call_args_list)
+        self.assertIn("BREADCRUMB directory_status_checkbox_click_failed", printed)
+        self.assertIn("aria_checked=true", printed)
+
+
 class TestActiveWins(unittest.TestCase):
     """Dolce: Terminated `Johnson, Dolce` $15.25 beside Active `Johnson, Dolce J` $18."""
 

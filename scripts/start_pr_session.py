@@ -278,17 +278,22 @@ git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #<n> ledger"
 
     if _is_provisional(key):
         model_block = f"""## Jam handoff (first chat in this worktree)
-**Ask mode** — the front-door deeplink pre-selects Ask mode. **Set the model to
+**Ask mode is requested, not guaranteed** — the front-door deeplink asks for Ask mode, but the
+chat may open in Agent mode. Tell which you are in from your tools (file-edit tools = Agent
+mode); never tell the operator to switch modes when you already can edit. **Set the model to
 {_DM.FRIENDLY[DEFAULT_JAM_HANDOFF_MODEL]} (`{DEFAULT_JAM_HANDOFF_MODEL}`) yourself** (the deeplink cannot pre-select
 the model). You are at the **jam** operator gate: restate the requirement, clarify scope,
 and draft the PR §4 acceptance-evidence contract. Read-only diagnosis/research (logs, BQ,
 Firestore reads) is expected during jam and needs no approval; only code changes wait for
 the gates. Do NOT make code changes until jam and define-evidence are approved in chat.
 
-After plan passes `check_plan_readiness.py`, switch to Sonnet for implementation."""
+**Once jam + define-evidence are approved, build straight away.** The plan is yours: write it,
+pass `check_plan_readiness.py`, advance — do not present it or wait for plan approval. When the
+change has operator-visible output (a message, DM, page), show the operator a live demo of
+that output and get their OK before opening the PR (`self-drive.mdc` § After alignment)."""
         open_line = (
-            "Open a **new** Cursor chat in **Ask mode** for jam (the handoff deeplink "
-            "pre-selects Ask mode). Build cost is attributed to chat space(s) with "
+            "Open a **new** Cursor chat for jam (the handoff deeplink requests Ask mode). "
+            "Build cost is attributed to chat space(s) with "
             "AI edits after this timestamp (see `pr_cost_ledger.py sync`)."
         )
     else:
@@ -390,11 +395,12 @@ def seed_prompt_jam(key: int | str, *, brief_rel: str, requirement: str | None =
     return (
         f"{header}\n\n"
         f"Read `{brief_rel}` first (requirement, branch, lifecycle ladder, cost gate).\n\n"
-        f"You are at the **jam** operator gate in Ask mode. Restate the requirement and draft "
+        f"You are at the **jam** operator gate (Ask mode requested — check your tools; if you can edit "
+        f"files you are in Agent mode). Restate the requirement and draft "
         f"the PR §4 evidence contract. Read-only diagnosis/research (logs, BQ, Firestore reads) "
         f"is expected during jam and needs no approval; only mutations/code changes wait for the gates. "
         f"The phase gate in verify.py blocks shipping until jam and define-evidence are recorded "
-        f"via phase_state.py advance.\n\n"
+        f"via phase_state.py advance. Once both are approved, build without presenting a plan.\n\n"
         f"Set the model to {_DM.FRIENDLY[DEFAULT_JAM_HANDOFF_MODEL]} yourself (the deeplink cannot pre-select the model)."
     )
 

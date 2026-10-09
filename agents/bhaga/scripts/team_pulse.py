@@ -387,6 +387,7 @@ def record_post(
     dry_run: bool,
     trigger: str,
     updated_by: str,
+    automation_id: str = AUTOMATION_ID,
 ) -> None:
     from core.datastore import load_rows
 
@@ -394,7 +395,7 @@ def record_post(
         "automation_posts",
         [{
             "store": store,
-            "automation_id": AUTOMATION_ID,
+            "automation_id": automation_id,
             "post_date_ct": post_date_ct.isoformat(),
             "posted_at": datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
             "destination": destination,

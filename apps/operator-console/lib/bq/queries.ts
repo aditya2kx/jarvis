@@ -3123,6 +3123,8 @@ export interface AutomationRow {
   dm_user_id: string | null;
   workspace_id: string;
   template: string;
+  /** Migration 088; only the unavailability reminder uses it. */
+  followup_template?: string | null;
   updated_at: string | null;
   updated_by: string | null;
 }

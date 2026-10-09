@@ -65,6 +65,10 @@ export const MUTATING_ACTIONS = [
   { name: "saveTeamPulseConfigAction", page: "automations", heavy: null },
   { name: "previewTeamPulseAction", page: "automations", heavy: null },
   { name: "postTeamPulseOnceAction", page: "automations", heavy: null },
+  // Unavailability reminder (Issue #381)
+  { name: "saveReminderConfigAction", page: "automations", heavy: null },
+  { name: "previewReminderAction", page: "automations", heavy: null },
+  { name: "sendReminderOnceAction", page: "automations", heavy: null },
   // Monthly recognition (Issue #369)
   { name: "syncRecognitionSourcesAction", page: "automations", heavy: null },
   { name: "previewRecognitionAction", page: "automations", heavy: null },

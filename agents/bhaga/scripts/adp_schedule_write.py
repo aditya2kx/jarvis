@@ -8,7 +8,10 @@ Two operator-confirmed modes, each started by one console click:
            Rows whose row_key is already drafted/published are marked 'skipped'.
   publish  ... --publish --week-start 2026-09-28
            Clicks ADP "Publish drafts" for that week and flips the week's 'drafted'
-           rows to 'published'. The operator announces open shifts themselves.
+           rows to 'published', re-reads ADP from tomorrow through that week, then
+           DMs the operator a Shift Coverage draft listing every open shift left.
+  dm       ... --publish-dm --week-start 2026-10-19
+           Re-sends that DM from BQ alone (no ADP), e.g. to preview the format.
 
 ``--dry-run`` walks each ADP wizard to its final step and backs out; BQ is
 left untouched. Cloud Run: daily_refresh early-exits here when
@@ -26,6 +29,7 @@ import sys
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from zoneinfo import ZoneInfo
 
 from skills.adp_run_automation import schedule_write_backend as wb
 
@@ -113,8 +117,8 @@ _NOT_SCHEDULE = ("square", "adp_shifts", "adp_punches", "adp_rates", "adp_liabil
                  "adp_timecard_gaps", "square_rollup")
 
 
-def refresh_schedule(page, store: str, week: dt.date) -> bool:
-    """Re-scrape ``week`` from the grid already open on it and reload adp_scheduled_shifts.
+def refresh_schedule(page, store: str, week: dt.date, *, weeks: int = 1) -> bool:
+    """Re-scrape ``weeks`` weeks from ``week`` (grid already open on it) and reload BQ.
 
     The console reads ADP's schedule from BQ; without this, a save/delete/publish
     only shows after the next sync. The loader purges each scraped date first, so
@@ -127,7 +131,7 @@ def refresh_schedule(page, store: str, week: dt.date) -> bool:
         label = frame.get_by_text(re.compile(r"Week of")).first.inner_text(timeout=5000)
         if wb.week_label_start(label) != week:
             raise wb.ScheduleWriteError(f"grid shows {label!r}, not {week}")
-        payloads, requests = r._schedule_within_session(page, weeks=1)
+        payloads, requests = r._schedule_within_session(page, weeks=weeks)
         path = r._write_schedule_json(payloads, store=store, requests=requests)
         subprocess.run(
             [sys.executable, "-m", "agents.bhaga.scripts.backfill_from_downloads", "--store", store,
@@ -139,6 +143,20 @@ def refresh_schedule(page, store: str, week: dt.date) -> bool:
         return False
     print(f"[schedule_write] schedule refreshed week_start={week} from {path.name}")
     return True
+
+
+def refresh_open_shift_window(page, store: str, week_start: dt.date) -> bool:
+    """Re-read every week the publish post lists open shifts for, so claimed shifts drop off."""
+    from skills.adp_run_automation import runner as r
+
+    first = min(week_start_of(open_shift_window(week_start, _today_ct())[0]), week_start)
+    if first != week_start:
+        try:
+            wb.goto_week(r._open_team_schedule(page), page, first)
+        except Exception as exc:  # noqa: BLE001
+            print(f"BREADCRUMB adp_schedule_refresh store={store} week_start={first} error={type(exc).__name__}: {exc}"[:500])
+            return False
+    return refresh_schedule(page, store, first, weeks=(week_start - first).days // 7 + 1)
 
 
 def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> int:
@@ -261,69 +279,97 @@ def _week_label(week_start: dt.date) -> str:
     return f"{week_start:%b} {week_start.day}–{tail}"
 
 
-def publish_message(week_start: dt.date, open_shifts: list[dict]) -> str:
-    """ClickUp DM to the operator: a ready-to-post note for the team.
+def _today_ct() -> dt.date:
+    return dt.datetime.now(ZoneInfo("America/Chicago")).date()
 
-    ``open_shifts``: ``{"date": date, "start_min": int, "end_min": int}`` rows.
+
+def open_shift_window(week_start: dt.date, today: dt.date) -> tuple[dt.date, dt.date]:
+    """Dates the publish post lists open shifts for: tomorrow through the published week's Sunday."""
+    return today + dt.timedelta(days=1), week_start + dt.timedelta(days=6)
+
+
+def publish_message(week_start: dt.date, open_shifts: list[dict], *, stale_as_of: str | None = None) -> str:
+    """ClickUp DM to the operator: a ready-to-post Shift Coverage note for the team.
+
+    ``open_shifts``: ``{"date": date, "start_min": int, "end_min": int}`` rows, already
+    limited to ``open_shift_window``. ``stale_as_of`` notes that ADP could not be
+    re-read, so claimed shifts may still be listed.
     """
     week = _week_label(week_start)
+    header = f"Published **{week}** in ADP. Here's a draft for Shift Coverage & Trades — copy and post:"
+    if stale_as_of:
+        header += f"\n\n_ADP re-read failed — open shifts are as of {stale_as_of}; check before posting._"
     lines = [
-        f"Published **{week}** in ADP. Here's a draft for the team — copy and post:",
+        header,
         "",
         "---",
         "",
-        f"Hi team! The schedule for **{week}** is now published in ADP.",
-        "",
+        f"@everyone 🗞️ Hi team! The schedule for **{week}** is now published in ADP. "
         "Please take a moment to look over your shifts and make sure they work with your availability. "
-        "If anything doesn't look right, just let me know and we'll sort it out together.",
-        "",
+        "If anything doesn't look right, just let me know in this thread and we'll sort it out together.",
     ]
     if open_shifts:
-        lines += ["**Open shifts this week**", ""]
-        for o in sorted(open_shifts, key=lambda x: (x["date"], x["start_min"])):
-            d = o["date"]
-            lines.append(f"- {d:%a %b} {d.day} · {_clock(o['start_min'])} – {_clock(o['end_min'])}")
         lines += [
             "",
-            "If you'd like to pick one up, please claim it in the ADP app — that's the quickest way to "
-            "lock it in. If you run into any trouble claiming it, reply in this thread and I'll add you.",
+            "Additionally, sharing the Open Shifts for the coming days where we really need folks, please let "
+            "us know if someone can pick these up. We are flexible around below times. 🙏🏽",
             "",
         ]
-    else:
-        lines += ["There are no open shifts this week.", ""]
-    lines.append("Thank you, team!")
+        by_day: dict[dt.date, list[dict]] = defaultdict(list)
+        for o in open_shifts:
+            by_day[o["date"]].append(o)
+        for i, d in enumerate(sorted(by_day), 1):
+            lines.append(f"{i}. {d:%b} {d.day} ({d:%A})")
+            for j, o in enumerate(sorted(by_day[d], key=lambda x: (x["start_min"], x["end_min"])), 1):
+                lines.append(f"    {j}. {_clock(o['start_min'])} → {_clock(o['end_min'])}")
     return "\n".join(lines)
 
 
-def notify_published(store: str, week_start: dt.date) -> None:
-    """DM the operator a draft team message after a console publish. Best-effort, posts once."""
+def open_shifts_between(lo: dt.date, hi: dt.date) -> tuple[list[dict], str | None]:
+    """ADP open shifts dated ``lo``..``hi`` from BQ, plus when they were last scraped (CT)."""
     from core.datastore import fq
 
-    from agents.bhaga.scripts.team_pulse import DEFAULT_DM_USER_ID, DEFAULT_WORKSPACE_ID
     from skills.adp_run_automation.schedule_backend import _SHIFT_RANGE_RE, _to_minutes
+
+    rows = _query(
+        f"SELECT date, shift_range, scraped_at_utc FROM {fq('adp_open_shifts')}"
+        " WHERE date BETWEEN @lo AND @hi ORDER BY date, slot_index",
+        [("lo", "DATE", lo), ("hi", "DATE", hi)],
+    )
+    out = []
+    for r in rows:
+        m = _SHIFT_RANGE_RE.search(r["shift_range"] or "")
+        if m:
+            out.append({
+                "date": r["date"],
+                "start_min": _to_minutes(int(m.group(1)), int(m.group(2)), m.group(3)),
+                "end_min": _to_minutes(int(m.group(4)), int(m.group(5)), m.group(6)),
+            })
+    scraped = max((r["scraped_at_utc"] for r in rows if r.get("scraped_at_utc")), default=None)
+    if scraped is None:
+        return out, None
+    if isinstance(scraped, str):
+        scraped = dt.datetime.fromisoformat(scraped.replace("Z", "+00:00"))
+    if scraped.tzinfo is None:
+        scraped = scraped.replace(tzinfo=dt.timezone.utc)
+    when = scraped.astimezone(ZoneInfo("America/Chicago"))
+    return out, f"{when:%b} {when.day} {_clock(when.hour * 60 + when.minute)} CT"
+
+
+def notify_published(store: str, week_start: dt.date, *, fresh: bool = True) -> None:
+    """DM the operator a draft team message after a console publish. Best-effort, posts once."""
+    from agents.bhaga.scripts.team_pulse import DEFAULT_DM_USER_ID, DEFAULT_WORKSPACE_ID
     from skills.clickup_chat import ensure_dm_channel, post_message
 
     try:
-        rows = _query(
-            f"SELECT date, shift_range FROM {fq('adp_open_shifts')}"
-            " WHERE week_start = @week ORDER BY date, slot_index",
-            [("week", "DATE", week_start)],
-        )
-        open_shifts = []
-        for r in rows:
-            m = _SHIFT_RANGE_RE.search(r["shift_range"] or "")
-            if m:
-                open_shifts.append({
-                    "date": r["date"],
-                    "start_min": _to_minutes(int(m.group(1)), int(m.group(2)), m.group(3)),
-                    "end_min": _to_minutes(int(m.group(4)), int(m.group(5)), m.group(6)),
-                })
+        open_shifts, as_of = open_shifts_between(*open_shift_window(week_start, _today_ct()))
+        content = publish_message(week_start, open_shifts, stale_as_of=None if fresh else (as_of or "unknown"))
         channel = ensure_dm_channel([DEFAULT_DM_USER_ID], team_id=DEFAULT_WORKSPACE_ID)
-        post_message(str(channel["id"]), publish_message(week_start, open_shifts), team_id=DEFAULT_WORKSPACE_ID)
+        post_message(str(channel["id"]), content, team_id=DEFAULT_WORKSPACE_ID)
     except Exception as exc:  # noqa: BLE001
         print(f"BREADCRUMB adp_publish_dm store={store} week_start={week_start} error={type(exc).__name__}: {exc}"[:500])
         return
-    print(f"[schedule_write] publish DM sent week_start={week_start} open_shifts={len(open_shifts)}")
+    print(f"[schedule_write] publish DM sent week_start={week_start} open_shifts={len(open_shifts)} fresh={fresh}")
 
 
 def _drafted_left(store: str, week_start: dt.date) -> int:
@@ -343,6 +389,7 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
         frame = r._open_team_schedule(page)
         page.wait_for_timeout(2500)
         wb.goto_week(frame, page, week_start)
+        fresh = False
         try:
             try:
                 pending = wb.publish_drafts(frame, page, dry_run=dry_run)
@@ -353,9 +400,10 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
                     raise
                 pending = exc.pending
                 print(f"[schedule_write] publish confirmed by schedule re-read week_start={week_start}")
+                fresh = refresh_open_shift_window(page, store, week_start)
             else:
                 if pending and not dry_run:
-                    refresh_schedule(page, store, week_start)
+                    fresh = refresh_open_shift_window(page, store, week_start)
         except Exception as exc:  # noqa: BLE001
             msg = f"{type(exc).__name__}: {exc}"[:400]
             print(f"BREADCRUMB adp_schedule_publish store={store} week_start={week_start} error={msg}")
@@ -376,7 +424,7 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
         [("store", "STRING", store), ("week", "DATE", week_start)],
     )
     if pending:
-        notify_published(store, week_start)
+        notify_published(store, week_start, fresh=fresh)
     return 0
 
 
@@ -486,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--store", default="palmetto")
     p.add_argument("--push-id")
     p.add_argument("--publish", action="store_true")
+    p.add_argument("--publish-dm", action="store_true", help="DM the publish draft for --week-start from BQ only")
     p.add_argument("--inspect", action="store_true", help="read-only: draft count + open shifts for --week-start")
     p.add_argument("--refresh-schedule", action="store_true", help="read-only: reload --week-start's ADP schedule into BQ")
     p.add_argument("--delete", help="';'-separated row_keys of drafted shifts to remove from ADP (--week-start)")
@@ -502,6 +551,11 @@ def main(argv: list[str] | None = None) -> int:
             p.error("--delete needs --week-start on a Monday")
         keys = [k.strip() for k in a.delete.split(";") if k.strip()]
         return run_delete(a.store, a.week_start, keys, headless=a.headless, dry_run=a.dry_run)
+    if a.publish_dm:
+        if not a.week_start or a.week_start.weekday() != 0:
+            p.error("--publish-dm needs --week-start on a Monday")
+        notify_published(a.store, a.week_start)
+        return 0
     if a.inspect:
         if not a.week_start or a.week_start.weekday() != 0:
             p.error("--inspect needs --week-start on a Monday")

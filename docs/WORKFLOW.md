@@ -150,7 +150,12 @@ file in the worktree's `metrics/pr_cost/` directory manually.
 
 The handoff deeplink pre-selects **Ask mode** + **Opus 4.8 thinking high** for the jam
 phase (configurable via `new_requirement.py --mode` / `--model`). The new chat must not
-inherit Agent/Auto settings from the parent window.
+inherit Agent/Auto settings from the parent window. Cursor does not always honor the mode, so
+the agent infers its mode from its tools (file-edit tools = Agent mode) rather than trusting
+the brief. Once jam + define-evidence are approved, `plan` is agent-internal: the agent writes
+the plan, passes `check_plan_readiness.py`, and builds without a plan review. Operator-visible
+output (a DM, message, page) is demoed live to the operator before the PR opens
+(`self-drive.mdc` § After alignment, Issue #381).
 `done = [specify, setup]` (both are factually complete the moment the front door runs)
 and prints the issue URL in the handoff banner.  So a fresh requirement shows **Align
 50%** with `jam` as the current operator gate — never a misleading "0%, nothing done".

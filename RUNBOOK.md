@@ -536,6 +536,37 @@ BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.team_pulse --dry-run
 BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.team_pulse --once   # force day gate; still DM-first
 ```
 
+### Unavailability reminder (Issue #381)
+
+DMs the operator a ready-to-post ClickUp nudge to update ADP unavailability before the Friday
+publish. First configured day (default **Wed**): the full reminder for the week after next
+(`{target_week}` → `Oct 19 - Oct 25`, `{publish_day}` → `Friday(Oct 9)`); later configured days
+(default **Thu**): the one-line follow-up for the same thread. Config is the `automations` row
+`unavailability-reminder` (on/off, days, hour/minute CT, `template`, `followup_template` — migration
+088), edited at Operator Console `/automations/unavailability-reminder` (Preview any date; **DM me
+now** sends today's message and counts as today's send). The scheduler ticks every 15 minutes; the job
+(`agents/bhaga/scripts/unavailability_reminder.py`) sends only on a configured day at/after the
+configured time, and at most once per CT day (`automation_posts`). Python and console compose from
+the shared fixture `core/testdata/unavailability_reminder_golden.json`.
+
+| Field | Value |
+|---|---|
+| Name | `bhaga-unavailability-reminder` (`--location=us-central1`) |
+| Schedule | `*/15 * * * *` (`America/Chicago`) |
+| Target | `POST https://bhaga-webhook-4yl5izovxq-uc.a.run.app/unavailability-reminder` |
+| Auth | Header `X-Team-Pulse-Token` (same token as team pulse) |
+
+```bash
+gcloud scheduler jobs create http bhaga-unavailability-reminder \
+  --location=us-central1 --schedule='*/15 * * * *' --time-zone=America/Chicago \
+  --uri='https://bhaga-webhook-4yl5izovxq-uc.a.run.app/unavailability-reminder' \
+  --http-method=POST --headers=X-Team-Pulse-Token=TOKEN
+
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.unavailability_reminder --dry-run --date 2026-10-14
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.unavailability_reminder --once   # ignore day/time gate
+```
+Logs: `unavailability_reminder result=` on `bhaga-webhook`; `BREADCRUMB unavailability_reminder failed`.
+
 > The `bhaga-daily-diff` scheduler + Cloud Run job have been **retired** (deleted 2026-05-29) and
 > the diff build/deploy steps were removed from `.github/workflows/deploy.yml`. `cloud/diff/` source
 > remains in the repo but is no longer built or deployed.
@@ -1762,9 +1793,15 @@ that row fails with the names ADP did list. **Publish week** (enabled once a row
 `BHAGA_ADP_SCHEDULE_WRITE=publish`: Publish drafts for that week — every draft, including ones added by
 hand in ADP — then the week's rows become `published`. If the toolbar count never reads 0 after the
 confirm, the job re-reads the week's grid and treats the publish as done only when no row is left
-`drafted` (else `PublishUnconfirmed`, rows stay `drafted`). A console publish then DMs the operator in
-ClickUp (`notify_published`, team_pulse's DM user) a ready-to-post team note listing the week's ADP
-open shifts — nothing is posted to the team (`BREADCRUMB adp_publish_dm` if the DM fails). **Publishing
+`drafted` (else `PublishUnconfirmed`, rows stay `drafted`). A console publish then re-reads ADP from
+this week through the published week (`refresh_open_shift_window`, so shifts claimed since the last
+sync drop off) and DMs the operator in ClickUp (`notify_published`, team_pulse's DM user) a
+ready-to-post Shift Coverage & Trades note (Issue #381): `@everyone` + the published week, then every
+ADP open shift from **tomorrow** through that week's Sunday, numbered by date with the slots nested.
+Nothing is posted to the team (`BREADCRUMB adp_publish_dm` if the DM fails). If the re-read fails the
+DM still goes out from the last sync and says "open shifts are as of <time>". Re-send that DM from BQ
+alone (no ADP): `BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.adp_schedule_write
+--publish-dm --week-start <Mon>`. **Publishing
 in ADP directly also works:** every Team Schedule load (nightly, Sync ADP, after any console write)
 reads each shift's `DRAFT` tag and each day's open-shift `Drafts: N` and flips matching `drafted` rows
 to `published` (`reconcile_published`, `[schedule_write] reconcile … newly_published=N`,

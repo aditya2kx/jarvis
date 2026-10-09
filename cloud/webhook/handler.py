@@ -1988,6 +1988,28 @@ def team_pulse_kick():
     return jsonify({"status": "accepted"})
 
 
+def _run_unavailability_reminder_job() -> None:
+    """Background: day/time-gated ClickUp unavailability-reminder DM (Issue #381)."""
+    try:
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        from agents.bhaga.scripts.unavailability_reminder import run_reminder
+
+        result = run_reminder(trigger="scheduler", updated_by="bhaga-webhook")
+        log.info("unavailability_reminder result=%s", {k: result.get(k) for k in ("status", "reason", "kind", "message_id", "post_date_ct")})
+    except Exception as exc:  # noqa: BLE001
+        log.error("BREADCRUMB unavailability_reminder failed: %s", exc)
+
+
+@app.route("/unavailability-reminder", methods=["POST"])
+def unavailability_reminder_kick():
+    """Cloud Scheduler tick (every 15 min) — same token as the team-pulse kick."""
+    token = request.headers.get("X-Team-Pulse-Token", "")
+    if not _TEAM_PULSE_TOKEN or not hmac.compare_digest(token, _TEAM_PULSE_TOKEN):
+        return Response("unauthorized", status=403)
+    _dispatch_async(_run_unavailability_reminder_job)
+    return jsonify({"status": "accepted"})
+
+
 # ---------------------------------------------------------------------------
 # Operator Console IAP fail beacon (Issue #194)
 # ---------------------------------------------------------------------------

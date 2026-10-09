@@ -1,0 +1,26 @@
+{
+  "_comment": "Issue #381. Shared by agents/bhaga/scripts/test_unavailability_reminder.py and apps/operator-console/__tests__/unavailability-reminder.test.ts so the Python job and the console preview compose identical DMs.",
+  "cases": [
+    {
+      "name": "wednesday full reminder (operator's 2026-10-07 post)",
+      "today": "2026-10-07",
+      "days": [2, 3],
+      "kind": "reminder",
+      "content": "Unavailability reminder for Shift Coverage & Trades — copy and post:\n\n---\n\n@everyone Friendly reminder to update unavailability on ADP. Schedule for Oct 19 - Oct 25, will be published this Friday(Oct 9) based entirely off your ADP unavailability. Please update it beforehand to avoid swapping shifts after that."
+    },
+    {
+      "name": "thursday follow-up (operator's 2026-10-08 thread reply)",
+      "today": "2026-10-08",
+      "days": [2, 3],
+      "kind": "followup",
+      "content": "Unavailability follow-up — post as a reply in this week's reminder thread:\n\n---\n\nOne last reminder before shifts get published tomorrow"
+    },
+    {
+      "name": "target week crosses a month",
+      "today": "2026-10-14",
+      "days": [2, 3],
+      "kind": "reminder",
+      "content": "Unavailability reminder for Shift Coverage & Trades — copy and post:\n\n---\n\n@everyone Friendly reminder to update unavailability on ADP. Schedule for Oct 26 - Nov 1, will be published this Friday(Oct 16) based entirely off your ADP unavailability. Please update it beforehand to avoid swapping shifts after that."
+    }
+  ]
+}

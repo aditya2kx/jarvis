@@ -1007,6 +1007,8 @@ export type AutomationUpsert = {
   dm_user_id: string;
   workspace_id: string;
   template: string;
+  /** Unavailability reminder only; omitted = column left as is. */
+  followup_template?: string;
 };
 
 export async function upsertAutomation(
@@ -1015,6 +1017,7 @@ export async function upsertAutomation(
   cfg: AutomationUpsert,
   by: string,
 ): Promise<void> {
+  const followup = cfg.followup_template !== undefined;
   await mutate(
     `MERGE ${fq("automations")} T
      USING (SELECT @store AS store, @id AS automation_id) S
@@ -1029,16 +1032,16 @@ export async function upsertAutomation(
        channel_id = @channel_id,
        dm_user_id = @dm_user_id,
        workspace_id = @workspace_id,
-       template = @template,
+       template = @template,${followup ? "\n       followup_template = @followup," : ""}
        updated_at = CURRENT_TIMESTAMP(),
        updated_by = @by
      WHEN NOT MATCHED THEN INSERT (
        store, automation_id, enabled, days_of_week, hour_local, minute_local,
-       timezone, destination, channel_id, dm_user_id, workspace_id, template,
+       timezone, destination, channel_id, dm_user_id, workspace_id, template,${followup ? " followup_template," : ""}
        updated_at, updated_by
      ) VALUES (
        @store, @id, @enabled, @days, @hour, @minute,
-       @tz, @destination, @channel_id, @dm_user_id, @workspace_id, @template,
+       @tz, @destination, @channel_id, @dm_user_id, @workspace_id, @template,${followup ? " @followup," : ""}
        CURRENT_TIMESTAMP(), @by
      )`,
     {
@@ -1054,6 +1057,7 @@ export async function upsertAutomation(
       dm_user_id: cfg.dm_user_id,
       workspace_id: cfg.workspace_id,
       template: cfg.template,
+      ...(followup ? { followup: cfg.followup_template } : {}),
       by,
     },
   );

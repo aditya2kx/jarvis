@@ -210,17 +210,25 @@ def _fill_times(frame, page, start_min: int, end_min: int) -> None:
 
 
 def goto_week(frame, page, week_start: dt.date) -> None:
-    """Advance the grid (opens on the current week) until it shows ``week_start``."""
+    """Step the grid back or forward until it shows ``week_start``."""
     from skills.adp_run_automation import runner as r
 
     for _ in range(10):
-        label = frame.get_by_text(re.compile(r"Week of")).first.inner_text(timeout=5000)
-        shown = week_label_start(label)
+        label = frame.get_by_text(re.compile(r"Week of")).first
+        before = label.inner_text(timeout=5000).strip()
+        shown = week_label_start(before)
         if shown == week_start:
             return
-        if shown > week_start:
-            raise ScheduleWriteError(f"week {week_start} is before the grid's first week {shown}")
-        r._goto_next_week(page, frame)
+        if shown < week_start:
+            r._goto_next_week(page, frame)
+            continue
+        # A coordinate click on the ‹ chevron does nothing; the DOM click does.
+        frame.locator('[aria-label="Select previous week"]').first.evaluate("el => el.click()", timeout=5000)
+        now = r._wait_week_label_change(page, label, before, 8.0)
+        if now is None:
+            raise ScheduleWriteError(f"previous-week click did not leave {before!r}")
+        print(f"[adp_schedule] step=previous-week {before!r} -> {now!r}")
+        page.wait_for_timeout(1500)
     raise ScheduleWriteError(f"could not reach week {week_start}")
 
 

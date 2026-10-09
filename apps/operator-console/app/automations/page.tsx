@@ -9,6 +9,11 @@ import {
   cadenceSummary,
   parseDays,
 } from "@/lib/automations/teamPulse";
+import {
+  REMINDER_AUTOMATION_ID,
+  REMINDER_DEFAULT_DAYS,
+  REMINDER_DEFAULT_HOUR,
+} from "@/lib/automations/unavailabilityReminder";
 
 export const dynamic = "force-dynamic";
 
@@ -16,13 +21,26 @@ export default async function AutomationsPage() {
   let error: string | undefined;
   let cfg = null;
   let lastPost: string | null = null;
+  let reminder = null;
+  let reminderLast: string | null = null;
   try {
     cfg = await getAutomation(DEFAULT_STORE, AUTOMATION_ID);
     const posts = await listAutomationPosts(DEFAULT_STORE, AUTOMATION_ID, 1);
     lastPost = posts[0]?.posted_at ?? null;
+    reminder = await getAutomation(DEFAULT_STORE, REMINDER_AUTOMATION_ID);
+    const sent = await listAutomationPosts(DEFAULT_STORE, REMINDER_AUTOMATION_ID, 1);
+    reminderLast = sent[0]?.posted_at ?? null;
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
+  const reminderOn =
+    !reminder || reminder.enabled === true || (reminder.enabled as unknown) === "true";
+  const reminderCadence = cadenceSummary(
+    reminder ? parseDays(reminder.days_of_week) : REMINDER_DEFAULT_DAYS,
+    reminder?.hour_local ?? REMINDER_DEFAULT_HOUR,
+    reminder?.minute_local ?? 0,
+    "America/Chicago",
+  );
 
   const days = parseDays(cfg?.days_of_week ?? "[1,3,6]");
   const cadence = cadenceSummary(
@@ -73,6 +91,33 @@ export default async function AutomationsPage() {
               <p>
                 Last post:{" "}
                 <span className="text-foreground">{lastPost ?? "—"}</span>
+              </p>
+            </CardContent>
+          </Card>
+        </Link>
+      )}
+
+      {!error && (
+        <Link
+          href="/automations/unavailability-reminder"
+          className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Card className="transition-colors hover:bg-muted/40">
+            <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
+              <div>
+                <CardTitle className="text-base">Unavailability reminder (ClickUp)</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  DMs you a ready-to-post nudge to update ADP unavailability before the Friday publish
+                </p>
+              </div>
+              <Badge variant={reminderOn ? "default" : "secondary"}>
+                {reminderOn ? "Enabled" : "Off"}
+              </Badge>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-1 text-sm text-muted-foreground">
+              <p>{reminderCadence}</p>
+              <p>
+                Last sent: <span className="text-foreground">{reminderLast ?? "—"}</span>
               </p>
             </CardContent>
           </Card>

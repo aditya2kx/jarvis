@@ -222,23 +222,115 @@ class PublishedRowKeys(unittest.TestCase):
         self.assertEqual(w.published_row_keys(self.rows, states), [])
 
 
+D = datetime.date
+
+
+def _slot(d, start, end):
+    return {"date": d, "start_min": start, "end_min": end}
+
+
 class PublishMessage(unittest.TestCase):
-    def test_lists_open_shifts_by_day(self):
-        msg = w.publish_message(datetime.date(2026, 10, 12), [
-            {"date": datetime.date(2026, 10, 17), "start_min": 870, "end_min": 1200},
-            {"date": datetime.date(2026, 10, 13), "start_min": 900, "end_min": 1230},
-        ])
-        self.assertIn("The schedule for **Oct 12–18** is now published in ADP", msg)
-        self.assertIn("work with your availability", msg)
-        self.assertIn("**Open shifts this week**\n\n- Tue Oct 13", msg)
-        self.assertIn("claim it in the ADP app", msg)
-        self.assertLess(msg.index("Tue Oct 13 · 3:00 PM – 8:30 PM"), msg.index("Sat Oct 17 · 2:30 PM – 8:00 PM"))
+    # The operator's 2026-10-09 Shift Coverage post, with ADP's open shifts that morning.
+    OCT_9_SHIFTS = [
+        _slot(D(2026, 10, 18), 810, 1230),
+        _slot(D(2026, 10, 17), 870, 1200),
+        _slot(D(2026, 10, 13), 900, 1230),
+        _slot(D(2026, 10, 17), 750, 1230),
+        _slot(D(2026, 10, 16), 900, 1230),
+    ]
+
+    def test_matches_the_operator_post(self):
+        msg = w.publish_message(D(2026, 10, 19), self.OCT_9_SHIFTS)
+        post = msg.split("---\n\n", 1)[1]
+        self.assertEqual(post, "\n".join([
+            "@everyone 🗞️ Hi team! The schedule for **Oct 19–25** is now published in ADP. Please take a "
+            "moment to look over your shifts and make sure they work with your availability. If anything "
+            "doesn't look right, just let me know in this thread and we'll sort it out together.",
+            "",
+            "Additionally, sharing the Open Shifts for the coming days where we really need folks, please "
+            "let us know if someone can pick these up. We are flexible around below times. 🙏🏽",
+            "",
+            "1. Oct 13 (Tuesday)",
+            "    1. 3:00 PM → 8:30 PM",
+            "2. Oct 16 (Friday)",
+            "    1. 3:00 PM → 8:30 PM",
+            "3. Oct 17 (Saturday)",
+            "    1. 12:30 PM → 8:30 PM",
+            "    2. 2:30 PM → 8:00 PM",
+            "4. Oct 18 (Sunday)",
+            "    1. 1:30 PM → 8:30 PM",
+        ]))
+        self.assertTrue(msg.startswith("Published **Oct 19–25** in ADP."))
+        self.assertNotIn("re-read failed", msg)
 
     def test_no_open_shifts_and_month_boundary(self):
-        msg = w.publish_message(datetime.date(2026, 10, 26), [])
+        msg = w.publish_message(D(2026, 10, 26), [])
         self.assertIn("Oct 26–Nov 1", msg)
-        self.assertIn("no open shifts", msg)
-        self.assertNotIn("claim it", msg)
+        self.assertNotIn("Open Shifts", msg)
+        self.assertTrue(msg.endswith("sort it out together."))
+
+    def test_stale_data_is_flagged_in_the_header_only(self):
+        msg = w.publish_message(D(2026, 10, 19), self.OCT_9_SHIFTS, stale_as_of="Oct 9 12:58 PM CT")
+        head, post = msg.split("---\n\n", 1)
+        self.assertIn("as of Oct 9 12:58 PM CT", head)
+        self.assertNotIn("re-read failed", post)
+
+    def test_window_starts_tomorrow_and_ends_on_the_published_sunday(self):
+        self.assertEqual(w.open_shift_window(D(2026, 10, 19), D(2026, 10, 9)), (D(2026, 10, 10), D(2026, 10, 25)))
+
+
+class NotifyPublished(unittest.TestCase):
+    def _notify(self, fresh=True, scraped="2026-10-09T17:58:30+00:00"):
+        calls = []
+
+        def fq(sql, params):
+            calls.append(dict((n, v) for n, _t, v in params))
+            return [{"date": D(2026, 10, 13), "shift_range": "3:00 PM - 8:30 PM", "scraped_at_utc": scraped}]
+
+        posted = []
+        with mock.patch.object(w, "_query", fq), \
+             mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
+             mock.patch("core.datastore.fq", lambda t: t), \
+             mock.patch("skills.clickup_chat.ensure_dm_channel", return_value={"id": "dm1"}), \
+             mock.patch("skills.clickup_chat.post_message", lambda ch, content, team_id: posted.append(content)):
+            w.notify_published("palmetto", D(2026, 10, 19), fresh=fresh)
+        return calls, posted
+
+    def test_reads_the_whole_window_and_posts_once(self):
+        calls, posted = self._notify()
+        self.assertEqual(calls, [{"lo": D(2026, 10, 10), "hi": D(2026, 10, 25)}])
+        self.assertEqual(len(posted), 1)
+        self.assertIn("1. Oct 13 (Tuesday)\n    1. 3:00 PM → 8:30 PM", posted[0])
+
+    def test_failed_re_read_says_when_the_data_is_from(self):
+        _calls, posted = self._notify(fresh=False)
+        self.assertIn("as of Oct 9 12:58 PM CT", posted[0])
+
+    def test_dm_failure_leaves_a_breadcrumb(self):
+        with mock.patch.object(w, "_query", side_effect=RuntimeError("bq down")), \
+             mock.patch("builtins.print") as out:
+            w.notify_published("palmetto", D(2026, 10, 19))
+        self.assertIn("BREADCRUMB adp_publish_dm", out.call_args[0][0])
+
+
+class RefreshWindow(unittest.TestCase):
+    def test_reads_from_this_week_through_the_published_week(self):
+        with mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
+             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
+             mock.patch.object(wb, "goto_week") as goto, \
+             mock.patch.object(w, "refresh_schedule", return_value=True) as refresh:
+            self.assertTrue(w.refresh_open_shift_window(object(), "palmetto", D(2026, 10, 19)))
+        self.assertEqual(goto.call_args[0][2], D(2026, 10, 5))
+        refresh.assert_called_once_with(mock.ANY, "palmetto", D(2026, 10, 5), weeks=3)
+
+    def test_sunday_publish_starts_next_week(self):
+        with mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 11)), \
+             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
+             mock.patch.object(wb, "goto_week") as goto, \
+             mock.patch.object(w, "refresh_schedule", return_value=True) as refresh:
+            w.refresh_open_shift_window(object(), "palmetto", D(2026, 10, 19))
+        refresh.assert_called_once_with(mock.ANY, "palmetto", D(2026, 10, 12), weeks=2)
+        self.assertEqual(goto.call_count, 1)
 
 
 class RunPublish(unittest.TestCase):
@@ -267,7 +359,7 @@ class RunPublish(unittest.TestCase):
     def test_publish_marks_rows_and_sends_the_dm(self):
         rc, notify, published = self._run(mock.MagicMock(return_value=33))
         self.assertEqual((rc, published), (0, True))
-        notify.assert_called_once_with("palmetto", self.W)
+        notify.assert_called_once_with("palmetto", self.W, fresh=True)
 
     def test_lagging_count_confirmed_by_the_schedule_still_succeeds(self):
         publish = mock.MagicMock(side_effect=wb.PublishUnconfirmed("still shows drafts", 33))

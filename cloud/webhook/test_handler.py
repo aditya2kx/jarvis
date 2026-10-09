@@ -2083,6 +2083,23 @@ class TestTeamPulseKick:
         ]
 
 
+class TestUnavailabilityReminderKick:
+    def test_wrong_token_returns_403(self, monkeypatch):
+        monkeypatch.setattr(handler, "_TEAM_PULSE_TOKEN", "secret-tp")
+        with app.test_client() as client:
+            resp = client.post("/unavailability-reminder", headers={"X-Team-Pulse-Token": "wrong"})
+        assert resp.status_code == 403
+
+    def test_valid_token_dispatches_the_job(self, monkeypatch):
+        monkeypatch.setattr(handler, "_TEAM_PULSE_TOKEN", "secret-tp")
+        called = []
+        monkeypatch.setattr(handler, "_dispatch_async", lambda fn: called.append(fn))
+        with app.test_client() as client:
+            resp = client.post("/unavailability-reminder", headers={"X-Team-Pulse-Token": "secret-tp"})
+        assert resp.status_code == 200
+        assert [f.__name__ for f in called] == ["_run_unavailability_reminder_job"]
+
+
 class TestStalenessAlarm:
     """The alarm must fire from a beat the nightly cannot silence."""
 

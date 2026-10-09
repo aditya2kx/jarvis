@@ -31,6 +31,19 @@ Operator-reserved gates (where you MUST pause and await approval):
 At each operator gate, `phase_state.py advance` will refuse and post an `awaiting:operator` prompt on
 the GitHub issue.  Do not attempt to self-advance past these gates.
 
+## After alignment (jam + define-evidence approved)
+
+- **Build straight away; the plan is agent-internal.** Write the plan, pass
+  `check_plan_readiness.py`, advance `plan`, implement. Do not present the plan, ask for a
+  plan review, or ask the operator to switch to Plan mode — the jam + §4 contract is the
+  operator's sign-off.
+- **Know your own mode.** The jam deeplink only *requests* Ask mode. If you have file-edit
+  tools you are in Agent mode — act accordingly; never tell the operator to switch.
+- **Demo operator-visible output before the PR.** When the change produces something the
+  operator sees (a DM, message, page), show it live on the real surface — e.g. DM them the
+  message built from prod data, or a localhost screenshot — and get their OK before
+  `gh pr create`. Announce any DM before sending it.
+
 **You do NOT need the operator to remind you to:**
 - Keep follow-up requests in the current worktree (a new worktree only when the operator explicitly asks — see `new-requirement-intake.mdc`)
 - Make the plan thorough (apply `check_plan_readiness.py` yourself)

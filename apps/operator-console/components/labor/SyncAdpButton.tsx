@@ -159,8 +159,8 @@ export function SyncAdpButton({
   // A sync started before a reload keeps running on Cloud Run — pick its status back up.
   useEffect(() => {
     let cancelled = false;
-    void runningAdpSyncAction().then((ack) => {
-      if (cancelled || !ack.ok || !ack.data || pollTimerRef.current) return;
+    void runningAdpSyncAction().catch(() => null).then((ack) => {
+      if (cancelled || !ack?.ok || !ack.data || pollTimerRef.current) return;
       watch(ack.data.executionName, ack.data.baselineScrapedAt, "Syncing ADP… (started earlier)");
     });
     return () => {

@@ -203,23 +203,17 @@ jobs:
           python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
             --marker operator-console-preview-shots --body-file /tmp/body.md
 
-  diag-nav:
+  # Every menu item, tapped from the mobile hamburger on the real preview (IAP + Cloud Run),
+  # in iPhone WebKit: fails if a tap does not navigate or a page throws. Logs paths and
+  # timings only (public repo).
+  smoke:
     if: github.event_name == 'pull_request' && github.event.action != 'closed'
     needs: deploy
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
-    env:
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
       - uses: google-github-actions/auth@v2
         id: idt
         with:
@@ -228,39 +222,52 @@ jobs:
           token_format: id_token
           id_token_audience: 887772634501-rtccq8d5foru6kgcqbi3a1n6kmcqn2eu.apps.googleusercontent.com
           id_token_include_email: true
-      - uses: google-github-actions/setup-gcloud@v2
-      - name: iPhone WebKit — hamburger → Sales on the real preview
+      - name: Mobile nav smoke (iPhone WebKit, through IAP)
         env:
           TOKEN: ${{ steps.idt.outputs.id_token }}
         run: |
+          URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app"
+          for i in $(seq 1 40); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$URL/home")"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+          [ "$code" = "200" ] || { echo "::error::smoke: IAP did not admit the CI identity (last $code)"; exit 1; }
           pip install --quiet playwright && python3 -m playwright install --with-deps webkit >/dev/null
-          cat > /tmp/ios.py <<'EOF'
-          import os, time
+          cat > /tmp/smoke.py <<'EOF'
+          import os, sys, time
           from playwright.sync_api import sync_playwright
           base = os.environ["URL"]
+          bad = []
           with sync_playwright() as p:
               b = p.webkit.launch()
               ctx = b.new_context(**p.devices["iPhone 14"], extra_http_headers={"Authorization": "Bearer " + os.environ["TOKEN"]})
               page = ctx.new_page()
-              docs = []
-              page.on("request", lambda r: docs.append(r.url[len(base):]) if r.resource_type == "document" else None)
-              page.on("pageerror", lambda e: print("  pageerror", str(e)[:200]))
-              page.on("console", lambda m: print("  console", m.type, m.text[:200]) if m.type in ("error", "warning") else None)
-              for target in ["Sales", "Labor", "Sales", "Inventory"]:
+              errors = []
+              page.on("pageerror", lambda e: errors.append(str(e)[:160]))
+              page.goto(base + "/home", wait_until="networkidle", timeout=180000)
+              page.get_by_role("button", name="Open navigation").tap(); page.wait_for_timeout(700)
+              hrefs = [h for h in page.get_by_role("dialog").locator("a[href^='/']").evaluate_all("els => els.map(e => e.getAttribute('href'))") if h != "/home"]
+              page.keyboard.press("Escape")
+              for href in hrefs:
                   page.goto(base + "/home", wait_until="networkidle", timeout=180000)
-                  docs.clear()
+                  errors.clear()
                   page.get_by_role("button", name="Open navigation").tap(); page.wait_for_timeout(700)
-                  t = time.time(); page.get_by_role("link", name=target, exact=True).last.tap()
+                  t = time.time(); page.get_by_role("dialog").locator(f"a[href='{href}']").tap()
                   try:
-                      page.wait_for_url(f"**/{target.lower()}**", timeout=30000)
-                      print(f"  {target}: url changed in {time.time()-t:.2f}s, full loads {docs}")
+                      page.wait_for_url(f"**{href}**", timeout=30000)
+                      page.wait_for_load_state("networkidle", timeout=60000)
+                      page.wait_for_timeout(1500)
+                      res = f"ok {time.time()-t:.2f}s"
                   except Exception:
-                      print(f"  {target}: STUCK on {page.url[len(base):]} after 30s, full loads {docs}")
-                  page.wait_for_timeout(2500)
-                  page.screenshot(path=f"/tmp/ios-{target}.png")
+                      res = f"STUCK on {page.url[len(base):].split('?')[0]}"
+                  if not res.startswith("ok") or errors:
+                      bad.append(href)
+                  print(f"home -> {href}: {res}" + (f" | page errors: {errors}" if errors else ""))
               b.close()
+          sys.exit(f"smoke: failed for {bad}" if bad else 0)
           EOF
-          URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app" python3 /tmp/ios.py
+          URL="$URL" python3 /tmp/smoke.py
 
   teardown:
     if: >-

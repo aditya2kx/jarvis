@@ -47,6 +47,23 @@ def _cursor_cloud_agent(env: dict[str, str]) -> bool:
     return False
 
 
+def detect_surface(env: dict[str, str] | None = None, platform: str | None = None) -> str:
+    """Where this process runs: ``ci`` | ``cursor_cloud`` | ``mac_local`` | ``other``.
+
+    Dev-loop scripts branch on this (open Cursor windows / launchd only on
+    ``mac_local``); GCP identity is a separate question answered by classify().
+    """
+    env = env if env is not None else dict(os.environ)
+    platform = platform if platform is not None else sys.platform
+    if env.get("GITHUB_ACTIONS") == "true":
+        return "ci"
+    if _cursor_cloud_agent(env):
+        return "cursor_cloud"
+    if platform == "darwin":
+        return "mac_local"
+    return "other"
+
+
 def probe_adc() -> tuple[bool, str]:
     """Return (ok, project_or_error_type). Does not print credentials."""
     try:
@@ -94,6 +111,7 @@ def format_report(
 ) -> str:
     lines = [
         f"surface={surface}",
+        f"dev_surface={detect_surface()}",
         f"gcloud_cli={'yes' if gcloud_on_path else 'no'}",
         f"adc={'yes' if adc_ok else 'no'} ({adc_detail})",
         f"recipe={RECIPES[surface]}",

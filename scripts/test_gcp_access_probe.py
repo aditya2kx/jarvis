@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from gcp_access_probe import RECIPES, classify, format_report  # noqa: E402
+from gcp_access_probe import RECIPES, classify, detect_surface, format_report  # noqa: E402
 
 
 class ClassifyTests(unittest.TestCase):
@@ -71,6 +71,21 @@ class ClassifyTests(unittest.TestCase):
         self.assertIn("surface=cursor_cloud_no_adc", text)
         self.assertIn("docs/contributing/gcp-access.md", text)
         self.assertNotIn("BEGIN PRIVATE", text)
+
+
+class DetectSurfaceTests(unittest.TestCase):
+    def test_ci_wins_over_everything(self):
+        env = {"GITHUB_ACTIONS": "true", "CURSOR_AGENT": "1"}
+        self.assertEqual(detect_surface(env=env, platform="darwin"), "ci")
+
+    def test_cursor_cloud_agent(self):
+        self.assertEqual(detect_surface(env={"CURSOR_AGENT": "1"}, platform="linux"), "cursor_cloud")
+
+    def test_operator_mac(self):
+        self.assertEqual(detect_surface(env={}, platform="darwin"), "mac_local")
+
+    def test_unknown_linux(self):
+        self.assertEqual(detect_surface(env={}, platform="linux"), "other")
 
 
 if __name__ == "__main__":

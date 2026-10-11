@@ -52,6 +52,7 @@ import shutil
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import gcp_access_probe as P
 import pr_cost_ledger as L
 import start_pr_session as S
 
@@ -598,8 +599,9 @@ def _run_one(
             print(f"Tracking issue → {issue_url}")
         return 0
 
-    if no_open:
-        # Agent-driven run (cloud/CI/dogfood): skip the Cursor window.
+    if no_open or P.detect_surface() != "mac_local":
+        # Agent-driven run (Cursor Cloud Agent / CI / dogfood): no Cursor window,
+        # no launchd daemon — both only exist on the operator's Mac.
         print("\n─── WORKTREE READY (--no-open) ───")
         print(f"Worktree: {wt}")
         if issue_url:

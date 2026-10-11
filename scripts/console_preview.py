@@ -6,6 +6,8 @@
 Authenticates to IAP with the cursor-cloud-agent ID token (scripts/cloud_agent_gcp.py id-token);
 previews only — prod's IAP list does not include that identity. Prints one line per path
 (status, final path, title); screenshots are local files, never uploaded by this script.
+Right after a preview deploy IAP answers 403 until the SA's grant applies; each path retries a
+403 every 15 s for up to 3 min, so a slow first call is expected.
 """
 from __future__ import annotations
 
@@ -19,6 +21,17 @@ import cloud_agent_gcp as G  # noqa: E402
 
 URL = "https://operator-console-pr{pr}-887772634501.us-central1.run.app"
 IAP_GRANT_RETRIES = 12
+
+
+def goto_through_iap(page, url: str, retries: int = IAP_GRANT_RETRIES, wait_ms: int = 15_000):
+    """The preview deploy's IAP grant for this SA takes a minute or two to apply: retry 403s."""
+    resp = page.goto(url, wait_until="networkidle")
+    for _ in range(retries):
+        if not resp or resp.status != 403:
+            break
+        page.wait_for_timeout(wait_ms)
+        resp = page.goto(url, wait_until="networkidle")
+    return resp
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,13 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         ctx = browser.new_context(**opts, extra_http_headers={"Authorization": f"Bearer {token}"})
         page = ctx.new_page()
         for path in a.paths:
-            resp = page.goto(base + path, wait_until="networkidle")
-            # The preview deploy's IAP grant for this SA takes a minute or two to apply.
-            for _ in range(IAP_GRANT_RETRIES):
-                if not resp or resp.status != 403:
-                    break
-                page.wait_for_timeout(15_000)
-                resp = page.goto(base + path, wait_until="networkidle")
+            resp = goto_through_iap(page, base + path)
             final = page.url.removeprefix(base)
             print(f"{path}: {resp.status if resp else '?'} → {final} — {page.title()}")
             if a.shots:

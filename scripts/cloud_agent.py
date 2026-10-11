@@ -95,7 +95,7 @@ def seed_prompt(requirement: str, issue: int | None) -> str:
         f"{requirement.strip()}\n\n{issue_line}"
         "You are a Jarvis Cursor Cloud Agent started by `/jarvis-cloud-task`. Follow AGENTS.md, "
         "CONTRIBUTING.md and .cursor/rules (pr-workflow.mdc § Cursor Cloud Agent surface): "
-        "jam with the operator before building, open a draft PR early, put "
+        "jam with the operator before building, push your branch early (`cloud-agent-pr.yml` opens the draft PR as jarvis-agent-bot328 — set its title/body with ManagePullRequest update_pr, never create_pr), put "
         "`Cursor-Agent: <your bc- id> model=<your model id>` in the PR body, "
         "use the Operator Console preview + screenshot comments as UI evidence, "
         "use `/prod-read` PR comments for prod data, and subscribe to the PR's review and CI "

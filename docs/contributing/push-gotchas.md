@@ -63,7 +63,7 @@ PY
 # 4. Revoke ALL previous bot classic PATs on github.com/settings/tokens (last step).
 ```
 
-**Custody note:** `~/.zshrc` loads `github-bot-pat` into `GH_TOKEN`. Repo secret
+**Custody note:** `~/.zshrc` loads `github-bot-pat` into `GH_TOKEN`. Cursor Cloud Agents get the same PAT as the Cursor dashboard secret `GH_TOKEN` (`scripts/cloud_git_identity.sh`) — a rotation updates that slot too. Repo secret
 `ADMIN_PAT` is the same bot PAT (used by `jarvis-dev-signals`, `auto-merge-on-approval`,
 `pr-merged-lifecycle`, etc.). Owner personal PAT stays under Keychain service
 `github-pat` / account `aditya2kx` (alias `gh-adi`) — never overwrite that slot

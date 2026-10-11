@@ -512,6 +512,7 @@ capture, operator setup): [`docs/contributing/dev-anywhere.md`](contributing/dev
 | `prod-ops.yml` / `scripts/prod_ops.py` | `/prod-ops` comment → planned prod mutation gated on Environment `prod` approval |
 | `pr-cost-gate.yml` + `scripts/cloud_agent.py record-cost` | prices a `Cursor-Agent:` PR's agent usage into BQ |
 | `jarvis-dev-gateway-deploy.yml` | deploys the Siri/Grok gateway from `main`; PR self-test on the runner |
+| `cloud-agent-pr.yml` + `scripts/cloud_git_identity.sh` | Cloud Agents commit/push as `jarvis-agent-bot328` (Cursor secret `GH_TOKEN`); first push of a `cursor/*` branch opens its draft PR as the bot |
 
 ## 10. Deferred roadmap (out of scope for this PR)
 

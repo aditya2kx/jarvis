@@ -1,5 +1,6 @@
 {
   "install": "pip install -q -r requirements.txt pytest playwright && python3 -m playwright install --with-deps chromium && (cd apps/operator-console && npm ci --no-audit --no-fund)",
+  "start": "bash scripts/cloud_git_identity.sh",
   "ports": [
     { "name": "operator-console", "port": 3000 }
   ]

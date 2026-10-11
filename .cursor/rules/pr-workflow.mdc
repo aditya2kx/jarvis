@@ -34,7 +34,7 @@ Do NOT ask whether to babysit — just do it.
 ## Cursor Cloud Agent surface
 
 `python3 scripts/gcp_access_probe.py` prints `dev_surface=` (`mac_local` / `cursor_cloud` / `ci`). On `cursor_cloud`:
-`gh` is read-only, so steps 2 and 4 go through the agent's `ManagePullRequest` tool (create / update / `post_comment` / `resolve_comment`), and the PR body carries `Cursor-Agent: <bc-id> model=<model-id>` so `pr-cost-gate.yml` records build cost from the Cursor API instead of step 3. After opening the PR, subscribe to its review and CI events (`subscribe` skill) so comments and failures wake you for the batch loop; prod data comes from `/prod-read` PR comments (`scripts/prod_read.py`). See `docs/contributing/dev-anywhere.md`.
+commits and pushes run as `jarvis-agent-bot328`, same as the Mac (`scripts/cloud_git_identity.sh` on VM start, from the Cursor secret `GH_TOKEN` = bot PAT). Step 2: **do not** create the PR with `ManagePullRequest` (it opens under the operator's account, who then cannot approve it — Issue #321); push the branch and `cloud-agent-pr.yml` opens a draft PR as the bot, then `ManagePullRequest` `update_pr` by branch sets title/body. Comments and replies (step 4) also go through `ManagePullRequest`. The PR body carries `Cursor-Agent: <bc-id> model=<model-id>` so `pr-cost-gate.yml` records build cost from the Cursor API instead of step 3. After opening the PR, subscribe to its review and CI events (`subscribe` skill) so comments and failures wake you for the batch loop; prod data comes from `/prod-read` PR comments (`scripts/prod_read.py`). See `docs/contributing/dev-anywhere.md`.
 
 ## What "babysitting" is NOT
 

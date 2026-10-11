@@ -78,6 +78,15 @@ git ls-remote origin HEAD               # must exit 0 (push path live)
 ```
 If `gh api user` returns 401, the shell still has the old token — open a new terminal tab.
 
+**Cursor Cloud Agent: re-assert the bot before every push.** Cursor re-injects its GitHub App
+token mid-session (`insteadOf` rewrites in `~/.gitconfig`, a token in the `origin` URL, `gh`
+logged in as `cursor`), silently undoing `scripts/cloud_git_identity.sh`. A push made then lands
+as `cursor[bot]`, and the Claude review refuses non-human actors. Repo hooks don't run there
+(Cursor owns `core.hooksPath`), so chain it by hand:
+```bash
+bash scripts/cloud_git_identity.sh && [ "$(gh api user --jq .login)" = jarvis-agent-bot328 ] && git push
+```
+
 ## 3. Never push to `main` directly
 `main` is the deployed branch.  Push to `main` → image rebuild → prod change.
 Always work on a feature branch and land via PR.

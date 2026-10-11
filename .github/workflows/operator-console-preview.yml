@@ -194,6 +194,69 @@ jobs:
           python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
             --marker operator-console-preview-shots --body-file /tmp/body.md
 
+  diag-nav:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Preview request log (status, latency, path — no query strings)
+        run: |
+          gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT_ID" \
+            --format='value(spec.template.spec.containerConcurrency,spec.template.metadata.annotations)' || true
+          gcloud logging read \
+            "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND timestamp>=\"2026-10-11T15:45:00Z\" AND httpRequest.requestMethod:*" \
+            --project "$PROJECT_ID" --limit 400 --order asc \
+            --format='value(timestamp,httpRequest.requestMethod,httpRequest.status,httpRequest.latency,httpRequest.requestUrl)' \
+            | sed -E 's#https://[^/]+##; s#\?_rsc=[^ \t]*#?_rsc#; s#\?[^ \t]*#?…#' | tail -200
+          echo "--- app warnings/errors"
+          gcloud logging read \
+            "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND timestamp>=\"2026-10-11T15:45:00Z\" AND severity>=WARNING AND NOT httpRequest.requestMethod:*" \
+            --project "$PROJECT_ID" --limit 60 --order asc --format='value(timestamp,severity,textPayload)' | cut -c1-200
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/operator-console/package-lock.json
+      - name: Mobile nav timing against prod data (runner)
+        working-directory: apps/operator-console
+        env:
+          CONSOLE_PREVIEW: "1"
+          BYPASS_IAP_EMAIL: preview-bot@mypalmetto.co
+          BQ_PROJECT: ${{ env.PROJECT_ID }}
+          BQ_DATASET: bhaga
+        run: |
+          npm ci --no-audit --no-fund >/dev/null && npm run build >/dev/null
+          nohup npx next start -p 3000 > /tmp/next.log 2>&1 &
+          for _ in $(seq 1 60); do curl -fsS -o /dev/null http://localhost:3000/home && break; sleep 2; done
+          pip install --quiet playwright && python3 -m playwright install --with-deps chromium >/dev/null
+          cat > /tmp/nav.py <<'EOF'
+          import time
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              b = p.chromium.launch()
+              page = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True).new_page()
+              t0 = time.time()
+              page.on("requestfinished", lambda r: print(f"{time.time()-t0:6.2f}s", r.method, r.url.split('?')[0][21:], "rsc" if "_rsc" in r.url else "", f"{r.timing['responseEnd']:.0f}ms"))
+              page.goto("http://localhost:3000/home", wait_until="networkidle", timeout=180000)
+              print(f"home loaded {time.time()-t0:.2f}s")
+              page.get_by_role("button", name="Open navigation").tap(); page.wait_for_timeout(800)
+              t1 = time.time(); page.get_by_role("link", name="Sales").last.tap()
+              page.wait_for_url("**/sales**", timeout=120000)
+              print(f"NAV home->sales took {time.time()-t1:.2f}s")
+              b.close()
+          EOF
+          python3 /tmp/nav.py
+
   teardown:
     if: >-
       github.event_name == 'pull_request' &&

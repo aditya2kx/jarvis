@@ -32,6 +32,8 @@ jobs:
             exit 0
           fi
           title="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.commit.message | split("\n")[0]')"
+          # ManagePullRequest update_pr only rewrites a body inside Cursor's agent-managed
+          # markers; without them the agent cannot set the title/body of the bot's PR.
+          body="$(printf '<!-- CURSOR_AGENT_PR_BODY_BEGIN -->\nOpened as jarvis-agent-bot328 for Cursor Cloud Agent branch `%s`; the agent replaces this body with the PR template.\n<!-- CURSOR_AGENT_PR_BODY_END -->' "$BRANCH")"
           gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --draft \
-            --title "$title" \
-            --body "Opened as jarvis-agent-bot328 for Cursor Cloud Agent branch \`$BRANCH\`; the agent replaces this body with the PR template."
+            --title "$title" --body "$body"

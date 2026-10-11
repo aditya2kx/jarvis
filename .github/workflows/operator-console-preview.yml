@@ -31,6 +31,7 @@ env:
   PROD_SERVICE: operator-console
   PR: ${{ github.event.pull_request.number }}
   SERVICE: operator-console-pr${{ github.event.pull_request.number }}
+  AGENT_SA: cursor-cloud-agent@jarvis-bhaga-prod.iam.gserviceaccount.com
 
 concurrency:
   group: operator-console-preview-${{ github.event.pull_request.number || github.run_id }}
@@ -108,8 +109,20 @@ jobs:
           b[0]['members'].append('serviceAccount:' + os.environ['CI_SA'])
           print(json.dumps(p))" > /tmp/iap.json
           python3 -c "import json; p=json.load(open('/tmp/iap.json')); print('iap members copied:', sum(len(b.get('members',[])) for b in p.get('bindings',[])))"
-          gcloud iap web set-iam-policy /tmp/iap.json --resource-type=cloud-run --service="$SERVICE" \
-            --region "$REGION" --project "$PROJECT_ID" --quiet >/dev/null
+          # Cursor Cloud Agents open previews with an ID token (scripts/cloud_agent_gcp.py id-token);
+          # IAP rejects a policy naming a missing SA, so fall back until provisioning has run.
+          python3 -c "
+          import json; p = json.load(open('/tmp/iap.json'))
+          [b for b in p['bindings'] if b['role'] == 'roles/iap.httpsResourceAccessor' and 'condition' not in b][0]['members'].append('serviceAccount:$AGENT_SA')
+          json.dump(p, open('/tmp/iap-agent.json', 'w'))"
+          set_iap() { gcloud iap web set-iam-policy "$1" --resource-type=cloud-run --service="$SERVICE" \
+            --region "$REGION" --project "$PROJECT_ID" --quiet >/dev/null; }
+          if set_iap /tmp/iap-agent.json 2>/dev/null; then
+            echo "iap: Cursor Cloud Agent SA included"
+          else
+            echo "iap: $AGENT_SA not provisioned yet (scripts/provision_cloud_agent_identity.sh)"
+            set_iap /tmp/iap.json
+          fi
 
       - name: Comment preview URL
         run: |

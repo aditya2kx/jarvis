@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cursor Cloud Agent VM: commit, push and use gh as jarvis-agent-bot328, exactly like the Mac
 # (docs/contributing/push-gotchas.md §2). The bot PAT comes from Secret Manager `github-bot-pat`
-# via Cursor OIDC (scripts/cloud_agent_secret.py), or from a GH_TOKEN Cursor secret if set.
+# via Cursor OIDC (scripts/cloud_agent_gcp.py), or from a GH_TOKEN Cursor secret if set.
 # Without either nothing changes. Idempotent — safe on every VM start.
 set -euo pipefail
 
@@ -11,7 +11,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 
 [ "$(uname -s)" = Darwin ] && exit 0
 token="${GH_TOKEN:-}"
-[ -n "$token" ] || token="$(python3 "$here/cloud_agent_secret.py" github-bot-pat)" || token=""
+[ -n "$token" ] || token="$(python3 "$here/cloud_agent_gcp.py" secret github-bot-pat)" || token=""
 if [ -z "$token" ]; then
   echo "cloud-git-identity: no bot PAT (Secret Manager github-bot-pat via Cursor OIDC, or GH_TOKEN) — commits/pushes stay as the Cursor app"
   exit 0

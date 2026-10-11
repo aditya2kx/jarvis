@@ -26,7 +26,7 @@ Run that **before** any Secret Manager write or `gcloud` command. The printed
 | **GitHub Actions** | `deploy.yml`, `tesla-aladdin-garage-deploy.yml`, cost/BQ workflows | Workload Identity Federation | `google-github-actions/auth` + `gcloud` in the job |
 | **Laptop / Cloud Shell** | operator machine, `gcloud auth application-default login` | User ADC (`aditya.2ky@gmail.com`) | `hydrate`, `secret_manager_put.py`, optional `gcloud` CLI |
 | **Cloud Run / GCE** | runtime of `bhaga-webhook`, `tesla-aladdin-garage`, jobs | Attached service account | Google client libraries; no laptop Keychain |
-| **Cursor Cloud Agent** | `CURSOR_AGENT=1` VM (iPhone / desktop cloud run) | No ADC; **Cursor OIDC → WIF pool `cursor-agents`** (recipe F) — reads `github-bot-pat` only | `scripts/cloud_agent_secret.py`, `gh` as the bot after `cloud_git_identity.sh`; no `gcloud` |
+| **Cursor Cloud Agent** | `CURSOR_AGENT=1` VM (iPhone / desktop cloud run) | No ADC; **Cursor OIDC → WIF pool `cursor-agents` → SA `cursor-cloud-agent`** (recipe F) — reads `github-bot-pat`, opens console previews | `scripts/cloud_agent_gcp.py`, `scripts/console_preview.py`, `gh` as the bot after `cloud_git_identity.sh`; no `gcloud` |
 
 Repo secrets used by WIF (names only — values never in git):
 
@@ -141,16 +141,30 @@ includes `https://<service>/oauth/tesla`. Client id/secret/Aladdin can be put fi
 Cloud Agent VMs mint short-lived Cursor OIDC tokens on `$CURSOR_AGENT_SOCKET`
 (`POST /v1/tokens/oidc`, issuer `https://api.cursor.com`). Pool `cursor-agents` / provider
 `cursor` trusts them only when `owner_user_id` is the operator's Cursor user and `repo_url` is
-`github.com/aditya2kx/jarvis`; the resulting principal set has `secretAccessor` on
-`github-bot-pat` and nothing else. One-time, idempotent, from an owner ADC surface:
+`github.com/aditya2kx/jarvis`; that principal set may act as SA **`cursor-cloud-agent`**, which has
+no project roles — only per-resource grants:
+
+| Grant | Use |
+|---|---|
+| `secretAccessor` on `github-bot-pat` | `cloud_git_identity.sh`: git + `gh` as `jarvis-agent-bot328` |
+| `iap.httpsResourceAccessor` on each **preview** (`operator-console-preview.yml`) | `console_preview.py`: open / screenshot a PR preview with an ID token — never prod |
+
+One-time, idempotent, from an owner ADC surface (an agent can drive Cloud Shell, signing in with
+`skills/vault`):
 
 ```bash
 bash scripts/provision_cloud_agent_identity.sh   # also creates the jarvis-dev gateway secrets
 ```
 
-On the VM: `python3 scripts/cloud_agent_secret.py github-bot-pat` (stdlib only: OIDC → STS →
-Secret Manager); `scripts/cloud_git_identity.sh` (environment `start`) uses it so git and `gh`
-run as `jarvis-agent-bot328`. Widen the grant per secret, never project-wide.
+On the VM (stdlib only: OIDC → STS → SA):
+
+```bash
+python3 scripts/cloud_agent_gcp.py secret github-bot-pat
+python3 scripts/cloud_agent_gcp.py id-token            # audience = console IAP OAuth client
+python3 scripts/console_preview.py --pr 385 /home /inventory --shots /tmp/shots [--mobile]
+```
+
+Widen per resource, never project-wide; prod changes stay on `/prod-ops` (operator approval).
 
 ---
 

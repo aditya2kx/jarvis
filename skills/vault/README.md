@@ -1,0 +1,46 @@
+# vault — per-site credentials for agents (1Password)
+
+Ad-hoc development logins (portals with no API, Cloud Shell sign-in, vendor dashboards) come from
+one 1Password vault, so a Cursor Cloud Agent can sign in by itself the way the Mac agent used
+Keychain + `user-playwright`.
+
+| | |
+|---|---|
+| Store | 1Password vault **`Jarvis Agents`** (override `JARVIS_VAULT`) — one **Login** item per site: username, password, website URL, optional one-time password |
+| Agent access | 1Password **service account** with `read_items` on that vault only → `OP_SERVICE_ACCOUNT_TOKEN` (Cursor dashboard → Cloud Agents → Secrets, type **Runtime Secret**, scoped to `aditya2kx/jarvis`) |
+| CLI | `op` 2.40.0, installed by `.cursor/environment.json` |
+| Limits | personal plans: 1,000 reads/hour per token, 1,000 requests/day per account — each command here is 2–4 reads |
+
+## Use
+
+```bash
+python3 -m skills.vault list                                   # titles + sites, no secrets
+python3 -m skills.vault get accounts.google.com                # username only
+# click the field in the browser first, then:
+python3 -m skills.vault type accounts.google.com --field password --enter
+python3 -m skills.vault type accounts.google.com --field otp --enter
+# scripted logins: secret only in the child's environment
+python3 -m skills.vault run adp --field password --as ADP_PASSWORD -- python3 login.py
+```
+
+A site resolves by item title, then by website host (exact, then parent domain).
+
+## Never
+
+- print a password or code: `get` returns the username only; `type` sends the value to xdotool
+  stdin; `run` passes it in the child environment;
+- give the service account write access or a second vault;
+- store GCP / GitHub machine credentials here — those use OIDC federation
+  (`docs/contributing/gcp-access.md` recipe F).
+
+## Operator one-time setup
+
+1. 1Password → New vault **Jarvis Agents**; add a Login item per site the agents may use.
+2. 1Password.com → Developer → Directory → **Service account** → access: `Jarvis Agents`, *Read items*
+   only (or `op service-account create jarvis-cloud-agents --vault "Jarvis Agents:read_items"`).
+3. Cursor dashboard → Cloud Agents → Secrets → `OP_SERVICE_ACCOUNT_TOKEN` = the token
+   (Runtime Secret, repo `aditya2kx/jarvis`). New agents pick it up.
+
+For a Google sign-in, add the account's authenticator-app code to its item (Google account →
+Security → 2-Step Verification → Authenticator → scan with 1Password) so the agent can answer
+"Try another way → Google Authenticator" without your phone.

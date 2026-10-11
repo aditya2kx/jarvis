@@ -513,6 +513,8 @@ capture, operator setup): [`docs/contributing/dev-anywhere.md`](contributing/dev
 | `pr-cost-gate.yml` + `scripts/cloud_agent.py record-cost` | prices a `Cursor-Agent:` PR's agent usage into BQ |
 | `jarvis-dev-gateway-deploy.yml` | deploys the Siri/Grok gateway from `main`; PR self-test on the runner |
 | `cloud-agent-pr.yml` + `scripts/cloud_git_identity.sh` | Cloud Agents commit/push as `jarvis-agent-bot328` (bot PAT from Secret Manager via Cursor OIDC; `provision_cloud_agent_identity.sh` once); first push of a `cursor/*` branch opens its draft PR as the bot |
+| `scripts/cloud_agent_gcp.py` + `scripts/console_preview.py` | Cloud Agent GCP identity (Cursor OIDC → `cursor-cloud-agent`): bot PAT, preview ID token |
+| `skills/vault` | per-site logins from 1Password vault `Jarvis Agents` for ad-hoc dev (Cloud Shell, portals) |
 
 ## 10. Deferred roadmap (out of scope for this PR)
 

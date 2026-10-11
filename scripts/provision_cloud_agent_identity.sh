@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# One-time, idempotent: lets Cursor Cloud Agents read the bot PAT from Secret Manager with no
-# static secret (Cursor OIDC → GCP Workload Identity Federation), and creates the jarvis-dev
+# One-time, idempotent: gives Cursor Cloud Agents a GCP identity with no static secret (Cursor
+# OIDC → Workload Identity Federation → service account cursor-cloud-agent), so they can read the
+# bot PAT and open Operator Console previews with an ID token; also creates the jarvis-dev
 # gateway secrets. Run from an owner ADC surface (Cloud Shell / laptop):
 #   bash scripts/provision_cloud_agent_identity.sh
-# Trust is limited to Cloud Agents owned by the operator's Cursor user on aditya2kx/jarvis, and
-# grants only secretAccessor on github-bot-pat. docs/contributing/gcp-access.md recipe F.
+# Trust is limited to Cloud Agents owned by the operator's Cursor user on aditya2kx/jarvis. The SA
+# holds secretAccessor on github-bot-pat only; previews add it to their IAP list
+# (operator-console-preview.yml) — never prod. docs/contributing/gcp-access.md recipe F.
 set -euo pipefail
 
 P=jarvis-bhaga-prod
@@ -14,6 +16,8 @@ PROVIDER=cursor
 CURSOR_USER_ID=345375759
 REPO=github.com/aditya2kx/jarvis
 DEPLOY_SA=serviceAccount:bhaga-orchestrator@$P.iam.gserviceaccount.com
+AGENT_SA_NAME=cursor-cloud-agent
+AGENT_SA=$AGENT_SA_NAME@$P.iam.gserviceaccount.com
 AUD="//iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/$POOL/providers/$PROVIDER"
 PRINCIPALS="principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/$POOL/attribute.repo/$REPO"
 
@@ -34,6 +38,12 @@ gcloud iam workload-identity-pools providers $verb $PROVIDER --workload-identity
   --location=global --project $P --issuer-uri=https://api.cursor.com --allowed-audiences="$AUD" \
   --attribute-mapping="$MAPPING" --attribute-condition="$CONDITION"
 
+gcloud iam service-accounts describe $AGENT_SA --project $P >/dev/null 2>&1 ||
+  gcloud iam service-accounts create $AGENT_SA_NAME --project $P \
+    --display-name="Cursor Cloud Agents (no roles; per-resource grants only)"
+gcloud iam service-accounts add-iam-policy-binding $AGENT_SA --project $P \
+  --member="$PRINCIPALS" --role=roles/iam.workloadIdentityUser >/dev/null
+
 for s in jarvis-dev-gateway-token github-bot-pat; do
   gcloud secrets describe $s --project $P >/dev/null 2>&1 ||
     gcloud secrets create $s --replication-policy=automatic --project $P
@@ -47,7 +57,7 @@ bind() { gcloud secrets add-iam-policy-binding "$1" --project $P --member="$2" -
 bind jarvis-dev-gateway-token "$DEPLOY_SA" roles/secretmanager.secretAccessor
 bind github-bot-pat "$DEPLOY_SA" roles/secretmanager.secretAccessor
 bind github-bot-pat "$DEPLOY_SA" roles/secretmanager.secretVersionAdder
-bind github-bot-pat "$PRINCIPALS" roles/secretmanager.secretAccessor
+bind github-bot-pat "serviceAccount:$AGENT_SA" roles/secretmanager.secretAccessor
 
 echo "cloud-agent identity: pool=$POOL provider=$PROVIDER aud=$AUD"
-echo "cloud-agent identity: $PRINCIPALS → secretAccessor on github-bot-pat"
+echo "cloud-agent identity: $PRINCIPALS → $AGENT_SA (secretAccessor on github-bot-pat)"

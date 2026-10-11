@@ -10,13 +10,14 @@ additive and reached through its own commands, so both can be used side by side.
 |---|---|---|
 | Start work | `/jarvis-new-task` → `new_requirement.py` worktree + Cursor window | `/jarvis-cloud-task` on an issue → `scripts/cloud_agent.py launch` (link commented on the issue); or open an agent on the repo in Cursor mobile/web; or Siri / Grok via the [gateway](../../cloud/jarvis_dev_gateway/README.md) |
 | Environment | your checkout | `.cursor/environment.json` (pip + pytest + Playwright Chromium + console `npm ci`) |
-| See the console change | `npm run dev` on localhost | **per-PR preview** `operator-console-pr<N>` behind prod IAP (same Google sign-in + allowlist), screenshot comment on the PR; deleted on PR close + nightly sweep (`operator-console-preview.yml`) — Mac PRs get one too |
+| See the console change | `npm run dev` on localhost | **per-PR preview** `operator-console-pr<N>` behind prod IAP (same Google sign-in + allowlist), screenshot comment on the PR; the agent itself opens it with a token (`scripts/console_preview.py`, no Google sign-in); deleted on PR close + nightly sweep (`operator-console-preview.yml`) — Mac PRs get one too |
 | Prod reads (BQ, logs, status) | ADC | `/prod-read …` PR comment → result encrypted to the agent's key (`scripts/prod_read.py`; repo is public) |
 | Prod mutations (env flags, job runs, migrations) | ADC / Cloud Shell | `/prod-ops …` PR comment → operator approves in GitHub Environment `prod` (`scripts/prod_ops.py`) |
 | Git identity | `GH_TOKEN` (bot PAT, Keychain) → commits + pushes as `jarvis-agent-bot328` | same PAT, no copy: `scripts/cloud_git_identity.sh` (environment `start`) reads Secret Manager `github-bot-pat` via Cursor OIDC ([gcp-access.md](gcp-access.md) recipe F), logs `gh` in, drops Cursor's app-token rewrite, sets bot name/email (a `GH_TOKEN` Cursor secret also works) |
 | Open the PR | `gh pr create` as the bot | push a `cursor/*` branch → `cloud-agent-pr.yml` opens a draft PR as the bot (`ADMIN_PAT`); the agent sets title/body with `ManagePullRequest` `update_pr` — never its `create_pr`, which opens under the operator's account (Issue #321) |
 | Claude review | normal | normal — the actor is the bot, as on the Mac |
 | Build cost → BQ | `pr_cost_ledger.py capture-build` from transcripts | PR body line `Cursor-Agent: <bc-id> model=<model-id>` (add `prs=<a>,<b>` when one agent built several PRs — the cost splits by diff size); `pr-cost-gate.yml` prices the agent's `/usage` |
+| Ad-hoc logins (portals, Cloud Shell, vendor dashboards) | Keychain + `user-playwright` | 1Password vault `Jarvis Agents` via `skills/vault` (`type` into the focused field — never printed) |
 | Babysit | `dev_event_listener` + hooks | subscribe to the PR's review/CI events; `@cursor` comments reach the agent |
 
 Why the Mac cannot be disturbed: `/jarvis-new-task` and its `intake-signal` job are byte-identical
@@ -46,7 +47,8 @@ page error (paths and timings only in the log).
 
 | Step | Where | Why |
 |---|---|---|
-| `bash scripts/provision_cloud_agent_identity.sh` (Cursor OIDC trust + gateway secrets; agent-driven in Cloud Shell, operator only signs in) | Cloud Shell or Mac ADC | Cloud Agents act as `jarvis-agent-bot328`; gateway deployable |
+| Vault `Jarvis Agents` + read-only service account → Cursor secret `OP_SERVICE_ACCOUNT_TOKEN` ([skills/vault](../../skills/vault/README.md#operator-one-time-setup)); put the Google owner login (+ authenticator code) in it | 1Password + Cursor dashboard | agents sign in to sites by themselves |
+| `bash scripts/provision_cloud_agent_identity.sh` (Cursor OIDC trust + gateway secrets) — **the agent runs it** in Cloud Shell, signing in from the vault | Cloud Shell | Cloud Agents act as `jarvis-agent-bot328` and open previews with tokens; gateway deployable |
 | Create environment `prod` with yourself as **Required reviewer** | GitHub → Settings → Environments (owner-only; works on phone) | `/prod-ops` refuses until it exists |
 | Save the proposed environment config | Cursor dashboard → Cloud Agents → Environment | new agents boot with deps installed |
 | Copy `jarvis-dev-gateway-token` into Siri Shortcut / Grok | Cloud Console → Secret Manager | voice / Grok entry |
@@ -58,5 +60,6 @@ Optional: repo variable `CLOUD_AGENT_MODEL` picks the Cloud Agent model (account
 
 ## Still Mac-only
 
-`user-playwright` MCP portal provisioning (ADP/Square/Slack app setup), Keychain-backed secrets, and
-CHITRA/CHANAKYA/AKSHAYA (local agents). BHAGA runtime is already cloud (`RUNBOOK.md`).
+The Keychain-backed secrets the runtime scripts read and CHITRA/CHANAKYA/AKSHAYA (local agents).
+Portal provisioning moves to the cloud once the portal's login is in the vault: the agent drives the
+VM's desktop browser and types credentials with `skills/vault`. BHAGA runtime is already cloud (`RUNBOOK.md`).

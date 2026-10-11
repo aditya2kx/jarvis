@@ -81,6 +81,16 @@ class SecretHandlingTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("--otp", calls[1][0])
 
+    def test_run_takes_options_after_site_and_passes_secret_in_child_env(self):
+        rc, out, calls = self._main(["run", "ADP RUN", "--field", "password", "--as", "ADP_PASSWORD",
+                                     "--", "python3", "login.py", "--fast"],
+                                    {("item", "list"): json.dumps(ITEMS), ("get", "--fields"): "hunter2\n"})
+        self.assertEqual(rc, 0)
+        self.assertNotIn("hunter2", out)
+        args, kw = calls[-1]
+        self.assertEqual(args, ["python3", "login.py", "--fast"])
+        self.assertEqual(kw["env"]["ADP_PASSWORD"], "hunter2")
+
     def test_missing_token_fails_without_calling_op(self):
         err = io.StringIO()
         with mock.patch.dict("os.environ", {}, clear=True), mock.patch.object(V.subprocess, "run") as run, \

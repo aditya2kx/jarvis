@@ -41,6 +41,11 @@ A site resolves by item title, then by website host (exact, then parent domain).
 3. Cursor dashboard → Cloud Agents → Secrets → `OP_SERVICE_ACCOUNT_TOKEN` = the token
    (Runtime Secret, repo `aditya2kx/jarvis`). New agents pick it up.
 
+Cloud Shell runs as the signed-in Google account, so GCP provisioning (e.g.
+`scripts/provision_cloud_agent_identity.sh`) needs the project owner's item — `Google (aditya.2ky)`,
+username `aditya.2ky@gmail.com`; `adi@mypalmetto.co` has no IAM on `jarvis-bhaga-prod`. Two items
+share `accounts.google.com`, so address them by title.
+
 For a Google sign-in, add the account's authenticator-app code to its item (Google account →
 Security → 2-Step Verification → Authenticator → scan with 1Password) so the agent can answer
 "Try another way → Google Authenticator" without your phone.

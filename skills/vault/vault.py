@@ -95,8 +95,10 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("site")
     r.add_argument("--field", default="password", choices=["username", "password", "otp"])
     r.add_argument("--as", dest="var", required=True)
-    r.add_argument("command", nargs=argparse.REMAINDER)
-    a = ap.parse_args(argv)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    # Split at `--` by hand: an argparse REMAINDER after `site` would swallow `--field`/`--as`.
+    cmd = argv[argv.index("--") + 1:] if "--" in argv else []
+    a = ap.parse_args(argv[:argv.index("--")] if "--" in argv else argv)
     try:
         if a.cmd == "list":
             for i in list_items():
@@ -113,7 +115,6 @@ def main(argv: list[str] | None = None) -> int:
             type_text(value, a.enter)
             print(f"vault: typed {a.field} for {a.site}")
             return 0
-        cmd = a.command[1:] if a.command[:1] == ["--"] else a.command
         if not cmd:
             raise VaultError("run: missing command after --")
         return subprocess.run(cmd, env={**os.environ, a.var: value}).returncode

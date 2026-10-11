@@ -7,8 +7,7 @@ name: Prod ops
 #
 # The guard refuses to continue unless `prod` requires a reviewer: GitHub silently
 # auto-creates a referenced environment WITHOUT protection, which would turn this
-# into an unreviewed prod write. It creates the protected environment itself when
-# missing (ADMIN_PAT), else fails with the fix.
+# into an unreviewed prod write.
 #
 # issue_comment resolves from main (post-merge only); the pull_request self-test
 # runs the guard and plans canned requests without executing anything.
@@ -27,9 +26,6 @@ permissions:
   issues: write
   pull-requests: write
 
-env:
-  OPERATOR_GITHUB_ID: "2888930"  # aditya2kx
-
 jobs:
   guard:
     if: >-
@@ -46,9 +42,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Creating/protecting an environment needs repo-admin (owner-only), so the
+      # operator sets the reviewer once; until then comments fail closed and PRs warn.
       - name: Require operator approval on environment `prod`
         env:
-          ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
+          ISSUE: ${{ github.event.issue.number }}
         run: |
           protected() {
             curl -fsS "https://api.github.com/repos/$GITHUB_REPOSITORY/environments/prod" 2>/dev/null | python3 -c '
@@ -58,15 +56,14 @@ jobs:
           ' 2>/dev/null || echo missing
           }
           STATE="$(protected)"
-          if [ "$STATE" != "yes" ] && [ -n "$ADMIN_PAT" ]; then
-            echo "prod-ops: environment prod is '$STATE' — creating it with the operator as required reviewer"
-            printf '{"reviewers":[{"type":"User","id":%s}],"prevent_self_review":false}' "$OPERATOR_GITHUB_ID" \
-              | GH_TOKEN="$ADMIN_PAT" gh api -X PUT "repos/$GITHUB_REPOSITORY/environments/prod" --input - >/dev/null \
-              || echo "::warning::prod-ops: could not create environment prod with ADMIN_PAT"
-            STATE="$(protected)"
-          fi
           if [ "$STATE" != "yes" ]; then
-            echo "::error::prod-ops: GitHub Environment 'prod' has no required reviewer — refusing. Settings → Environments → prod → Required reviewers → add the operator."
+            MSG="prod-ops: GitHub Environment 'prod' is '$STATE' (needs a required reviewer). Settings → Environments → New environment 'prod' → Required reviewers → add the operator."
+            if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+              echo "::warning::$MSG"
+              exit 0
+            fi
+            echo "::error::$MSG Refusing."
+            gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -X POST -f body="\`$MSG\` Refusing." >/dev/null
             exit 1
           fi
           echo "prod-ops: environment prod requires reviewer approval"

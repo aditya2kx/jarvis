@@ -1,7 +1,10 @@
 {
   "install": "pip install -q -r requirements.txt pytest playwright && python3 -m playwright install --with-deps chromium webkit && (cd apps/operator-console && npm ci --no-audit --no-fund) && (command -v op >/dev/null || (curl -fsSLo /tmp/op.zip https://cache.agilebits.com/dist/1P/op2/pkg/v2.40.0/op_linux_amd64_v2.40.0.zip && sudo unzip -oq /tmp/op.zip op -d /usr/local/bin))",
-  "start": "bash scripts/cloud_git_identity.sh",
+  "start": "[ ! -f scripts/cloud_git_identity.sh ] || bash scripts/cloud_git_identity.sh",
   "ports": [
-    { "name": "operator-console", "port": 3000 }
+    {
+      "name": "operator-console",
+      "port": 3000
+    }
   ]
 }

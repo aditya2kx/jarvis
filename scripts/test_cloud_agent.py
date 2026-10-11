@@ -139,6 +139,53 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(payload["name"], "PR #388 continue PR #388 from the handoff note above")
         self.assertIn("handoff.py in --pr 388", payload["prompt"]["text"])
 
+    def test_empty_requirement_still_launches(self):
+        with mock.patch.object(C, "_api", return_value={"agent": {"id": AID, "url": "u"}}) as api:
+            C.launch("", 7)
+        self.assertEqual(api.call_args.args[2]["name"], "#7 (no requirement text)")
+
+
+class IntakeTests(unittest.TestCase):
+    """cloud-intake (jarvis-dev-signals.yml) runs `cloud_agent.py intake`; gh is stubbed here."""
+
+    def _intake(self, is_pr: bool, model: str | None, pr_body: str = "PR body\n"):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            out = pr_body if cmd[:3] == ["gh", "pr", "view"] else ""
+            return mock.Mock(stdout=out, returncode=0)
+
+        with mock.patch.object(C, "_api", return_value={"agent": {"id": AID, "url": "https://cursor.com/agents/x"}}) as api, \
+             mock.patch.object(C.subprocess, "run", side_effect=fake_run):
+            C.intake(388 if is_pr else 384, is_pr, "continue PR #388 from the handoff note above", model, "o/r")
+        return api.call_args.args[2], calls
+
+    def test_on_a_pr_continues_its_branch_and_appends_one_cost_line(self):
+        payload, calls = self._intake(True, "claude-opus-5-5-high")
+        self.assertEqual(payload["repos"][0]["prUrl"], f"{C.REPO_URL}/pull/388")
+        self.assertIs(payload["workOnCurrentBranch"], True)
+        edits = [c for c in calls if c[:3] == ["gh", "pr", "edit"]]
+        self.assertEqual(len(edits), 1)
+        body = edits[0][edits[0].index("--body") + 1]
+        self.assertEqual(body, f"PR body\n\nCursor-Agent: {AID} model=claude-opus-5-5-high\n")
+        self.assertEqual(C.parse_markers(body), [(AID, "claude-opus-5-5-high", [])])
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "issue", "edit"]])
+        comment = next(c for c in calls if c[:3] == ["gh", "issue", "comment"])
+        self.assertIn("https://cursor.com/agents/x", comment[comment.index("--body") + 1])
+
+    def test_on_a_pr_without_model_uses_the_bare_marker(self):
+        _, calls = self._intake(True, None)
+        body = next(c for c in calls if c[:3] == ["gh", "pr", "edit"])
+        self.assertTrue(body[body.index("--body") + 1].endswith(f"Cursor-Agent: {AID}\n"))
+
+    def test_on_an_issue_starts_from_main_and_labels_it(self):
+        payload, calls = self._intake(False, None)
+        self.assertEqual(payload["repos"][0], {"url": C.REPO_URL, "startingRef": "main"})
+        self.assertEqual(payload["mode"], "plan")
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "pr", "edit"]])
+        self.assertTrue([c for c in calls if c[:3] == ["gh", "issue", "edit"] and "jarvis-work" in c])
+
 
 if __name__ == "__main__":
     unittest.main()

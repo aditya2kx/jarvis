@@ -134,5 +134,64 @@ class InTests(unittest.TestCase):
         self.assertEqual((data["done"], data["handed_off_to"]), (["specify", "setup"], None))
 
 
+class RoundTripTests(unittest.TestCase):
+    """Mac `out --to cloud` then Cloud `in`, against a real bare remote; only gh is faked."""
+
+    def test_mac_to_cloud_and_back_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            origin = Path(tmp) / "origin.git"
+            _git(tmp, "init", "-q", "--bare", "-b", "main", str(origin))
+            mac = _repo(tmp)
+            _git(mac, "remote", "add", "origin", str(origin))
+            _git(mac, "checkout", "-q", "-b", "fix/rt")
+            _git(mac, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "work")
+            _git(mac, "push", "-q", "-u", "origin", "fix/rt")
+            cloud = Path(tmp) / "cloud"
+            _git(tmp, "clone", "-q", "-b", "fix/rt", str(origin), str(cloud))
+
+            posted, real = [], H._run
+
+            def run(*args, cwd=None, check=True):
+                if args[:3] == ("gh", "pr", "comment"):
+                    posted.append(args[args.index("--body") + 1])
+                    return ""
+                if args[0] == "python3":
+                    posted.append("capture-build")
+                    return ""
+                return real(*args, cwd=cwd, check=check)
+
+            def gh_json(*args):
+                if args[:2] == ("pr", "view"):
+                    return {"headRefName": "fix/rt", "body": "Closes #42", "url": "u",
+                            "comments": [{"body": b} for b in posted]}
+                return {"body": ISSUE_BODY}
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(mac)
+                with mock.patch.object(H, "_run", run), mock.patch.object(H, "_gh_json", gh_json), \
+                     mock.patch.object(H, "surface", return_value="mac"):
+                    msg = H.cmd_out(388, "cloud", "**Next:** wire the badge.")
+                mac_cache = json.loads((mac / "metrics/pr_cost/session-fix-rt-phase.json").read_text())
+
+                os.chdir(cloud)
+                with mock.patch.object(H, "_run", run), mock.patch.object(H, "_gh_json", gh_json), \
+                     mock.patch.object(H, "surface", return_value="cloud"):
+                    out = H.cmd_in(388)
+                cloud_cache = json.loads((cloud / "metrics/pr_cost/session-fix-rt-phase.json").read_text())
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(msg.startswith("handoff: PR #388 (fix/rt @ ") and msg.endswith("→ cloud"))
+        self.assertEqual(posted[0], "capture-build")
+        self.assertTrue(posted[1].startswith(f"{H.MARKER} to=cloud from=mac sha="))
+        self.assertIn("**Next:** wire the badge.", posted[1])
+        self.assertEqual(posted[2], "/jarvis-cloud-task continue PR #388 from the handoff note above")
+        self.assertEqual((mac_cache["handed_off_to"], mac_cache["pr"]), ("cloud", 388))
+        self.assertEqual((cloud_cache["handed_off_to"], cloud_cache["issue"], cloud_cache["done"]),
+                         (None, 42, ["specify", "setup", "jam"]))
+        self.assertIn("**Next:** wire the badge.", out)
+
+
 if __name__ == "__main__":
     unittest.main()

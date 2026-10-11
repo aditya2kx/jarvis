@@ -48,7 +48,7 @@ page error (paths and timings only in the log).
 | Step | Where | Why |
 |---|---|---|
 | Vault `Shared with Bots` + read-only service account → Cursor secret `OP_SERVICE_ACCOUNT_TOKEN` ([skills/vault](../../skills/vault/README.md#operator-one-time-setup)); put the Google owner login (+ authenticator code) in it | 1Password + Cursor dashboard | agents sign in to sites by themselves |
-| `bash scripts/provision_cloud_agent_identity.sh` (Cursor OIDC trust + gateway secrets) — **the agent runs it** in Cloud Shell, signing in from the vault | Cloud Shell | Cloud Agents act as `jarvis-agent-bot328` and open previews with tokens; gateway deployable |
+| `bash scripts/provision_cloud_agent_identity.sh` (Cursor OIDC trust + gateway secrets) — **the agent runs it** in Cloud Shell as `aditya.2ky@gmail.com` (vault item `Google (aditya.2ky)`). Done 2026-10-11 ([gcp-access.md](gcp-access.md) recipe F) | Cloud Shell | Cloud Agents act as `jarvis-agent-bot328` and open previews with tokens; gateway deployable |
 | Create environment `prod` with yourself as **Required reviewer** | GitHub → Settings → Environments (owner-only; works on phone) | `/prod-ops` refuses until it exists |
 | Save the proposed environment config | Cursor dashboard → Cloud Agents → Environment | new agents boot with deps installed |
 | Copy `jarvis-dev-gateway-token` into Siri Shortcut / Grok | Cloud Console → Secret Manager | voice / Grok entry |

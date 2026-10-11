@@ -191,6 +191,7 @@ jobs:
       github.event.comment.user.login == 'aditya2kx' &&
       !startsWith(github.event.comment.body, '/jarvis-new-task') &&
       !startsWith(github.event.comment.body, '/prod-read') &&
+      !startsWith(github.event.comment.body, '/prod-ops') &&
       !contains(github.event.comment.body, 'jarvis-signal')
     runs-on: ubuntu-latest
     env:

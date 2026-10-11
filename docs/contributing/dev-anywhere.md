@@ -16,7 +16,7 @@ additive and reached through its own commands, so both can be used side by side.
 | Git identity | `GH_TOKEN` (bot PAT, Keychain) → commits + pushes as `jarvis-agent-bot328` | same PAT, no copy: `scripts/cloud_git_identity.sh` (environment `start`) reads Secret Manager `github-bot-pat` via Cursor OIDC ([gcp-access.md](gcp-access.md) recipe F), logs `gh` in, drops Cursor's app-token rewrite, sets bot name/email (a `GH_TOKEN` Cursor secret also works) |
 | Open the PR | `gh pr create` as the bot | push a `cursor/*` branch → `cloud-agent-pr.yml` opens a draft PR as the bot (`ADMIN_PAT`); the agent sets title/body with `ManagePullRequest` `update_pr` — never its `create_pr`, which opens under the operator's account (Issue #321) |
 | Claude review | normal | normal — the actor is the bot, as on the Mac |
-| Build cost → BQ | `pr_cost_ledger.py capture-build` from transcripts | PR body line `Cursor-Agent: <bc-id> model=<model-id>` (add `prs=<a>,<b>` when one agent built several PRs — the cost splits by diff size); `pr-cost-gate.yml` prices the agent's `/usage` |
+| Build cost → BQ | `pr_cost_ledger.py capture-build` from transcripts | PR body line `Cursor-Agent: <bc-id> model=<model-id>` (add `prs=<a>,<b>` when one agent built several PRs — the cost splits by diff size; one line per agent when a later agent continues the PR); `pr-cost-gate.yml` prices the agent's `/usage` |
 | Ad-hoc logins (portals, Cloud Shell, vendor dashboards) | Keychain + `user-playwright` | 1Password vault `Shared with Bots` via `skills/vault` (`type` into the focused field — never printed) |
 | Babysit | `dev_event_listener` + hooks | subscribe to the PR's review/CI events; `@cursor` comments reach the agent |
 

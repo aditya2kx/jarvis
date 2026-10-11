@@ -61,12 +61,14 @@ def _api(method: str, path: str, body: dict | None = None) -> dict:
         raise ApiError(f"{method} {path} → HTTP {e.code}: {e.read().decode(errors='replace')[:300]}") from None
 
 
+def parse_markers(text: str) -> list[tuple[str, str, list[int]]]:
+    return [(m.group(1), m.group(2) or FALLBACK_MODEL, [int(p) for p in (m.group(3) or "").split(",") if p])
+            for m in _MARKER.finditer(text or "")]
+
+
 def parse_marker(text: str) -> tuple[str, str, list[int]] | None:
-    m = _MARKER.search(text or "")
-    if not m:
-        return None
-    prs = [int(p) for p in (m.group(3) or "").split(",") if p]
-    return m.group(1), m.group(2) or FALLBACK_MODEL, prs
+    found = parse_markers(text)
+    return found[0] if found else None
 
 
 def _gh_pr(pr: int) -> dict:
@@ -131,13 +133,17 @@ def cost_usd(usage: dict, model: str) -> float:
 
 
 def record_cost(pr: int, pr_body: str, title: str, branch: str) -> str:
-    """Record the agent's cumulative usage; with `prs=a,b` split it across those PRs by diff size."""
-    import pr_cost_ledger as L
-
-    found = parse_marker(pr_body)
+    """Record each marked agent's cumulative usage (one line per agent, e.g. after a PR is
+    re-opened by a later agent); with `prs=a,b` split it across those PRs by diff size."""
+    found = parse_markers(pr_body)
     if not found:
         return "cloud-agent cost: no Cursor-Agent marker in PR body — skipped"
-    agent_id, model, prs = found
+    return "\n".join(_record_agent(pr, agent_id, model, prs, title, branch) for agent_id, model, prs in found)
+
+
+def _record_agent(pr: int, agent_id: str, model: str, prs: list[int], title: str, branch: str) -> str:
+    import pr_cost_ledger as L
+
     prs = prs if pr in prs else [pr, *prs]
     agent = _api("GET", f"/agents/{agent_id}")
     usage = _api("GET", f"/agents/{agent_id}/usage").get("totalUsage") or {}

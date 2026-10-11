@@ -85,6 +85,27 @@ class RecordCostTests(unittest.TestCase):
         self.assertEqual({r["ts"] for r in rows.values()}, {"2026-10-11T14:00:00.000Z"})
         self.assertIn("PR #386 10%", out)
 
+    def test_each_agent_marker_gets_its_own_row(self):
+        later = "bc-90191966-7bee-57e1-b3e9-67d50b0b4de0"
+        created = {AID: "2026-10-11T14:00:00.000Z", later: "2026-10-11T21:48:00.000Z"}
+
+        def fake_api(method, path, body=None):
+            agent = path.split("/")[2]
+            if path.endswith("/usage"):
+                return {"totalUsage": {**CostTests.USAGE, "totalTokens": 13_000_000}}
+            return {"id": agent, "createdAt": created[agent]}
+
+        body = f"Cursor-Agent: {AID} model=claude-opus-5-5-high prs=387\nCursor-Agent: {later} model=claude-sonnet-5-5-medium"
+        with mock.patch.object(C, "_api", side_effect=fake_api), \
+             mock.patch.object(L, "set_meta"), mock.patch.object(L, "record_build_session") as rec:
+            out = C.record_cost(387, body, "t", "b")
+        rows = {c.kwargs["note"]: c.kwargs for c in rec.call_args_list}
+        self.assertEqual({c.args[0] for c in rec.call_args_list}, {387})
+        self.assertAlmostEqual(rows[AID]["cost_usd"], 31.0)
+        self.assertAlmostEqual(rows[later]["cost_usd"], 15.5)
+        self.assertEqual(rows[later]["ts"], "2026-10-11T21:48:00.000Z")
+        self.assertEqual(len(out.splitlines()), 2)
+
     def test_split_shares_equal_when_sizes_unknown(self):
         self.assertEqual(C.split_shares({1: 0, 2: 0}), {1: 0.5, 2: 0.5})
 

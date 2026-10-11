@@ -1,0 +1,46 @@
+name: Operator Console CI
+
+# PR-time build + tests for apps/operator-console. Before this, the first
+# `next build` of a console change ran in the post-merge deploy, so type and
+# build errors surfaced as broken prod deploys instead of a red PR check.
+
+on:
+  pull_request:
+    paths:
+      - "apps/operator-console/**"
+      - ".github/workflows/operator-console-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: operator-console-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/operator-console
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/operator-console/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+      - name: Production build (next build — same as the Dockerfile)
+        run: npm run build
+
+      # Pre-existing lint debt; reported, not gating, until it is paid down.
+      - name: Lint (advisory)
+        continue-on-error: true
+        run: npm run lint

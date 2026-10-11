@@ -26,6 +26,25 @@ the Mac listener never sees them; a Cloud Agent's `cursor/*` branch has no Mac p
 signals route as `unrouted` (skipped). `detect_surface()` returns `mac_local` on macOS even inside a
 Cursor desktop agent terminal (which also sets `CURSOR_AGENT=1`).
 
+## Handoff — Mac ↔ phone, either direction, mid-PR
+
+One PR, one owner at a time; the PR (branch + body + a handoff note comment) carries the work, the
+tracking issue carries phase state. Chat history does not travel, so the note is the next agent's
+context. Type **`/jarvis-handoff`** in the leaving chat (`.cursor/skills/jarvis-handoff`); it commits
+and pushes, writes the note, and runs `scripts/handoff.py out`.
+
+| | Mac → phone (`/jarvis-handoff cloud`) | Phone → Mac (`/jarvis-handoff mac`) |
+|---|---|---|
+| Leaving agent | WIP commit + push; `handoff.py out --to cloud`: captures the Mac session's build cost (`capture-build`), posts the note, marks the phase cache `handed_off_to=cloud` (the Mac listener then returns `handed_off` for this branch instead of waking the idle Mac chat), comments `/jarvis-cloud-task` on the PR | `cloud_git_identity.sh` + push; `handoff.py out --to mac` posts the note; the agent stops and unsubscribes |
+| Start the other side | automatic: `cloud-intake` sees the comment is on a PR → Cursor API `prUrl` + `workOnCurrentBranch` (same branch, agent mode, no new PR), appends its `Cursor-Agent:` line to the PR body, comments the agent link → open it in Cursor mobile | on the Mac, in any Jarvis chat: `python3 scripts/handoff.py in --pr <N>` → worktree on the PR's branch, Cursor window seeded with "continue PR #N" |
+| Arriving agent | `handoff.py in --pr <N>`: checks out/pulls the branch, restores the phase cache from the tracking issue (`Closes #N` → its `Done:` line), clears `handed_off_to`, prints the latest note | same command (`--no-open` inside the seeded chat) |
+| Cost | Mac rows from `capture-build` + the agent's `Cursor-Agent:` row; `pr-cost-gate` sums both | the agent's row is already there; the Mac session adds `capture-build` as usual |
+
+Phone → phone needs nothing: comment `/jarvis-cloud-task <what next>` on the PR to start a fresh
+Cloud Agent on its branch. Cursor's own **Move to Cloud** (desktop Agents Window) also carries the
+chat itself — still commit/push first and have the cloud agent run `handoff.py in`; **Move to
+Local** is often unavailable for agents that started in the cloud, hence `handoff.py in` on the Mac.
+
 ## Console preview (read-only)
 
 `CONSOLE_PREVIEW=1` (`apps/operator-console/lib/config/preview.ts`) is set only on preview services:

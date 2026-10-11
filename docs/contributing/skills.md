@@ -14,6 +14,7 @@ chat input surfaces the whole family in the autocomplete:
 
 ```
 /jarvis-new-task      — spin up an isolated worktree (opt-in; default is the current worktree)
+/jarvis-handoff       — hand the PR to the other surface (Mac ↔ Cloud Agent) with a note (dev-anywhere.md § Handoff)
 ```
 
 Future members follow the same pattern:

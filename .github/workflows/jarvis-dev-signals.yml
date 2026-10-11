@@ -5,7 +5,8 @@ name: Jarvis dev signals
 #
 # Production triggers:
 #   check_suite.completed              → ci_failed / ci_passed / ci_other
-#   issue_comment.created              → intake (/jarvis-new-task, allowlisted authors only)
+#   issue_comment.created              → intake (/jarvis-new-task, allowlisted authors only;
+#                                         Cursor Cloud Agent instead when vars.CLOUD_AGENT_DISPATCH == '1')
 #                                       → comment  (operator comment on any issue/PR, loop-safe)
 #   pull_request_review_comment.created → comment  (operator inline/diff review comment)
 #   pull_request_review.submitted      → comment  (operator top-level review, e.g. approve/request-changes with a body)
@@ -134,7 +135,27 @@ jobs:
         with:
           python-version: "3.12"
 
+      # CLOUD_AGENT_DISPATCH=1 (repo variable): start a Cursor Cloud Agent instead of
+      # signalling the Mac listener — exactly one of the two picks up the requirement.
+      - name: Launch Cursor Cloud Agent
+        if: vars.CLOUD_AGENT_DISPATCH == '1'
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+          BODY: ${{ github.event.comment.body }}
+          CURSOR_AGENT_TOKEN: ${{ secrets.CURSOR_AGENT_TOKEN }}
+          MODEL: ${{ vars.CLOUD_AGENT_MODEL }}
+        run: |
+          STRIPPED="${BODY#/jarvis-new-task}"
+          printf '%s' "${STRIPPED# }" > /tmp/req.txt
+          OUT="$(python3 scripts/cloud_agent.py launch --issue "$ISSUE" --requirement-file /tmp/req.txt ${MODEL:+--model "$MODEL"})"
+          URL="$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')"
+          AID="$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          gh issue comment "$ISSUE" --repo "$REPO" \
+            --body "**Cursor Cloud Agent** started: $URL"$'\n\n'"Open it from Cursor mobile, web or desktop. <!-- cursor-agent: $AID -->"
+          echo "intake: cloud agent $AID for issue #$ISSUE"
+
       - name: Emit intake signal
+        if: vars.CLOUD_AGENT_DISPATCH != '1'
         env:
           ISSUE: ${{ github.event.issue.number }}
           BODY: ${{ github.event.comment.body }}

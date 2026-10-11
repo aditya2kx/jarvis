@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Cursor Cloud Agents API: launch an agent for a requirement, record its cost.
+
+    # /jarvis-new-task <requirement> on an issue (jarvis-dev-signals.yml):
+    python3 scripts/cloud_agent.py launch --issue 384 --requirement-file req.txt [--model ID]
+
+    # pr-cost-gate.yml, for PRs whose body carries `Cursor-Agent: bc-… model=…`:
+    python3 scripts/cloud_agent.py record-cost --pr 385 --pr-body-file body.md \
+        --title "…" --branch cursor/…
+
+Auth: CURSOR_AGENT_TOKEN (Basic, https://cursor.com/dashboard/api).
+API: https://cursor.com/docs/cloud-agent/api/endpoints.md
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+API_BASE = "https://api.cursor.com/v1"
+REPO_URL = "https://github.com/aditya2kx/jarvis"
+# No model in the marker: price as Opus 5.5 so an unlabeled PR is over- not under-counted.
+FALLBACK_MODEL = "claude-opus-5-5"
+_MARKER = re.compile(r"Cursor-Agent:\s*(bc-[0-9a-fA-F-]{8,})(?:\s+model=([\w.\-]+))?")
+
+
+class ApiError(RuntimeError):
+    pass
+
+
+def _token() -> str:
+    tok = (os.environ.get("CURSOR_AGENT_TOKEN") or "").strip()
+    if not tok:
+        raise ApiError("CURSOR_AGENT_TOKEN is not set")
+    return tok
+
+
+def _api(method: str, path: str, body: dict | None = None) -> dict:
+    auth = base64.b64encode(f"{_token()}:".encode()).decode()
+    req = urllib.request.Request(
+        f"{API_BASE}{path}",
+        data=json.dumps(body).encode() if body is not None else None,
+        method=method,
+        headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        raise ApiError(f"{method} {path} → HTTP {e.code}: {e.read().decode(errors='replace')[:300]}") from None
+
+
+def parse_marker(text: str) -> tuple[str, str] | None:
+    m = _MARKER.search(text or "")
+    if not m:
+        return None
+    return m.group(1), m.group(2) or FALLBACK_MODEL
+
+
+def seed_prompt(requirement: str, issue: int | None) -> str:
+    issue_line = f"Tracking issue: #{issue} (put `Closes #{issue}` in the PR body).\n" if issue else ""
+    return (
+        f"{requirement.strip()}\n\n{issue_line}"
+        "You are a Jarvis Cursor Cloud Agent started by `/jarvis-new-task`. Follow AGENTS.md, "
+        "CONTRIBUTING.md and .cursor/rules (pr-workflow.mdc § Cursor Cloud Agent surface): "
+        "jam with the operator before building, open a draft PR early, put "
+        "`Cursor-Agent: <your bc- id> model=<your model id>` in the PR body, "
+        "use the Operator Console preview + screenshot comments as UI evidence, "
+        "use `/prod-read` PR comments for prod data, and subscribe to the PR's review and CI "
+        "events so you keep iterating until it is green.\n"
+    )
+
+
+def launch(requirement: str, issue: int | None, model: str | None = None, ref: str = "main") -> dict:
+    payload: dict = {
+        "prompt": {"text": seed_prompt(requirement, issue)},
+        "repos": [{"url": REPO_URL, "startingRef": ref}],
+        "autoCreatePR": False,
+        "mode": "plan",
+        "name": (f"#{issue} " if issue else "") + requirement.strip().splitlines()[0][:80],
+    }
+    if model:
+        payload["model"] = {"id": model}
+    body = _api("POST", "/agents", payload)
+    agent = body.get("agent") or {}
+    return {"id": agent.get("id", ""), "url": agent.get("url", ""), "run_id": (body.get("run") or {}).get("id", "")}
+
+
+def cost_usd(usage: dict, model: str) -> float:
+    import pr_cost_ledger as L
+
+    r = L._MODEL_RATES[L._model_tier(model)]
+    return (
+        int(usage.get("inputTokens") or 0) * r["input"]
+        + int(usage.get("outputTokens") or 0) * r["output"]
+        + int(usage.get("cacheReadTokens") or 0) * r["cache_read"]
+        + int(usage.get("cacheWriteTokens") or 0) * r["cache_write"]
+    ) / 1_000_000
+
+
+def record_cost(pr: int, pr_body: str, title: str, branch: str) -> str:
+    import pr_cost_ledger as L
+
+    found = parse_marker(pr_body)
+    if not found:
+        return "cloud-agent cost: no Cursor-Agent marker in PR body — skipped"
+    agent_id, model = found
+    agent = _api("GET", f"/agents/{agent_id}")
+    usage = _api("GET", f"/agents/{agent_id}/usage").get("totalUsage") or {}
+    cost = cost_usd(usage, model)
+    L.set_meta(pr, title=title, branch=branch)
+    # ts = agent creation time: usage is cumulative, so each push replaces the same row.
+    L.record_build_session(
+        pr, ts=agent.get("createdAt") or agent_id, tokens=int(usage.get("totalTokens") or 0),
+        cost_usd=cost, model=model, source="cursor_cloud_agent_api", note=agent_id,
+    )
+    return f"cloud-agent cost: {agent_id} model={model} tokens={usage.get('totalTokens', 0)} cost=${cost:.2f} → PR #{pr}"
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    la = sub.add_parser("launch")
+    la.add_argument("--issue", type=int)
+    la.add_argument("--requirement-file", required=True)
+    la.add_argument("--model", help="GET /v1/models id; omit for the account default")
+    rc = sub.add_parser("record-cost")
+    rc.add_argument("--pr", type=int, required=True)
+    rc.add_argument("--pr-body-file", required=True)
+    rc.add_argument("--title", required=True)
+    rc.add_argument("--branch", required=True)
+    a = ap.parse_args(argv)
+    try:
+        if a.cmd == "launch":
+            req = Path(a.requirement_file).read_text()
+            print(json.dumps(launch(req, a.issue, a.model or None)))
+        else:
+            print(record_cost(a.pr, Path(a.pr_body_file).read_text(), a.title, a.branch))
+    except ApiError as e:
+        print(f"cloud_agent: {a.cmd} failed — {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

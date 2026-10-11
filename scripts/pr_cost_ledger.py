@@ -72,13 +72,19 @@ _MODEL_RATES: dict[str, dict[str, float]] = {
     "sonnet":   {"input": 3.00, "cache_write": 3.75, "cache_read": 0.30, "output": 15.00},
     "haiku":    {"input": 1.00, "cache_write": 1.25, "cache_read": 0.10, "output":  5.00},
     "composer": {"input": 0.50, "cache_write": 0.00, "cache_read": 0.20, "output":  2.50},
+    # 5.5 generation (Cursor API pricing, 2026-10-11)
+    "opus-5-5":   {"input": 4.00, "cache_write": 5.00, "cache_read": 0.20, "output": 20.00},
+    "sonnet-5-5": {"input": 2.00, "cache_write": 2.50, "cache_read": 0.10, "output": 10.00},
 }
-_RATES_DATE = "2026-06-03"
+_RATES_DATE = "2026-10-11"
 
 
 def _model_tier(model: str) -> str:
     """Map a raw model string to a tier key in _MODEL_RATES."""
     m = (model or "").lower()
+    gen55 = re.search(r"(opus|sonnet)-5[-.]5", m)
+    if gen55:
+        return f"{gen55.group(1)}-5-5"
     if "opus" in m:
         return "opus"
     if "sonnet" in m:
@@ -978,7 +984,7 @@ def _recommendations(rec: dict[str, Any]) -> list[str]:
 
     # 2. Model routing — per Opus session that looks mechanical
     if b["sessions"]:
-        opus_sessions = [s for s in b["sessions"] if _model_tier(s.get("model") or "") == "opus"
+        opus_sessions = [s for s in b["sessions"] if _model_tier(s.get("model") or "").startswith("opus")
                          and float(s.get("cost_usd") or 0) >= 0.50]
         if opus_sessions:
             total_opus = sum(float(s.get("cost_usd") or 0) for s in opus_sessions)

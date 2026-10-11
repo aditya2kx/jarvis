@@ -126,6 +126,18 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(payload["name"], "#384 Add a badge")
         self.assertIn("Closes #384", payload["prompt"]["text"])
         self.assertEqual(out, {"id": AID, "url": "u", "run_id": "r"})
+        self.assertEqual(payload["mode"], "plan")
+        self.assertNotIn("workOnCurrentBranch", payload)
+
+    def test_pr_continues_on_the_prs_own_branch(self):
+        with mock.patch.object(C, "_api", return_value={"agent": {"id": AID, "url": "u"}, "run": {"id": "r"}}) as api:
+            C.launch("continue PR #388 from the handoff note above", None, pr=388)
+        payload = api.call_args.args[2]
+        self.assertEqual(payload["repos"], [{"url": C.REPO_URL, "prUrl": f"{C.REPO_URL}/pull/388"}])
+        self.assertIs(payload["workOnCurrentBranch"], True)
+        self.assertEqual(payload["mode"], "agent")
+        self.assertEqual(payload["name"], "PR #388 continue PR #388 from the handoff note above")
+        self.assertIn("handoff.py in --pr 388", payload["prompt"]["text"])
 
 
 if __name__ == "__main__":

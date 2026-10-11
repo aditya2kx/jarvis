@@ -44,6 +44,13 @@ class TestRouteSignalUntracked(unittest.TestCase):
                 result = R.route_signal(_signal("ci_failed", branch))
         self.assertEqual(result, "unrouted")
 
+    def test_handed_off_to_cloud_is_not_delivered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_cache(tmp, "fix/handed", {"handed_off_to": "cloud"})
+            with patch.object(R, "METRICS_DIR", Path(tmp) / "metrics" / "pr_cost"):
+                result = R.route_signal(_signal("ci_failed", "fix/handed"))
+        self.assertEqual(result, "handed_off")
+
 
 class TestLoadCacheWorktreeFallback(unittest.TestCase):
     def test_falls_back_to_worktree_cache_when_daemon_side_missing(self):

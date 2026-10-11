@@ -229,6 +229,7 @@ def route_signal(
         duplicate     — signal id already in delivered_signals; skipped
         debounced     — ci_failed within DEBOUNCE_WINDOW_SEC of previous; skipped
         unrouted      — no phase cache for this branch (branch not tracked locally)
+        handed_off    — the branch was handed to a Cloud Agent (`handoff.py out --to cloud`)
         unauthorized  — intake/comment signal from non-allowlisted author
     """
     branch = signal.get("branch")
@@ -252,6 +253,8 @@ def route_signal(
     cache = _load_cache(branch)
     if cache is None:
         return "unrouted"
+    if cache.get("handed_off_to") == "cloud":
+        return "handed_off"
 
     delivered = cache.get("delivered_signals", [])
     if sid and sid in delivered:

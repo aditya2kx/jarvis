@@ -189,13 +189,23 @@ jobs:
           BODY: ${{ github.event.comment.body }}
           CURSOR_AGENT_TOKEN: ${{ secrets.CURSOR_AGENT_TOKEN }}
           MODEL: ${{ vars.CLOUD_AGENT_MODEL }}
+          IS_PR: ${{ github.event.issue.pull_request && 'true' || '' }}
         run: |
           STRIPPED="${BODY#/jarvis-cloud-task}"
           printf '%s' "${STRIPPED# }" > /tmp/req.txt
-          OUT="$(python3 scripts/cloud_agent.py launch --issue "$ISSUE" --requirement-file /tmp/req.txt ${MODEL:+--model "$MODEL"})"
+          # On a PR (a handoff from the Mac, or a phone follow-up) the agent continues that PR's branch.
+          if [ -n "$IS_PR" ]; then TARGET=(--pr "$ISSUE"); else TARGET=(--issue "$ISSUE"); fi
+          OUT="$(python3 scripts/cloud_agent.py launch "${TARGET[@]}" --requirement-file /tmp/req.txt ${MODEL:+--model "$MODEL"})"
           URL="$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')"
           AID="$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-          gh issue edit "$ISSUE" --repo "$REPO" --add-label "jarvis-work" || true
+          if [ -n "$IS_PR" ]; then
+            # Its cost line, so pr-cost-gate prices it; Mac-opened PR bodies are not agent-editable.
+            gh pr view "$ISSUE" --repo "$REPO" --json body -q .body > /tmp/body.md
+            printf '\nCursor-Agent: %s%s\n' "$AID" "${MODEL:+ model=$MODEL}" >> /tmp/body.md
+            gh pr edit "$ISSUE" --repo "$REPO" --body-file /tmp/body.md
+          else
+            gh issue edit "$ISSUE" --repo "$REPO" --add-label "jarvis-work" || true
+          fi
           gh issue comment "$ISSUE" --repo "$REPO" \
             --body "**Cursor Cloud Agent** started: $URL"$'\n\n'"Open it from Cursor mobile, web or desktop. <!-- cursor-agent: $AID -->"
           echo "cloud intake: agent $AID for issue #$ISSUE"

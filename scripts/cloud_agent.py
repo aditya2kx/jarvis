@@ -3,6 +3,8 @@
 
     # /jarvis-cloud-task <requirement> on an issue (jarvis-dev-signals.yml cloud-intake):
     python3 scripts/cloud_agent.py launch --issue 384 --requirement-file req.txt [--model ID]
+    # … on a PR (e.g. `handoff.py out --to cloud`): continue that PR on its own branch
+    python3 scripts/cloud_agent.py launch --pr 388 --requirement-file req.txt
 
     # pr-cost-gate.yml, for PRs whose body carries `Cursor-Agent: bc-… model=… [prs=385,386]`:
     python3 scripts/cloud_agent.py record-cost --pr 385 --pr-body-file body.md \
@@ -105,14 +107,32 @@ def seed_prompt(requirement: str, issue: int | None) -> str:
     )
 
 
-def launch(requirement: str, issue: int | None, model: str | None = None, ref: str = "main") -> dict:
+def continue_prompt(requirement: str, pr: int) -> str:
+    return (
+        f"{requirement.strip()}\n\n"
+        f"You are a Jarvis Cursor Cloud Agent continuing PR #{pr}, started by `/jarvis-cloud-task` on the PR "
+        "(usually a handoff from the operator's Mac). You are on the PR's own branch: push there, never a new one. "
+        f"First run `bash scripts/cloud_git_identity.sh`, then `python3 scripts/handoff.py in --pr {pr}`: it restores "
+        "phase tracking and prints the latest handoff note — that note, the PR body and its review threads are your "
+        "context (the earlier chat does not travel). Your `Cursor-Agent:` cost line is already in the PR body. "
+        "Follow AGENTS.md and pr-workflow.mdc § Cursor Cloud Agent surface, subscribe to the PR's review and CI "
+        "events, and keep iterating until it is green. To hand back: `python3 scripts/handoff.py out --to mac`.\n"
+    )
+
+
+def launch(requirement: str, issue: int | None, model: str | None = None, ref: str = "main",
+           pr: int | None = None) -> dict:
+    """New work starts from `ref` in plan mode (jam first); `pr` continues that PR on its own branch."""
+    repo = {"url": REPO_URL, "prUrl": f"{REPO_URL}/pull/{pr}"} if pr else {"url": REPO_URL, "startingRef": ref}
     payload: dict = {
-        "prompt": {"text": seed_prompt(requirement, issue)},
-        "repos": [{"url": REPO_URL, "startingRef": ref}],
+        "prompt": {"text": continue_prompt(requirement, pr) if pr else seed_prompt(requirement, issue)},
+        "repos": [repo],
         "autoCreatePR": False,
-        "mode": "plan",
-        "name": (f"#{issue} " if issue else "") + requirement.strip().splitlines()[0][:80],
+        "mode": "agent" if pr else "plan",
+        "name": (f"PR #{pr} " if pr else f"#{issue} " if issue else "") + requirement.strip().splitlines()[0][:80],
     }
+    if pr:
+        payload["workOnCurrentBranch"] = True
     if model:
         payload["model"] = {"id": model}
     body = _api("POST", "/agents", payload)
@@ -174,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     la.add_argument("--issue", type=int)
     la.add_argument("--requirement-file", required=True)
     la.add_argument("--model", help="GET /v1/models id; omit for the account default")
+    la.add_argument("--pr", type=int, help="continue this PR on its own branch instead of starting from main")
     rc = sub.add_parser("record-cost")
     rc.add_argument("--pr", type=int, required=True)
     rc.add_argument("--pr-body-file", required=True)
@@ -183,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if a.cmd == "launch":
             req = Path(a.requirement_file).read_text()
-            print(json.dumps(launch(req, a.issue, a.model or None)))
+            print(json.dumps(launch(req, a.issue, a.model or None, pr=a.pr)))
         else:
             print(record_cost(a.pr, Path(a.pr_body_file).read_text(), a.title, a.branch))
     except ApiError as e:

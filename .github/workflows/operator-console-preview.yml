@@ -247,7 +247,9 @@ jobs:
                   if r.url.startswith(base) and "/_next/static" not in r.url:
                       resp = None if failed else r.response()
                       path = r.url[len(base):].split("&_rsc")[0].split("?_rsc")[0]
-                      print(f"{time.time()-t0:7.2f}s {r.method} {resp.status if resp else 'FAILED'} {path[:90]} {'rsc' if '_rsc' in r.url else ''}")
+                      why = "" if resp else (r.failure or "")
+                      loc = (resp.headers.get("location", "")[:60] if resp else "")
+                      print(f"{time.time()-t0:7.2f}s {r.method} {resp.status if resp else 'FAILED'} {r.resource_type} {path[:70]} {'rsc' if '_rsc' in r.url else ''} {why} {loc}")
               page.on("requestfinished", done)
               page.on("requestfailed", lambda r: done(r, True))
               page.on("pageerror", lambda e: print("pageerror", str(e)[:200]))
@@ -264,6 +266,7 @@ jobs:
                   except Exception:
                       print(f"NAV home->sales: still on {page.url} after 90s")
                   page.wait_for_timeout(3000)
+                  print("heading:", page.locator("main h1").first.text_content(timeout=5000) if page.locator("main h1").count() else "(none)")
               b.close()
           EOF
           URL="$URL" python3 /tmp/nav.py

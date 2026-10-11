@@ -223,6 +223,13 @@ jobs:
           TOKEN: ${{ steps.auth.outputs.id_token }}
         run: |
           URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app"
+          for i in $(seq 1 40); do
+            code="$(curl -s -o /tmp/r.txt -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$URL/home")"
+            [ "$code" = "200" ] && break
+            [ "$i" = 1 ] && head -c 300 /tmp/r.txt && echo
+            sleep 15
+          done
+          echo "IAP admitted CI after $i tries (last $code)"
           curl -s -o /dev/null -w "curl /home %{http_code} %{time_total}s\n" -H "Authorization: Bearer $TOKEN" "$URL/home"
           curl -s -o /dev/null -w "curl /sales %{http_code} %{time_total}s\n" -H "Authorization: Bearer $TOKEN" "$URL/sales"
           pip install --quiet playwright && python3 -m playwright install --with-deps chromium >/dev/null

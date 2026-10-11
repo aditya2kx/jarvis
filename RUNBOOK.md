@@ -638,7 +638,7 @@ gcloud run services update bhaga-webhook \
 | `aladdin-connect-username` | tesla-aladdin-garage (`ALADDIN_USERNAME`) | Genie Aladdin Connect account email (must **own** Big Peach). |
 | `aladdin-connect-password` | tesla-aladdin-garage (`ALADDIN_PASSWORD`) | Aladdin Connect password. |
 | `jarvis-dev-gateway-token` | jarvis-dev-gateway (`JARVIS_DEV_GATEWAY_TOKEN`) | Bearer for Siri / Grok. Created once in Cloud Shell (`cloud/jarvis_dev_gateway/README.md` § One-time setup); operator copies it from Console into the Shortcut / connector. |
-| `github-bot-pat` | jarvis-dev-gateway (`GITHUB_TOKEN`) | Copy of repo secret `ADMIN_PAT` (bot classic PAT), re-synced on every gateway deploy (`bhaga-orchestrator` holds `secretVersionAdder` on this secret only) — after a bot PAT rotation, re-run that workflow. |
+| `github-bot-pat` | jarvis-dev-gateway (`GITHUB_TOKEN`); Cursor Cloud Agents via OIDC (`scripts/cloud_git_identity.sh`) | Copy of repo secret `ADMIN_PAT` (bot classic PAT), re-synced on every gateway deploy and gateway PR self-test (`bhaga-orchestrator` holds `secretVersionAdder` on this secret only) — after a bot PAT rotation, re-run that workflow. |
 
 > **Local bootstrap (all providers):** If a secret is missing from your macOS Keychain on a fresh
 > clone, use:

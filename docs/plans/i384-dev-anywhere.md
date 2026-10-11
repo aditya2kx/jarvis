@@ -91,8 +91,8 @@ routes `/health`, `/task`, `/status`, `/mcp`, `/mcp/<path_token>`; `jarvis-dev-g
 ## PR mechanics
 
 One branch per PR: #385 carries everything except the `claude-review.yml` line (#386). Cloud Agents act
-as `jarvis-agent-bot328`, like the Mac: `scripts/cloud_git_identity.sh` (environment `start`, Cursor
-secret `GH_TOKEN` = bot PAT) for commits/pushes, and `cloud-agent-pr.yml` opens the PR as the bot
+as `jarvis-agent-bot328`, like the Mac: `scripts/cloud_git_identity.sh` (environment `start`; bot PAT
+from Secret Manager via Cursor OIDC, `provision_cloud_agent_identity.sh` once) for commits/pushes, and `cloud-agent-pr.yml` opens the PR as the bot
 (`--base main`); ManagePullRequest only updates it, because its create opens under the operator's
 account, which the operator cannot approve (Issue #321). Babysit per `pr-workflow.mdc`;
 never self-merge — operator merges #386 first, then #385.

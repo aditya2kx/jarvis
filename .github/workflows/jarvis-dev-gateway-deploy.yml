@@ -93,6 +93,22 @@ jobs:
           else
             echo "deploy identity: ready"
           fi
+          echo "PAT_PERMS=$PAT" >> "$GITHUB_ENV"
+
+      # Cloud Agents read github-bot-pat at VM start (scripts/cloud_git_identity.sh), so keep it
+      # current from PRs too — the value is ADMIN_PAT, never PR-controlled.
+      - name: Sync bot PAT
+        if: contains(env.PAT_PERMS, 'versions.add') && contains(env.PAT_PERMS, 'versions.access')
+        env:
+          ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
+        run: |
+          CUR="$(gcloud secrets versions access latest --secret github-bot-pat --project $PROJECT_ID 2>/dev/null || true)"
+          if [ "$CUR" != "$ADMIN_PAT" ]; then
+            printf '%s' "$ADMIN_PAT" | gcloud secrets versions add github-bot-pat --data-file=- --project $PROJECT_ID >/dev/null
+            echo "github-bot-pat: new version"
+          else
+            echo "github-bot-pat: current"
+          fi
 
   deploy:
     if: github.event_name != 'pull_request'

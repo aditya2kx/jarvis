@@ -24,17 +24,12 @@ re-run the workflow).
 ## One-time setup (Cloud Shell, operator)
 
 The deploy identity (`bhaga-orchestrator`) has no project-level Secret Manager admin, and should not
-get it. Create both secrets once and let it add versions to `github-bot-pat` only:
+get it. `scripts/provision_cloud_agent_identity.sh` creates both secrets once (idempotent), lets the
+deploy identity add versions to `github-bot-pat` only, and grants Cursor Cloud Agents read access to
+that secret ([gcp-access.md](../../docs/contributing/gcp-access.md) recipe F):
 
 ```bash
-P=jarvis-bhaga-prod; SA=serviceAccount:bhaga-orchestrator@$P.iam.gserviceaccount.com
-gcloud secrets create jarvis-dev-gateway-token --replication-policy=automatic --project $P
-python3 -c 'import secrets; print(secrets.token_urlsafe(32), end="")' \
-  | gcloud secrets versions add jarvis-dev-gateway-token --data-file=- --project $P
-gcloud secrets create github-bot-pat --replication-policy=automatic --project $P
-gcloud secrets add-iam-policy-binding jarvis-dev-gateway-token --project $P --member=$SA --role=roles/secretmanager.secretAccessor
-gcloud secrets add-iam-policy-binding github-bot-pat --project $P --member=$SA --role=roles/secretmanager.secretAccessor
-gcloud secrets add-iam-policy-binding github-bot-pat --project $P --member=$SA --role=roles/secretmanager.secretVersionAdder
+bash scripts/provision_cloud_agent_identity.sh
 ```
 
 The PR `self-test` job's "Probe deploy-identity IAM" step prints `deploy identity: ready` once this is

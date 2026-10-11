@@ -13,7 +13,7 @@ additive and reached through its own commands, so both can be used side by side.
 | See the console change | `npm run dev` on localhost | **per-PR preview** `operator-console-pr<N>` behind prod IAP (same Google sign-in + allowlist), screenshot comment on the PR; deleted on PR close + nightly sweep (`operator-console-preview.yml`) — Mac PRs get one too |
 | Prod reads (BQ, logs, status) | ADC | `/prod-read …` PR comment → result encrypted to the agent's key (`scripts/prod_read.py`; repo is public) |
 | Prod mutations (env flags, job runs, migrations) | ADC / Cloud Shell | `/prod-ops …` PR comment → operator approves in GitHub Environment `prod` (`scripts/prod_ops.py`) |
-| Git identity | `GH_TOKEN` (bot PAT, Keychain) → commits + pushes as `jarvis-agent-bot328` | same: Cursor secret `GH_TOKEN` (bot PAT) → `scripts/cloud_git_identity.sh` (environment `start`) drops Cursor's app-token rewrite, `gh auth setup-git`, bot name/email |
+| Git identity | `GH_TOKEN` (bot PAT, Keychain) → commits + pushes as `jarvis-agent-bot328` | same PAT, no copy: `scripts/cloud_git_identity.sh` (environment `start`) reads Secret Manager `github-bot-pat` via Cursor OIDC ([gcp-access.md](gcp-access.md) recipe F), logs `gh` in, drops Cursor's app-token rewrite, sets bot name/email (a `GH_TOKEN` Cursor secret also works) |
 | Open the PR | `gh pr create` as the bot | push a `cursor/*` branch → `cloud-agent-pr.yml` opens a draft PR as the bot (`ADMIN_PAT`); the agent sets title/body with `ManagePullRequest` `update_pr` — never its `create_pr`, which opens under the operator's account (Issue #321) |
 | Claude review | normal | normal — the actor is the bot, as on the Mac |
 | Build cost → BQ | `pr_cost_ledger.py capture-build` from transcripts | PR body line `Cursor-Agent: <bc-id> model=<model-id>` (add `prs=<a>,<b>` when one agent built several PRs — the cost splits by diff size); `pr-cost-gate.yml` prices the agent's `/usage` |
@@ -46,10 +46,9 @@ page error (paths and timings only in the log).
 
 | Step | Where | Why |
 |---|---|---|
-| Add Cursor secret `GH_TOKEN` = the bot classic PAT (same value as repo secret `ADMIN_PAT`; Mac: `security find-generic-password -s github-bot-pat -a jarvis-agent-bot328 -w \| pbcopy`), scoped to `aditya2kx/jarvis` | Cursor dashboard → Cloud Agents → Secrets | Cloud Agents commit, push and act as `jarvis-agent-bot328` like the Mac |
+| `bash scripts/provision_cloud_agent_identity.sh` (Cursor OIDC trust + gateway secrets; agent-driven in Cloud Shell, operator only signs in) | Cloud Shell or Mac ADC | Cloud Agents act as `jarvis-agent-bot328`; gateway deployable |
 | Create environment `prod` with yourself as **Required reviewer** | GitHub → Settings → Environments (owner-only; works on phone) | `/prod-ops` refuses until it exists |
 | Save the proposed environment config | Cursor dashboard → Cloud Agents → Environment | new agents boot with deps installed |
-| Create the gateway's two secrets + per-secret grants (7 lines) | Cloud Shell — [gateway README § One-time setup](../../cloud/jarvis_dev_gateway/README.md#one-time-setup-cloud-shell-operator) | deploy identity cannot create secrets |
 | Copy `jarvis-dev-gateway-token` into Siri Shortcut / Grok | Cloud Console → Secret Manager | voice / Grok entry |
 
 `/prod-read logs` also needs `roles/logging.viewer` for the CI deploy identity (it has none today):

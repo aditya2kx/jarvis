@@ -2447,7 +2447,10 @@ idempotent against the one-time Console-only provisioning below — it does not 
 service `operator-console-pr<N>` from
 [`.github/workflows/operator-console-preview.yml`](.github/workflows/operator-console-preview.yml)
 — prod runtime SA, prod BQ, `CONSOLE_PREVIEW=1` (every non-GET refused with 403, Preview badge),
-`--iap` with the prod service's IAP policy copied, so the same Google accounts sign in. A sticky
+`--iap` with the prod service's IAP policy copied, so the same Google accounts sign in (plus the CI
+identity on the preview only, for the `smoke` job: every mobile menu tap on the real preview in
+iPhone WebKit). `IAP_SERVICE_NAME` is the preview's own name — the IAP JWT audience is per service,
+so the prod default would fail identity on the preview. A sticky
 PR comment carries the URL and `/home` + `/inventory` screenshots. Deleted on PR close; a nightly
 sweep removes any preview whose PR is no longer open. Never deploy a branch onto `operator-console`
 itself: a revision's env becomes the service template (`/prod-ops` refuses `CONSOLE_PREVIEW`).

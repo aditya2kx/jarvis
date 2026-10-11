@@ -35,6 +35,12 @@ cannot reach prod; `/prod-ops` refuses to set it. Unset (localhost, prod) the co
 before. Screenshots cover `/home` and `/inventory` only — Payroll and Accounting carry names, wages
 and bank lines, and this repo is public.
 
+Previews verify IAP's JWT against their own service (`IAP_SERVICE_NAME=operator-console-pr<N>`),
+and each build carries `NEXT_DEPLOYMENT_ID`, so a tab left open across a redeploy hard-reloads
+instead of mixing builds. The CI identity is added to the **preview's** IAP list only, so the `smoke`
+job taps every mobile menu item on the real preview in iPhone WebKit and fails on a stuck tap or a
+page error (paths and timings only in the log).
+
 ## Operator one-time setup
 
 | Step | Where | Why |
@@ -43,6 +49,9 @@ and bank lines, and this repo is public.
 | Save the proposed environment config | Cursor dashboard → Cloud Agents → Environment | new agents boot with deps installed |
 | Create the gateway's two secrets + per-secret grants (7 lines) | Cloud Shell — [gateway README § One-time setup](../../cloud/jarvis_dev_gateway/README.md#one-time-setup-cloud-shell-operator) | deploy identity cannot create secrets |
 | Copy `jarvis-dev-gateway-token` into Siri Shortcut / Grok | Cloud Console → Secret Manager | voice / Grok entry |
+
+`/prod-read logs` also needs `roles/logging.viewer` for the CI deploy identity (it has none today):
+`gcloud projects add-iam-policy-binding jarvis-bhaga-prod --member serviceAccount:<WIF_SERVICE_ACCOUNT> --role roles/logging.viewer`.
 
 Optional: repo variable `CLOUD_AGENT_MODEL` picks the Cloud Agent model (account default otherwise).
 

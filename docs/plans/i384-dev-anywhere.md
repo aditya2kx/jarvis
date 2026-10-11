@@ -20,7 +20,7 @@ Out of scope: OAuth for the gateway (path-token instead), Mac-only `user-playwri
 
 ## Invariants preserved
 
-- Read-only prod from previews: `apps/operator-console/middleware.ts` returns 403 for every
+- Read-only prod from previews: `apps/operator-console/middleware.ts` line 16 returns 403 for every
   non-GET/HEAD when `isConsolePreview()`; `app/accounting/page.tsx` skips `dedupePlaidTransactions`.
 - Public repo: no plaintext prod data in logs/comments/artifacts — `scripts/prod_read.py` encrypts
   (RSA-OAEP-wrapped AES-256) to the requester's key; screenshots only `/home` + `/inventory`.

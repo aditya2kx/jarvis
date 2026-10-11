@@ -37,9 +37,10 @@ Jobs (Option B); they must never block the click path via daemon threads.
 
 Canonical machine-readable list: [`registry.ts`](./registry.ts).
 
-Read-only preview (`CONSOLE_PREVIEW=1`): `middleware.ts` refuses every server-action
-POST (`next-action` header) with a text/plain 403, so all rows above — including the
-read-only polls — are disabled; `ensureOrderRecoFresh` skips its page-open refresh.
+Read-only preview (`CONSOLE_PREVIEW=1`): `middleware.ts` refuses every non-GET request
+(server actions and `/api/*` POSTs) with a text/plain 403, so all rows above — including the
+read-only polls — are disabled; `ensureOrderRecoFresh` skips its page-open refresh and
+the Accounting page skips its on-load Plaid dedupe.
 Gate: `python3 scripts/check_operator_console_actions.py`.
 
 ## Live evidence (PR #193)

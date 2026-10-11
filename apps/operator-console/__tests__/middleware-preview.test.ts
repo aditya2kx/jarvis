@@ -30,10 +30,12 @@ describe("middleware read-only preview gate (CONSOLE_PREVIEW=1)", () => {
     expect(res.status).toBe(200);
   });
 
-  it("lets non-action POSTs through (e.g. /api/iap-beacon)", () => {
+  it("refuses API-route writes too (telemetry beacon, restock parse)", () => {
     vi.stubEnv("CONSOLE_PREVIEW", "1");
-    const res = middleware(new NextRequest("http://localhost:3000/api/iap-beacon", { method: "POST" }));
-    expect(res.status).toBe(200);
+    for (const path of ["/api/iap-beacon", "/api/parse-restock"]) {
+      const res = middleware(new NextRequest(`http://localhost:3000${path}`, { method: "POST" }));
+      expect(res.status).toBe(403);
+    }
   });
 
   it("does nothing when CONSOLE_PREVIEW is unset (prod)", () => {

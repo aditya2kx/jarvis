@@ -10,9 +10,10 @@ import { isConsolePreview, PREVIEW_ACTION_REFUSAL } from "@/lib/config/preview";
  * canonical host only; hash hits are logged, not bounced.
  */
 export function middleware(request: NextRequest) {
-  // Next's action client surfaces a text/plain 4xx body as the error, which
-  // useConsoleAction shows as the toast.
-  if (isConsolePreview() && request.method === "POST" && request.headers.has("next-action")) {
+  // Every console write is a non-GET (server actions, /api/iap-beacon,
+  // /api/parse-restock). Next's action client surfaces a text/plain 4xx body
+  // as the error, which useConsoleAction shows as the toast.
+  if (isConsolePreview() && request.method !== "GET" && request.method !== "HEAD") {
     return new NextResponse(PREVIEW_ACTION_REFUSAL, {
       status: 403,
       headers: { "content-type": "text/plain" },

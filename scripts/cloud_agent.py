@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cursor Cloud Agents API: launch an agent for a requirement, record its cost.
 
-    # /jarvis-new-task <requirement> on an issue (jarvis-dev-signals.yml):
+    # /jarvis-cloud-task <requirement> on an issue (jarvis-dev-signals.yml cloud-intake):
     python3 scripts/cloud_agent.py launch --issue 384 --requirement-file req.txt [--model ID]
 
     # pr-cost-gate.yml, for PRs whose body carries `Cursor-Agent: bc-… model=…`:
@@ -69,7 +69,7 @@ def seed_prompt(requirement: str, issue: int | None) -> str:
     issue_line = f"Tracking issue: #{issue} (put `Closes #{issue}` in the PR body).\n" if issue else ""
     return (
         f"{requirement.strip()}\n\n{issue_line}"
-        "You are a Jarvis Cursor Cloud Agent started by `/jarvis-new-task`. Follow AGENTS.md, "
+        "You are a Jarvis Cursor Cloud Agent started by `/jarvis-cloud-task`. Follow AGENTS.md, "
         "CONTRIBUTING.md and .cursor/rules (pr-workflow.mdc § Cursor Cloud Agent surface): "
         "jam with the operator before building, open a draft PR early, put "
         "`Cursor-Agent: <your bc- id> model=<your model id>` in the PR body, "

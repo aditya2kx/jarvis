@@ -495,12 +495,13 @@ Wired as a `verify.py` gate (`progress-push-guard`). Blocks pushes that target `
 
 ## 9. Dev from anywhere (Issue #384)
 
-The lifecycle above runs unchanged on a Mac or on a Cursor Cloud Agent (Cursor mobile/web).
-`gcp_access_probe.py::detect_surface()` picks the surface; `new_requirement.py` skips the Cursor
-window + launchd daemon off-Mac. With repo variable `CLOUD_AGENT_DISPATCH=1`, the `intake-signal`
-job starts a Cloud Agent (`scripts/cloud_agent.py launch`) instead of signalling the Mac listener —
-exactly one of the two picks up a `/jarvis-new-task`. Siri / Grok enter the same intake through
-`cloud/jarvis_dev_gateway`. Per-surface details (console preview, `/prod-read`, `/prod-ops`, cost
+The Mac lifecycle above is unchanged: `/jarvis-new-task` → `intake-signal` → Mac listener →
+`new_requirement.py`. Cloud work uses a **separate command**, `/jarvis-cloud-task <requirement>`:
+the `cloud-intake` job starts a Cursor Cloud Agent (`scripts/cloud_agent.py launch`) and comments
+its link; the Mac never receives it (`comment-signal` excludes it, and the agent's `cursor/*` branch
+has no Mac phase cache, so its CI signals route as `unrouted`). Both kinds of task can be in flight at
+once. Siri / Grok enter through `cloud/jarvis_dev_gateway` (cloud by default, `where=mac` for the
+Mac). `gcp_access_probe.py` reports `dev_surface=` (`mac_local` / `cursor_cloud` / `ci`). Per-surface details (console preview, `/prod-read`, `/prod-ops`, cost
 capture, operator setup): [`docs/contributing/dev-anywhere.md`](contributing/dev-anywhere.md).
 
 | Workflow / script | Role |

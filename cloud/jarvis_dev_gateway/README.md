@@ -1,16 +1,16 @@
 # jarvis-dev gateway
 
 Start and check Jarvis development tasks from **Siri**, **Grok** or any HTTP client — no laptop,
-no terminal. A task is a GitHub tracking issue (`[work] …`, label `jarvis-work`) plus a
-`/jarvis-new-task …` comment posted as `jarvis-agent-bot328`. That comment is the same intake
-`jarvis-dev-signals.yml` already serves, so the request lands on a **Cursor Cloud Agent** when the
-repo variable `CLOUD_AGENT_DISPATCH=1` (else the Mac listener). The gateway holds no Cursor key
-and never touches prod data.
+no terminal. A task is a GitHub tracking issue (`[work] …`, label `jarvis-work`) plus an intake
+comment posted as `jarvis-agent-bot328`, served by `jarvis-dev-signals.yml` exactly like a typed one:
+`/jarvis-cloud-task …` (default) starts a **Cursor Cloud Agent**; `"where": "mac"` posts
+`/jarvis-new-task …` instead, which the Mac listener picks up as always. The gateway holds no
+Cursor key and never touches prod data.
 
 | Route | Auth | Does |
 |---|---|---|
 | `GET /health` | none | wiring check (`github_token`, `gateway_token` booleans) |
-| `POST /task` `{"text": "…"}` (JSON or form) | Bearer | opens the issue + intake comment; returns `{issue, url, speech}` |
+| `POST /task` `{"text": "…", "where": "cloud"\|"mac"}` (JSON or form) | Bearer | opens the issue + intake comment; returns `{issue, url, where, speech}` |
 | `GET /status` | Bearer | newest open `jarvis-work` issues, their `stage:*`, Cursor agent link; `speech` summary |
 | `POST /mcp` | Bearer | MCP (Streamable HTTP, stateless JSON): tools `start_task`, `task_status` |
 | `POST /mcp/<token>` | token in path | same, for connectors that only take a URL (grok.com) |
@@ -56,7 +56,8 @@ Request Body **JSON** `text` = *Dictated Text* → *Get Dictionary Value* `speec
 *Get Dictionary Value* `speech` → *Speak Text*.
 
 "Hey Siri, Jarvis task" → speak the requirement → Siri reads back the issue number. The Cursor agent
-link lands on the issue within a minute; open it in Cursor mobile to jam.
+link lands on the issue within a minute; open it in Cursor mobile to jam. For a task you want to
+pick up on the Mac instead, duplicate the Shortcut with `where` = `mac` in the JSON body.
 
 ## Grok
 

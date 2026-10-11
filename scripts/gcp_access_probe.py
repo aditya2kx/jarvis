@@ -50,17 +50,19 @@ def _cursor_cloud_agent(env: dict[str, str]) -> bool:
 def detect_surface(env: dict[str, str] | None = None, platform: str | None = None) -> str:
     """Where this process runs: ``ci`` | ``cursor_cloud`` | ``mac_local`` | ``other``.
 
-    Dev-loop scripts branch on this (open Cursor windows / launchd only on
-    ``mac_local``); GCP identity is a separate question answered by classify().
+    Reported as ``dev_surface=`` so an agent knows which dev loop it is in; GCP
+    identity is a separate question answered by classify().
     """
     env = env if env is not None else dict(os.environ)
     platform = platform if platform is not None else sys.platform
     if env.get("GITHUB_ACTIONS") == "true":
         return "ci"
-    if _cursor_cloud_agent(env):
-        return "cursor_cloud"
+    # Before the Cursor check: Cursor desktop sets CURSOR_AGENT=1 in local agent
+    # terminals too, and Cloud Agent VMs are always Linux.
     if platform == "darwin":
         return "mac_local"
+    if _cursor_cloud_agent(env):
+        return "cursor_cloud"
     return "other"
 
 

@@ -1,8 +1,10 @@
-"""Gateway: bearer auth is mandatory, a task is issue + /jarvis-new-task comment, MCP speaks JSON-RPC."""
+"""Gateway: bearer auth is mandatory, a task is issue + intake comment, MCP speaks JSON-RPC."""
 
 import pytest
 
-from cloud.jarvis_dev_gateway import app as gw
+pytest.importorskip("flask")
+
+from cloud.jarvis_dev_gateway import app as gw  # noqa: E402
 
 TOKEN = "test-token"
 
@@ -68,7 +70,19 @@ def test_task_opens_issue_then_posts_intake_comment(client, calls):
     assert (m1, p1) == ("POST", "/repos/aditya2kx/jarvis/issues")
     assert b1["title"] == "[work] add a chip to the home page" and b1["labels"] == ["jarvis-work"]
     assert (m2, p2) == ("POST", "/repos/aditya2kx/jarvis/issues/401/comments")
-    assert b2["body"].startswith("/jarvis-new-task add a chip")
+    assert b2["body"].startswith("/jarvis-cloud-task add a chip")
+    assert body["where"] == "cloud"
+
+
+def test_task_for_the_mac_uses_the_unchanged_mac_intake(client, calls):
+    body = client.post("/task", json={"text": "fix it", "where": "mac"}, headers=AUTH).get_json()
+    assert calls[1][2]["body"] == "/jarvis-new-task fix it"
+    assert "Mac" in body["speech"]
+
+
+def test_unknown_target_is_refused_without_side_effects(client, calls):
+    assert client.post("/task", json={"text": "x", "where": "laptop"}, headers=AUTH).status_code == 400
+    assert calls == []
 
 
 def test_task_accepts_form_text(client, calls):

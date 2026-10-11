@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -76,6 +78,23 @@ class ParseCommentTests(unittest.TestCase):
         self.assertTrue(f.endswith(' AND "dedupe"'))
 
 
+def _openssl_has_pbkdf2_and_oaep() -> bool:
+    """macOS ships LibreSSL, which may lack these; prod_read only runs on Linux (CI + Cloud Agents)."""
+    if not shutil.which("openssl"):
+        return False
+    with tempfile.TemporaryDirectory() as d:
+        key, pub = Path(d) / "k.pem", Path(d) / "p.pem"
+        steps = [
+            ["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-pass", "pass:x", "-in", os.devnull],
+            ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:1024", "-out", str(key)],
+            ["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(pub)],
+            ["openssl", "pkeyutl", "-encrypt", "-pubin", "-inkey", str(pub),
+             "-pkeyopt", "rsa_padding_mode:oaep", "-in", os.devnull],
+        ]
+        return all(subprocess.run(s, capture_output=True).returncode == 0 for s in steps)
+
+
+@unittest.skipUnless(_openssl_has_pbkdf2_and_oaep(), "local openssl lacks -pbkdf2 / OAEP (e.g. macOS LibreSSL)")
 class EncryptionTests(unittest.TestCase):
     def test_round_trip_only_with_the_private_key(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:

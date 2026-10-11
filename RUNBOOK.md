@@ -2450,8 +2450,8 @@ service `operator-console-pr<N>` from
 `--iap` with the prod service's IAP policy copied, so the same Google accounts sign in. A sticky
 PR comment carries the URL and `/home` + `/inventory` screenshots. Deleted on PR close; a nightly
 sweep removes any preview whose PR is no longer open. Never deploy a branch onto `operator-console`
-itself: a revision's env becomes the service template. The prod deploy strips `CONSOLE_PREVIEW`
-(`--remove-env-vars`). Cloud Agent prod access: `/prod-read` + `/prod-ops`
+itself: a revision's env becomes the service template (`/prod-ops` refuses `CONSOLE_PREVIEW`).
+Cloud Agent prod access: `/prod-read` + `/prod-ops`
 ([docs/contributing/dev-anywhere.md](docs/contributing/dev-anywhere.md)).
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)

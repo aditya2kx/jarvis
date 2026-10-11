@@ -84,6 +84,10 @@ class DetectSurfaceTests(unittest.TestCase):
     def test_operator_mac(self):
         self.assertEqual(detect_surface(env={}, platform="darwin"), "mac_local")
 
+    def test_local_cursor_agent_terminal_on_mac_is_still_mac(self):
+        env = {"CURSOR_AGENT": "1", "CURSOR_CONVERSATION_ID": "abc"}
+        self.assertEqual(detect_surface(env=env, platform="darwin"), "mac_local")
+
     def test_unknown_linux(self):
         self.assertEqual(detect_surface(env={}, platform="linux"), "other")
 

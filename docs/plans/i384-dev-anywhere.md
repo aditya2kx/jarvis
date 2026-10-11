@@ -12,9 +12,11 @@ Evidence tier: unit-only (waiver: no BHAGA pipeline code changes — the live pr
 ## Scope and flag decision
 
 Feature-flag decision: no new runtime flag on prod paths. Every new path is additive and
-off-by-default: `CONSOLE_PREVIEW=1` only on `operator-console-pr<N>` services (prod deploy strips
-it, `operator-console-deploy.yml` `--remove-env-vars CONSOLE_PREVIEW`); Cloud Agent intake only when
-repo var `CLOUD_AGENT_DISPATCH == '1'`; the Mac flow keeps `detect_surface() == "mac_local"`.
+off-by-default: `CONSOLE_PREVIEW=1` only on separate `operator-console-pr<N>` services
+(`operator-console-deploy.yml` untouched); Cloud Agent intake only via the new `/jarvis-cloud-task`
+command. **Mac flow must not break:** `new_requirement.py`, `operator-console-deploy.yml` and the
+`intake-signal` job are byte-identical to `main`; `detect_surface()` returns `mac_local` on darwin
+even with `CURSOR_AGENT=1` (Cursor desktop agent terminals set it).
 Can it silently produce wrong numbers? No — previews are read-only and the rest is dev tooling.
 Out of scope: OAuth for the gateway (path-token instead), Mac-only `user-playwright` provisioning.
 
@@ -35,8 +37,7 @@ Out of scope: OAuth for the gateway (path-token instead), Mac-only `user-playwri
 ## M1 — Cloud Agent parity (Sonnet)
 
 `scripts/gcp_access_probe.py:50` `detect_surface(env=None, platform=None) -> str` (`ci` /
-`cursor_cloud` / `mac_local` / `other`); `scripts/new_requirement.py:602` skips window + daemon when not
-`mac_local`; `.cursor/environment.json`; `.cursor/rules/pr-workflow.mdc` § Cursor Cloud Agent surface.
+`cursor_cloud` / `mac_local` / `other`), reported as `dev_surface=` only; `.cursor/environment.json`; `.cursor/rules/pr-workflow.mdc` § Cursor Cloud Agent surface.
 
 **Verify:** `python3 -m pytest -q scripts/test_gcp_access_probe.py scripts/test_new_requirement.py`
 — pass criterion: all green; env build `bld-20261011-6de31ea8` SUCCEEDED.
@@ -54,7 +55,7 @@ matches Topbar chips — visual polish is an acceptance bar), `operator-console-
 
 `scripts/prod_read.py` + `prod-read.yml`; `scripts/prod_ops.py` + `prod-ops.yml`;
 `scripts/cloud_agent.py` (`launch`, `record_cost`) + `pr-cost-gate.yml` step + `jarvis-dev-signals.yml`
-intake step; `pr_cost_ledger.py` tiers `opus-5-5` / `sonnet-5-5`.
+new `cloud-intake` job (`/jarvis-cloud-task`); `pr_cost_ledger.py` tiers `opus-5-5` / `sonnet-5-5`.
 
 **Verify:** `python3 -m pytest -q scripts/test_prod_read.py scripts/test_prod_ops.py scripts/test_cloud_agent.py scripts/test_pr_cost_ledger.py`
 — pass criterion: `prod-read` self-test round-trips; cost gate prints `[OK] PR #385 cost record is present`.
@@ -78,7 +79,7 @@ routes `/health`, `/task`, `/status`, `/mcp`, `/mcp/<path_token>`; `jarvis-dev-g
 | Failure: prod-ops without protected env | guard refuses (comment) / warns (PR) |
 | Failure: write in preview | 403 middleware test |
 | Recovery: preview cleanup | teardown on close + nightly sweep (post-merge) |
-| Legacy: Mac | `detect_surface() == "mac_local"` tests; dry-run `new_requirement.py --dry-run` |
+| Legacy: Mac | `git diff origin/main --stat -- scripts/new_requirement.py .github/workflows/operator-console-deploy.yml` empty; `intake-signal` job unchanged; `test_local_cursor_agent_terminal_on_mac_is_still_mac`; `test_new_requirement.py` 44 pass; prod_read round-trip skips on LibreSSL |
 
 ## Docs lock-step
 

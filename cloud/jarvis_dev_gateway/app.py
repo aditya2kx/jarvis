@@ -1,11 +1,11 @@
 """jarvis-dev gateway: start and check Jarvis dev tasks from Siri, Grok or any HTTP client.
 
-A task is a GitHub tracking issue plus a `/jarvis-new-task` comment posted as the
-bot — the same intake `jarvis-dev-signals.yml` already serves, so a voice request
-lands on a Cursor Cloud Agent (vars.CLOUD_AGENT_DISPATCH=1) or the Mac listener
-exactly like a typed one. This service holds no Cursor key and never touches prod.
+A task is a GitHub tracking issue plus an intake comment posted as the bot, served
+by `jarvis-dev-signals.yml` exactly like a typed one: `/jarvis-cloud-task` (default)
+starts a Cursor Cloud Agent, `/jarvis-new-task` (where="mac") queues it for the Mac
+listener. This service holds no Cursor key and never touches prod.
 
-    POST /task   {"text": "..."}          → opens the issue, returns a speakable reply
+    POST /task   {"text": "...", "where": "cloud"|"mac"} → opens the issue, returns a speakable reply
     GET  /status                          → the newest open jarvis-work issues + agent links
     POST /mcp    JSON-RPC (MCP Streamable HTTP, stateless) → tools start_task / task_status
 """
@@ -32,6 +32,7 @@ REPO = os.environ.get("GATEWAY_REPO", "aditya2kx/jarvis")
 LABEL = "jarvis-work"
 MAX_TEXT = 4000
 MCP_PROTOCOL = "2025-06-18"
+INTAKE = {"cloud": "/jarvis-cloud-task", "mac": "/jarvis-new-task"}
 _AGENT_LINK = re.compile(r"Cursor Cloud Agent\*\* started: (\S+)")
 
 
@@ -61,12 +62,15 @@ def _gh(method: str, path: str, body: dict | None = None) -> Any:
         raise GitHubError(f"{method} {path} → HTTP {e.code}") from None
 
 
-def start_task(text: str) -> dict:
+def start_task(text: str, where: str = "cloud") -> dict:
     text = (text or "").strip()
+    where = (where or "cloud").strip().lower()
     if not text:
         raise ValueError("say what to build")
     if len(text) > MAX_TEXT:
         raise ValueError(f"request is longer than {MAX_TEXT} characters")
+    if where not in INTAKE:
+        raise ValueError("where must be cloud or mac")
     title = text.splitlines()[0][:100]
     issue = _gh("POST", f"/repos/{REPO}/issues", {
         "title": f"[work] {title}",
@@ -74,12 +78,15 @@ def start_task(text: str) -> dict:
         "labels": [LABEL],
     })
     num = issue["number"]
-    _gh("POST", f"/repos/{REPO}/issues/{num}/comments", {"body": f"/jarvis-new-task {text}"})
-    log.info("gateway task issue=%s chars=%d", num, len(text))
+    _gh("POST", f"/repos/{REPO}/issues/{num}/comments", {"body": f"{INTAKE[where]} {text}"})
+    log.info("gateway task issue=%s where=%s chars=%d", num, where, len(text))
+    follow = ("The agent link will be on the issue in about a minute." if where == "cloud"
+              else "It opens on your Mac when the listener is running.")
     return {
         "issue": num,
         "url": issue["html_url"],
-        "speech": f"Started Jarvis task {num}: {title}. The agent link will be on the issue in about a minute.",
+        "where": where,
+        "speech": f"Started Jarvis task {num}: {title}. {follow}",
     }
 
 
@@ -132,7 +139,9 @@ def task():
         return _deny()
     payload = request.get_json(silent=True) or {}
     try:
-        return jsonify({"ok": True, **start_task(payload.get("text") or request.form.get("text", ""))})
+        text = payload.get("text") or request.form.get("text", "")
+        where = payload.get("where") or request.form.get("where", "cloud")
+        return jsonify({"ok": True, **start_task(text, where)})
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e), "speech": str(e)}), 400
     except GitHubError as e:
@@ -154,10 +163,14 @@ def status():
 TOOLS = [
     {
         "name": "start_task",
-        "description": "Start a Jarvis development task (opens a tracking issue; a Cursor Cloud Agent picks it up).",
+        "description": "Start a Jarvis development task (opens a tracking issue; a Cursor Cloud Agent picks it up, "
+                       "or the operator's Mac with where=mac).",
         "inputSchema": {
             "type": "object",
-            "properties": {"text": {"type": "string", "description": "What to build or fix, in plain words."}},
+            "properties": {
+                "text": {"type": "string", "description": "What to build or fix, in plain words."},
+                "where": {"type": "string", "enum": ["cloud", "mac"], "default": "cloud"},
+            },
             "required": ["text"],
         },
     },
@@ -195,7 +208,7 @@ def _handle_rpc(msg: dict) -> dict | None:
         name, args = params.get("name"), params.get("arguments") or {}
         try:
             if name == "start_task":
-                out = start_task(args.get("text", ""))
+                out = start_task(args.get("text", ""), args.get("where", "cloud"))
             elif name == "task_status":
                 out = task_status()
             else:

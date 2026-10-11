@@ -17,9 +17,28 @@ and never touches prod data.
 
 Deploy: `.github/workflows/jarvis-dev-gateway-deploy.yml` on push to `main` — Cloud Run
 `jarvis-dev-gateway` (us-central1, scale to zero, max 1, public ingress + app bearer because Siri and
-Grok cannot do Google sign-in). Secrets: `jarvis-dev-gateway-token` (generated once by the workflow)
-and `github-bot-pat` (synced from repo secret `ADMIN_PAT` on every deploy — after a bot PAT rotation,
+Grok cannot do Google sign-in). Secrets: `jarvis-dev-gateway-token` (the bearer) and
+`github-bot-pat` (synced from repo secret `ADMIN_PAT` on every deploy — after a bot PAT rotation,
 re-run the workflow).
+
+## One-time setup (Cloud Shell, operator)
+
+The deploy identity (`bhaga-orchestrator`) has no project-level Secret Manager admin, and should not
+get it. Create both secrets once and let it add versions to `github-bot-pat` only:
+
+```bash
+P=jarvis-bhaga-prod; SA=serviceAccount:bhaga-orchestrator@$P.iam.gserviceaccount.com
+gcloud secrets create jarvis-dev-gateway-token --replication-policy=automatic --project $P
+python3 -c 'import secrets; print(secrets.token_urlsafe(32), end="")' \
+  | gcloud secrets versions add jarvis-dev-gateway-token --data-file=- --project $P
+gcloud secrets create github-bot-pat --replication-policy=automatic --project $P
+gcloud secrets add-iam-policy-binding jarvis-dev-gateway-token --project $P --member=$SA --role=roles/secretmanager.secretAccessor
+gcloud secrets add-iam-policy-binding github-bot-pat --project $P --member=$SA --role=roles/secretmanager.secretAccessor
+gcloud secrets add-iam-policy-binding github-bot-pat --project $P --member=$SA --role=roles/secretmanager.secretVersionAdder
+```
+
+The PR `self-test` job's "Probe deploy-identity IAM" step prints `deploy identity: ready` once this is
+done; re-run the workflow (Actions → jarvis-dev gateway → Run workflow) to deploy.
 
 ## Get the URL and token (phone, once)
 

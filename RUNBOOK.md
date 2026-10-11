@@ -637,7 +637,7 @@ gcloud run services update bhaga-webhook \
 | `tesla-fleet-refresh-token` | tesla-aladdin-garage (`TESLA_REFRESH_TOKEN`) | User refresh token; rotated on refresh and written back as a new secret version. Cloud Run SA needs `secretVersionAdder` (not only `secretAccessor`) or `/oauth/tesla` tokens stay in memory and die on restart. |
 | `aladdin-connect-username` | tesla-aladdin-garage (`ALADDIN_USERNAME`) | Genie Aladdin Connect account email (must **own** Big Peach). |
 | `aladdin-connect-password` | tesla-aladdin-garage (`ALADDIN_PASSWORD`) | Aladdin Connect password. |
-| `jarvis-dev-gateway-token` | jarvis-dev-gateway (`JARVIS_DEV_GATEWAY_TOKEN`) | Bearer for Siri / Grok. Generated once by `jarvis-dev-gateway-deploy.yml`; operator copies it from Console into the Shortcut / connector. |
+| `jarvis-dev-gateway-token` | jarvis-dev-gateway (`JARVIS_DEV_GATEWAY_TOKEN`) | Bearer for Siri / Grok. Created once in Cloud Shell (`cloud/jarvis_dev_gateway/README.md` § One-time setup); operator copies it from Console into the Shortcut / connector. |
 | `github-bot-pat` | jarvis-dev-gateway (`GITHUB_TOKEN`) | Copy of repo secret `ADMIN_PAT` (bot classic PAT), re-synced on every gateway deploy — after a bot PAT rotation, re-run that workflow. |
 
 > **Local bootstrap (all providers):** If a secret is missing from your macOS Keychain on a fresh

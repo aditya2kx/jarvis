@@ -1,8 +1,8 @@
 name: jarvis-dev gateway
 
 # cloud/jarvis_dev_gateway — Siri / Grok / HTTP entry point that opens a Jarvis dev task.
-# main: build → Secret Manager (bearer generated once; bot PAT synced from ADMIN_PAT so a
-# PAT rotation is "re-run this workflow") → Cloud Run (scale to zero) → smoke.
+# main: build → sync bot PAT from ADMIN_PAT into Secret Manager (a PAT rotation is
+# "re-run this workflow") → Cloud Run (scale to zero) → smoke.
 # pull_request: the same image runs on the runner against live GitHub (read-only calls)
 # and the deploy identity's IAM is probed, so the first main deploy is not a guess.
 
@@ -71,20 +71,28 @@ jobs:
 
       - name: Probe deploy-identity IAM
         run: |
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "Content-Type: application/json" \
-            "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID:testIamPermissions" \
-            -d '{"permissions":["secretmanager.secrets.create","secretmanager.versions.add","secretmanager.versions.access","run.services.create","run.services.setIamPolicy","iam.serviceAccounts.actAs"]}' \
-            | tee /tmp/perms.json; echo
-          python3 - <<'PY'
-          import json
-          want = {"secretmanager.secrets.create", "secretmanager.versions.add", "secretmanager.versions.access",
-                  "run.services.create", "run.services.setIamPolicy", "iam.serviceAccounts.actAs"}
-          missing = sorted(want - set(json.load(open("/tmp/perms.json")).get("permissions", [])))
-          print("missing:", missing or "none")
-          if missing:
-              print(f"::warning::jarvis-dev gateway: deploy identity lacks {missing} — the main deploy will fail at that step")
-          PY
+          AT="$(gcloud auth print-access-token)"
+          probe() {  # $1 = resource URL, $2 = JSON permission list
+            curl -sS -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" \
+              "$1:testIamPermissions" -d "{\"permissions\":$2}" \
+              | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin).get("permissions", [])))'
+          }
+          SM="https://secretmanager.googleapis.com/v1/projects/$PROJECT_ID/secrets"
+          PROJ="$(probe "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID" '["run.services.create","run.services.setIamPolicy","iam.serviceAccounts.actAs"]')"
+          TOK="$(probe "$SM/jarvis-dev-gateway-token" '["secretmanager.versions.access"]')"
+          PAT="$(probe "$SM/github-bot-pat" '["secretmanager.versions.access","secretmanager.versions.add"]')"
+          echo "project: $PROJ"; echo "jarvis-dev-gateway-token: ${TOK:-none}"; echo "github-bot-pat: ${PAT:-none}"
+          MISSING=""
+          for p in run.services.create run.services.setIamPolicy iam.serviceAccounts.actAs; do
+            [[ " $PROJ " == *" $p "* ]] || MISSING="$MISSING project:$p"
+          done
+          [[ "$TOK" == *versions.access* ]] || MISSING="$MISSING jarvis-dev-gateway-token:versions.access"
+          [[ "$PAT" == *versions.add* && "$PAT" == *versions.access* ]] || MISSING="$MISSING github-bot-pat:versions.access+add"
+          if [ -n "$MISSING" ]; then
+            echo "::warning::jarvis-dev gateway: not deployable yet —$MISSING. One-time setup: cloud/jarvis_dev_gateway/README.md § One-time setup"
+          else
+            echo "deploy identity: ready"
+          fi
 
   deploy:
     if: github.event_name != 'pull_request'
@@ -105,23 +113,15 @@ jobs:
           docker build -f cloud/jarvis_dev_gateway/Dockerfile -t $REGISTRY/$SERVICE:${{ github.sha }} .
           docker push $REGISTRY/$SERVICE:${{ github.sha }}
 
-      # The bearer is generated once and never printed: the operator copies it from
-      # Cloud Console → Secret Manager → jarvis-dev-gateway-token (phone OK) into the
-      # Siri Shortcut / Grok connector. Rotate by adding a version there + redeploy.
-      - name: Ensure secrets
+      # The deploy identity cannot create secrets (no project-level Secret Manager admin);
+      # both exist from the one-time setup in the README, and only github-bot-pat grants
+      # it versionAdder so a bot PAT rotation propagates on the next run.
+      - name: Sync bot PAT
         env:
           ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
         run: |
-          ensure() {
-            gcloud secrets describe "$1" --project $PROJECT_ID >/dev/null 2>&1 \
-              || gcloud secrets create "$1" --replication-policy=automatic --project $PROJECT_ID
-          }
-          ensure jarvis-dev-gateway-token
-          if ! gcloud secrets versions access latest --secret jarvis-dev-gateway-token --project $PROJECT_ID >/dev/null 2>&1; then
-            python3 -c 'import secrets; print(secrets.token_urlsafe(32), end="")' \
-              | gcloud secrets versions add jarvis-dev-gateway-token --data-file=- --project $PROJECT_ID
-          fi
-          ensure github-bot-pat
+          gcloud secrets versions describe latest --secret jarvis-dev-gateway-token --project $PROJECT_ID >/dev/null \
+            || { echo "::error::secret jarvis-dev-gateway-token missing — cloud/jarvis_dev_gateway/README.md § One-time setup"; exit 1; }
           CUR="$(gcloud secrets versions access latest --secret github-bot-pat --project $PROJECT_ID 2>/dev/null || true)"
           if [ "$CUR" != "$ADMIN_PAT" ]; then
             printf '%s' "$ADMIN_PAT" | gcloud secrets versions add github-bot-pat --data-file=- --project $PROJECT_ID

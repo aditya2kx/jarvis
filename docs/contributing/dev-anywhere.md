@@ -36,7 +36,8 @@ lines, and this repo is public.
 | Create environment `prod` with yourself as **Required reviewer** | GitHub → Settings → Environments (owner-only; works on phone) | `/prod-ops` refuses until it exists |
 | Set repo variable `CLOUD_AGENT_DISPATCH=1` (optional `CLOUD_AGENT_MODEL`) | GitHub → Settings → Variables | `/jarvis-new-task` starts a Cloud Agent instead of the Mac listener |
 | Save the proposed environment config | Cursor dashboard → Cloud Agents → Environment | new agents boot with deps installed |
-| Copy `jarvis-dev-gateway-token` into Siri Shortcut / Grok | Cloud Console → Secret Manager (after the gateway's first main deploy) | voice / Grok entry |
+| Create the gateway's two secrets + per-secret grants (7 lines) | Cloud Shell — [gateway README § One-time setup](../../cloud/jarvis_dev_gateway/README.md#one-time-setup-cloud-shell-operator) | deploy identity cannot create secrets |
+| Copy `jarvis-dev-gateway-token` into Siri Shortcut / Grok | Cloud Console → Secret Manager | voice / Grok entry |
 
 ## Still Mac-only
 

@@ -85,10 +85,11 @@ jobs:
             --no-allow-unauthenticated --iap \
             --memory 512Mi --min-instances 0 --max-instances 1 \
             --labels "jarvis-preview=operator-console,pr=$PR" \
-            --set-env-vars "BQ_PROJECT=$PROJECT_ID,BQ_DATASET=bhaga,CONSOLE_PREVIEW=1"
+            --set-env-vars "BQ_PROJECT=$PROJECT_ID,BQ_DATASET=bhaga,CONSOLE_PREVIEW=1,IAP_SERVICE_NAME=$SERVICE"
 
       # Same Google sign-in and allowlist as prod: IAP's service agent may invoke
-      # the service, and the IAP accessor policy is copied from prod each deploy.
+      # the service, and the IAP accessor policy is copied from prod each deploy, plus
+      # the CI identity (preview only) so CI can drive the real preview through IAP.
       - name: Mirror prod IAP access
         run: |
           gcloud run services add-iam-policy-binding "$SERVICE" \
@@ -97,7 +98,14 @@ jobs:
             --role roles/run.invoker --quiet >/dev/null
           gcloud iap web get-iam-policy --resource-type=cloud-run --service="$PROD_SERVICE" \
             --region "$REGION" --project "$PROJECT_ID" --format=json \
-            | python3 -c "import json,sys; p=json.load(sys.stdin); p.pop('etag',None); print(json.dumps(p))" > /tmp/iap.json
+            | CI_SA="${{ secrets.WIF_SERVICE_ACCOUNT }}" python3 -c "
+          import json, os, sys
+          p = json.load(sys.stdin); p.pop('etag', None)
+          b = [x for x in p.setdefault('bindings', []) if x['role'] == 'roles/iap.httpsResourceAccessor' and 'condition' not in x]
+          if not b:
+              b = [{'role': 'roles/iap.httpsResourceAccessor', 'members': []}]; p['bindings'].append(b[0])
+          b[0]['members'].append('serviceAccount:' + os.environ['CI_SA'])
+          print(json.dumps(p))" > /tmp/iap.json
           python3 -c "import json; p=json.load(open('/tmp/iap.json')); print('iap members copied:', sum(len(b.get('members',[])) for b in p.get('bindings',[])))"
           gcloud iap web set-iam-policy /tmp/iap.json --resource-type=cloud-run --service="$SERVICE" \
             --region "$REGION" --project "$PROJECT_ID" --quiet >/dev/null
@@ -196,66 +204,62 @@ jobs:
 
   diag-nav:
     if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    needs: deploy
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
       - uses: google-github-actions/auth@v2
+        id: auth
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v2
-      - name: Preview request log (status, latency, path — no query strings)
-        run: |
-          gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT_ID" \
-            --format='value(spec.template.spec.containerConcurrency,spec.template.metadata.annotations)' || true
-          gcloud logging read \
-            "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND timestamp>=\"2026-10-11T15:45:00Z\" AND httpRequest.requestMethod:*" \
-            --project "$PROJECT_ID" --limit 400 --order asc \
-            --format='value(timestamp,httpRequest.requestMethod,httpRequest.status,httpRequest.latency,httpRequest.requestUrl)' \
-            | sed -E 's#https://[^/]+##; s#\?_rsc=[^ \t]*#?_rsc#; s#\?[^ \t]*#?…#' | tail -200
-          echo "--- app warnings/errors"
-          gcloud logging read \
-            "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND timestamp>=\"2026-10-11T15:45:00Z\" AND severity>=WARNING AND NOT httpRequest.requestMethod:*" \
-            --project "$PROJECT_ID" --limit 60 --order asc --format='value(timestamp,severity,textPayload)' | cut -c1-200
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: apps/operator-console/package-lock.json
-      - name: Mobile nav timing against prod data (runner)
-        working-directory: apps/operator-console
+          token_format: id_token
+          id_token_audience: 887772634501-rtccq8d5foru6kgcqbi3a1n6kmcqn2eu.apps.googleusercontent.com
+          id_token_include_email: true
+      - name: Mobile nav on the real preview (through IAP)
         env:
-          CONSOLE_PREVIEW: "1"
-          BYPASS_IAP_EMAIL: preview-bot@mypalmetto.co
-          BQ_PROJECT: ${{ env.PROJECT_ID }}
-          BQ_DATASET: bhaga
+          TOKEN: ${{ steps.auth.outputs.id_token }}
         run: |
-          npm ci --no-audit --no-fund >/dev/null && npm run build >/dev/null
-          nohup npx next start -p 3000 > /tmp/next.log 2>&1 &
-          for _ in $(seq 1 60); do curl -fsS -o /dev/null http://localhost:3000/home && break; sleep 2; done
+          URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app"
+          curl -s -o /dev/null -w "curl /home %{http_code} %{time_total}s\n" -H "Authorization: Bearer $TOKEN" "$URL/home"
+          curl -s -o /dev/null -w "curl /sales %{http_code} %{time_total}s\n" -H "Authorization: Bearer $TOKEN" "$URL/sales"
           pip install --quiet playwright && python3 -m playwright install --with-deps chromium >/dev/null
           cat > /tmp/nav.py <<'EOF'
-          import time
+          import os, time
           from playwright.sync_api import sync_playwright
+          base = os.environ["URL"]
           with sync_playwright() as p:
               b = p.chromium.launch()
-              page = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True).new_page()
+              ctx = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
+                                  extra_http_headers={"Authorization": "Bearer " + os.environ["TOKEN"]})
+              page = ctx.new_page()
               t0 = time.time()
-              page.on("requestfinished", lambda r: print(f"{time.time()-t0:6.2f}s", r.method, r.url.split('?')[0][21:], "rsc" if "_rsc" in r.url else "", f"{r.timing['responseEnd']:.0f}ms"))
-              page.goto("http://localhost:3000/home", wait_until="networkidle", timeout=180000)
-              print(f"home loaded {time.time()-t0:.2f}s")
-              page.get_by_role("button", name="Open navigation").tap(); page.wait_for_timeout(800)
-              t1 = time.time(); page.get_by_role("link", name="Sales").last.tap()
-              page.wait_for_url("**/sales**", timeout=120000)
-              print(f"NAV home->sales took {time.time()-t1:.2f}s")
+              def done(r, failed=False):
+                  if r.url.startswith(base) and "/_next/static" not in r.url:
+                      resp = None if failed else r.response()
+                      path = r.url[len(base):].split("&_rsc")[0].split("?_rsc")[0]
+                      print(f"{time.time()-t0:7.2f}s {r.method} {resp.status if resp else 'FAILED'} {path[:90]} {'rsc' if '_rsc' in r.url else ''}")
+              page.on("requestfinished", done)
+              page.on("requestfailed", lambda r: done(r, True))
+              page.on("pageerror", lambda e: print("pageerror", str(e)[:200]))
+              page.on("console", lambda m: print("console", m.type, m.text[:200]) if m.type == "error" else None)
+              for attempt in (1, 2):
+                  print(f"=== attempt {attempt}")
+                  page.goto(base + "/home", wait_until="networkidle", timeout=180000)
+                  print(f"{time.time()-t0:7.2f}s home loaded")
+                  page.get_by_role("button", name="Open navigation").tap(); page.wait_for_timeout(800)
+                  t1 = time.time(); page.get_by_role("link", name="Sales").last.tap()
+                  try:
+                      page.wait_for_url("**/sales**", timeout=90000)
+                      print(f"NAV home->sales url changed after {time.time()-t1:.2f}s")
+                  except Exception:
+                      print(f"NAV home->sales: still on {page.url} after 90s")
+                  page.wait_for_timeout(3000)
               b.close()
           EOF
-          python3 /tmp/nav.py
+          URL="$URL" python3 /tmp/nav.py
 
   teardown:
     if: >-

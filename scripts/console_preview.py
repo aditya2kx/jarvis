@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import cloud_agent_gcp as G  # noqa: E402
 
 URL = "https://operator-console-pr{pr}-887772634501.us-central1.run.app"
+IAP_GRANT_RETRIES = 12
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,6 +43,12 @@ def main(argv: list[str] | None = None) -> int:
         page = ctx.new_page()
         for path in a.paths:
             resp = page.goto(base + path, wait_until="networkidle")
+            # The preview deploy's IAP grant for this SA takes a minute or two to apply.
+            for _ in range(IAP_GRANT_RETRIES):
+                if not resp or resp.status != 403:
+                    break
+                page.wait_for_timeout(15_000)
+                resp = page.goto(base + path, wait_until="networkidle")
             final = page.url.removeprefix(base)
             print(f"{path}: {resp.status if resp else '?'} → {final} — {page.title()}")
             if a.shots:

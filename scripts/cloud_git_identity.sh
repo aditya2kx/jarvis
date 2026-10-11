@@ -28,7 +28,7 @@ printf '%s' "$token" | env -u GH_TOKEN gh auth login --hostname github.com --wit
 # remote URL; either would win over gh's credential helper and push as the `cursor` app.
 git config --global --name-only --get-regexp '^url\..*@github\.com/\.insteadof$' 2>/dev/null \
   | sed 's/\.insteadof$//' | sort -u \
-  | while read -r section; do git config --global --remove-section "$section"; done
+  | while read -r section; do git config --global --remove-section "$section"; done || true
 repo="$(git -C "$here" rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$repo" ]; then
   git -C "$repo" remote set-url origin https://github.com/aditya2kx/jarvis

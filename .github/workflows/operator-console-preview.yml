@@ -1,0 +1,264 @@
+name: Operator Console preview
+
+# One read-only preview of the console per PR, reachable from any device:
+#   deploy      — Cloud Run service `operator-console-pr<N>` (scale-to-zero) behind
+#                 the same Cloud Run direct IAP + Google sign-in allowlist as prod;
+#                 sticky PR comment with the URL.
+#   screenshots — the PR's build served on the runner against prod BQ (WIF ADC),
+#                 captured with capture_evidence.py → sticky PR comment (PR §4 / G5).
+#   teardown    — on close, delete the service; the daily sweep catches any miss.
+#
+# Every preview runs CONSOLE_PREVIEW=1: all non-GET requests are refused in
+# middleware.ts and no secrets are mounted, so it can read prod data but not change it.
+# Never deploy onto the prod `operator-console` service for previews — a revision's
+# env becomes the template the next main deploy inherits (`--update-env-vars`).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - "apps/operator-console/**"
+      - ".github/workflows/operator-console-preview.yml"
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: jarvis-bhaga-prod
+  PROJECT_NUMBER: "887772634501"
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
+  PROD_SERVICE: operator-console
+  PR: ${{ github.event.pull_request.number }}
+  SERVICE: operator-console-pr${{ github.event.pull_request.number }}
+
+concurrency:
+  group: operator-console-preview-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push image
+        working-directory: apps/operator-console
+        run: |
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          IMAGE="$REGISTRY/operator-console:pr-$PR-${HEAD_SHA::12}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy preview service (IAP, read-only, scale-to-zero)
+        run: |
+          RUNTIME_SA="$(gcloud run services describe "$PROD_SERVICE" --region "$REGION" --project "$PROJECT_ID" \
+            --format='value(spec.template.spec.serviceAccountName)')"
+          if [ -z "$RUNTIME_SA" ]; then
+            echo "::error::preview: could not read the prod console runtime service account"; exit 1
+          fi
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE" \
+            --region "$REGION" --project "$PROJECT_ID" \
+            --service-account "$RUNTIME_SA" \
+            --no-allow-unauthenticated --iap \
+            --memory 512Mi --min-instances 0 --max-instances 1 \
+            --labels "jarvis-preview=operator-console,pr=$PR" \
+            --set-env-vars "BQ_PROJECT=$PROJECT_ID,BQ_DATASET=bhaga,CONSOLE_PREVIEW=1"
+
+      # Same Google sign-in and allowlist as prod: IAP's service agent may invoke
+      # the service, and the IAP accessor policy is copied from prod each deploy.
+      - name: Mirror prod IAP access
+        run: |
+          gcloud run services add-iam-policy-binding "$SERVICE" \
+            --region "$REGION" --project "$PROJECT_ID" \
+            --member "serviceAccount:service-$PROJECT_NUMBER@gcp-sa-iap.iam.gserviceaccount.com" \
+            --role roles/run.invoker --quiet >/dev/null
+          gcloud iap web get-iam-policy --resource-type=cloud-run --service="$PROD_SERVICE" \
+            --region "$REGION" --project "$PROJECT_ID" --format=json \
+            | python3 -c "import json,sys; p=json.load(sys.stdin); p.pop('etag',None); print(json.dumps(p))" > /tmp/iap.json
+          python3 -c "import json; p=json.load(open('/tmp/iap.json')); print('iap members copied:', sum(len(b.get('members',[])) for b in p.get('bindings',[])))"
+          gcloud iap web set-iam-policy /tmp/iap.json --resource-type=cloud-run --service="$SERVICE" \
+            --region "$REGION" --project "$PROJECT_ID" --quiet >/dev/null
+
+      - name: Comment preview URL
+        run: |
+          URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app"
+          cat > /tmp/body.md <<EOF
+          ### Operator Console preview
+          **[$URL/home]($URL/home)** — commit \`${HEAD_SHA::7}\`
+
+          Read-only (\`CONSOLE_PREVIEW=1\`): prod data, every save refused. Google sign-in with the same allowlist as prod. Deleted when this PR closes.
+          EOF
+          python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
+            --marker operator-console-preview --body-file /tmp/body.md
+          echo "preview: deployed $SERVICE url=$URL sha=${HEAD_SHA::7}"
+
+  screenshots:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # upload to the evidence-screenshots release
+      id-token: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/operator-console/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build console
+        working-directory: apps/operator-console
+        run: npm ci --no-audit --no-fund && npm run build
+
+      - name: Serve the PR build read-only against prod data
+        working-directory: apps/operator-console
+        env:
+          CONSOLE_PREVIEW: "1"
+          BYPASS_IAP_EMAIL: preview-bot@mypalmetto.co
+          BQ_PROJECT: ${{ env.PROJECT_ID }}
+          BQ_DATASET: bhaga
+        run: |
+          nohup npx next start -p 3000 > /tmp/next.log 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -fsS -o /dev/null http://localhost:3000/home && exit 0
+            sleep 2
+          done
+          tail -50 /tmp/next.log; echo "::error::preview: console did not come up on :3000"; exit 1
+
+      # /home and /inventory only: this repo is public, and Payroll / Accounting
+      # show names, wages and bank transactions.
+      - name: Capture screenshots
+        run: |
+          pip install --quiet playwright && python3 -m playwright install --with-deps chromium >/dev/null
+          python3 apps/operator-console/scripts/capture_evidence.py \
+            --path /home --label "pr$PR-home" \
+            --path /inventory --label "pr$PR-inventory" | tee /tmp/shots.txt
+
+      - name: Comment screenshots
+        run: |
+          {
+            echo "### Operator Console preview screenshots"
+            echo "PR build \`${HEAD_SHA::7}\`, read-only, prod data (rendered on the CI runner)."
+            echo
+            while IFS= read -r line; do
+              label="${line%%: *}"; url="${line#*: }"
+              echo "**${label#pr$PR-}**"
+              echo
+              echo "<img alt=\"$label\" src=\"$url\" width=\"720\" />"
+              echo
+            done < /tmp/shots.txt
+          } > /tmp/body.md
+          python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
+            --marker operator-console-preview-shots --body-file /tmp/body.md
+
+  teardown:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Delete preview service
+        run: |
+          if gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT_ID" >/dev/null 2>&1; then
+            gcloud run services delete "$SERVICE" --region "$REGION" --project "$PROJECT_ID" --quiet
+            echo "preview: deleted $SERVICE"
+          else
+            echo "preview: $SERVICE not found (never deployed or already deleted)"
+          fi
+          printf '### Operator Console preview\nPR closed — preview service `%s` deleted.\n' "$SERVICE" > /tmp/body.md
+          python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
+            --marker operator-console-preview --body-file /tmp/body.md
+
+  # Safety net for a missed `closed` event: delete preview services whose PR is no longer open.
+  sweep:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Delete orphaned previews
+        run: |
+          gcloud run services list --region "$REGION" --project "$PROJECT_ID" \
+            --filter "metadata.labels.jarvis-preview=operator-console" \
+            --format "value(metadata.name,metadata.labels.pr)" |
+          while read -r name pr; do
+            state="$(gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json state -q .state 2>/dev/null || echo UNKNOWN)"
+            if [ "$state" = "OPEN" ]; then
+              echo "sweep: keep $name (PR #$pr open)"
+            elif [ "$state" = "UNKNOWN" ]; then
+              echo "::warning::sweep: could not read PR #$pr state — keeping $name"
+            else
+              gcloud run services delete "$name" --region "$REGION" --project "$PROJECT_ID" --quiet
+              echo "sweep: deleted $name (PR #$pr $state)"
+            fi
+          done

@@ -94,6 +94,9 @@ This is expected, not a broken install.
 3. Finish code + workflow + RUNBOOK in the PR.
 4. Put Secret Manager versions from **recipe B** on a laptop/Cloud Shell that already
    has ADC.
+5. Read prod via a `/prod-read` PR comment (result encrypted to the agent's key) and
+   request mutations via `/prod-ops` (runs with CI WIF after operator approval in
+   Environment `prod`) — [dev-anywhere.md](dev-anywhere.md). Both run CI identity, not the VM.
 
 **Do not:**
 

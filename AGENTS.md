@@ -35,6 +35,7 @@ Read these first, derive proposals from them, cite what you used.
 |---|---|---|---|
 | **tesla-aladdin-garage** | Geofence Dhanno → open Big Peach (Aladdin) | Cloud Run, always-on, max instances = 1 | `cloud/tesla_aladdin_garage/README.md` + `RUNBOOK.md` § Tesla Aladdin garage |
 | **pup-watch** | Email when the pup is let out alone in the daycare yard | Cloud Run, scale-to-zero + Cloud Scheduler tick | `cloud/pup_watch/README.md` + `RUNBOOK.md` § pup-watch |
+| **jarvis-dev-gateway** | Start / check Jarvis dev tasks from Siri, Grok (MCP) or HTTP | Cloud Run, scale-to-zero, bearer auth | `cloud/jarvis_dev_gateway/README.md` |
 
 ---
 
@@ -78,6 +79,7 @@ Read these first, derive proposals from them, cite what you used.
 | See project state / decisions | `PROGRESS.md` |
 | Missing a cloud secret locally (ClickUp, Google, Square, ADP, Slack) | `python3 -m skills.credentials.registry audit` (shows exact fix) then `hydrate <name>` |
 | Talk to GCP (`gcloud`, Secret Manager write, Cloud Run mutate) | [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md) — always `python3 scripts/gcp_access_probe.py` first. Cloud Agents have no ADC. |
+| Develop from Cursor mobile / a Cloud Agent (preview, `/prod-read`, `/prod-ops`, Siri/Grok) | [docs/contributing/dev-anywhere.md](docs/contributing/dev-anywhere.md) |
 
 ---
 

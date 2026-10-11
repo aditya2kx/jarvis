@@ -493,7 +493,26 @@ Wired as a `verify.py` gate (`progress-push-guard`). Blocks pushes that target `
 | `pr-merged-lifecycle.yml` | Added `Emit pr_merged signal` step; retrospective prompt now instructs jam→plan→issues flow (no direct `PROGRESS.md` write). **Fixed (2026-07-01):** the file was invalid YAML from #85 onward (column-0 Python heredocs + a multi-line `--body` broke the `run:` block scalars) so the post-merge job silently never ran — every merge since #85 stranded its issue (no merge-advance / PR-link / post-merge-verify / retro). Re-indented the mis-authored spans into their block scalars (byte-identical content); now parses + `bash -n` + `py_compile` clean. **Fixed again (Issue #130, #123):** the re-indented step still hard-failed 100% of the time because `find_tracking_issue` only checked phase-cache + a gh body-scan (issue bodies say `Branch: TBD`, never updated). Added a branch-slug (`iNNN`) resolution strategy and hardened the step to always emit one token + use the `key<<EOF` heredoc `$GITHUB_OUTPUT` form so a stray value can never throw `Invalid format`. |
 | `jarvis-dev-signals.yml` | `check_suite` → CI signals; `issue_comment` → `intake-signal` (/jarvis-new-task) + `comment-signal` (operator comments, loop-safe); `pull_request.opened` → `pr-issue-link` (obs 3: link PR↔issue, idempotent); label-gated `pull_request` → pre-merge evidence. **Note:** `issue_comment` and `check_suite` jobs only activate once the workflow lands on `main` (GitHub resolves those triggers from the default branch). `comment-signal` end-to-end proven pre-merge by temporarily setting the PR branch as default branch — run [28486518592](https://github.com/aditya2kx/jarvis/actions/runs/28486518592) ✅. **Fixed (Issue #140):** added `pull_request_review_comment.created` and `pull_request_review.submitted` triggers + a `review-comment-signal` job, since inline/diff comments and review submissions fire those events instead of `issue_comment` — the operator's queue-triggering comments were silently dropped when left this way. Both `comment-signal` and `review-comment-signal` now post on the branch's **tracking issue**, not the PR (see event-mapping table above). |
 
-## 9. Deferred roadmap (out of scope for this PR)
+## 9. Dev from anywhere (Issue #384)
+
+The lifecycle above runs unchanged on a Mac or on a Cursor Cloud Agent (Cursor mobile/web).
+`gcp_access_probe.py::detect_surface()` picks the surface; `new_requirement.py` skips the Cursor
+window + launchd daemon off-Mac. With repo variable `CLOUD_AGENT_DISPATCH=1`, the `intake-signal`
+job starts a Cloud Agent (`scripts/cloud_agent.py launch`) instead of signalling the Mac listener —
+exactly one of the two picks up a `/jarvis-new-task`. Siri / Grok enter the same intake through
+`cloud/jarvis_dev_gateway`. Per-surface details (console preview, `/prod-read`, `/prod-ops`, cost
+capture, operator setup): [`docs/contributing/dev-anywhere.md`](contributing/dev-anywhere.md).
+
+| Workflow / script | Role |
+|---|---|
+| `operator-console-ci.yml` | PR-time vitest + `next build` for `apps/operator-console` |
+| `operator-console-preview.yml` | per-PR IAP preview service + screenshot comment; teardown on close, nightly sweep |
+| `prod-read.yml` / `scripts/prod_read.py` | `/prod-read` comment → read-only prod query, result encrypted to the requester |
+| `prod-ops.yml` / `scripts/prod_ops.py` | `/prod-ops` comment → planned prod mutation gated on Environment `prod` approval |
+| `pr-cost-gate.yml` + `scripts/cloud_agent.py record-cost` | prices a `Cursor-Agent:` PR's agent usage into BQ |
+| `jarvis-dev-gateway-deploy.yml` | deploys the Siri/Grok gateway from `main`; PR self-test on the runner |
+
+## 10. Deferred roadmap (out of scope for this PR)
 
 - Jira/Linear backend for phase_state.py (only `source` seam built now)
 - Agent researching candidate capabilities from a brief requirement (L2)

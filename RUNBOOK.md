@@ -637,6 +637,8 @@ gcloud run services update bhaga-webhook \
 | `tesla-fleet-refresh-token` | tesla-aladdin-garage (`TESLA_REFRESH_TOKEN`) | User refresh token; rotated on refresh and written back as a new secret version. Cloud Run SA needs `secretVersionAdder` (not only `secretAccessor`) or `/oauth/tesla` tokens stay in memory and die on restart. |
 | `aladdin-connect-username` | tesla-aladdin-garage (`ALADDIN_USERNAME`) | Genie Aladdin Connect account email (must **own** Big Peach). |
 | `aladdin-connect-password` | tesla-aladdin-garage (`ALADDIN_PASSWORD`) | Aladdin Connect password. |
+| `jarvis-dev-gateway-token` | jarvis-dev-gateway (`JARVIS_DEV_GATEWAY_TOKEN`) | Bearer for Siri / Grok. Generated once by `jarvis-dev-gateway-deploy.yml`; operator copies it from Console into the Shortcut / connector. |
+| `github-bot-pat` | jarvis-dev-gateway (`GITHUB_TOKEN`) | Copy of repo secret `ADMIN_PAT` (bot classic PAT), re-synced on every gateway deploy — after a bot PAT rotation, re-run that workflow. |
 
 > **Local bootstrap (all providers):** If a secret is missing from your macOS Keychain on a fresh
 > clone, use:
@@ -2441,11 +2443,16 @@ so sticky tags never leave the new revision at 0% (Issue #240), then grants
 `roles/iap.httpsResourceAccessor` to each operator account. No manual deploy step. `--iap` is
 idempotent against the one-time Console-only provisioning below — it does not redo it.
 
-**Pre-merge review-deploy** (no PR preview hostname): build/push the branch image and
-`gcloud run deploy operator-console … --min-instances=1` onto the same service URL below;
-hard-refresh after deploy. Next `main` push restores the merged SHA.
-For a no-write review, set `CONSOLE_PREVIEW=1` on the revision: every write (server action or
-API POST) is refused (403) and the top bar shows a **Preview** badge (`apps/operator-console/README.md`).
+**Pre-merge preview** (Issue #384): every PR touching `apps/operator-console/**` gets its own
+service `operator-console-pr<N>` from
+[`.github/workflows/operator-console-preview.yml`](.github/workflows/operator-console-preview.yml)
+— prod runtime SA, prod BQ, `CONSOLE_PREVIEW=1` (every non-GET refused with 403, Preview badge),
+`--iap` with the prod service's IAP policy copied, so the same Google accounts sign in. A sticky
+PR comment carries the URL and `/home` + `/inventory` screenshots. Deleted on PR close; a nightly
+sweep removes any preview whose PR is no longer open. Never deploy a branch onto `operator-console`
+itself: a revision's env becomes the service template. The prod deploy strips `CONSOLE_PREVIEW`
+(`--remove-env-vars`). Cloud Agent prod access: `/prod-read` + `/prod-ops`
+([docs/contributing/dev-anywhere.md](docs/contributing/dev-anywhere.md)).
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)
 

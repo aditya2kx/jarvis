@@ -9,6 +9,12 @@ inline comments.  It checks:
 - BHAGA correctness invariants
 - Code quality (no hardcoding, idempotency, etc.)
 
+## Cursor Cloud Agent PRs
+Cloud Agent pushes arrive as the `cursor` GitHub App (actor type Bot), and
+`claude-code-action` refuses non-human actors by default ("Workflow initiated by
+non-human actor"). `allowed_bots: cursor` lets those PRs get a normal review; no other
+bot is allowed. See `docs/contributing/dev-anywhere.md` (Issue #384).
+
 ## Full review vs. RE-REVIEW
 On the first review of a PR the bot reads the **whole** diff.  On later pushes it
 focuses on what changed since its last review (a "RE-REVIEW", driven by

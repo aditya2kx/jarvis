@@ -10,6 +10,9 @@ FROM node:22-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# Per-build id for Next's version-skew protection (next.config.ts). Empty = off.
+ARG NEXT_DEPLOYMENT_ID=""
+ENV NEXT_DEPLOYMENT_ID=$NEXT_DEPLOYMENT_ID
 RUN npm run build
 
 FROM node:22-slim AS runner

@@ -67,7 +67,8 @@ jobs:
         run: |
           gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
           IMAGE="$REGISTRY/operator-console:pr-$PR-${HEAD_SHA::12}"
-          docker build -t "$IMAGE" .
+          # Each push redeploys this preview while the operator may have it open.
+          docker build --build-arg "NEXT_DEPLOYMENT_ID=pr$PR-${HEAD_SHA::12}" -t "$IMAGE" .
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
@@ -209,67 +210,76 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: google-github-actions/auth@v2
-        id: auth
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/auth@v2
+        id: idt
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
           token_format: id_token
           id_token_audience: 887772634501-rtccq8d5foru6kgcqbi3a1n6kmcqn2eu.apps.googleusercontent.com
           id_token_include_email: true
-      - name: Mobile nav on the real preview (through IAP)
-        env:
-          TOKEN: ${{ steps.auth.outputs.id_token }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Build a second fixed image (different deployment id, same code)
+        working-directory: apps/operator-console
         run: |
-          URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app"
-          for i in $(seq 1 40); do
-            code="$(curl -s -o /tmp/r.txt -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$URL/home")"
-            [ "$code" = "200" ] && break
-            [ "$i" = 1 ] && head -c 300 /tmp/r.txt && echo
-            sleep 15
-          done
-          echo "IAP admitted CI after $i tries (last $code)"
-          curl -s -o /dev/null -w "curl /home %{http_code} %{time_total}s\n" -H "Authorization: Bearer $TOKEN" "$URL/home"
-          curl -s -o /dev/null -w "curl /sales %{http_code} %{time_total}s\n" -H "Authorization: Bearer $TOKEN" "$URL/sales"
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          ALT="$REGISTRY/operator-console:pr-$PR-${HEAD_SHA::12}-alt"
+          docker build --build-arg "NEXT_DEPLOYMENT_ID=pr$PR-${HEAD_SHA::12}-alt" -t "$ALT" . >/dev/null && docker push -q "$ALT"
+      - name: Skew repro on the real preview — before vs after the fix
+        env:
+          TOKEN: ${{ steps.idt.outputs.id_token }}
+        run: |
           pip install --quiet playwright && python3 -m playwright install --with-deps chromium >/dev/null
-          cat > /tmp/nav.py <<'EOF'
-          import os, time
+          cat > /tmp/skew.py <<'EOF'
+          import os, subprocess, sys, time
           from playwright.sync_api import sync_playwright
-          base = os.environ["URL"]
-          with sync_playwright() as p:
-              b = p.chromium.launch()
-              ctx = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
-                                  extra_http_headers={"Authorization": "Bearer " + os.environ["TOKEN"]})
-              page = ctx.new_page()
-              t0 = time.time()
-              def done(r, failed=False):
-                  if r.url.startswith(base) and "/_next/static" not in r.url:
-                      resp = None if failed else r.response()
-                      path = r.url[len(base):].split("&_rsc")[0].split("?_rsc")[0]
-                      why = "" if resp else (r.failure or "")
-                      loc = (resp.headers.get("location", "")[:60] if resp else "")
-                      print(f"{time.time()-t0:7.2f}s {r.method} {resp.status if resp else 'FAILED'} {r.resource_type} {path[:70]} {'rsc' if '_rsc' in r.url else ''} {why} {loc}")
-              page.on("requestfinished", done)
-              page.on("requestfailed", lambda r: done(r, True))
-              page.on("pageerror", lambda e: print("pageerror", str(e)[:200]))
-              page.on("console", lambda m: print("console", m.type, m.text[:200]) if m.type == "error" else None)
-              for attempt in (1, 2):
-                  print(f"=== attempt {attempt}")
+          base, svc = os.environ["URL"], os.environ["SERVICE"]
+          def switch(img):
+              subprocess.run(["gcloud", "run", "services", "update", svc, "--image", img, "--region", os.environ["REGION"],
+                              "--project", os.environ["PROJECT_ID"], "--quiet"], check=True, capture_output=True)
+              print("  live revision now:", img.rsplit(":", 1)[1])
+          def scenario(name, first, second):
+              print(f"=== {name}")
+              switch(first)
+              with sync_playwright() as p:
+                  b = p.chromium.launch()
+                  page = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
+                                       extra_http_headers={"Authorization": "Bearer " + os.environ["TOKEN"]}).new_page()
+                  docs = []
+                  page.on("request", lambda r: docs.append(r.url[len(base):]) if r.resource_type == "document" else None)
+                  page.on("pageerror", lambda e: print("  pageerror", str(e)[:160]))
                   page.goto(base + "/home", wait_until="networkidle", timeout=180000)
-                  print(f"{time.time()-t0:7.2f}s home loaded")
+                  print("  tab open on", first.rsplit(":", 1)[1])
+                  switch(second)
                   page.get_by_role("button", name="Open navigation").tap(); page.wait_for_timeout(800)
-                  t1 = time.time(); page.get_by_role("link", name="Sales").last.tap()
+                  t = time.time(); page.get_by_role("link", name="Sales").last.tap()
                   try:
-                      page.wait_for_url("**/sales**", timeout=90000)
-                      print(f"NAV home->sales url changed after {time.time()-t1:.2f}s")
+                      page.wait_for_url("**/sales**", timeout=45000)
+                      page.wait_for_load_state("networkidle", timeout=60000)
+                      res = f"reached /sales in {time.time()-t:.1f}s"
                   except Exception:
-                      print(f"NAV home->sales: still on {page.url} after 90s")
-                  page.wait_for_timeout(3000)
-                  print("heading:", page.locator("main h1").first.text_content(timeout=5000) if page.locator("main h1").count() else "(none)")
-              b.close()
+                      res = f"STUCK on {page.url[len(base):]} after 45s"
+                  print("  RESULT:", res, "| full page loads:", docs)
+                  b.close()
+          reg = os.environ["REGISTRY"] + "/operator-console:"
+          cur = f"pr-{os.environ['PR']}-{os.environ['HEAD_SHA'][:12]}"
+          try:
+              scenario("BEFORE fix: two older builds without a deployment id", reg + "pr-385-64cfcc860647", reg + "pr-385-30702ed4eed6")
+              scenario("AFTER fix: two builds with different deployment ids", reg + cur, reg + cur + "-alt")
+          finally:
+              switch(reg + cur)
           EOF
-          URL="$URL" python3 /tmp/nav.py
+          URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app" python3 /tmp/skew.py
 
   teardown:
     if: >-

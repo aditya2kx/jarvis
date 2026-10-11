@@ -7,7 +7,7 @@
     python3 -m skills.vault run adp --field password --as ADP_PASSWORD -- python3 login.py
 
 The operator keeps one Login item per site (username, password, optional one-time password) in
-the vault `Jarvis Agents` (override: JARVIS_VAULT). Agents read it through a 1Password service
+the vault `Shared with Bots` (override: JARVIS_VAULT). Agents read it through a 1Password service
 account limited to that vault (`OP_SERVICE_ACCOUNT_TOKEN`, a Cursor Runtime Secret on Cloud
 Agents). Passwords and codes only ever go to the keyboard (`type`, via xdotool stdin) or a child
 process environment (`run`) — never stdout, so they stay out of transcripts and logs.
@@ -29,7 +29,7 @@ class VaultError(RuntimeError):
 
 
 def vault_name() -> str:
-    return os.environ.get("JARVIS_VAULT") or "Jarvis Agents"
+    return os.environ.get("JARVIS_VAULT") or "Shared with Bots"
 
 
 def _op(*args: str) -> str:

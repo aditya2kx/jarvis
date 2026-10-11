@@ -17,7 +17,7 @@ additive and reached through its own commands, so both can be used side by side.
 | Open the PR | `gh pr create` as the bot | push a `cursor/*` branch → `cloud-agent-pr.yml` opens a draft PR as the bot (`ADMIN_PAT`); the agent sets title/body with `ManagePullRequest` `update_pr` — never its `create_pr`, which opens under the operator's account (Issue #321) |
 | Claude review | normal | normal — the actor is the bot, as on the Mac |
 | Build cost → BQ | `pr_cost_ledger.py capture-build` from transcripts | PR body line `Cursor-Agent: <bc-id> model=<model-id>` (add `prs=<a>,<b>` when one agent built several PRs — the cost splits by diff size); `pr-cost-gate.yml` prices the agent's `/usage` |
-| Ad-hoc logins (portals, Cloud Shell, vendor dashboards) | Keychain + `user-playwright` | 1Password vault `Jarvis Agents` via `skills/vault` (`type` into the focused field — never printed) |
+| Ad-hoc logins (portals, Cloud Shell, vendor dashboards) | Keychain + `user-playwright` | 1Password vault `Shared with Bots` via `skills/vault` (`type` into the focused field — never printed) |
 | Babysit | `dev_event_listener` + hooks | subscribe to the PR's review/CI events; `@cursor` comments reach the agent |
 
 Why the Mac cannot be disturbed: `/jarvis-new-task` and its `intake-signal` job are byte-identical
@@ -47,7 +47,7 @@ page error (paths and timings only in the log).
 
 | Step | Where | Why |
 |---|---|---|
-| Vault `Jarvis Agents` + read-only service account → Cursor secret `OP_SERVICE_ACCOUNT_TOKEN` ([skills/vault](../../skills/vault/README.md#operator-one-time-setup)); put the Google owner login (+ authenticator code) in it | 1Password + Cursor dashboard | agents sign in to sites by themselves |
+| Vault `Shared with Bots` + read-only service account → Cursor secret `OP_SERVICE_ACCOUNT_TOKEN` ([skills/vault](../../skills/vault/README.md#operator-one-time-setup)); put the Google owner login (+ authenticator code) in it | 1Password + Cursor dashboard | agents sign in to sites by themselves |
 | `bash scripts/provision_cloud_agent_identity.sh` (Cursor OIDC trust + gateway secrets) — **the agent runs it** in Cloud Shell, signing in from the vault | Cloud Shell | Cloud Agents act as `jarvis-agent-bot328` and open previews with tokens; gateway deployable |
 | Create environment `prod` with yourself as **Required reviewer** | GitHub → Settings → Environments (owner-only; works on phone) | `/prod-ops` refuses until it exists |
 | Save the proposed environment config | Cursor dashboard → Cloud Agents → Environment | new agents boot with deps installed |

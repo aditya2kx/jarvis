@@ -6,7 +6,7 @@ Keychain + `user-playwright`.
 
 | | |
 |---|---|
-| Store | 1Password vault **`Jarvis Agents`** (override `JARVIS_VAULT`) — one **Login** item per site: username, password, website URL, optional one-time password |
+| Store | 1Password vault **`Shared with Bots`** (override `JARVIS_VAULT`) — one **Login** item per site: username, password, website URL, optional one-time password |
 | Agent access | 1Password **service account** with `read_items` on that vault only → `OP_SERVICE_ACCOUNT_TOKEN` (Cursor dashboard → Cloud Agents → Secrets, type **Runtime Secret**, scoped to `aditya2kx/jarvis`) |
 | CLI | `op` 2.40.0, installed by `.cursor/environment.json` |
 | Limits | personal plans: 1,000 reads/hour per token, 1,000 requests/day per account — each command here is 2–4 reads |
@@ -35,9 +35,9 @@ A site resolves by item title, then by website host (exact, then parent domain).
 
 ## Operator one-time setup
 
-1. 1Password → New vault **Jarvis Agents**; add a Login item per site the agents may use.
-2. 1Password.com → Developer → Directory → **Service account** → access: `Jarvis Agents`, *Read items*
-   only (or `op service-account create jarvis-cloud-agents --vault "Jarvis Agents:read_items"`).
+1. 1Password vault **Shared with Bots** (exists): one Login item per site the agents may use.
+2. 1Password.com → Developer → Directory → **Service account** → access: `Shared with Bots`, *Read items*
+   only (or `op service-account create jarvis-cloud-agents --vault "Shared with Bots:read_items"`).
 3. Cursor dashboard → Cloud Agents → Secrets → `OP_SERVICE_ACCOUNT_TOKEN` = the token
    (Runtime Secret, repo `aditya2kx/jarvis`). New agents pick it up.
 

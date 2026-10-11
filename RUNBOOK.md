@@ -2444,6 +2444,8 @@ idempotent against the one-time Console-only provisioning below — it does not 
 **Pre-merge review-deploy** (no PR preview hostname): build/push the branch image and
 `gcloud run deploy operator-console … --min-instances=1` onto the same service URL below;
 hard-refresh after deploy. Next `main` push restores the merged SHA.
+For a no-write review, set `CONSOLE_PREVIEW=1` on the revision: every server action is
+refused (403) and the top bar shows a **Preview** badge (`apps/operator-console/README.md`).
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)
 

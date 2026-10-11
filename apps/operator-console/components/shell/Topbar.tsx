@@ -4,6 +4,9 @@ import { ThemeToggle } from "./ThemeToggle";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { pipelineRuns } from "@/lib/bq/queries";
 import { cn } from "@/lib/utils";
+import { isConsolePreview } from "@/lib/config/preview";
+import { Badge } from "@/components/ui/badge";
+import { Eye } from "lucide-react";
 
 async function PipelineDot() {
   let status: string | undefined;
@@ -31,6 +34,16 @@ export function Topbar({ operatorEmail }: { operatorEmail?: string }) {
         <span className="truncate text-sm font-semibold tracking-tight">
           Palmetto · Texas — Operator Console
         </span>
+        {isConsolePreview() ? (
+          <Badge
+            variant="outline"
+            title="Read-only preview: prod data, every save is disabled"
+            className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+          >
+            <Eye aria-hidden />
+            Preview
+          </Badge>
+        ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-3 text-sm text-muted-foreground">
         <ThemeToggle />

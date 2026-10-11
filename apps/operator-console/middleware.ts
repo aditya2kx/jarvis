@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { HASH_CONSOLE_HOST } from "@/lib/iap/hosts";
+import { isConsolePreview, PREVIEW_ACTION_REFUSAL } from "@/lib/config/preview";
 
 /**
  * Issue #208 — do NOT redirect hash ↔ canonical after IAP.
@@ -9,6 +10,14 @@ import { HASH_CONSOLE_HOST } from "@/lib/iap/hosts";
  * canonical host only; hash hits are logged, not bounced.
  */
 export function middleware(request: NextRequest) {
+  // Next's action client surfaces a text/plain 4xx body as the error, which
+  // useConsoleAction shows as the toast.
+  if (isConsolePreview() && request.method === "POST" && request.headers.has("next-action")) {
+    return new NextResponse(PREVIEW_ACTION_REFUSAL, {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    });
+  }
   const host = request.headers.get("host")?.split(":")[0] ?? "";
   if (host === HASH_CONSOLE_HOST) {
     console.info(

@@ -36,6 +36,10 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Automations | Monthly recognition Approve & issue / $1 test card | `approveRecognitionAction`, `sendTestGiftCardAction` | Behind `FEATURES.recognitionGiftCards` (`CONSOLE_RECOGNITION_GIFT_CARDS=1`). Square create + ACTIVATE + read-back per card (`recognition_gift_cards` ledger, idempotency key per card), one Gmail per recipient, recap ClickUp DM. Failed rows are never auto-retried — "Retry failed" resumes from the recorded state |
 
 Canonical machine-readable list: [`registry.ts`](./registry.ts).
+
+Read-only preview (`CONSOLE_PREVIEW=1`): `middleware.ts` refuses every server-action
+POST (`next-action` header) with a text/plain 403, so all rows above — including the
+read-only polls — are disabled; `ensureOrderRecoFresh` skips its page-open refresh.
 Gate: `python3 scripts/check_operator_console_actions.py`.
 
 ## Live evidence (PR #193)

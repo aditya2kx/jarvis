@@ -15,7 +15,7 @@ additive and reached through its own commands, so both can be used side by side.
 | Prod mutations (env flags, job runs, migrations) | ADC / Cloud Shell | `/prod-ops …` PR comment → operator approves in GitHub Environment `prod` (`scripts/prod_ops.py`) |
 | PR / comments | `gh` as the bot | `ManagePullRequest` tool (`gh` is read-only); pushes arrive as the `cursor` GitHub App |
 | Claude review | normal | normal (`allowed_bots: cursor` in `claude-review.yml`) |
-| Build cost → BQ | `pr_cost_ledger.py capture-build` from transcripts | PR body line `Cursor-Agent: <bc-id> model=<model-id>`; `pr-cost-gate.yml` prices the agent's `/usage` |
+| Build cost → BQ | `pr_cost_ledger.py capture-build` from transcripts | PR body line `Cursor-Agent: <bc-id> model=<model-id>` (add `prs=<a>,<b>` when one agent built several PRs — the cost splits by diff size); `pr-cost-gate.yml` prices the agent's `/usage` |
 | Babysit | `dev_event_listener` + hooks | subscribe to the PR's review/CI events; `@cursor` comments reach the agent |
 
 Why the Mac cannot be disturbed: `/jarvis-new-task` and its `intake-signal` job are byte-identical

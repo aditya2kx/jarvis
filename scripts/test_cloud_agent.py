@@ -17,10 +17,13 @@ AID = "bc-01a12b15-18e9-7f9a-9252-af37a985457d"
 class MarkerTests(unittest.TestCase):
     def test_marker_with_model(self):
         self.assertEqual(C.parse_marker(f"x\nCursor-Agent: {AID} model=claude-opus-5-5-high\n"),
-                         (AID, "claude-opus-5-5-high"))
+                         (AID, "claude-opus-5-5-high", []))
 
     def test_marker_without_model_prices_as_opus_5_5(self):
-        self.assertEqual(C.parse_marker(f"Cursor-Agent: {AID}"), (AID, C.FALLBACK_MODEL))
+        self.assertEqual(C.parse_marker(f"Cursor-Agent: {AID}"), (AID, C.FALLBACK_MODEL, []))
+
+    def test_marker_with_prs(self):
+        self.assertEqual(C.parse_marker(f"Cursor-Agent: {AID} model=m prs=385,386"), (AID, "m", [385, 386]))
 
     def test_no_marker(self):
         self.assertIsNone(C.parse_marker("Closes #384"))
@@ -60,6 +63,30 @@ class RecordCostTests(unittest.TestCase):
         self.assertEqual(kw["tokens"], 13_000_000)
         self.assertAlmostEqual(kw["cost_usd"], 31.0)
         self.assertIn("cost=$31.00", out)
+
+    def test_prs_splits_cost_by_diff_size_one_row_per_pr(self):
+        def fake_api(method, path, body=None):
+            if path.endswith("/usage"):
+                return {"totalUsage": {**CostTests.USAGE, "totalTokens": 13_000_000}}
+            return {"id": AID, "createdAt": "2026-10-11T14:00:00.000Z"}
+
+        gh = {385: {"additions": 700, "deletions": 200}, 386: {"additions": 80, "deletions": 20,
+              "title": "ci: review", "head": {"ref": "cursor/x"}}}
+        with mock.patch.object(C, "_api", side_effect=fake_api), \
+             mock.patch.object(C, "_gh_pr", side_effect=gh.get), \
+             mock.patch.object(L, "set_meta") as meta, \
+             mock.patch.object(L, "record_build_session") as rec:
+            out = C.record_cost(385, f"Cursor-Agent: {AID} model=claude-opus-5-5-high prs=385,386", "t", "b")
+        meta.assert_any_call(385, title="t", branch="b")
+        meta.assert_any_call(386, title="ci: review", branch="cursor/x")
+        rows = {c.args[0]: c.kwargs for c in rec.call_args_list}
+        self.assertAlmostEqual(rows[385]["cost_usd"], 27.9)
+        self.assertAlmostEqual(rows[386]["cost_usd"], 3.1)
+        self.assertEqual({r["ts"] for r in rows.values()}, {"2026-10-11T14:00:00.000Z"})
+        self.assertIn("PR #386 10%", out)
+
+    def test_split_shares_equal_when_sizes_unknown(self):
+        self.assertEqual(C.split_shares({1: 0, 2: 0}), {1: 0.5, 2: 0.5})
 
     def test_skips_without_marker(self):
         with mock.patch.object(C, "_api") as api:

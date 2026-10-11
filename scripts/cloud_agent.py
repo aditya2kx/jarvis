@@ -4,7 +4,7 @@
     # /jarvis-cloud-task <requirement> on an issue (jarvis-dev-signals.yml cloud-intake):
     python3 scripts/cloud_agent.py launch --issue 384 --requirement-file req.txt [--model ID]
 
-    # pr-cost-gate.yml, for PRs whose body carries `Cursor-Agent: bc-… model=…`:
+    # pr-cost-gate.yml, for PRs whose body carries `Cursor-Agent: bc-… model=… [prs=385,386]`:
     python3 scripts/cloud_agent.py record-cost --pr 385 --pr-body-file body.md \
         --title "…" --branch cursor/…
 
@@ -29,7 +29,10 @@ API_BASE = "https://api.cursor.com/v1"
 REPO_URL = "https://github.com/aditya2kx/jarvis"
 # No model in the marker: price as Opus 5.5 so an unlabeled PR is over- not under-counted.
 FALLBACK_MODEL = "claude-opus-5-5"
-_MARKER = re.compile(r"Cursor-Agent:\s*(bc-[0-9a-fA-F-]{8,})(?:\s+model=([\w.\-]+))?")
+_MARKER = re.compile(
+    r"Cursor-Agent:\s*(bc-[0-9a-fA-F-]{8,})(?:\s+model=([\w.\-]+))?(?:\s+prs=([\d,]+))?"
+)
+GH_API = "https://api.github.com/repos/aditya2kx/jarvis"
 
 
 class ApiError(RuntimeError):
@@ -58,11 +61,32 @@ def _api(method: str, path: str, body: dict | None = None) -> dict:
         raise ApiError(f"{method} {path} → HTTP {e.code}: {e.read().decode(errors='replace')[:300]}") from None
 
 
-def parse_marker(text: str) -> tuple[str, str] | None:
+def parse_marker(text: str) -> tuple[str, str, list[int]] | None:
     m = _MARKER.search(text or "")
     if not m:
         return None
-    return m.group(1), m.group(2) or FALLBACK_MODEL
+    prs = [int(p) for p in (m.group(3) or "").split(",") if p]
+    return m.group(1), m.group(2) or FALLBACK_MODEL, prs
+
+
+def _gh_pr(pr: int) -> dict:
+    headers = {"Accept": "application/vnd.github+json"}
+    if os.environ.get("GH_TOKEN"):
+        headers["Authorization"] = f"Bearer {os.environ['GH_TOKEN']}"
+    req = urllib.request.Request(f"{GH_API}/pulls/{pr}", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+    except (urllib.error.URLError, ValueError):
+        return {}
+
+
+def split_shares(sizes: dict[int, int]) -> dict[int, float]:
+    """Diff-size-weighted shares; equal split when no size is known."""
+    total = sum(sizes.values())
+    if total <= 0:
+        return {pr: 1 / len(sizes) for pr in sizes}
+    return {pr: n / total for pr, n in sizes.items()}
 
 
 def seed_prompt(requirement: str, issue: int | None) -> str:
@@ -107,22 +131,34 @@ def cost_usd(usage: dict, model: str) -> float:
 
 
 def record_cost(pr: int, pr_body: str, title: str, branch: str) -> str:
+    """Record the agent's cumulative usage; with `prs=a,b` split it across those PRs by diff size."""
     import pr_cost_ledger as L
 
     found = parse_marker(pr_body)
     if not found:
         return "cloud-agent cost: no Cursor-Agent marker in PR body — skipped"
-    agent_id, model = found
+    agent_id, model, prs = found
+    prs = prs if pr in prs else [pr, *prs]
     agent = _api("GET", f"/agents/{agent_id}")
     usage = _api("GET", f"/agents/{agent_id}/usage").get("totalUsage") or {}
     cost = cost_usd(usage, model)
-    L.set_meta(pr, title=title, branch=branch)
+    tokens = int(usage.get("totalTokens") or 0)
+    meta = {p: _gh_pr(p) if len(prs) > 1 else {} for p in prs}
+    shares = split_shares({p: int(m.get("additions") or 0) + int(m.get("deletions") or 0) for p, m in meta.items()})
     # ts = agent creation time: usage is cumulative, so each push replaces the same row.
-    L.record_build_session(
-        pr, ts=agent.get("createdAt") or agent_id, tokens=int(usage.get("totalTokens") or 0),
-        cost_usd=cost, model=model, source="cursor_cloud_agent_api", note=agent_id,
-    )
-    return f"cloud-agent cost: {agent_id} model={model} tokens={usage.get('totalTokens', 0)} cost=${cost:.2f} → PR #{pr}"
+    ts = agent.get("createdAt") or agent_id
+    parts = []
+    for p in prs:
+        if p == pr:
+            L.set_meta(p, title=title, branch=branch)
+        else:
+            L.set_meta(p, title=meta[p].get("title"), branch=(meta[p].get("head") or {}).get("ref"))
+        L.record_build_session(
+            p, ts=ts, tokens=round(tokens * shares[p]), cost_usd=cost * shares[p],
+            model=model, source="cursor_cloud_agent_api", note=agent_id,
+        )
+        parts.append(f"PR #{p} {shares[p]:.0%} ${cost * shares[p]:.2f}")
+    return f"cloud-agent cost: {agent_id} model={model} tokens={tokens} cost=${cost:.2f} → " + ", ".join(parts)
 
 
 def main(argv: list[str] | None = None) -> int:

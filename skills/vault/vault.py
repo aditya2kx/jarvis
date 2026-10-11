@@ -34,7 +34,7 @@ def vault_name() -> str:
 
 def _op(*args: str) -> str:
     if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
-        raise VaultError("OP_SERVICE_ACCOUNT_TOKEN is not set (docs/contributing/dev-anywhere.md § Credentials vault)")
+        raise VaultError("OP_SERVICE_ACCOUNT_TOKEN is not set (skills/vault/README.md § Operator one-time setup)")
     r = subprocess.run(["op", *args, "--vault", vault_name()], capture_output=True, text=True)
     if r.returncode:
         raise VaultError(r.stderr.strip().splitlines()[-1] if r.stderr.strip() else f"op exit {r.returncode}")

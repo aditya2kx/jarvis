@@ -582,6 +582,19 @@ class TestPrState(unittest.TestCase):
         self.assertIn("already merged", buf.getvalue())
         self.assertNotIn("merge-ready", buf.getvalue())
 
+    def test_green_draft_is_not_called_merge_ready(self):
+        import io
+        from contextlib import redirect_stdout
+        from scripts.pr_triage import _print_report
+        tri = {"pr": 1, "repo": "o/r", "unresolved_threads": [], "failing_checks": [],
+               "pending_checks": [], "merge_status": {}, "claude_verdict": {},
+               "pr_state": {"state": "OPEN", "draft": True, "approved_by": []}}
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _print_report(tri)
+        self.assertIn("still a DRAFT", buf.getvalue())
+        self.assertNotIn("merge-ready", buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

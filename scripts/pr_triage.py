@@ -230,9 +230,9 @@ def _collect_merge_status(pr: int, repo: str) -> dict:
 def _collect_pr_state(pr: int) -> dict:
     """Lifecycle state, so a report never says 'merge-ready' about a PR that is
     already approved or merged."""
-    data = _gh_json(["pr", "view", str(pr), "--json", "state,reviews,mergedAt,baseRefName"])
+    data = _gh_json(["pr", "view", str(pr), "--json", "state,reviews,mergedAt,baseRefName,isDraft"])
     if not isinstance(data, dict):
-        return {"state": "", "approved_by": [], "merged_at": None, "base": ""}
+        return {"state": "", "approved_by": [], "merged_at": None, "base": "", "draft": False}
     latest: dict[str, str] = {}
     for r in data.get("reviews") or []:
         if r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
@@ -242,6 +242,7 @@ def _collect_pr_state(pr: int) -> dict:
         "approved_by": sorted(u for u, st in latest.items() if st == "APPROVED"),
         "merged_at": data.get("mergedAt"),
         "base": data.get("baseRefName") or "",
+        "draft": bool(data.get("isDraft")),
     }
 
 
@@ -354,6 +355,8 @@ def _print_report(triage: dict) -> None:
     st = triage.get("pr_state") or {}
     if st.get("state") in ("MERGED", "CLOSED"):
         print(f"PR STATE: {st['state']}" + (f" into {st['base']} at {st['merged_at']}" if st.get("merged_at") else ""))
+    elif st.get("draft"):
+        print("PR STATE: DRAFT — a draft cannot be approved or merged; mark it ready (ManagePullRequest update_pr draft=false) once checks are green")
     elif st.get("approved_by"):
         print(f"PR STATE: open, already APPROVED by {', '.join(st['approved_by'])} — do not ask for approval")
     print(f"\n=== PR #{pr} triage report ===\n")
@@ -434,6 +437,8 @@ def _print_report(triage: dict) -> None:
     print()
     if (triage.get("pr_state") or {}).get("state") == "MERGED":
         print("RESULT: already merged — run post-merge verification, nothing to approve.")
+    elif (triage.get("pr_state") or {}).get("draft") and not _has_work(triage):
+        print("RESULT: green but still a DRAFT — mark it ready, then ask the operator to approve.")
     elif _has_work(triage):
         print("RESULT: work remaining — fix ALL items above, then push ONCE.")
     else:

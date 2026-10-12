@@ -1,8 +1,8 @@
 """jarvis-dev gateway: start and check Jarvis dev tasks from Siri, Grok or any HTTP client.
 
 A task is a GitHub tracking issue plus an intake comment posted as the bot, served
-by `jarvis-dev-signals.yml` exactly like a typed one: `/jarvis-cloud-task` (default)
-starts a Cursor Cloud Agent, `/jarvis-new-task` (where="mac") queues it for the Mac
+by `jarvis-dev-signals.yml` exactly like a typed one: `/jarvis-new-task` (default)
+starts a Cursor Cloud Agent, `/jarvis-new-task mac` (where="mac") queues it for the Mac
 listener. This service holds no Cursor key and never touches prod.
 
     POST /task   {"text": "...", "where": "cloud"|"mac"} → opens the issue, returns a speakable reply
@@ -32,7 +32,7 @@ REPO = os.environ.get("GATEWAY_REPO", "aditya2kx/jarvis")
 LABEL = "jarvis-work"
 MAX_TEXT = 4000
 MCP_PROTOCOL = "2025-06-18"
-INTAKE = {"cloud": "/jarvis-cloud-task", "mac": "/jarvis-new-task"}
+INTAKE = {"cloud": "/jarvis-new-task", "mac": "/jarvis-new-task mac"}
 _AGENT_LINK = re.compile(r"Cursor Cloud Agent\*\* started: (\S+)")
 
 

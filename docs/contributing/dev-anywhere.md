@@ -8,7 +8,7 @@ additive and reached through its own commands, so both can be used side by side.
 
 | Need | Mac (`mac_local`) | Cursor Cloud Agent (`cursor_cloud`, e.g. from Cursor mobile) |
 |---|---|---|
-| Start work | `/jarvis-new-task` → `new_requirement.py` worktree + Cursor window | `/jarvis-cloud-task` on an issue → `scripts/cloud_agent.py launch` (link commented on the issue); or open an agent on the repo in Cursor mobile/web; or Siri / Grok via the [gateway](../../cloud/jarvis_dev_gateway/README.md) |
+| Start work | **one command, `/jarvis-new-task <text>`, everywhere.** In a Mac chat it opens a worktree + Cursor window (`jarvis_task.py` → `new_requirement.py`); as an issue comment it starts a Cloud Agent; first word `mac` / `cloud` overrides (`/jarvis-new-task mac <text>`) | in a Cloud Agent chat or as an issue/PR comment: a new Cloud Agent (`cloud_agent.py intake`, link commented on the issue); or open an agent on the repo in Cursor mobile/web; or Siri / Grok via the [gateway](../../cloud/jarvis_dev_gateway/README.md). `/jarvis-cloud-task` still works as an alias |
 | Environment | your checkout | `.cursor/environment.json` (pip + pytest + Playwright Chromium + console `npm ci`) |
 | See the console change | `npm run dev` on localhost | **per-PR preview** `operator-console-pr<N>` behind prod IAP (same Google sign-in + allowlist), screenshot comment on the PR; the agent itself opens it with a token (`scripts/console_preview.py`, no Google sign-in); deleted on PR close + nightly sweep (`operator-console-preview.yml`) — Mac PRs get one too |
 | Prod reads (BQ, logs, status) | ADC | `/prod-read …` PR comment → result encrypted to the agent's key (`scripts/prod_read.py`; repo is public) |
@@ -21,9 +21,9 @@ additive and reached through its own commands, so both can be used side by side.
 | Ad-hoc logins (portals, Cloud Shell, vendor dashboards) | Keychain + `user-playwright` | 1Password vault `Shared with Bots` via `skills/vault` (`type` into the focused field — never printed) |
 | Babysit | `dev_event_listener` + hooks | subscribe to the PR's review/CI events; `@cursor` comments reach the agent |
 
-Why the Mac cannot be disturbed: `/jarvis-new-task` and its `intake-signal` job are byte-identical
-to before; `/jarvis-cloud-task`, `/prod-read` and `/prod-ops` are excluded from `comment-signal`, so
-the Mac listener never sees them; a Cloud Agent's `cursor/*` branch has no Mac phase cache, so its CI
+Why the Mac cannot be disturbed: `new_requirement.py` and the Mac listener are unchanged, and only
+`/jarvis-new-task mac …` reaches the `intake-signal` job; `/jarvis-new-task`, `/jarvis-cloud-task`,
+`/prod-read` and `/prod-ops` are excluded from `comment-signal`, so the listener never sees cloud tasks; a Cloud Agent's `cursor/*` branch has no Mac phase cache, so its CI
 signals route as `unrouted` (skipped). `detect_surface()` returns `mac_local` on macOS even inside a
 Cursor desktop agent terminal (which also sets `CURSOR_AGENT=1`).
 
@@ -41,7 +41,7 @@ and pushes, writes the note, and runs `scripts/handoff.py out`.
 | Arriving agent | `handoff.py in --pr <N>`: checks out/pulls the branch, restores the phase cache from the tracking issue (`Closes #N` → its `Done:` line), clears `handed_off_to`, prints the latest note | same command (`--no-open` inside the seeded chat) |
 | Cost | Mac rows from `capture-build` + the agent's `Cursor-Agent:` row; `pr-cost-gate` sums both | the agent's row is already there; the Mac session adds `capture-build` as usual |
 
-Phone → phone needs nothing: comment `/jarvis-cloud-task <what next>` on the PR to start a fresh
+Phone → phone needs nothing: comment `/jarvis-new-task <what next>` on the PR to start a fresh
 Cloud Agent on its branch. Cursor's own **Move to Cloud** (desktop Agents Window) also carries the
 chat itself — still commit/push first and have the cloud agent run `handoff.py in`; **Move to
 Local** is often unavailable for agents that started in the cloud, hence `handoff.py in` on the Mac.

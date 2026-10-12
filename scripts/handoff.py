@@ -10,7 +10,7 @@
 
 `out` refuses uncommitted or unpushed work, posts the note as a PR comment (the arriving agent's
 context — chat history does not travel), and marks the phase cache handed off so the Mac listener
-stops routing this branch's signals. `--to cloud` also comments `/jarvis-cloud-task` on the PR,
+stops routing this branch's signals. `--to cloud` also comments `/jarvis-new-task` on the PR,
 which starts a Cloud Agent on the PR's own branch (open it from Cursor mobile/web/desktop).
 
 `in` checks the branch out (Mac: its own worktree, then a Cursor window), restores phase tracking
@@ -78,7 +78,7 @@ def latest_note(comments: list[dict]) -> str | None:
 
 
 def note_comment(note: str, *, to: str, frm: str, sha: str, branch: str, done: list[str]) -> str:
-    nxt = ("A Cloud Agent starts on this branch from the `/jarvis-cloud-task` comment below."
+    nxt = ("A Cloud Agent starts on this branch from the `/jarvis-new-task` comment below."
            if to == "cloud" else
            f"On the Mac: `python3 scripts/handoff.py in --pr <this PR>` (worktree on `{branch}` + Cursor window).")
     return (
@@ -134,7 +134,7 @@ def cmd_out(pr: int, to: str, note: str) -> str:
          note_comment(note, to=to, frm=frm, sha=sha, branch=branch, done=data.get("done", [])))
     if to == "cloud":
         _run("gh", "pr", "comment", str(pr), "--body",
-             f"/jarvis-cloud-task continue PR #{pr} from the handoff note above")
+             f"/jarvis-new-task continue PR #{pr} from the handoff note above")
     return f"handoff: PR #{pr} ({branch} @ {sha[:7]}) → {to}"
 
 

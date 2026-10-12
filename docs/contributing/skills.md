@@ -13,7 +13,7 @@ All Jarvis skills use the `jarvis-` prefix so that typing `/jarvis` in Cursor's
 chat input surfaces the whole family in the autocomplete:
 
 ```
-/jarvis-new-task      — spin up an isolated worktree (opt-in; default is the current worktree)
+/jarvis-new-task      — start a task on the right surface (Mac worktree or Cloud Agent; `mac`/`cloud` first word overrides)
 /jarvis-handoff       — hand the PR to the other surface (Mac ↔ Cloud Agent) with a note (dev-anywhere.md § Handoff)
 ```
 

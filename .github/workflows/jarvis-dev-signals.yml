@@ -6,7 +6,7 @@ name: Jarvis dev signals
 # Production triggers:
 #   check_suite.completed              → ci_failed / ci_passed / ci_other
 #   issue_comment.created              → intake (/jarvis-new-task, allowlisted authors only)
-#                                       → cloud intake (/jarvis-cloud-task → Cursor Cloud Agent; the Mac never sees it)
+#                                       → cloud intake (/jarvis-new-task → Cursor Cloud Agent by default; `mac` first word → Mac; /jarvis-cloud-task = alias)
 #                                       → comment  (operator comment on any issue/PR, loop-safe)
 #   pull_request_review_comment.created → comment  (operator inline/diff review comment)
 #   pull_request_review.submitted      → comment  (operator top-level review, e.g. approve/request-changes with a body)
@@ -120,7 +120,8 @@ jobs:
     name: Emit intake signal
     if: >-
       github.event_name == 'issue_comment' &&
-      startsWith(github.event.comment.body, '/jarvis-new-task') &&
+      (startsWith(github.event.comment.body, '/jarvis-new-task mac ') ||
+       github.event.comment.body == '/jarvis-new-task mac') &&
       contains(fromJSON('["aditya2kx","jarvis-agent-bot328"]'), github.event.comment.user.login)
     runs-on: ubuntu-latest
     env:
@@ -141,8 +142,10 @@ jobs:
           BODY: ${{ github.event.comment.body }}
           AUTHOR: ${{ github.event.comment.user.login }}
         run: |
-          # Strip the /jarvis-new-task prefix (with optional trailing space) using bash
+          # Strip `/jarvis-new-task` and the `mac` routing word
           STRIPPED="${BODY#/jarvis-new-task}"
+          STRIPPED="${STRIPPED# }"
+          STRIPPED="${STRIPPED#mac}"
           REQ="${STRIPPED# }"
 
           SIG="$(python3 scripts/post_merge_lifecycle.py emit-signal \
@@ -161,14 +164,17 @@ jobs:
           gh issue comment "$ISSUE" --repo "$REPO" \
             --body "$IBODY" || echo "::warning::could not post intake signal on issue #$ISSUE"
 
-  # ── Cloud intake (/jarvis-cloud-task comment → Cursor Cloud Agent) ─────────
-  # A separate command, not a mode of /jarvis-new-task: the Mac intake above is
-  # untouched, and Mac and cloud tasks can run side by side.
+  # ── Cloud intake (/jarvis-new-task comment → Cursor Cloud Agent) ───────────
+  # One command: `/jarvis-new-task <text>` runs on the cloud by default, `/jarvis-new-task mac <text>`
+  # goes to the Mac (above). `/jarvis-cloud-task` is kept as an alias.
   cloud-intake:
     name: Launch Cursor Cloud Agent
     if: >-
       github.event_name == 'issue_comment' &&
-      startsWith(github.event.comment.body, '/jarvis-cloud-task') &&
+      (startsWith(github.event.comment.body, '/jarvis-cloud-task') ||
+       (startsWith(github.event.comment.body, '/jarvis-new-task') &&
+        !startsWith(github.event.comment.body, '/jarvis-new-task mac ') &&
+        github.event.comment.body != '/jarvis-new-task mac')) &&
       contains(fromJSON('["aditya2kx","jarvis-agent-bot328"]'), github.event.comment.user.login)
     runs-on: ubuntu-latest
     env:
@@ -192,7 +198,10 @@ jobs:
           IS_PR: ${{ github.event.issue.pull_request && 'true' || '' }}
         run: |
           STRIPPED="${BODY#/jarvis-cloud-task}"
-          printf '%s' "${STRIPPED# }" > /tmp/req.txt
+          STRIPPED="${STRIPPED#/jarvis-new-task}"
+          STRIPPED="${STRIPPED# }"
+          STRIPPED="${STRIPPED#cloud }"
+          printf '%s' "$STRIPPED" > /tmp/req.txt
           # On a PR (a handoff from the Mac, or a phone follow-up) the agent continues that PR's branch.
           python3 scripts/cloud_agent.py intake --number "$ISSUE" ${IS_PR:+--is-pr} \
             --requirement-file /tmp/req.txt ${MODEL:+--model "$MODEL"} --repo "$REPO"

@@ -495,9 +495,10 @@ Wired as a `verify.py` gate (`progress-push-guard`). Blocks pushes that target `
 
 ## 9. Dev from anywhere (Issue #384)
 
-The Mac lifecycle above is unchanged: `/jarvis-new-task` → `intake-signal` → Mac listener →
-`new_requirement.py`. Cloud work uses a **separate command**, `/jarvis-cloud-task <requirement>`:
-the `cloud-intake` job starts a Cursor Cloud Agent (`scripts/cloud_agent.py launch`) and comments
+One command starts work everywhere: `/jarvis-new-task <requirement>`. In a chat, `scripts/jarvis_task.py`
+routes by surface (Mac chat → worktree via `new_requirement.py`; Cloud Agent chat → cloud). As a comment, it
+goes to the cloud by default and `/jarvis-new-task mac <requirement>` → `intake-signal` → Mac listener →
+`new_requirement.py` (unchanged). `/jarvis-cloud-task` is a kept alias. The cloud path: the `cloud-intake` job starts a Cursor Cloud Agent (`scripts/cloud_agent.py launch`) and comments
 its link; the Mac never receives it (`comment-signal` excludes it, and the agent's `cursor/*` branch
 has no Mac phase cache, so its CI signals route as `unrouted`). Both kinds of task can be in flight at
 once. Siri / Grok enter through `cloud/jarvis_dev_gateway` (cloud by default, `where=mac` for the

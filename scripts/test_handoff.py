@@ -186,7 +186,7 @@ class RoundTripTests(unittest.TestCase):
         self.assertEqual(posted[0], "capture-build")
         self.assertTrue(posted[1].startswith(f"{H.MARKER} to=cloud from=mac sha="))
         self.assertIn("**Next:** wire the badge.", posted[1])
-        self.assertEqual(posted[2], "/jarvis-cloud-task continue PR #388 from the handoff note above")
+        self.assertEqual(posted[2], "/jarvis-new-task continue PR #388 from the handoff note above")
         self.assertEqual((mac_cache["handed_off_to"], mac_cache["pr"]), ("cloud", 388))
         self.assertEqual((cloud_cache["handed_off_to"], cloud_cache["issue"], cloud_cache["done"]),
                          (None, 42, ["specify", "setup", "jam"]))

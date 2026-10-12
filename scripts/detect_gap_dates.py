@@ -101,7 +101,7 @@ def partial_replays(partial: dict[str, str], latest_night: str | None) -> tuple[
         steps = {s.strip() for s in (failed or "").split(",") if s.strip()}
         latest = d == latest_night
         if steps - SNAPSHOT_STEPS - DATA_CHECKED_STEPS or (
-                latest and steps & SNAPSHOT_STEPS - ADP_SNAPSHOT_STEPS):
+                latest and steps & (SNAPSHOT_STEPS - ADP_SNAPSHOT_STEPS)):
             recompute.append(d)
         if latest and steps & ADP_SNAPSHOT_STEPS:
             rescrape = True

@@ -46,6 +46,33 @@ def test_hole_behind_latest_date_is_found():
         "2026-09-28"]
 
 
+def test_missing_kds_day_is_a_hole():
+    """A KDS failure exits 0, so only the table shows the day is missing."""
+    assert g.raw_holes(square_days=set(WEEK), adp_days=set(WEEK), today=TODAY, lookback=7,
+                       kds_days=set(WEEK) - {"2026-09-29"}) == ["2026-09-29"]
+
+
+def test_partial_day_scoped_step_is_recomputed_on_any_night():
+    assert g.partial_replays({"2026-09-27": "verify_model_bq"}, "2026-10-01") == (
+        ["2026-09-27"], False)
+
+
+def test_partial_snapshot_step_only_matters_on_the_latest_night():
+    partial = {"2026-09-27": "ingest_inventory,adp_schedule",
+               "2026-10-01": "refresh_order_reco"}
+    assert g.partial_replays(partial, "2026-10-01") == (["2026-10-01"], False)
+
+
+def test_partial_adp_snapshot_on_latest_night_rescrapes_without_recompute():
+    assert g.partial_replays({"2026-10-01": "adp_pay_info,plaid_sync"}, "2026-10-01") == (
+        ["2026-10-01"], True)
+    assert g.partial_replays({"2026-10-01": "adp_timecard_gaps"}, "2026-10-01") == ([], True)
+
+
+def test_partial_data_checked_steps_are_left_to_raw_holes():
+    assert g.partial_replays({"2026-09-30": "adp,square_kds"}, "2026-09-30") == ([], False)
+
+
 def test_closed_dates_are_not_holes():
     sq = set(WEEK) - {"2026-09-28"}
     adp = set(WEEK) - {"2026-09-28"}
@@ -99,8 +126,8 @@ def test_plan_rate_refresh_scrapes_yesterday_once():
 
 
 def _run_main(data, argv, excluded=()):
-    healthy = {"status": {d: "success" for d in WEEK}, "model": set(WEEK),
-               "square": set(WEEK), "adp": set(WEEK), "unrated": []}
+    healthy = {"status": {d: "success" for d in WEEK}, "partial": {}, "model": set(WEEK),
+               "square": set(WEEK), "adp": set(WEEK), "kds": set(WEEK), "unrated": []}
     with mock.patch.object(g, "_fetch", return_value={**healthy, **data}), \
          mock.patch("skills.store_profile.load_exclusions",
                     return_value={"permanent": list(excluded)}), \
@@ -149,6 +176,20 @@ def test_main_rate_scraper_change_triggers_scrape(capsys, tmp_path):
     assert "rate_scraper_changed=True" in out.err
 
 
+def test_main_replays_partial_nights_with_one_scrape(capsys):
+    _run_main({"partial": {"2026-09-28": "square_kds", "2026-09-29": "verify_model_bq",
+                           "2026-10-01": "adp_schedule"},
+               "status": {**{d: "success" for d in WEEK}, "2026-09-28": "partial",
+                          "2026-09-29": "partial", "2026-10-01": "partial"},
+               "kds": set(WEEK) - {"2026-09-28"}}, [])
+    out = capsys.readouterr()
+    assert out.out.splitlines() == [
+        "--date 2026-09-28 --force-scrape --window-from 2026-09-28",
+        "--date 2026-09-29 --force-recompute",
+    ]
+    assert "adp_snapshot_stale=True" in out.err
+
+
 def test_bq_error_prints_nothing_and_exits_zero(capsys):
     with mock.patch.object(g, "_fetch", side_effect=RuntimeError("no creds")):
         assert g.main([]) == 0
@@ -179,3 +220,5 @@ def test_fetch_reads_full_run_history_not_the_30_row_view():
         g._fetch(14, datetime.date(2026, 10, 11))
     runs = [q for q in sql if "run_date" in q]
     assert runs and all(".pipeline_runs`" in q and "vw_pipeline_runs" not in q for q in runs)
+    assert all("failed_step" in q for q in runs)
+    assert any(".square_kds_daily`" in q for q in sql)

@@ -4,9 +4,10 @@
 deploy.yml reruns the dates in a PR's ``Retry-Dates:`` trailer. This plans the
 rest, over the last ``--lookback`` CT days (through yesterday):
 
-- **Raw holes** — a day with no ``square_daily_rollup`` row or no ``adp_shifts``
-  row (store-profile ``closed_dates`` excepted). One full-scrape execution
-  covers min..max hole: one portal login, at most one OTP prompt.
+- **Raw holes** — a day with no ``square_daily_rollup``, ``adp_shifts`` or
+  ``square_kds_daily`` row (store-profile ``closed_dates`` excepted). One
+  full-scrape execution covers min..max hole: one portal login, at most one OTP
+  prompt.
 - **Model rebuild** — the merged PR changed a file the model build imports
   (``model_sources``) or a store profile: one recompute-only execution that
   rebuilds from the last closed pay period's start, so days built by the old
@@ -17,6 +18,12 @@ rest, over the last ``--lookback`` CT days (through yesterday):
   A hole scrape already does this, so it is not added twice.
 - **Gap nights** — latest run failed, never ran, or no ``model_daily`` row,
   with raw data present: recompute-only, unless the rebuild already covers it.
+- **Partial nights** — the run exited 0 but a non-fatal step failed
+  (``status='partial'``, steps in ``failed_step``). A missed day-scoped step is a
+  gap night. A missed snapshot step (ADP schedule / timecard gaps / pay info,
+  inventory, order reco, Plaid) only matters on the latest night, since any later
+  run refreshes it: ADP ones join the rate-refresh scrape, the rest recompute.
+  ADP skipped on OTP and KDS failures are found as raw holes instead.
 
 Prints one ``trigger_dated_refresh.py`` argument line per execution. Read-only;
 on any BQ error prints nothing and exits 0, so it can never fail a deploy.
@@ -43,6 +50,13 @@ RATE_SCRAPER = frozenset({
     "skills/adp_run_automation/pay_info_backend.py",
     "skills/adp_run_automation/wage_rate_history.py",
 })
+ADP_SNAPSHOT_STEPS = frozenset({
+    "adp_schedule", "adp_timecard_gaps", "adp_pay_info", "adp_earnings", "adp_liability",
+})
+SNAPSHOT_STEPS = ADP_SNAPSHOT_STEPS | {"ingest_inventory", "refresh_order_reco", "plaid_sync"}
+# raw_holes finds these from adp_shifts / square_kds_daily, which converge on data;
+# a scrape window records a run only for its last date.
+DATA_CHECKED_STEPS = frozenset({"adp", "square_kds"})
 _PROJECT = os.environ.get("GCP_PROJECT", "jarvis-bhaga-prod")
 _DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
 
@@ -71,10 +85,27 @@ def raw_holes(
     today: datetime.date,
     lookback: int = LOOKBACK_DAYS,
     closed: frozenset[str] = frozenset(),
+    kds_days: set[str] | None = None,
 ) -> list[str]:
-    """Days missing either raw source (a closed day is not a hole)."""
+    """Days missing any raw source (a closed day is not a hole)."""
     return [d for d in _days(today, lookback)
-            if d not in closed and (d not in square_days or d not in adp_days)]
+            if d not in closed and (d not in square_days or d not in adp_days
+                                    or (kds_days is not None and d not in kds_days))]
+
+
+def partial_replays(partial: dict[str, str], latest_night: str | None) -> tuple[list[str], bool]:
+    """For nights whose latest run was ``partial``: (nights to recompute, rescrape ADP?)."""
+    recompute: list[str] = []
+    rescrape = False
+    for d, failed in sorted(partial.items()):
+        steps = {s.strip() for s in (failed or "").split(",") if s.strip()}
+        latest = d == latest_night
+        if steps - SNAPSHOT_STEPS - DATA_CHECKED_STEPS or (
+                latest and steps & SNAPSHOT_STEPS - ADP_SNAPSHOT_STEPS):
+            recompute.append(d)
+        if latest and steps & ADP_SNAPSHOT_STEPS:
+            rescrape = True
+    return recompute, rescrape
 
 
 def model_sources(entry: str = MODEL_ENTRY, root: pathlib.Path = ROOT) -> set[str]:
@@ -156,7 +187,7 @@ def _fetch(lookback: int, today: datetime.date) -> dict[str, object]:
     # The table, not vw_pipeline_runs: that view is the dashboard's last 30 runs, so on busy
     # rerun days older nights drop out of it and would read as never-ran.
     runs = client.query(
-        f"SELECT CAST(run_date AS STRING) d, status FROM {t}.pipeline_runs` "
+        f"SELECT CAST(run_date AS STRING) d, status, failed_step FROM {t}.pipeline_runs` "
         f"WHERE run_date >= '{since}' "
         f"QUALIFY ROW_NUMBER() OVER (PARTITION BY run_date ORDER BY started_at_utc DESC) = 1"
     ).result()
@@ -167,8 +198,11 @@ def _fetch(lookback: int, today: datetime.date) -> dict[str, object]:
         f"ON p.n = r.employee_id OR p.n = r.canonical_name "
         f"WHERE p.n IS NOT NULL AND r.wage_rate_dollars IS NULL ORDER BY 1"
     ).result()
+    runs = list(runs)
     return {
         "status": {r["d"]: r["status"] for r in runs},
+        "partial": {r["d"]: r["failed_step"] for r in runs if r["status"] == "partial"},
+        "kds": days("square_kds_daily", "date_local"),
         "model": days("model_daily", "date"),
         "square": days("square_daily_rollup", "date_local"),
         "adp": days("adp_shifts", "date"),
@@ -215,16 +249,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     gaps = gap_dates(latest_status=data["status"], model_days=data["model"],
                      today=today, lookback=args.lookback)
+    partial_recompute, adp_snapshot_stale = partial_replays(
+        data["partial"], max(data["status"], default=None))
+    window = set(_days(today, args.lookback))
+    gaps = sorted(set(gaps) | (set(partial_recompute) & window))
     holes = raw_holes(square_days=data["square"], adp_days=data["adp"], today=today,
                       lookback=args.lookback,
-                      closed=frozenset(profile.get("closed_dates") or []))
+                      closed=frozenset(profile.get("closed_dates") or []),
+                      kds_days=data["kds"])
     exclude = set(args.exclude.replace(",", " ").split())
     unrated = [n for n in data["unrated"] if n not in excluded]
     scraper_changed = bool(RATE_SCRAPER & set(changed))
     runs = plan(gaps=gaps, holes=holes, rebuild_from=rebuild_from,
                 yesterday=yesterday, exclude=exclude,
-                refresh_rates=bool(unrated) or scraper_changed)
-    print(f"[detect_gap_dates] gaps={gaps} raw_holes={holes} "
+                refresh_rates=bool(unrated) or scraper_changed or adp_snapshot_stale)
+    print(f"[detect_gap_dates] gaps={gaps} raw_holes={holes} partial={data['partial']} "
+          f"adp_snapshot_stale={adp_snapshot_stale} "
           f"model_rebuild_from={rebuild_from} unrated={unrated} "
           f"rate_scraper_changed={scraper_changed} runs={len(runs)}", file=sys.stderr)
     for r in runs:

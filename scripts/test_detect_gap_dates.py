@@ -160,3 +160,22 @@ def test_deploy_step_runs_the_plan():
     assert "detect_gap_dates.py --changed-files changed-files.txt" in wf
     assert "pulls/$PR/files" in wf
     assert "python3 scripts/trigger_dated_refresh.py $ARGS" in wf
+
+
+def test_fetch_reads_full_run_history_not_the_30_row_view():
+    sql: list[str] = []
+
+    class Client:
+        def __init__(self, project):
+            pass
+
+        def query(self, q):
+            sql.append(q)
+            return mock.Mock(result=lambda: [])
+
+    bq = mock.Mock(Client=Client)
+    with mock.patch.dict(sys.modules, {"google.cloud": mock.Mock(bigquery=bq),
+                                       "google.cloud.bigquery": bq}):
+        g._fetch(14, datetime.date(2026, 10, 11))
+    runs = [q for q in sql if "run_date" in q]
+    assert runs and all(".pipeline_runs`" in q and "vw_pipeline_runs" not in q for q in runs)

@@ -153,8 +153,10 @@ def _fetch(lookback: int, today: datetime.date) -> dict[str, object]:
             f"SELECT DISTINCT CAST({col} AS STRING) d FROM {t}.{table}` WHERE {col} >= '{since}'"
         ).result()}
 
+    # The table, not vw_pipeline_runs: that view is the dashboard's last 30 runs, so on busy
+    # rerun days older nights drop out of it and would read as never-ran.
     runs = client.query(
-        f"SELECT CAST(run_date AS STRING) d, status FROM {t}.vw_pipeline_runs` "
+        f"SELECT CAST(run_date AS STRING) d, status FROM {t}.pipeline_runs` "
         f"WHERE run_date >= '{since}' "
         f"QUALIFY ROW_NUMBER() OVER (PARTITION BY run_date ORDER BY started_at_utc DESC) = 1"
     ).result()

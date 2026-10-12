@@ -815,6 +815,29 @@ def capture_review(pr: int, *, repo: str | None = None) -> dict[str, Any]:
 
 # ── pre-merge gate ──────────────────────────────────────────────────
 
+def summary_markdown(rec: dict[str, Any]) -> str:
+    """The PR's cost as a Markdown comment: one row per build session (a Cursor Cloud Agent is
+    one row, keyed by its bc- id), the Claude review runs, and the total so far."""
+    _recompute_totals(rec)
+    b, r = rec["build"], rec["review"]
+    lines = [f"### Dev cost — PR #{rec.get('pr_number')}", "",
+             "| Build session | Model | Tokens | Cost |", "|---|---|---:|---:|"]
+    for s in b["sessions"]:
+        who = s.get("note") if str(s.get("note") or "").startswith("bc-") else f"Cursor session {s.get('ts') or ''}".strip()
+        lines.append(f"| `{who}` | {s.get('model') or '?'} | {int(s.get('tokens') or 0):,} | ${float(s.get('cost_usd') or 0):.2f} |")
+    if not b["sessions"]:
+        lines.append("| _none recorded yet_ | | | $0.00 |")
+    lines += [
+        f"| **Build total** | | **{b['tokens_total']:,}** | **${b['cost_usd_total']:.2f}** |",
+        f"| Claude review ({r['run_count']} run{'s' if r['run_count'] != 1 else ''}) | | {r['tokens_total']:,} | ${r['cost_usd_total']:.2f} |",
+        f"| **Total so far** | | **{rec['totals']['tokens']:,}** | **${rec['totals']['cost_usd']:.2f}** |",
+        "",
+        "_Updated by the PR cost gate on every push; Cloud Agent usage is cumulative from the Cursor API. "
+        "Review cost is finalized after merge (`pr-cost-finalize.yml`)._",
+    ]
+    return "\n".join(lines)
+
+
 def validate(pr: int, *, require_build: bool = False) -> tuple[bool, list[str]]:
     """Pre-merge gate: a PR may not merge without an accounted cost record.
 
@@ -1324,6 +1347,9 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--require-build", action="store_true",
                    help="Hard gate: also require build sessions to be recorded.")
 
+    sm = sub.add_parser("summary", help="Print the PR's cost as a Markdown comment body")
+    sm.add_argument("--pr", type=int, required=True)
+
     a = sub.add_parser("analyze", help="Post-merge: top cost areas + recommendations")
     a.add_argument("--pr", type=int)
     a.add_argument("--top", type=int, default=5)
@@ -1467,6 +1493,9 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(html_body, encoding="utf-8")
         n_merged = html_body.count('<section class="pr">')
         print(f"wrote HTML cost report for {n_merged} merged PR(s) → {out}")
+        return 0
+    if args.cmd == "summary":
+        print(summary_markdown(load_record(args.pr)))
         return 0
     if args.cmd == "sync":
         print(f"syncing cost for PR #{args.pr} …")

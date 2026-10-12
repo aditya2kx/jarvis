@@ -20,6 +20,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  pull-requests: write  # the sticky dev-cost comment
 
 jobs:
   cost-gate:
@@ -69,6 +70,14 @@ jobs:
           printf '%s' "$PR_BODY" > /tmp/pr_body.md
           python3 scripts/cloud_agent.py record-cost --pr "$PR" --pr-body-file /tmp/pr_body.md \
             --title "$PR_TITLE" --branch "$BRANCH"
+
+      - name: Report dev cost on the PR (sticky comment)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        run: |
+          python3 scripts/pr_cost_ledger.py summary --pr "$PR" > /tmp/cost.md
+          python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
+            --marker pr-cost --body-file /tmp/cost.md
 
       - name: Validate cost ledger (hard gate — requires build cost)
         if: github.event_name == 'pull_request'

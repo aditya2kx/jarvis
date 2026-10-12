@@ -17,6 +17,7 @@ additive and reached through its own commands, so both can be used side by side.
 | Open the PR | `gh pr create` as the bot | push a `cursor/*` branch → `cloud-agent-pr.yml` opens a draft PR as the bot (`ADMIN_PAT`); the agent sets title/body with `ManagePullRequest` `update_pr` — never its `create_pr`, which opens under the operator's account (Issue #321) |
 | Claude review | normal | normal — the actor is the bot, as on the Mac |
 | Build cost → BQ | `pr_cost_ledger.py capture-build` from transcripts | PR body line `Cursor-Agent: <bc-id> model=<model-id>` (add `prs=<a>,<b>` when one agent built several PRs — the cost splits by diff size; one line per agent when a later agent continues the PR); `pr-cost-gate.yml` prices the agent's `/usage` |
+| Build cost on the PR | `pr-cost-gate.yml` upserts a sticky **Dev cost** comment on every push (`pr_cost_ledger.py summary`: one row per build session / Cloud Agent, Claude review runs, total so far) | same |
 | Ad-hoc logins (portals, Cloud Shell, vendor dashboards) | Keychain + `user-playwright` | 1Password vault `Shared with Bots` via `skills/vault` (`type` into the focused field — never printed) |
 | Babysit | `dev_event_listener` + hooks | subscribe to the PR's review/CI events; `@cursor` comments reach the agent |
 

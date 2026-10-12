@@ -582,6 +582,13 @@ class TestPrState(unittest.TestCase):
         self.assertIn("already merged", buf.getvalue())
         self.assertNotIn("merge-ready", buf.getvalue())
 
+    def test_collector_reads_is_draft(self):
+        base = {"state": "OPEN", "baseRefName": "main", "reviews": [
+            {"author": {"login": "a"}, "state": "APPROVED"}]}
+        self.assertTrue(self._state({**base, "isDraft": True})["draft"])
+        self.assertFalse(self._state(base)["draft"])
+        self.assertFalse(self._state({**base, "isDraft": False})["draft"])
+
     def test_green_draft_is_not_called_merge_ready(self):
         import io
         from contextlib import redirect_stdout

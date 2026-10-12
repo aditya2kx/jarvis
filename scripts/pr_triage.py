@@ -356,7 +356,8 @@ def _print_report(triage: dict) -> None:
     if st.get("state") in ("MERGED", "CLOSED"):
         print(f"PR STATE: {st['state']}" + (f" into {st['base']} at {st['merged_at']}" if st.get("merged_at") else ""))
     elif st.get("draft"):
-        print("PR STATE: DRAFT — a draft cannot be approved or merged; mark it ready (ManagePullRequest update_pr draft=false) once checks are green")
+        who = f" (already approved by {', '.join(st['approved_by'])})" if st.get("approved_by") else ""
+        print(f"PR STATE: DRAFT{who} — a draft cannot be approved or merged; mark it ready (ManagePullRequest update_pr draft=false) once checks are green")
     elif st.get("approved_by"):
         print(f"PR STATE: open, already APPROVED by {', '.join(st['approved_by'])} — do not ask for approval")
     print(f"\n=== PR #{pr} triage report ===\n")

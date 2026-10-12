@@ -1,0 +1,166 @@
+name: jarvis-dev gateway
+
+# cloud/jarvis_dev_gateway — Siri / Grok / HTTP entry point that opens a Jarvis dev task.
+# main: build → sync bot PAT from ADMIN_PAT into Secret Manager (a PAT rotation is
+# "re-run this workflow") → Cloud Run (scale to zero) → smoke.
+# pull_request: the same image runs on the runner against live GitHub (read-only calls)
+# and the deploy identity's IAM is probed, so the first main deploy is not a guess.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cloud/jarvis_dev_gateway/**"
+      - ".github/workflows/jarvis-dev-gateway-deploy.yml"
+  pull_request:
+    paths:
+      - "cloud/jarvis_dev_gateway/**"
+      - ".github/workflows/jarvis-dev-gateway-deploy.yml"
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: jarvis-bhaga-prod
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
+  SERVICE: jarvis-dev-gateway
+  RUNTIME_SA: bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  self-test:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run the container
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADMIN_PAT }}
+        run: |
+          docker build -f cloud/jarvis_dev_gateway/Dockerfile -t gw .
+          TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+          echo "::add-mask::$TOKEN"
+          echo "GW_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          docker run -d --name gw -p 8080:8080 -e GITHUB_TOKEN -e JARVIS_DEV_GATEWAY_TOKEN="$TOKEN" gw
+          for _ in $(seq 20); do curl -fs localhost:8080/health >/dev/null && break; sleep 1; done
+
+      - name: Smoke (no side effects — /task is unit-tested, never called here)
+        run: |
+          set -o pipefail
+          H=(-H "Authorization: Bearer $GW_TOKEN" -H "Content-Type: application/json")
+          curl -fsS localhost:8080/health | tee /tmp/health.json; echo
+          python3 -c 'import json; d=json.load(open("/tmp/health.json")); assert d["github_token"] and d["gateway_token"], d'
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8080/task -d '{"text":"x"}' -H 'Content-Type: application/json')"
+          [ "$CODE" = "401" ] && echo "unauthenticated /task → 401"
+          curl -fsS "${H[@]}" localhost:8080/mcp -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'; echo
+          curl -fsS "${H[@]}" localhost:8080/mcp -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | python3 -c 'import json,sys; print("tools:", [t["name"] for t in json.load(sys.stdin)["result"]["tools"]])'
+          curl -fsS "${H[@]}" localhost:8080/mcp -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"task_status","arguments":{}}}' \
+            | python3 -c 'import json,sys; r=json.load(sys.stdin)["result"]; assert not r.get("isError"), r; print("task_status speech:", r["content"][0]["text"][:200])'
+          curl -fsS "${H[@]}" localhost:8080/status | python3 -c 'import json,sys; d=json.load(sys.stdin); print("GET /status:", len(d["tasks"]), "tasks")'
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Probe deploy-identity IAM
+        run: |
+          AT="$(gcloud auth print-access-token)"
+          probe() {  # $1 = resource URL, $2 = JSON permission list
+            curl -sS -X POST -H "Authorization: Bearer $AT" -H "Content-Type: application/json" \
+              "$1:testIamPermissions" -d "{\"permissions\":$2}" \
+              | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin).get("permissions", [])))'
+          }
+          SM="https://secretmanager.googleapis.com/v1/projects/$PROJECT_ID/secrets"
+          PROJ="$(probe "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID" '["run.services.create","run.services.setIamPolicy","iam.serviceAccounts.actAs"]')"
+          TOK="$(probe "$SM/jarvis-dev-gateway-token" '["secretmanager.versions.access"]')"
+          PAT="$(probe "$SM/github-bot-pat" '["secretmanager.versions.access","secretmanager.versions.add"]')"
+          echo "project: $PROJ"; echo "jarvis-dev-gateway-token: ${TOK:-none}"; echo "github-bot-pat: ${PAT:-none}"
+          MISSING=""
+          for p in run.services.create run.services.setIamPolicy iam.serviceAccounts.actAs; do
+            [[ " $PROJ " == *" $p "* ]] || MISSING="$MISSING project:$p"
+          done
+          [[ "$TOK" == *versions.access* ]] || MISSING="$MISSING jarvis-dev-gateway-token:versions.access"
+          [[ "$PAT" == *versions.add* && "$PAT" == *versions.access* ]] || MISSING="$MISSING github-bot-pat:versions.access+add"
+          if [ -n "$MISSING" ]; then
+            echo "::warning::jarvis-dev gateway: not deployable yet —$MISSING. One-time setup: cloud/jarvis_dev_gateway/README.md § One-time setup"
+          else
+            echo "deploy identity: ready"
+          fi
+          echo "PAT_PERMS=$PAT" >> "$GITHUB_ENV"
+
+      # Cloud Agents read github-bot-pat at VM start (scripts/cloud_git_identity.sh), so keep it
+      # current from PRs too — the value is ADMIN_PAT, never PR-controlled.
+      - name: Sync bot PAT
+        if: contains(env.PAT_PERMS, 'versions.add') && contains(env.PAT_PERMS, 'versions.access')
+        env:
+          ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
+        run: |
+          CUR="$(gcloud secrets versions access latest --secret github-bot-pat --project $PROJECT_ID 2>/dev/null || true)"
+          if [ "$CUR" != "$ADMIN_PAT" ]; then
+            printf '%s' "$ADMIN_PAT" | gcloud secrets versions add github-bot-pat --data-file=- --project $PROJECT_ID >/dev/null
+            echo "github-bot-pat: new version"
+          else
+            echo "github-bot-pat: current"
+          fi
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push image
+        run: |
+          gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+          docker build -f cloud/jarvis_dev_gateway/Dockerfile -t $REGISTRY/$SERVICE:${{ github.sha }} .
+          docker push $REGISTRY/$SERVICE:${{ github.sha }}
+
+      # The deploy identity cannot create secrets (no project-level Secret Manager admin);
+      # both exist from the one-time setup in the README, and only github-bot-pat grants
+      # it versionAdder so a bot PAT rotation propagates on the next run.
+      - name: Sync bot PAT
+        env:
+          ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
+        run: |
+          gcloud secrets versions describe latest --secret jarvis-dev-gateway-token --project $PROJECT_ID >/dev/null \
+            || { echo "::error::secret jarvis-dev-gateway-token missing — cloud/jarvis_dev_gateway/README.md § One-time setup"; exit 1; }
+          CUR="$(gcloud secrets versions access latest --secret github-bot-pat --project $PROJECT_ID 2>/dev/null || true)"
+          if [ "$CUR" != "$ADMIN_PAT" ]; then
+            printf '%s' "$ADMIN_PAT" | gcloud secrets versions add github-bot-pat --data-file=- --project $PROJECT_ID
+          fi
+
+      # Public ingress, app-level bearer: Siri Shortcuts and Grok connectors cannot do
+      # Google sign-in. Scale to zero — a task is two GitHub calls.
+      - name: Deploy Cloud Run
+        run: |
+          gcloud run deploy $SERVICE \
+            --image $REGISTRY/$SERVICE:${{ github.sha }} \
+            --region $REGION --project $PROJECT_ID \
+            --service-account $RUNTIME_SA \
+            --allow-unauthenticated \
+            --min-instances 0 --max-instances 1 \
+            --memory 256Mi --cpu 1 --timeout 60 \
+            --set-env-vars GATEWAY_REPO=${{ github.repository }} \
+            --set-secrets "JARVIS_DEV_GATEWAY_TOKEN=jarvis-dev-gateway-token:latest,GITHUB_TOKEN=github-bot-pat:latest"
+
+      - name: Smoke
+        run: |
+          URL="$(gcloud run services describe $SERVICE --region $REGION --project $PROJECT_ID --format='value(status.url)')"
+          curl -fsS "$URL/health"; echo
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL/task" -H 'Content-Type: application/json' -d '{"text":"x"}')"
+          [ "$CODE" = "401" ] || { echo "::error::unauthenticated /task returned $CODE"; exit 1; }
+          echo "### jarvis-dev gateway: $URL" >> "$GITHUB_STEP_SUMMARY"

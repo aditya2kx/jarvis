@@ -8,6 +8,7 @@ import {
 import { dedupePlaidTransactions } from "@/lib/bq/writes";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
+import { isConsolePreview } from "@/lib/config/preview";
 import { storeDisplayName } from "@/lib/config/stores";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
@@ -64,11 +65,13 @@ export default async function AccountingPage({
   try {
     // Prod webhook/nightly may still race-insert until this branch deploys
     // (Issue #230). Cheap no-op when already unique.
-    await dedupePlaidTransactions().catch((e) => {
-      console.error(
-        `plaid dedupe on accounting load: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    });
+    if (!isConsolePreview()) {
+      await dedupePlaidTransactions().catch((e) => {
+        console.error(
+          `plaid dedupe on accounting load: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+    }
     const [items, transactions, nodes, ruleRows, labor] = await Promise.all([
       plaidItems(DEFAULT_STORE),
       plaidTransactions(win),

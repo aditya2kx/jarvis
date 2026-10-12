@@ -4,12 +4,15 @@ name: PR cost gate
 # BigQuery (jarvis_dev dataset). The build cost must be non-zero. Review cost
 # is optional at gate time (finalized post-merge by pr-cost-finalize.yml).
 #
-# This is a PURE VALIDATOR — it never writes. CI reads from BQ via WIF.
+# Validator, with one writer: for PRs built by a Cursor Cloud Agent (PR body
+# carries `Cursor-Agent: bc-… model=…`) it first records that agent's cumulative
+# build cost from the Cursor API (scripts/cloud_agent.py) — the agent's VM has
+# no BQ identity. Everything else is read-only. CI reads/writes BQ via WIF.
 # Make this a REQUIRED status check in branch protection to enforce the gate.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   # Register the job name on main so branch protection can require it.
   push:
     branches: [main]
@@ -17,6 +20,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  pull-requests: write  # the sticky dev-cost comment
 
 jobs:
   cost-gate:
@@ -50,6 +54,30 @@ jobs:
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Record Cursor Cloud Agent build cost
+        if: github.event_name == 'pull_request' && contains(github.event.pull_request.body, 'Cursor-Agent:')
+        env:
+          CURSOR_AGENT_TOKEN: ${{ secrets.CURSOR_AGENT_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [ -z "$CURSOR_AGENT_TOKEN" ]; then
+            echo "::warning::cloud-agent cost: CURSOR_AGENT_TOKEN repo secret not set — cannot record build cost"
+            exit 0
+          fi
+          printf '%s' "$PR_BODY" > /tmp/pr_body.md
+          python3 scripts/cloud_agent.py record-cost --pr "$PR" --pr-body-file /tmp/pr_body.md \
+            --title "$PR_TITLE" --branch "$BRANCH"
+
+      - name: Report dev cost on the PR (sticky comment)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        run: |
+          python3 scripts/pr_cost_ledger.py summary --pr "$PR" > /tmp/cost.md
+          python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
+            --marker pr-cost --body-file /tmp/cost.md
 
       - name: Validate cost ledger (hard gate — requires build cost)
         if: github.event_name == 'pull_request'

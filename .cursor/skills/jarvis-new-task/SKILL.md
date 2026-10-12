@@ -20,11 +20,16 @@ Type `/jarvis-new-task` followed by the requirement text, e.g.:
 
 1. Take the text the operator typed after `/jarvis-new-task` as the requirement string.
 2. If no text was provided, ask the operator for a one-line requirement description, then proceed.
-3. Run the front door script verbatim:
+3. Run the front door script verbatim. It picks where the task runs from the surface you are on
+   (a Mac chat → Mac worktree via `scripts/new_requirement.py`; a Cloud Agent chat → a new Cloud Agent);
+   the operator can override with a first word `mac` or `cloud`:
 
 ```bash
-python3 scripts/new_requirement.py --requirement "<operator's text>"
+python3 scripts/jarvis_task.py "<operator's text>"
 ```
+
+The same command works as a GitHub issue/PR comment: `/jarvis-new-task <text>` starts a Cloud Agent,
+`/jarvis-new-task mac <text>` queues it for the Mac. `/jarvis-cloud-task` is a deprecated alias.
 
 **Link-not-create:** if the operator includes a GitHub issue URL or `#NN` reference in
 the requirement text (e.g. `/jarvis-new-task fix the auth bug #42`), the script
@@ -36,7 +41,7 @@ through verbatim — do **not** ask a clarifying question about the issue number
 the requirement text is identical.  If no issue number is present the branch is
 `fix/<slug>` with an automatic `-2`, `-3`, … suffix on collision.
 
-4. After the script launches (it creates or links a worktree, branch, GitHub issue, and opens a new Cursor window), **stop**. Do NOT continue implementing in the current chat.
+4. After the script launches (Mac: creates or links a worktree, branch, GitHub issue, and opens a new Cursor window; cloud: opens the issue, and the agent link is commented on it), **stop**. Do NOT continue implementing in the current chat.
 5. Confirm to the operator that the new worktree is being set up and that they should continue work in the new Cursor window.
 
 ## Hard rules
@@ -47,6 +52,6 @@ the requirement text is identical.  If no issue number is present the branch is
 
 ## See also
 
-- `scripts/new_requirement.py` — the front door script
+- `scripts/jarvis_task.py` — the router; `scripts/new_requirement.py` — the Mac front door it calls
 - `.cursor/rules/new-requirement-intake.mdc` — canonical intake rule
 - Other `/jarvis-*` skills surface by typing `/jarvis` in the chat input

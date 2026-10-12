@@ -9,7 +9,7 @@ alwaysApply: true
 ```
 Jarvis (this workspace)
 ├── agents/  Domain agents — BHAGA (tip/payroll), CHITRA (tax), CHANAKYA (strategy), AKSHAYA (inventory)
-├── skills/  Shared capabilities (slack, sheets, drive, browser, credentials, square, adp, tip-alloc)
+├── skills/  Shared capabilities (slack, sheets, drive, browser, credentials, vault, square, adp, tip-alloc)
 └── core/    Shared config/auth
 ```
 

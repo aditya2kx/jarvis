@@ -556,5 +556,36 @@ class TestPrCostLedger(unittest.TestCase):
         self.assertTrue(any("$0" in p for p in problems))
 
 
+class TestSummaryMarkdown(unittest.TestCase):
+    def test_one_row_per_agent_plus_review_and_total(self):
+        rec = L._empty_record(388)
+        rec["build"]["sessions"] = [
+            {"ts": "2026-10-11T15:00:00Z", "model": "claude-opus-5-5-high", "tokens": 90_348_681,
+             "cost_usd": 46.68, "note": "bc-01a12b15-18e9"},
+            {"ts": "2026-10-11T21:48:00Z", "model": "claude-opus-5-5-medium", "tokens": 25_900_620,
+             "cost_usd": 10.67, "note": "bc-90191966-7bee"},
+            {"ts": "2026-10-10T09:00:00Z", "model": "claude-sonnet-5-5", "tokens": 1_000, "cost_usd": 0.5, "note": None},
+        ]
+        rec["review"]["runs"] = [{"tokens": 2_000, "cost_usd": 1.25}, {"tokens": 1_000, "cost_usd": 0.75}]
+        md = L.summary_markdown(rec)
+        self.assertIn("| `bc-01a12b15-18e9` | claude-opus-5-5-high | 90,348,681 | $46.68 |", md)
+        self.assertIn("| `bc-90191966-7bee` | claude-opus-5-5-medium | 25,900,620 | $10.67 |", md)
+        self.assertIn("| `Cursor session 2026-10-10T09:00:00Z` | claude-sonnet-5-5 | 1,000 | $0.50 |", md)
+        self.assertIn("| **Build total** | | **116,250,301** | **$57.85** |", md)
+        self.assertIn("| Claude review (2 runs) | | 3,000 | $2.00 |", md)
+        self.assertIn("| **Total so far** | | **116,253,301** | **$59.85** |", md)
+
+    def test_empty_record_says_nothing_recorded(self):
+        md = L.summary_markdown(L._empty_record(1))
+        self.assertIn("_none recorded yet_", md)
+        self.assertIn("Claude review (0 runs)", md)
+        self.assertIn("**$0.00**", md)
+
+    def test_provisional_record_is_titled_by_its_branch_key(self):
+        md = L.summary_markdown(L._empty_record("cursor/some-branch"))
+        self.assertIn("### Dev cost — `cursor/some-branch`", md)
+        self.assertNotIn("None", md)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -63,7 +63,7 @@ PY
 # 4. Revoke ALL previous bot classic PATs on github.com/settings/tokens (last step).
 ```
 
-**Custody note:** `~/.zshrc` loads `github-bot-pat` into `GH_TOKEN`. Repo secret
+**Custody note:** `~/.zshrc` loads `github-bot-pat` into `GH_TOKEN`. Cursor Cloud Agents read the same PAT from Secret Manager `github-bot-pat` (`scripts/cloud_git_identity.sh`, gcp-access.md recipe F); the gateway workflow re-syncs it from `ADMIN_PAT`, so a rotation needs no extra slot. Repo secret
 `ADMIN_PAT` is the same bot PAT (used by `jarvis-dev-signals`, `auto-merge-on-approval`,
 `pr-merged-lifecycle`, etc.). Owner personal PAT stays under Keychain service
 `github-pat` / account `aditya2kx` (alias `gh-adi`) — never overwrite that slot
@@ -77,6 +77,15 @@ gh api user --jq .login                 # must print: jarvis-agent-bot328
 git ls-remote origin HEAD               # must exit 0 (push path live)
 ```
 If `gh api user` returns 401, the shell still has the old token — open a new terminal tab.
+
+**Cursor Cloud Agent: re-assert the bot before every push.** Cursor re-injects its GitHub App
+token mid-session (`insteadOf` rewrites in `~/.gitconfig`, a token in the `origin` URL, `gh`
+logged in as `cursor`), silently undoing `scripts/cloud_git_identity.sh`. A push made then lands
+as `cursor[bot]`, and the Claude review refuses non-human actors. Repo hooks don't run there
+(Cursor owns `core.hooksPath`), so chain it by hand:
+```bash
+bash scripts/cloud_git_identity.sh && [ "$(gh api user --jq .login)" = jarvis-agent-bot328 ] && git push
+```
 
 ## 3. Never push to `main` directly
 `main` is the deployed branch.  Push to `main` → image rebuild → prod change.

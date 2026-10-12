@@ -16,6 +16,9 @@ git add metrics/pr_cost/ && git commit -m "chore(cost): sync PR #N ledger"
 ```
 
 The `pr-cost-gate.yml` CI check reads BQ — zero build cost is a hard failure.
+On every push it also upserts a sticky **Dev cost** comment on the PR
+(`pr_cost_ledger.py summary --pr N`): one row per build session or Cloud Agent,
+the Claude review runs, and the total so far.
 
 Every ledger write (`set-meta`, `capture-build`, `dedup-sessions`, …) re-saves the
 whole PR record: delete its child rows, then re-insert them with one multi-row DML

@@ -110,6 +110,19 @@ describe("ensureOrderRecoFresh", () => {
     q.mockResolvedValueOnce([{ ...base, live_fingerprint: "9", failed_run_id: "f" }]);
     expect((await ensureOrderRecoFresh("palmetto", "op")).requested).toBe(false);
   });
+  it("never self-heals in read-only preview mode", async () => {
+    vi.stubEnv("CONSOLE_PREVIEW", "1");
+    try {
+      const { ensureOrderRecoFresh } = await import("@/lib/bhaga/orderReco");
+      q.mockResolvedValueOnce([{ ...base, live_fingerprint: "9" }]);
+      const out = await ensureOrderRecoFresh("palmetto", "op");
+      expect(out.requested).toBe(false);
+      expect(out.status.state).toBe("stale");
+      expect(submitQuery).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe("status helpers", () => {

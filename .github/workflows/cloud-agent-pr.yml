@@ -1,0 +1,39 @@
+name: Cloud Agent PR (open as bot)
+
+# A Cursor Cloud Agent's own PR tool opens PRs under the operator's account, which the
+# operator then cannot approve (Issue #321). Mac agents open PRs as jarvis-agent-bot328 via
+# `gh pr create`; this does the same for Cloud Agent branches (`cursor/*` — Mac branches are
+# fix/ feat/ chore/ …): the first push opens a draft PR as the bot, and the agent fills in
+# the title/body by branch afterwards (pr-workflow.mdc § Cursor Cloud Agent surface).
+
+on:
+  push:
+    branches: ['cursor/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-agent-pr-${{ github.ref_name }}
+
+jobs:
+  open:
+    name: Open PR as jarvis-agent-bot328
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_PAT }}
+      BRANCH: ${{ github.ref_name }}
+    steps:
+      - name: Open draft PR if none is open
+        run: |
+          open="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$open" ]; then
+            echo "PR #$open already open for $BRANCH"
+            exit 0
+          fi
+          title="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.commit.message | split("\n")[0]')"
+          # ManagePullRequest update_pr only rewrites a body inside Cursor's agent-managed
+          # markers; without them the agent cannot set the title/body of the bot's PR.
+          body="$(printf '<!-- CURSOR_AGENT_PR_BODY_BEGIN -->\nOpened as jarvis-agent-bot328 for Cursor Cloud Agent branch `%s`; the agent replaces this body with the PR template.\n<!-- CURSOR_AGENT_PR_BODY_END -->' "$BRANCH")"
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --draft \
+            --title "$title" --body "$body"

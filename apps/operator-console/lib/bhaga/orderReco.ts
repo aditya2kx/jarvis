@@ -1,6 +1,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { fq, q, submitQuery } from "@/lib/bq/client";
+import { isConsolePreview } from "@/lib/config/preview";
 import type { OrderRecoChange, OrderRecoStatus } from "@/lib/inventory/orderRecoStatus";
 
 /** A `running` row older than this with no terminal row is a dead run, not a live one. */
@@ -144,7 +145,7 @@ export async function ensureOrderRecoFresh(
   requestedBy: string,
 ): Promise<{ status: OrderRecoStatus; requested: boolean }> {
   const status = await orderRecoStatus(store);
-  if (status.state !== "stale") return { status, requested: false };
+  if (status.state !== "stale" || isConsolePreview()) return { status, requested: false };
   // The edit that made inputs stale started its own refresh; its `running` row
   // can lag the submit by seconds, and the drawer's router.refresh() lands here
   // inside that gap. Requesting again would only supersede the operator's run.

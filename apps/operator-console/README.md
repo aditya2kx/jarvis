@@ -31,6 +31,20 @@ npm run dev
 
 Requires Application Default Credentials for BigQuery reads
 (`gcloud auth application-default login`, project `jarvis-bhaga-prod`).
+Without ADC (e.g. a Cursor Cloud Agent) the shell, navigation and drawers still
+render; data panels show "Data unavailable".
+
+### Read-only preview mode
+
+`CONSOLE_PREVIEW=1` shows a **Preview** badge in the top bar, refuses every non-GET
+request in `middleware.ts` — server actions and API routes (403, toast: "Preview mode —
+changes are disabled. Nothing was saved.") — and skips the two write-on-render paths
+(Inventory order-reco self-heal, Accounting Plaid dedupe). Use it for review /
+preview deploys and demos; never set it on the prod `operator-console` service.
+
+```bash
+CONSOLE_PREVIEW=1 BYPASS_IAP_EMAIL=you@mypalmetto.co npm run dev
+```
 
 ## Commands
 

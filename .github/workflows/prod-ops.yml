@@ -1,0 +1,153 @@
+name: Prod ops
+
+# Approval-gated prod mutations for Cursor Cloud Agents (scripts/prod_ops.py).
+# `/prod-ops …` comment (owner/collaborators) → guard plans the exact commands and
+# replies with them → the `run` job waits in GitHub Environment `prod` until the
+# operator approves (web or GitHub mobile) → runs with the CI workload identity.
+#
+# The guard refuses to continue unless `prod` requires a reviewer: GitHub silently
+# auto-creates a referenced environment WITHOUT protection, which would turn this
+# into an unreviewed prod write.
+#
+# issue_comment resolves from main (post-merge only); the pull_request self-test
+# runs the guard and plans canned requests without executing anything.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+    paths:
+      - "scripts/prod_ops.py"
+      - ".github/workflows/prod-ops.yml"
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  guard:
+    if: >-
+      (github.event_name == 'issue_comment' &&
+       startsWith(github.event.comment.body, '/prod-ops') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      head_sha: ${{ steps.plan.outputs.head_sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Creating/protecting an environment needs repo-admin (owner-only), so the
+      # operator sets the reviewer once; until then comments fail closed and PRs warn.
+      - name: Require operator approval on environment `prod`
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          protected() {
+            curl -fsS "https://api.github.com/repos/$GITHUB_REPOSITORY/environments/prod" 2>/dev/null | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          print("yes" if any(r.get("type") == "required_reviewers" and r.get("reviewers") for r in d.get("protection_rules", [])) else "no")
+          ' 2>/dev/null || echo missing
+          }
+          STATE="$(protected)"
+          if [ "$STATE" != "yes" ]; then
+            MSG="prod-ops: GitHub Environment 'prod' is '$STATE' (needs a required reviewer). Settings → Environments → New environment 'prod' → Required reviewers → add the operator."
+            if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+              echo "::warning::$MSG"
+              exit 0
+            fi
+            echo "::error::$MSG Refusing."
+            gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -X POST -f body="\`$MSG\` Refusing." >/dev/null
+            exit 1
+          fi
+          echo "prod-ops: environment prod requires reviewer approval"
+
+      - name: Plan
+        id: plan
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE: ${{ github.event.issue.number }}
+          IS_PR: ${{ github.event.issue.pull_request != null }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            for body in "/prod-ops whoami" "/prod-ops console-env set CONSOLE_EXAMPLE_FLAG=1" \
+                        "/prod-ops run-job bhaga-daily-refresh REFRESH_DATE=2026-10-10" "/prod-ops apply-migrations" \
+                        "/prod-ops console-env set CONSOLE_PREVIEW=1"; do
+              COMMENT_BODY="$body" python3 scripts/prod_ops.py plan || true
+            done
+            exit 0
+          fi
+          set +e
+          PLAN="$(python3 scripts/prod_ops.py plan)"; RC=$?
+          set -e
+          echo "$PLAN"
+          if [ "$IS_PR" = "true" ]; then
+            echo "head_sha=$(gh pr view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)" >> "$GITHUB_OUTPUT"
+          fi
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ "$RC" = "0" ]; then
+            CMDS="$(printf '%s' "$PLAN" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["commands"]))')"
+            BODY="**prod-ops** awaiting operator approval — [review deployment]($RUN_URL):"$'\n```\n'"$CMDS"$'\n```'
+          else
+            BODY="\`$PLAN\`"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -X POST -f body="$BODY" >/dev/null
+          [ "$RC" = "0" ]
+
+  run:
+    needs: guard
+    if: github.event_name == 'issue_comment'
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE: ${{ github.event.issue.number }}
+      HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out PR head for migrations
+        if: needs.guard.outputs.head_sha != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.head_sha }}
+          path: pr-head
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install --quiet -r requirements.txt
+
+      - name: Run
+        id: run
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          [ -n "$HEAD_SHA" ] && export PROD_OPS_CODE_ROOT="$GITHUB_WORKSPACE/pr-head"
+          set +e
+          python3 scripts/prod_ops.py run | tee /tmp/out.txt
+          RC=${PIPESTATUS[0]}
+          echo "rc=$RC" >> "$GITHUB_OUTPUT"
+          exit "$RC"
+
+      - name: Reply
+        if: always()
+        run: |
+          LAST="$(grep '^prod-ops: ' /tmp/out.txt 2>/dev/null | tail -1)"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -X POST \
+            -f body="\`${LAST:-prod-ops: no result}\` — [run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)" >/dev/null

@@ -128,9 +128,10 @@ export function AdpScheduleFinalize({
 
   useEffect(() => {
     let live = true;
-    void schedulePushStatusAction(weekStart).then((ack) => {
+    // A refused or failed status read (network, read-only preview) must not throw.
+    void schedulePushStatusAction(weekStart).catch(() => null).then((ack) => {
       if (!live) return;
-      if (ack.ok && ack.data) {
+      if (ack?.ok && ack.data) {
         setRows(ack.data.rows);
         setRunning(ack.data.running);
       }

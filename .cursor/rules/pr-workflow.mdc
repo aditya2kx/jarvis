@@ -16,7 +16,7 @@ Do NOT ask whether to babysit — just do it.
 1. **Install the cost hook (once per clone/worktree)** → `bash scripts/install-git-hooks.sh`. The `pre-commit` hook captures review cost into BigQuery on each commit. No `git add`, no staged files.
 2. **Create PR** → `gh pr create --base main …` — **always pass `--base main` explicitly, never rely on the default.** `gh pr create` with no `--base` targets the repo's *configured* default branch, which can silently drift away from `main` (incident 2026-07-01: PR #119 auto-merged into a stale feature branch because the repo default branch had been misconfigured — `git log` on the working branch looked correct throughout, so the only symptom was the PR's `baseRefName`). `scripts/check_repo_default_branch.py` (wired into `verify.py --full`) and the `pr-base-branch.yml` CI gate are the two mechanical backstops; `--base main` is the first line of defense and costs nothing to type.
 3. **Seed cost ledger (BQ)** → `pr_cost_ledger.py set-meta --pr N --branch <branch>`, then record build cost (`record-build` or `capture-build`) into BQ so `validate --require-build` passes. **Do NOT commit `metrics/pr_cost/`** — the ledger is now in BQ, not git. Zero build cost is a hard failure.
-4. **Babysit immediately** — read `/Users/adiniekkajj/.cursor/skills-cursor/babysit/SKILL.md` and follow it using the **batch loop** (each completed push triggers a paid Claude Opus review; minimise push count):
+4. **Babysit immediately** — read `~/.cursor/skills-cursor/babysit/SKILL.md` and follow it using the **batch loop** (each completed push triggers a paid Claude Opus review; minimise push count):
    - **Collect all signals first** → `python3 scripts/pr_triage.py --pr N` enumerates every blocking item in one pass: unresolved inline threads (by author class), failing CI checks, merge/behind-base status, Claude verdict + evidence-confidence score.
    - **Fix everything in one go** — resolve merge conflicts, address ALL unresolved threads, fix ALL failing checks within scope. Do not push after each individual fix.
    - **Reply on every thread** — `gh api repos/{repo}/pulls/{pr}/comments/{id}/replies -f body='fixed in <sha> / won't fix: <reason>'` on each thread before pushing.
@@ -25,11 +25,16 @@ Do NOT ask whether to babysit — just do it.
 5. **Wait for operator approval** — do NOT arm auto-merge. Auto-merge is operator-only (`gh pr merge N --auto --squash` is run by the operator after they approve, not by the agent). The agent's job ends at "all checks green, all comments replied, no conflicts" — then hand back to the operator.
 6. **Confirm merged** → verify `state == MERGED` **and** `baseRefName == main` (`gh pr view N --json state,baseRefName`) before ending the session. A merge into any other base is a failure even if `state == MERGED`.
 7. **Post-merge pull + verify** — after confirmed merged:
-   - `git -C /Users/adiniekkajj/Documents/build-workspace/jarvis pull` to bring the squash commit into the main working copy.
+   - On the operator's Mac: `git -C ~/Documents/build-workspace/jarvis pull` to bring the squash commit into the main working copy. On a Cursor Cloud Agent there is no main working copy — skip this step.
    - CI's `pr-cost-finalize.yml` writes `merged_at` + final review cost to BQ automatically.
    - View cost data in Grafana: https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
    - Spot-check that expected artifacts landed: doc changes appear, nothing was omitted from the squash.
    - Report what SHA landed. Do NOT skip — the main working copy is what Adi reads; leaving it stale is a miss.
+
+## Cursor Cloud Agent surface
+
+`python3 scripts/gcp_access_probe.py` prints `dev_surface=` (`mac_local` / `cursor_cloud` / `ci`). On `cursor_cloud`:
+commits and pushes run as `jarvis-agent-bot328`, same as the Mac (`scripts/cloud_git_identity.sh` on VM start reads the bot PAT from Secret Manager via Cursor OIDC — `gcp-access.md` recipe F). Step 2: **do not** create the PR with `ManagePullRequest` (it opens under the operator's account, who then cannot approve it — Issue #321); push the branch and `cloud-agent-pr.yml` opens a draft PR as the bot, then `ManagePullRequest` `update_pr` by branch sets title/body. Comments and replies (step 4) also go through `ManagePullRequest`. The PR body carries `Cursor-Agent: <bc-id> model=<model-id>` so `pr-cost-gate.yml` records build cost from the Cursor API instead of step 3. After opening the PR, subscribe to its review and CI events (`subscribe` skill) so comments and failures wake you for the batch loop; prod data comes from `/prod-read` PR comments (`scripts/prod_read.py`). Switching device mid-PR (Mac ↔ phone): `/jarvis-handoff` on the leaving side, `scripts/handoff.py in --pr N` first on the arriving side. See `docs/contributing/dev-anywhere.md`.
 
 ## What "babysitting" is NOT
 

@@ -6,11 +6,20 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { PipelineRunRow, SourcePullRow } from "@/lib/bq/queries";
+import { runTone, WARN_BADGE_CLASS } from "@/lib/run-status";
 
 export const dynamic = "force-dynamic";
 
 function StatusBadge({ status }: { status: string | null }) {
-  const variant = status === "success" ? "default" : status ? "destructive" : "secondary";
+  const tone = runTone(status);
+  if (tone === "warn") {
+    return (
+      <Badge variant="outline" className={WARN_BADGE_CLASS} title="Finished; a non-fatal step failed">
+        {status}
+      </Badge>
+    );
+  }
+  const variant = tone === "ok" ? "default" : tone === "bad" ? "destructive" : "secondary";
   return <Badge variant={variant}>{status ?? "unknown"}</Badge>;
 }
 

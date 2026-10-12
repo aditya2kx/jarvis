@@ -4,6 +4,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { pipelineRuns } from "@/lib/bq/queries";
 import { cn } from "@/lib/utils";
+import { runTone } from "@/lib/run-status";
 import { isConsolePreview } from "@/lib/config/preview";
 import { Badge } from "@/components/ui/badge";
 import { Eye } from "lucide-react";
@@ -15,8 +16,12 @@ async function PipelineDot() {
   } catch {
     status = undefined; // honest "unknown" without local ADC — never fake a color
   }
-  const color =
-    status === "success" ? "bg-emerald-500" : status ? "bg-red-500" : "bg-muted-foreground/40";
+  const color = {
+    ok: "bg-emerald-500",
+    warn: "bg-amber-500",
+    bad: "bg-red-500",
+    unknown: "bg-muted-foreground/40",
+  }[runTone(status)];
   return (
     <span
       title={`Last pipeline run: ${status ?? "unknown"}`}

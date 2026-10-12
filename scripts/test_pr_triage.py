@@ -556,5 +556,32 @@ class TestHasWorkWaiverFloor(unittest.TestCase):
         self.assertTrue(_has_work(self._base(confidence=94, has_waiver=False)))
 
 
+class TestPrState(unittest.TestCase):
+    def _state(self, data):
+        with patch("scripts.pr_triage._gh_json", return_value=data):
+            from scripts.pr_triage import _collect_pr_state
+            return _collect_pr_state(1)
+
+    def test_latest_review_per_author_wins(self):
+        st = self._state({"state": "OPEN", "baseRefName": "main", "reviews": [
+            {"author": {"login": "a"}, "state": "CHANGES_REQUESTED"},
+            {"author": {"login": "a"}, "state": "APPROVED"},
+            {"author": {"login": "b"}, "state": "COMMENTED"}]})
+        self.assertEqual(st["approved_by"], ["a"])
+
+    def test_report_says_merged_not_merge_ready(self):
+        import io
+        from contextlib import redirect_stdout
+        from scripts.pr_triage import _print_report
+        tri = {"pr": 1, "repo": "o/r", "unresolved_threads": [], "failing_checks": [],
+               "pending_checks": [], "merge_status": {}, "claude_verdict": {},
+               "pr_state": {"state": "MERGED", "merged_at": "t", "base": "main", "approved_by": ["a"]}}
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _print_report(tri)
+        self.assertIn("already merged", buf.getvalue())
+        self.assertNotIn("merge-ready", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

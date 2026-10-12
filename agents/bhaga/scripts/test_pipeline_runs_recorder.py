@@ -106,6 +106,66 @@ class TestFailurePath:
 
 
 # ---------------------------------------------------------------------------
+# Scenario 2b: Partial — exit 0 after a non-fatal step failed is not "success"
+# ---------------------------------------------------------------------------
+
+
+class TestPartial:
+    def _record(self, monkeypatch, exit_code=0) -> dict:
+        monkeypatch.setenv("BHAGA_RECORD_PIPELINE_RUN", "1")
+        captured: list[dict] = []
+        with patch("core.datastore.load_rows",
+                   lambda table, rows, **kw: captured.extend(rows) or len(rows)):
+            dr._record_pipeline_run(started_at_utc=_STARTED, exit_code=exit_code, run_id="r")
+        return captured[0]
+
+    def test_noted_steps_make_a_clean_exit_partial(self, monkeypatch):
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
+        dr._note_partial("square_kds", RuntimeError("kds 500"))
+        dr._note_partial("adp_schedule", "timeout")
+        dr._note_partial("square_kds", RuntimeError("again"))
+        row = self._record(monkeypatch)
+        assert row["status"] == "partial"
+        assert row["failed_step"] == "square_kds,adp_schedule"
+        assert row["error"] == "square_kds: kds 500"
+
+    def test_non_fatal_run_step_failure_is_partial(self, monkeypatch):
+        """run_step records non-fatal failures (ingest_inventory) via _record_failure."""
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
+        with patch.object(dr, "_adapter_record_step_failure"), \
+                patch.object(dr, "evidence_prefix", return_value=None):
+            dr._record_failure(_REF_DATE, "ingest_inventory", RuntimeError("clickup 503"))
+        dr._note_partial("plaid_sync", "item expired")
+        row = self._record(monkeypatch)
+        assert row["status"] == "partial"
+        assert row["failed_step"] == "ingest_inventory,plaid_sync"
+
+    def test_failed_run_keeps_failed_status_and_first_step(self, monkeypatch):
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False,
+                       failed_step="materialize_model_bq")
+        dr._note_partial("square_kds", "x")
+        row = self._record(monkeypatch, exit_code=1)
+        assert (row["status"], row["failed_step"]) == ("failed", "materialize_model_bq")
+
+    def test_otp_pending_override_wins(self, monkeypatch):
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False,
+                       status_override="otp_pending")
+        dr._note_partial("adp", "otp")
+        assert self._record(monkeypatch)["status"] == "otp_pending"
+
+    def test_adp_aux_errors_are_noted_not_raised(self):
+        _reset_summary()
+        bundle = {"timecard_xlsx": "t.xlsx", "errors": {
+            "adp_schedule": "s", "adp_timecard_gaps": "g", "adp_pay_info": "p"}}
+        with patch("skills.adp_run_automation.runner.download_adp_bundle", return_value=bundle), \
+                patch("skills.adp_run_automation.pay_info_backend.report_pay_info_issues"):
+            dr._adp_bundle_then_raise(store="palmetto", target_date=_REF_DATE,
+                                      include_earnings=False, headed=False)
+        assert dr._RUN_SUMMARY["partial_steps"] == [
+            "adp_schedule", "adp_timecard_gaps", "adp_pay_info"]
+
+
+# ---------------------------------------------------------------------------
 # Scenario 3: OTP pending — status_override="otp_pending", exit_code=0
 # ---------------------------------------------------------------------------
 

@@ -694,6 +694,15 @@ def mark_step_done(refresh_date: datetime.date, step_name: str, *, note: str = "
     _adapter_mark_step_done(refresh_date, step_name, note=note)
 
 
+def _note_partial(step_name: str, err: object) -> None:
+    """A non-fatal step failed: the run still exits 0, but is recorded ``partial``
+    (not ``success``) so the deploy gap scan replays what this run missed."""
+    steps = _RUN_SUMMARY.setdefault("partial_steps", [])
+    if step_name not in steps:
+        steps.append(step_name)
+    _RUN_SUMMARY.setdefault("error", f"{step_name}: {err}"[:1000])
+
+
 def _record_failure(
     refresh_date: datetime.date, step_name: str, exc: BaseException
 ) -> str | None:
@@ -2078,13 +2087,16 @@ def _adp_bundle_then_raise(
     sched_err = errs.pop("adp_schedule", None)
     if sched_err:
         print(f"[adp_bundle] WARN: schedule scrape failed (non-fatal): {sched_err}")
+        _note_partial("adp_schedule", sched_err)
     # adp_timecard_gaps — open-punch review list (Issue #356); hours never read it.
     gaps_err = errs.pop("adp_timecard_gaps", None)
     if gaps_err:
         print(f"[adp_bundle] WARN: timecard gaps scrape failed (non-fatal): {gaps_err}")
+        _note_partial("adp_timecard_gaps", gaps_err)
     pay_info_err = errs.pop("adp_pay_info", None)
     if pay_info_err:
         print(f"[adp_bundle] WARN: pay_info scrape failed (non-fatal): {pay_info_err}")
+        _note_partial("adp_pay_info", pay_info_err)
         try:
             from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
                 report_pay_info_issues,
@@ -2151,6 +2163,7 @@ def _run_square_pipeline(
                 result.artifacts["square_kds_counts"] = kds_counts
             except Exception as kds_exc:  # noqa: BLE001
                 print(f"[square_pipeline] KDS WARN (non-fatal): {kds_exc}", file=sys.stderr)
+                _note_partial("square_kds", kds_exc)
 
         result.success = True
     except Exception as exc:  # noqa: BLE001
@@ -2611,6 +2624,13 @@ def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> No
         finished = datetime.datetime.now(datetime.timezone.utc)
         status = _RUN_SUMMARY.get("status_override") or {
             0: "success", EXIT_HALTED: "halted"}.get(exit_code, "failed")
+        failed_step = _RUN_SUMMARY.get("failed_step")
+        # A clean exit after a non-fatal step failed (run_step records it via
+        # _record_failure; the rest via _note_partial) is not a success.
+        missed = list(dict.fromkeys(
+            ([failed_step] if failed_step else []) + (_RUN_SUMMARY.get("partial_steps") or [])))
+        if status == "success" and missed:
+            status, failed_step = "partial", ",".join(missed)
         load_rows("pipeline_runs", [{
             "run_id": run_id,
             "run_date": refresh_date.isoformat(),
@@ -2619,7 +2639,7 @@ def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> No
             "finished_at_utc": finished.isoformat(),
             "runtime_s": (finished - started_at_utc).total_seconds(),
             "status": status,
-            "failed_step": _RUN_SUMMARY.get("failed_step"),
+            "failed_step": failed_step,
             "error": error or _RUN_SUMMARY.get("error"),
             "exit_code": exit_code,
             "recovery_retrigger": bool(_RUN_SUMMARY.get("recovery_retrigger")),
@@ -2688,6 +2708,7 @@ def _plaid_sync_linked_items(store: str) -> None:
         from skills.plaid_api.sync import list_linked_items, sync_item
     except Exception as exc:  # noqa: BLE001
         print(f"[plaid_sync] import failed (non-fatal): {exc}", file=sys.stderr)
+        _note_partial("plaid_sync", exc)
         return
     try:
         items = list_linked_items(store)
@@ -2696,6 +2717,7 @@ def _plaid_sync_linked_items(store: str) -> None:
             f"[plaid_sync] list_linked_items failed store={store} (non-fatal): {exc}",
             file=sys.stderr,
         )
+        _note_partial("plaid_sync", exc)
         return
     if not items:
         print(f"[plaid_sync] no linked Items for store={store}")
@@ -2715,6 +2737,7 @@ def _plaid_sync_linked_items(store: str) -> None:
                 f"[plaid_sync] failed item={item_id} (non-fatal): {exc}",
                 file=sys.stderr,
             )
+            _note_partial("plaid_sync", exc)
 
 
 def main() -> int:
@@ -3017,6 +3040,7 @@ def _run_refresh(run_id: str) -> int:
                 if sync_all:
                     print(f"[adp-timecard-only] WARN: {key} scrape failed "
                           f"({result['errors'][key]}); skipping its load")
+                    _note_partial(key, result["errors"][key])
         if after_punch_fix:
             skips.append("adp_schedule")
         elif result.get("schedule_json") and not result["errors"].get("adp_schedule"):
@@ -3027,12 +3051,16 @@ def _run_refresh(run_id: str) -> int:
                 f"[adp-timecard-only] WARN: schedule refresh failed "
                 f"({result['errors'].get('adp_schedule')}); clocked hours still load"
             )
+            if result["errors"].get("adp_schedule"):
+                _note_partial("adp_schedule", result["errors"]["adp_schedule"])
         if result["errors"].get("adp_timecard_gaps") or not result.get("timecards_ui_json"):
             skips.append("adp_timecard_gaps")
             print(
                 f"[adp-timecard-only] WARN: timecard gaps refresh failed "
                 f"({result['errors'].get('adp_timecard_gaps')}); clocked hours still load"
             )
+            if result["errors"].get("adp_timecard_gaps"):
+                _note_partial("adp_timecard_gaps", result["errors"]["adp_timecard_gaps"])
         bq_env = {**os.environ, "BHAGA_DATASTORE": "bigquery", "PYTHONUNBUFFERED": "1"}
         subprocess.run(
             [
@@ -3570,6 +3598,7 @@ def _run_refresh(run_id: str) -> int:
                           f"next nightly will retry. ({pr.error})")
                     otp_skipped_alert(date=refresh_date.isoformat(), portals=["ADP"])
                     _RUN_SUMMARY["source_pulls"][-1]["status"] = "skipped_otp_timeout"
+                    _note_partial("adp", pr.error)
                     continue
                 # ADP login throttle (sorry.adp.com interstitial persisted across
                 # all login attempts): transient upstream rate-limit. Treat as a
@@ -3579,6 +3608,7 @@ def _run_refresh(run_id: str) -> int:
                 if _handle_adp_throttle_skip(
                     pipeline_name, pr, _RUN_SUMMARY, refresh_date.isoformat()
                 ):
+                    _note_partial("adp", pr.error)
                     continue
                 failures.append((pipeline_name, pr.error))
                 if pipeline_name in ("square", "adp"):
@@ -4074,6 +4104,7 @@ def _run_refresh(run_id: str) -> int:
             print(f"[verify_model_bq] WARN: BQ verify raised unexpected error "
                   f"(non-fatal): {type(exc).__name__}: {exc}",
                   file=sys.stderr)
+            _note_partial("verify_model_bq", exc)
 
     print(f"\n=== DONE in {runtime_s:.1f}s ===")
     # Auto-resume: a fully-healthy run that rebuilt AND semantically verified the

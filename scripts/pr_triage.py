@@ -227,6 +227,24 @@ def _collect_merge_status(pr: int, repo: str) -> dict:
     }
 
 
+def _collect_pr_state(pr: int) -> dict:
+    """Lifecycle state, so a report never says 'merge-ready' about a PR that is
+    already approved or merged."""
+    data = _gh_json(["pr", "view", str(pr), "--json", "state,reviews,mergedAt,baseRefName"])
+    if not isinstance(data, dict):
+        return {"state": "", "approved_by": [], "merged_at": None, "base": ""}
+    latest: dict[str, str] = {}
+    for r in data.get("reviews") or []:
+        if r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            latest[(r.get("author") or {}).get("login", "?")] = r["state"]
+    return {
+        "state": (data.get("state") or "").upper(),
+        "approved_by": sorted(u for u, st in latest.items() if st == "APPROVED"),
+        "merged_at": data.get("mergedAt"),
+        "base": data.get("baseRefName") or "",
+    }
+
+
 # Patterns for parsing the Claude summary comment
 _CONFIDENCE_RE = re.compile(
     r"Evidence confidence(?:\s+rating)?\s*[:*\s]+\*{0,2}(\d+)\s*%",
@@ -295,6 +313,7 @@ def collect(pr: int, repo: str) -> dict:
         "failing_checks": _collect_failing_checks(pr),
         "pending_checks": _collect_pending_checks(pr),
         "merge_status": _collect_merge_status(pr, repo),
+        "pr_state": _collect_pr_state(pr),
         "claude_verdict": _collect_claude_verdict(pr, repo),
         "has_waiver": _pr_has_waiver(pr, repo),
     }
@@ -332,6 +351,11 @@ def _has_work(triage: dict) -> bool:
 
 def _print_report(triage: dict) -> None:
     pr = triage["pr"]
+    st = triage.get("pr_state") or {}
+    if st.get("state") in ("MERGED", "CLOSED"):
+        print(f"PR STATE: {st['state']}" + (f" into {st['base']} at {st['merged_at']}" if st.get("merged_at") else ""))
+    elif st.get("approved_by"):
+        print(f"PR STATE: open, already APPROVED by {', '.join(st['approved_by'])} — do not ask for approval")
     print(f"\n=== PR #{pr} triage report ===\n")
 
     # Merge status
@@ -408,10 +432,13 @@ def _print_report(triage: dict) -> None:
 
     # Summary
     print()
-    if _has_work(triage):
+    if (triage.get("pr_state") or {}).get("state") == "MERGED":
+        print("RESULT: already merged — run post-merge verification, nothing to approve.")
+    elif _has_work(triage):
         print("RESULT: work remaining — fix ALL items above, then push ONCE.")
     else:
-        print("RESULT: all clear — PR is merge-ready.")
+        approved = (triage.get("pr_state") or {}).get("approved_by")
+        print("RESULT: all clear — PR is " + ("approved and will auto-merge." if approved else "merge-ready; awaiting operator approval."))
     print()
 
 

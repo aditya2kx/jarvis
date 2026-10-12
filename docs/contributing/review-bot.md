@@ -130,6 +130,8 @@ Note `pr_triage.py` reports the latest claude[bot] verdict on the PR, not one sc
 the head SHA.  After a push, confirm the verdict comment is newer than the commit before
 treating it as a review of that commit.
 
+It also prints `PR STATE` (merged/closed, or who already approved) and ends with "already merged" or "approved and will auto-merge" when that is true. Read it before telling the operator to approve (Issue #391: #389 was approved and merged while the agent was still asking).
+
 **Step 1 — collect all signals in one pass:**
 ```bash
 python3 scripts/pr_triage.py --pr N

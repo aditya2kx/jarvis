@@ -581,6 +581,11 @@ class TestSummaryMarkdown(unittest.TestCase):
         self.assertIn("Claude review (0 runs)", md)
         self.assertIn("**$0.00**", md)
 
+    def test_provisional_record_is_titled_by_its_branch_key(self):
+        md = L.summary_markdown(L._empty_record("cursor/some-branch"))
+        self.assertIn("### Dev cost — `cursor/some-branch`", md)
+        self.assertNotIn("None", md)
+
 
 if __name__ == "__main__":
     unittest.main()

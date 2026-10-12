@@ -820,7 +820,8 @@ def summary_markdown(rec: dict[str, Any]) -> str:
     one row, keyed by its bc- id), the Claude review runs, and the total so far."""
     _recompute_totals(rec)
     b, r = rec["build"], rec["review"]
-    lines = [f"### Dev cost — PR #{rec.get('pr_number')}", "",
+    title = f"PR #{rec['pr_number']}" if rec.get("pr_number") is not None else f"`{rec.get('provisional_id')}`"
+    lines = [f"### Dev cost — {title}", "",
              "| Build session | Model | Tokens | Cost |", "|---|---|---:|---:|"]
     for s in b["sessions"]:
         who = s.get("note") if str(s.get("note") or "").startswith("bc-") else f"Cursor session {s.get('ts') or ''}".strip()

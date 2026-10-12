@@ -81,7 +81,7 @@ python3 scripts/phase_state.py status                  # this branch
 python3 scripts/phase_state.py status --branch feat/x  # specific branch
 python3 scripts/phase_state.py status --json           # machine-readable
 python3 scripts/phase_state.py report                  # all open work items
-python3 scripts/phase_state.py drift-check --branch b  # advisory: nudge to advance phases as work completes (obs 1; used by drain.sh)
+python3 scripts/phase_state.py drift-check --branch b  # advisory, manual: lists substeps that observable work has outrun
 ```
 
 Every work item has a GitHub Issue (label `jarvis-work` + `stage:*`).  The issue
@@ -467,7 +467,7 @@ Human-readable summary above; machine block in HTML comment (greppable, idempote
 | Hook | Script | Behavior |
 |---|---|---|
 | `beforeSubmitPrompt` | `mark_busy.sh` | Write `state=busy` + heartbeat to status lock |
-| `stop` | `drain.sh` | Mark idle; if `LOCAL_EVENT_AUTO_DISPATCH≠0` and inbox non-empty, pop oldest event and return `followup_message` (warm zero-click drain). Real output: `{"followup_message": "[AUTO-DISPATCH] New requirement intake signal received.\n\nEvent: {…}\n\nRun: python3 scripts/new_requirement.py …"}`. When `LOCAL_EVENT_AUTO_DISPATCH=0`, returns `{}` (no auto-dispatch). **Phase-drift nudge (obs 1):** when the inbox is empty, runs `phase_state.py drift-check` and, if observable progress has outrun the recorded `done` list, returns a `followup_message` listing the exact `advance` commands so phases are recorded per-substep instead of batched at PR time. The nudge fires **once** per pending set (`drift_nudged` in the phase cache). Repeating it every idle turn only floods the chat: an operator gate can't be self-advanced, and the detector over-reads (any non-doc commit counts as `implement`). |
+| `stop` | `drain.sh` | Mark idle; if `LOCAL_EVENT_AUTO_DISPATCH≠0` and inbox non-empty, pop oldest event and return `followup_message` (warm zero-click drain). Real output: `{"followup_message": "[AUTO-DISPATCH] New requirement intake signal received.\n\nEvent: {…}\n\nRun: python3 scripts/new_requirement.py …"}`. When `LOCAL_EVENT_AUTO_DISPATCH=0`, returns `{}` (no auto-dispatch). There is no phase-drift nudge: it was removed because it fired on idle turns and over-read progress (use `phase_state.py drift-check` by hand). |
 | `sessionStart` | `announce_pending.sh` | Surface pending event count as context |
 
 ### Feature flags

@@ -44,6 +44,7 @@ import { parsePerkReasons } from "@/lib/payroll/perkLabels";
 import { classifyAdpDiff } from "@/lib/payroll/adpDiff";
 import { formatBucket, type Grain } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
+import { runTone, WARN_BADGE_CLASS } from "@/lib/run-status";
 import {
   facetedMultiOptions,
   filterTextOrMulti,
@@ -207,6 +208,13 @@ function renderFormatted(
     }
     case "status":
       if (value == null || value === "") return null; // no slot 2 yet (Status 2)
+      if (runTone(value as string) === "warn") {
+        return (
+          <Badge variant="outline" className={WARN_BADGE_CLASS}>
+            {value as string}
+          </Badge>
+        );
+      }
       return <Badge variant={statusVariant(value as string)}>{value as string}</Badge>;
     case "flag": {
       if (value == null) return null;

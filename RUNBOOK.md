@@ -1044,7 +1044,7 @@ step is best-effort: a failure never fails the deploy and logs a `::warning::`.
 **Detected gaps, no trailer needed (Issue #348).** The same step also runs
 `scripts/detect_gap_dates.py`, which plans every repair over the last 14 CT days and prints one
 `trigger_dated_refresh.py` argument line per run:
-- **Raw holes** — a past day missing Square or ADP rows, even behind a later max date (the
+- **Raw holes** — a past day missing Square, ADP or KDS (`square_kds_daily`) rows, even behind a later max date (the
   nightly only scrapes forward from `data_window_end + 1`, so it never refills these). All holes
   share **one** windowed full scrape (`--force-scrape --window-from <first hole> --date <last
   hole>`), so a deploy costs at most one OTP prompt. Days the store was shut go in the
@@ -1065,9 +1065,18 @@ step is best-effort: a failure never fails the deploy and logs a `::warning::`.
   this scrape (one portal login each). The nightly itself also
   re-reads every puncher's rate, so a new hire is picked up the night of their first punch.
 - **Failed / never-ran / no `model_daily` row** — the remaining nights rerun recompute-only
-  (`--force-recompute`, max 7, newest first).
+  (`--force-recompute`, max 7, newest first). "Never ran" reads the `pipeline_runs` table, not
+  `vw_pipeline_runs` (the dashboard's last 30 rows, which drops older nights on busy rerun days).
+- **Partial nights** — the run exited 0 but a non-fatal step failed (`status = partial`, the
+  steps in `failed_step`). A missed day-scoped step (e.g. `verify_model_bq`) makes the night a
+  recompute gap. Snapshot steps — `adp_schedule`, `adp_timecard_gaps`, `adp_pay_info`,
+  `adp_earnings`, `adp_liability`, `ingest_inventory`, `refresh_order_reco`, `plaid_sync` — are
+  refreshed by any later run, so only the latest night's misses replay: an ADP one joins the
+  rate-refresh scrape (still one login), the others recompute that night. ADP skipped on OTP
+  timeout/throttle and KDS failures are not read from the status: they surface as raw holes, which
+  converge on data (a windowed scrape records a run only for its last date).
 
-Grep the deploy log for `[detect_gap_dates] gaps=[…] raw_holes=[…] model_rebuild_from=… unrated=[…] rate_scraper_changed=… runs=N`
+Grep the deploy log for `[detect_gap_dates] gaps=[…] raw_holes=[…] partial={…} adp_snapshot_stale=… model_rebuild_from=… unrated=[…] rate_scraper_changed=… runs=N`
 (`gap_scan_failed` = BQ error; the deploy carries on). Dry check (read-only):
 `python3 scripts/detect_gap_dates.py --changed-files <file with one path per line>`.
 
@@ -1991,8 +2000,8 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 | Column | Source | Notes |
 |---|---|---|
 | Run Time (CT) | `pipeline_runs.started_at_utc` | Formatted `America/Chicago`; empty until first nightly run |
-| Status | `pipeline_runs.status` | `success` (green) / `failed` / `halted` (red) / `otp_pending` (yellow) |
-| Failed Step | `pipeline_runs.failed_step` | Step name from `run_step()` or OTP/phase guard; blank when healthy |
+| Status | `pipeline_runs.status` | `success` (green) / `partial` (amber) / `failed` / `halted` / `otp_pending` (red) |
+| Failed Step | `pipeline_runs.failed_step` | Step name from `run_step()` or OTP/phase guard; comma-separated missed steps on a `partial` run; blank when healthy |
 | Error | `pipeline_runs.error` | Exception message; blank when healthy |
 
 **Table 2 — Data Source Pulls** (right half, `vw_source_pulls`): last 50 per-source pull attempts, newest first.
@@ -2008,7 +2017,12 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 
 **How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, skipped on `--dry-run`, never raises) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). **Prod-only gate (CLOUD_RUN_JOB):** records ONLY when the `CLOUD_RUN_JOB` env var is set (present in all real Cloud Run job/execution environments) OR when `BHAGA_RECORD_PIPELINE_RUN=1` is explicitly set (opt-in for intentional cloud-shell backfills). Laptop and GitHub CI runs never set `CLOUD_RUN_JOB` and therefore never write to `pipeline_runs` — this prevents Pipeline Health from showing non-prod rows. Greppable log lines: `[pipeline_runs] skip: <reason>` or `[pipeline_runs] recorded run_id=…`. Sandbox staging runs write only to `BHAGA_BQ_DATASET` (default prod `bhaga` blocked by `datastore._assert_sandbox_write_isolation`). Using MERGE means a re-run of the recorder converges to the same row rather than duplicating. Possible run statuses:
 
-- `success` — `_run_refresh()` returned 0 and model was verified OK
+- `success` — `_run_refresh()` returned 0 and every step, including the non-fatal ones, worked
+- `partial` — returned 0, but a non-fatal step failed: one recorded by `run_step` (`ingest_inventory`,
+  `refresh_order_reco`) or noted via `_note_partial` (ADP schedule / timecard gaps / pay info, ADP
+  skipped on OTP timeout or throttle, Square KDS, Plaid, an unexpected `verify_model_bq` error).
+  `failed_step` lists them all. Tips and payroll still published; the deploy gap scan replays the
+  misses (see § Auto-rerun fixed dates on deploy). Recovery retriggers stay keyed on `failed` only.
 - `failed` — returned 1 (any step/guard failure; `failed_step` records the first one)
 - `halted` — returned `EXIT_HALTED` (3) because the circuit breaker is tripped
 - `otp_pending` — returned 0 early because the OTP handshake is awaited

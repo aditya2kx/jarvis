@@ -2000,13 +2000,42 @@ def _run_unavailability_reminder_job() -> None:
         log.error("BREADCRUMB unavailability_reminder failed: %s", exc)
 
 
+def _apply_punch_decisions(decision_ids: list[str]) -> bool:
+    """Start the console's apply-only job for decisions punch_check claimed (Issue #397)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo("America/Chicago")).date().isoformat()
+    return _trigger_cloud_run_job_with_env(today, [
+        ("BHAGA_PUNCH_FIX_APPLY_ONLY", "1"),
+        ("BHAGA_PUNCH_FIX_WRITEBACK", "1"),
+        ("BHAGA_PUNCH_FIX_DECISION_IDS", ",".join(decision_ids)),
+    ])
+
+
+def _run_punch_check_job() -> None:
+    """Background: daily missing-punch post, thread-reply sweep, apply, ✅ (Issue #397)."""
+    try:
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        from agents.bhaga.scripts.punch_check import run_tick
+
+        result = run_tick(trigger_apply=_apply_punch_decisions, updated_by="bhaga-webhook")
+        log.info("punch_check result=%s", result)
+    except Exception as exc:  # noqa: BLE001
+        log.error("BREADCRUMB punch_check failed: %s", exc)
+
+
 @app.route("/unavailability-reminder", methods=["POST"])
 def unavailability_reminder_kick():
-    """Cloud Scheduler tick (every 15 min) — same token as the team-pulse kick."""
+    """Cloud Scheduler tick (every 15 min) — same token as the team-pulse kick.
+
+    Also drives the missing-punch check, which needs the same 15-minute beat.
+    """
     token = request.headers.get("X-Team-Pulse-Token", "")
     if not _TEAM_PULSE_TOKEN or not hmac.compare_digest(token, _TEAM_PULSE_TOKEN):
         return Response("unauthorized", status=403)
     _dispatch_async(_run_unavailability_reminder_job)
+    _dispatch_async(_run_punch_check_job)
     return jsonify({"status": "accepted"})
 
 

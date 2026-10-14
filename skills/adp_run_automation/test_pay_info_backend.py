@@ -639,3 +639,55 @@ class TestDirectoryStatus(unittest.TestCase):
         with mock.patch("core.datastore.load_rows") as load:
             self.assertEqual(pib.write_directory_status_bq({"scraped_at_utc": "x"}), 0)
         load.assert_not_called()
+
+
+class TestEmailCapture(unittest.TestCase):
+    """Issue #397: profile email for ClickUp matching; never costs the rate."""
+
+    READY = TestPayrollPaneRetry.READY
+
+    def test_extract_emails_dedupes_lowercases_and_skips_adp(self):
+        text = ("Contact Alex.Smith@Gmail.com Work alex@mypalmetto.co "
+                "alex.smith@gmail.com help noreply@adp.com support@run.adp.com.")
+        self.assertEqual(pib.extract_emails(text), ["alex.smith@gmail.com", "alex@mypalmetto.co"])
+        self.assertEqual(pib.extract_emails(None), [])
+
+    def test_email_on_payroll_pane_skips_personal_tab(self):
+        pane = {**self.READY, "text": "Personal email sam@x.io"}
+        with mock.patch.object(pib, "_open_profile", return_value="Ortiz, Sam"), \
+                mock.patch.object(pib, "_read_payroll_info", return_value=pane), \
+                mock.patch.object(pib, "_read_personal_emails") as personal:
+            raw = pib.scrape_one_pay_info(mock.Mock(), "Ortiz, Sam", dashboard_url="u")
+        self.assertEqual(raw["emails"], ["sam@x.io"])
+        personal.assert_not_called()
+
+    def test_personal_tab_failure_keeps_the_rate(self):
+        with mock.patch.object(pib, "_open_profile", return_value="Ortiz, Sam"), \
+                mock.patch.object(pib, "_read_payroll_info", return_value=self.READY), \
+                mock.patch.object(pib, "_read_personal_emails", side_effect=TimeoutError("tab")), \
+                mock.patch("builtins.print") as out:
+            raw = pib.scrape_one_pay_info(mock.Mock(), "Ortiz, Sam", dashboard_url="u")
+        self.assertEqual((raw["wage_rate_dollars"], raw["emails"]), (15.25, []))
+        self.assertTrue(any("email_not_found" in c.args[0] for c in out.call_args_list))
+
+    def test_no_email_wanted_never_opens_personal_tab(self):
+        with mock.patch.object(pib, "_open_profile", return_value="Ortiz, Sam"), \
+                mock.patch.object(pib, "_read_payroll_info", return_value=self.READY), \
+                mock.patch.object(pib, "_read_personal_emails") as personal:
+            pib.scrape_one_pay_info(mock.Mock(), "Ortiz, Sam", dashboard_url="u", want_email=False)
+        personal.assert_not_called()
+
+    def test_personal_tab_polls_until_an_address_renders(self):
+        page = mock.Mock()
+        page.evaluate.side_effect = [None, "Loading", "Loading", "Email sam@x.io"]
+        self.assertEqual(pib._read_personal_emails(page), ["sam@x.io"])
+
+    def test_contact_rows_drop_shared_addresses_and_blank_profiles(self):
+        payload = {"store": "palmetto", "scraped_at_utc": "2026-10-14T03:00:00Z", "contacts": [
+            {"employee_name": "Ortiz, Sam", "emails": ["sam@x.io", "store@mypalmetto.co"]},
+            {"employee_name": "Lee, Jordan", "emails": ["store@mypalmetto.co"]},
+            {"employee_name": "Kim, Alex", "emails": []},
+        ]}
+        rows = pib.employee_contact_rows(payload)
+        self.assertEqual([(r["employee_id"], r["emails_json"]) for r in rows],
+                         [("Ortiz, Sam", '["sam@x.io"]')])

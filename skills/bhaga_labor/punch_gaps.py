@@ -9,8 +9,10 @@ gap record and a suggestion the operator accepts, edits or rejects (Issue #356).
 Pure module — no network, no IO, no clock (``now_ct`` is passed in), same
 contract as solo_shift.py. Rules that are easy to get backwards:
 
-  * A suggestion only ever closes an OPEN entry. It never edits a completed
-    one, so accepting it can add hours but never remove punched time.
+  * A suggestion only ever fills the blank side of an entry (the clock-out of
+    an open entry, or the clock-in of an entry with only a clock-out). It never
+    edits a completed one, so accepting it can add hours but never remove
+    punched time.
   * A day with no entry at all gets no suggestion. A callout or a departed
     employee still on the schedule looks identical, and paying them would be
     inventing hours.
@@ -35,6 +37,7 @@ RULE_SCHEDULED_END = "close_at_scheduled_end"
 RULE_SHOP_CLOSE = "close_at_shop_close"
 RULE_SCHEDULED_HOURS = "pay_scheduled_hours"
 RULE_SCHEDULED_SHIFT = "scheduled_shift"
+RULE_SCHEDULED_START = "open_at_scheduled_start"
 
 _AMPM = re.compile(r"(\d{1,2}):(\d{2})\s*([AP])\.?M\.?", re.IGNORECASE)
 _HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
@@ -185,6 +188,19 @@ def suggest_entry(
     return _fmt(start), _fmt(min(start + owed, 23 * 60 + 59)), round(owed / 60.0, 2)
 
 
+def suggest_open(
+    *, out_time: str, scheduled_ranges: list[tuple[str, str]],
+) -> tuple[Optional[str], Optional[str]]:
+    """(suggested_in, rule) for an entry with a clock-out and no clock-in: the
+    start of the last scheduled range that begins before the clock-out, or
+    (None, None) when nothing scheduled precedes it."""
+    out = to_minutes(out_time)
+    starts = [a for a, _ in merge_ranges(scheduled_ranges) if a < out]
+    if not starts:
+        return None, None
+    return _fmt(starts[-1]), RULE_SCHEDULED_START
+
+
 def classify_day(
     *,
     date: datetime.date,
@@ -200,7 +216,10 @@ def classify_day(
         (i for i, e in enumerate(entries) if e.out_time and not e.in_time), None
     )
     if missing_in_idx is not None:
-        return PunchGap(MISSING_IN, missing_in_idx, None, None, None)
+        out = entries[missing_in_idx].out_time or ""
+        sin, rule = suggest_open(out_time=out, scheduled_ranges=scheduled_ranges)
+        hours = round((to_minutes(out) - to_minutes(sin)) / 60.0, 2) if sin else None
+        return PunchGap(MISSING_IN, missing_in_idx, None, hours, rule, sin)
     if not entries or all(not e.in_time for e in entries):
         if not scheduled_ranges:
             return None

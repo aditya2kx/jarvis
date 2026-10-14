@@ -80,6 +80,7 @@ const RULE_LABEL: Record<string, string> = {
   close_at_shop_close: "shop close",
   pay_scheduled_hours: "full scheduled hours",
   scheduled_shift: "scheduled shift",
+  open_at_scheduled_start: "scheduled start",
 };
 
 function dayLabel(iso: string): string {
@@ -360,7 +361,8 @@ function SuggestionCell({ gap }: { gap: PunchGap }) {
       </span>
     );
   }
-  if (!gap.suggestedOut) {
+  const missingIn = gap.kind === "missing_in";
+  if (missingIn ? !gap.suggestedIn : !gap.suggestedOut) {
     return (
       <span className="text-xs text-muted-foreground">
         No schedule to anchor on
@@ -372,7 +374,9 @@ function SuggestionCell({ gap }: { gap: PunchGap }) {
       <span className="text-sm font-medium tabular-nums">
         {gap.kind === "no_entry"
           ? `${formatClock(gap.suggestedIn)} – ${formatClock(gap.suggestedOut)}`
-          : `Out ${formatClock(gap.suggestedOut)}`}
+          : missingIn
+            ? `In ${formatClock(gap.suggestedIn)}`
+            : `Out ${formatClock(gap.suggestedOut)}`}
       </span>
       <span className="text-[11px] text-muted-foreground">
         +{gap.suggestedHours?.toFixed(2)} h ·{" "}

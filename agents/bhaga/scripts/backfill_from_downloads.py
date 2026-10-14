@@ -836,6 +836,15 @@ def main() -> int:
                     except Exception as exc:  # noqa: BLE001
                         print(f"[pay_info] BREADCRUMB directory_status_load_failed "
                               f"err={type(exc).__name__}: {exc}")
+                    try:
+                        from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415
+                            write_employee_contacts_bq,
+                        )
+                        summaries.append({"table": "employee_contacts",
+                                          "rows": write_employee_contacts_bq(payload)})
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[pay_info] BREADCRUMB employee_contacts_load_failed "
+                              f"err={type(exc).__name__}: {exc}")
                     remaining: list[str] = []
                     try:
                         from skills.adp_run_automation.pay_info_backend import (  # noqa: PLC0415

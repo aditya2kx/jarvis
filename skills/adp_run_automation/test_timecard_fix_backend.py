@@ -204,3 +204,61 @@ def test_add_entry_label_and_new_entry_comment():
     text = tfb.comment_text(out_time="20:30", in_time="13:30", decided_by="a@b", rule="scheduled_shift")
     assert text.startswith("Missing punch entered as 01:30 PM - 08:30 PM")
     assert "the scheduled shift" in text
+
+
+# ── Missing clock-in (Issue #397) ─────────────────────────────────
+MISSING_IN_PANEL = OPEN_PANEL.replace(
+    "In Time 09:00 AM Out Time Blank Total Hours 0:00HRS Missing Out Punch",
+    "In Time Blank Out Time 03:00 PM Total Hours 0:00HRS Missing In Punch",
+)
+
+
+def fill_in(ui, in_time="09:00", expect_out="15:00", idx=0):
+    return tfb.apply_in_punch(
+        ui, date=D, entry_index=idx, expect_out=expect_out, in_time=in_time, comment="c",
+    )
+
+
+def test_missing_in_fills_in_time_saves_once_and_verifies():
+    ui = FakeUi(MISSING_IN_PANEL)
+    assert fill_in(ui) == tfb.ApplyResult(tfb.APPLIED)
+    assert ui.calls == ["open:Monday, September 21st", "edit:0", "fill-in:09:00 AM", "comment",
+                        "save", "read", "back"]
+
+
+def test_missing_in_already_filled_is_already_resolved_without_writing():
+    ui = FakeUi(CLOSED_PANEL)
+    res = fill_in(ui)
+    assert res.status == tfb.ALREADY_RESOLVED and "save" not in ui.calls
+
+
+def test_missing_in_with_a_different_clock_out_fails_without_writing():
+    ui = FakeUi(MISSING_IN_PANEL)
+    res = fill_in(ui, expect_out="16:00")
+    assert res.status == tfb.FAILED and "save" not in ui.calls and ui.calls[-1] == "back"
+
+
+def test_missing_in_not_before_out_never_opens_adp():
+    ui = FakeUi(MISSING_IN_PANEL)
+    assert fill_in(ui, in_time="15:30").status == tfb.FAILED
+    assert ui.calls == []
+
+
+def test_missing_in_save_error_is_failed_and_not_retried():
+    ui = FakeUi(MISSING_IN_PANEL, fail_at="save")
+    assert fill_in(ui).status == tfb.FAILED
+    assert ui.calls.count("save") == 1
+
+
+def test_missing_in_read_back_mismatch_fails():
+    ui = FakeUi(MISSING_IN_PANEL, after_save=MISSING_IN_PANEL)
+    res = fill_in(ui)
+    assert res.status == tfb.FAILED and res.error.startswith("verify")
+
+
+def test_staff_comment_names_the_thread_and_the_person():
+    text = tfb.comment_text(out_time="15:00", in_time="09:05", missing_in=True, rule=None,
+                            decided_by="Alex Smith", via="the ClickUp missing-punch thread",
+                            entered_by="staff")
+    assert text == ("Missing clock-in set to 09:05 AM via the ClickUp missing-punch thread "
+                    "(staff-entered time); approved by Alex Smith.")

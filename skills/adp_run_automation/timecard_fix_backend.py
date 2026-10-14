@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""skills/adp_run_automation/timecard_fix_backend - write an operator-approved
-clock-out into an open ADP timecard entry (Issue #356).
+"""skills/adp_run_automation/timecard_fix_backend - write an approved missing
+punch into an ADP timecard (Issues #356, #397).
 
-The ONLY write this module makes: fill the Out Time of an entry ADP shows as
-open ("Out Time Blank · Missing Out Punch"), attach a comment, Save once. It
-never edits a completed entry, never deletes, never touches payroll.
+The only writes this module makes: fill the blank Out Time of an open entry
+("Out Time Blank · Missing Out Punch"), fill the blank In Time of an entry with
+only a clock-out, or add one entry on a scheduled day with none — each with a
+comment, Saved once. It never edits a completed entry, never deletes, never
+touches payroll.
 
 Selectors calibrated live 2026-10-03 against RUN > Time > Timecards: the day
 panel (``Show details for Monday, September 21st``) lists each entry with an
@@ -91,18 +93,22 @@ def parse_day_panel(snapshot: str) -> list[tuple[Optional[str], Optional[str]]]:
 
 def comment_text(
     *, out_time: str, decided_by: str, rule: Optional[str], in_time: Optional[str] = None,
+    missing_in: bool = False, via: str = "BHAGA Operator Console", entered_by: str = "operator",
 ) -> str:
     why = {
         "pay_scheduled_hours": "pays the full scheduled hours",
         "close_at_scheduled_end": "closes at the scheduled end",
         "close_at_shop_close": "closes at shop close",
         "scheduled_shift": "the scheduled shift",
-    }.get(rule or "", "operator-entered time")
-    what = (
-        f"Missing punch entered as {to_ampm(in_time)} - {to_ampm(out_time)}" if in_time
-        else f"Missing clock-out set to {to_ampm(out_time)}"
-    )
-    text = f"{what} via BHAGA Operator Console ({why}); approved by {decided_by}."
+        "open_at_scheduled_start": "opens at the scheduled start",
+    }.get(rule or "", f"{entered_by}-entered time")
+    if missing_in:
+        what = f"Missing clock-in set to {to_ampm(in_time or '')}"
+    elif in_time:
+        what = f"Missing punch entered as {to_ampm(in_time)} - {to_ampm(out_time)}"
+    else:
+        what = f"Missing clock-out set to {to_ampm(out_time)}"
+    text = f"{what} via {via} ({why}); approved by {decided_by}."
     return text[:COMMENT_MAX]
 
 
@@ -176,6 +182,75 @@ def apply_out_punch(
     return ApplyResult(
         FAILED,
         f"verify: ADP shows {got} after Save, wanted {(expect_in, out_time)}"
+        + (f" ({verify_err})" if verify_err else ""),
+        ev,
+    )
+
+
+def apply_in_punch(
+    ui: TimecardUi,
+    *,
+    date: datetime.date,
+    entry_index: int,
+    expect_out: str,
+    in_time: str,
+    comment: str,
+) -> ApplyResult:
+    """Fill the blank In Time of an entry ADP shows with only a clock-out. Same
+    rules as ``apply_out_punch``: re-read first (a filled In is
+    ``already_resolved``), Save once, never retry, ``applied`` only on read-back."""
+    if to_minutes(in_time) >= to_minutes(expect_out):
+        return ApplyResult(FAILED, f"in {in_time} is not before clock-out {expect_out}")
+    label = day_button_label(date)
+    try:
+        entries = parse_day_panel(ui.open_day(label))
+    except Exception as exc:  # noqa: BLE001 — day not visible (other pay period, etc.)
+        return ApplyResult(FAILED, f"open-day: {type(exc).__name__}: {exc}"[:300],
+                           ui.evidence("open-day"))
+    if entry_index >= len(entries):
+        ui.back()
+        return ApplyResult(ALREADY_RESOLVED, f"entry {entry_index} no longer in ADP")
+    in_t, out_t = entries[entry_index]
+    if in_t is not None:
+        ui.back()
+        return ApplyResult(ALREADY_RESOLVED, f"ADP already shows in {in_t}")
+    if out_t != expect_out:
+        ev = ui.evidence("out-mismatch")
+        ui.back()
+        return ApplyResult(FAILED, f"ADP clock-out is {out_t}, expected {expect_out}", ev)
+
+    step = "edit"
+    try:
+        ui.edit_entry(entry_index)
+        step = "fill-in"
+        ui.fill_in_time(to_ampm(in_time))
+        step = "comment"
+        ui.add_comment(comment)
+    except Exception as exc:  # noqa: BLE001 — nothing saved yet; discard the edit
+        ev = ui.evidence(step)
+        ui.back()
+        return ApplyResult(FAILED, f"{step}: {type(exc).__name__}: {exc}"[:300], ev)
+
+    try:
+        ui.save()
+    except Exception as exc:  # noqa: BLE001 — Save may or may not have landed
+        ev = ui.evidence("save")
+        return ApplyResult(FAILED, f"save: {type(exc).__name__}: {exc}"[:300], ev)
+
+    try:
+        after = parse_day_panel(ui.day_snapshot())
+        verify_err = None
+    except Exception as exc:  # noqa: BLE001
+        after, verify_err = [], f"{type(exc).__name__}: {exc}"
+    got = after[entry_index] if entry_index < len(after) else None
+    if got == (in_time, expect_out):
+        ui.back()
+        return ApplyResult(APPLIED)
+    ev = ui.evidence("verify")
+    ui.back()
+    return ApplyResult(
+        FAILED,
+        f"verify: ADP shows {got} after Save, wanted {(in_time, expect_out)}"
         + (f" ({verify_err})" if verify_err else ""),
         ev,
     )

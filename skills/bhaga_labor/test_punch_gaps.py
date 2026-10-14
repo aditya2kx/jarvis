@@ -144,6 +144,18 @@ def test_out_without_in_is_missing_in():
     gap = classify(D(2026, 9, 23), [E(None, "15:00")], [("09:00", "15:00")])
     assert gap.kind == pg.MISSING_IN
     assert gap.suggested_out is None
+    assert (gap.suggested_in, gap.rule, gap.suggested_hours) == ("09:00", pg.RULE_SCHEDULED_START, 6.0)
+
+
+def test_missing_in_opens_at_the_shift_before_the_clock_out():
+    gap = classify(D(2026, 9, 23), [E("07:00", "11:00"), E(None, "20:31")],
+                   [("07:00", "11:00"), ("14:00", "20:30")])
+    assert (gap.open_entry_index, gap.suggested_in) == (1, "14:00")
+
+
+def test_missing_in_without_a_schedule_has_no_suggestion():
+    gap = classify(D(2026, 9, 23), [E(None, "15:00")], [])
+    assert (gap.kind, gap.suggested_in, gap.rule) == (pg.MISSING_IN, None, None)
 
 
 @pytest.mark.parametrize(

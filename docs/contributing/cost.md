@@ -79,6 +79,7 @@ stays in sync.
 | Complex logic, architecture decisions | Sonnet 5 medium thinking |
 | Hard bugs, plan reviews, code review | Opus 4.8 thinking medium |
 | Doc-only changes, table of contents | Composer 2.5 |
+| Cursor Cloud Agents (`/jarvis-cloud-task`) | Opus 5.5 medium, 300k context |
 <!-- dev-models:end -->
 
 One chat per PR — each new PR gets a fresh Cursor chat.  Reusing a merged PR's

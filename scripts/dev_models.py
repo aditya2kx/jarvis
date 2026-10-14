@@ -27,12 +27,20 @@ DEFAULT_JAM_MODEL = "claude-opus-4-8-thinking-high"
 ESCALATION_MODEL = "claude-opus-4-8-thinking-medium"
 MECHANICAL_MODEL = "composer-2.5"
 
+# Cursor Cloud Agents (`/jarvis-cloud-task`, cloud_agent.py launch). The API takes
+# effort / context size as `model.params` whose ids only GET /v1/models knows, so
+# these are the wanted *values*, matched against each parameter at launch time.
+# Not high effort / 1M context: those burn far more tokens per turn (operator, #397).
+CLOUD_AGENT_MODEL = "claude-opus-5-5"
+CLOUD_AGENT_PARAM_VALUES = ("medium", "300k", "300000")
+
 # Friendly display name for each slug (used in briefs, deeplink docstrings, tables).
 FRIENDLY: dict[str, str] = {
     DEFAULT_IMPL_MODEL: "Sonnet 5 medium thinking",
     DEFAULT_JAM_MODEL: "Opus 4.8 thinking high",
     ESCALATION_MODEL: "Opus 4.8 thinking medium",
     MECHANICAL_MODEL: "Composer 2.5",
+    CLOUD_AGENT_MODEL: "Opus 5.5 medium, 300k context",
 }
 
 # (task description, slug) rows — renders both the cost.md table and the
@@ -42,6 +50,7 @@ ROUTING_TABLE: list[tuple[str, str]] = [
     ("Complex logic, architecture decisions", DEFAULT_IMPL_MODEL),
     ("Hard bugs, plan reviews, code review", ESCALATION_MODEL),
     ("Doc-only changes, table of contents", MECHANICAL_MODEL),
+    ("Cursor Cloud Agents (`/jarvis-cloud-task`)", CLOUD_AGENT_MODEL),
 ]
 
 _ROUTING_MD_BEGIN = "<!-- dev-models:begin -->"

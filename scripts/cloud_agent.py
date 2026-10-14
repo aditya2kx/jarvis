@@ -123,9 +123,39 @@ def continue_prompt(requirement: str, pr: int) -> str:
     )
 
 
+def resolve_model(model_id: str, wanted: tuple[str, ...]) -> tuple[dict | None, str]:
+    """Model selection for POST /agents plus a one-line label for the issue comment.
+
+    For each parameter GET /v1/models lists, pick the value whose value or display name
+    matches a `wanted` token (e.g. effort `medium`, context `300k`); unmatched parameters
+    keep the model's default. An id the API does not list returns None (account default)
+    rather than a launch the API would reject."""
+    items = _api("GET", "/models").get("items") or []
+    item = next((m for m in items if model_id == m.get("id") or model_id in (m.get("aliases") or [])), None)
+    if item is None:
+        return None, f"{model_id} not in GET /v1/models — account default model"
+    norm = lambda s: re.sub(r"\s+", "", str(s or "")).lower()  # noqa: E731
+    tokens = [norm(w) for w in wanted]
+    params = []
+    for p in item.get("parameters") or []:
+        values = p.get("values") or []
+        hit = next((v for v in values if norm(v.get("value")) in tokens), None) or next(
+            (v for v in values if any(t in norm(v.get("displayName")) for t in tokens)), None)
+        if hit:
+            params.append({"id": p["id"], "value": str(hit["value"])})
+    sel = {"id": item["id"], **({"params": params} if params else {})}
+    shown = ", ".join(f"{p['id']}={p['value']}" for p in params) or "default variant"
+    return sel, f"{item['id']} ({shown})"
+
+
 def launch(requirement: str, issue: int | None, model: str | None = None, ref: str = "main",
            pr: int | None = None) -> dict:
-    """New work starts from `ref` in plan mode (jam first); `pr` continues that PR on its own branch."""
+    """New work starts from `ref` in plan mode (jam first); `pr` continues that PR on its own branch.
+    `model` overrides the id only; effort/context come from dev_models.CLOUD_AGENT_PARAM_VALUES."""
+    import dev_models
+
+    model_sel, model_label = resolve_model(model or dev_models.CLOUD_AGENT_MODEL,
+                                           dev_models.CLOUD_AGENT_PARAM_VALUES)
     repo = {"url": REPO_URL, "prUrl": f"{REPO_URL}/pull/{pr}"} if pr else {"url": REPO_URL, "startingRef": ref}
     title = (requirement.strip().splitlines() or ["(no requirement text)"])[0][:80]
     payload: dict = {
@@ -137,11 +167,12 @@ def launch(requirement: str, issue: int | None, model: str | None = None, ref: s
     }
     if pr:
         payload["workOnCurrentBranch"] = True
-    if model:
-        payload["model"] = {"id": model}
+    if model_sel:
+        payload["model"] = model_sel
     body = _api("POST", "/agents", payload)
     agent = body.get("agent") or {}
-    return {"id": agent.get("id", ""), "url": agent.get("url", ""), "run_id": (body.get("run") or {}).get("id", "")}
+    return {"id": agent.get("id", ""), "url": agent.get("url", ""), "run_id": (body.get("run") or {}).get("id", ""),
+            "model": (model_sel or {}).get("id", ""), "model_label": model_label}
 
 
 def _gh(*args: str) -> str:
@@ -155,13 +186,14 @@ def intake(number: int, is_pr: bool, requirement: str, model: str | None, repo: 
     out = launch(requirement, None if is_pr else number, model, pr=number if is_pr else None)
     if is_pr:
         body = _gh("pr", "view", str(number), "--repo", repo, "--json", "body", "-q", ".body").rstrip("\n")
-        line = f"Cursor-Agent: {out['id']}" + (f" model={model}" if model else "")
+        line = f"Cursor-Agent: {out['id']}" + (f" model={out['model']}" if out["model"] else "")
         _gh("pr", "edit", str(number), "--repo", repo, "--body", f"{body}\n\n{line}\n")
     else:
         subprocess.run(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", "jarvis-work"],
                        capture_output=True)
     _gh("issue", "comment", str(number), "--repo", repo, "--body",
         f"**Cursor Cloud Agent** started: {out['url']}\n\n"
+        f"Model: {out['model_label']}\n\n"
         f"Open it from Cursor mobile, web or desktop. <!-- cursor-agent: {out['id']} -->")
     return out
 
@@ -219,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     la = sub.add_parser("launch")
     la.add_argument("--issue", type=int)
     la.add_argument("--requirement-file", required=True)
-    la.add_argument("--model", help="GET /v1/models id; omit for the account default")
+    la.add_argument("--model", help="GET /v1/models id; default dev_models.CLOUD_AGENT_MODEL")
     la.add_argument("--pr", type=int, help="continue this PR on its own branch instead of starting from main")
     it = sub.add_parser("intake", help="/jarvis-cloud-task comment: launch, add cost line (PR), comment the link")
     it.add_argument("--number", type=int, required=True, help="issue or PR number the comment is on")

@@ -76,7 +76,11 @@ page error (paths and timings only in the log).
 `/prod-read logs` also needs `roles/logging.viewer` for the CI deploy identity (it has none today):
 `gcloud projects add-iam-policy-binding jarvis-bhaga-prod --member serviceAccount:<WIF_SERVICE_ACCOUNT> --role roles/logging.viewer`.
 
-Optional: repo variable `CLOUD_AGENT_MODEL` picks the Cloud Agent model (account default otherwise).
+Cloud Agents launch on Opus 5.5 at medium effort with the 300k context (`scripts/dev_models.py`
+`CLOUD_AGENT_MODEL` / `CLOUD_AGENT_PARAM_VALUES`; high effort + 1M context burn far more tokens).
+`cloud_agent.py` matches those values against `GET /v1/models` at launch and prints the resolved
+selection as `Model: …` in the agent-link comment. Repo variable `CLOUD_AGENT_MODEL` overrides the
+model id only; an id the API does not list launches on the account default (the comment says so).
 
 ## Still Mac-only
 

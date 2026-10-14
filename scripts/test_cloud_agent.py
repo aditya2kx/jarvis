@@ -115,22 +115,74 @@ class RecordCostTests(unittest.TestCase):
         api.assert_not_called()
 
 
+MODELS = {"items": [
+    {"id": "claude-opus-5-5", "aliases": ["opus-latest"], "parameters": [
+        {"id": "reasoning_effort", "values": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]},
+        {"id": "context_window", "values": [{"value": "300000", "displayName": "300K"},
+                                            {"value": "1000000", "displayName": "1M"}]},
+        {"id": "fast", "values": [{"value": "false"}, {"value": "true", "displayName": "Fast"}]},
+    ]},
+    {"id": "claude-sonnet-5-5"},
+]}
+
+
+def fake_api(method, path, body=None):
+    if path == "/models":
+        return MODELS
+    return {"agent": {"id": AID, "url": "u"}, "run": {"id": "r"}}
+
+
+class ResolveModelTests(unittest.TestCase):
+    def test_default_pin_is_opus_medium_300k(self):
+        import dev_models as DM
+
+        with mock.patch.object(C, "_api", side_effect=fake_api):
+            sel, label = C.resolve_model(DM.CLOUD_AGENT_MODEL, DM.CLOUD_AGENT_PARAM_VALUES)
+        self.assertEqual(sel, {"id": "claude-opus-5-5", "params": [
+            {"id": "reasoning_effort", "value": "medium"}, {"id": "context_window", "value": "300000"}]})
+        self.assertEqual(label, "claude-opus-5-5 (reasoning_effort=medium, context_window=300000)")
+
+    def test_alias_and_model_without_parameters(self):
+        with mock.patch.object(C, "_api", side_effect=fake_api):
+            self.assertEqual(C.resolve_model("opus-latest", ("medium",))[0]["id"], "claude-opus-5-5")
+            self.assertEqual(C.resolve_model("claude-sonnet-5-5", ("medium",)),
+                             ({"id": "claude-sonnet-5-5"}, "claude-sonnet-5-5 (default variant)"))
+
+    def test_unlisted_id_falls_back_to_account_default(self):
+        with mock.patch.object(C, "_api", side_effect=fake_api):
+            sel, label = C.resolve_model("claude-opus-9", ("medium",))
+        self.assertIsNone(sel)
+        self.assertIn("not in GET /v1/models", label)
+
+
 class LaunchTests(unittest.TestCase):
     def test_payload(self):
-        with mock.patch.object(C, "_api", return_value={"agent": {"id": AID, "url": "u"}, "run": {"id": "r"}}) as api:
-            out = C.launch("Add a badge\nmore", 384, model="claude-opus-5-5-high")
+        with mock.patch.object(C, "_api", side_effect=fake_api) as api:
+            out = C.launch("Add a badge\nmore", 384)
         method, path, payload = api.call_args.args
         self.assertEqual((method, path), ("POST", "/agents"))
         self.assertEqual(payload["repos"], [{"url": C.REPO_URL, "startingRef": "main"}])
-        self.assertEqual(payload["model"], {"id": "claude-opus-5-5-high"})
+        self.assertEqual(payload["model"]["id"], "claude-opus-5-5")
+        self.assertIn({"id": "reasoning_effort", "value": "medium"}, payload["model"]["params"])
         self.assertEqual(payload["name"], "#384 Add a badge")
         self.assertIn("Closes #384", payload["prompt"]["text"])
-        self.assertEqual(out, {"id": AID, "url": "u", "run_id": "r"})
+        self.assertEqual((out["id"], out["url"], out["run_id"], out["model"]), (AID, "u", "r", "claude-opus-5-5"))
         self.assertEqual(payload["mode"], "plan")
         self.assertNotIn("workOnCurrentBranch", payload)
 
+    def test_model_override_keeps_medium_300k(self):
+        with mock.patch.object(C, "_api", side_effect=fake_api) as api:
+            C.launch("x", 1, model="opus-latest")
+        self.assertEqual(len(api.call_args.args[2]["model"]["params"]), 2)
+
+    def test_unlisted_model_omits_the_field(self):
+        with mock.patch.object(C, "_api", side_effect=fake_api) as api:
+            out = C.launch("x", 1, model="claude-opus-9")
+        self.assertNotIn("model", api.call_args.args[2])
+        self.assertEqual(out["model"], "")
+
     def test_pr_continues_on_the_prs_own_branch(self):
-        with mock.patch.object(C, "_api", return_value={"agent": {"id": AID, "url": "u"}, "run": {"id": "r"}}) as api:
+        with mock.patch.object(C, "_api", side_effect=fake_api) as api:
             C.launch("continue PR #388 from the handoff note above", None, pr=388)
         payload = api.call_args.args[2]
         self.assertEqual(payload["repos"], [{"url": C.REPO_URL, "prUrl": f"{C.REPO_URL}/pull/388"}])
@@ -140,7 +192,7 @@ class LaunchTests(unittest.TestCase):
         self.assertIn("handoff.py in --pr 388", payload["prompt"]["text"])
 
     def test_empty_requirement_still_launches(self):
-        with mock.patch.object(C, "_api", return_value={"agent": {"id": AID, "url": "u"}}) as api:
+        with mock.patch.object(C, "_api", side_effect=fake_api) as api:
             C.launch("", 7)
         self.assertEqual(api.call_args.args[2]["name"], "#7 (no requirement text)")
 
@@ -156,26 +208,31 @@ class IntakeTests(unittest.TestCase):
             out = pr_body if cmd[:3] == ["gh", "pr", "view"] else ""
             return mock.Mock(stdout=out, returncode=0)
 
-        with mock.patch.object(C, "_api", return_value={"agent": {"id": AID, "url": "https://cursor.com/agents/x"}}) as api, \
+        def api(method, path, body=None):
+            return MODELS if path == "/models" else {"agent": {"id": AID, "url": "https://cursor.com/agents/x"}}
+
+        with mock.patch.object(C, "_api", side_effect=api) as api_mock, \
              mock.patch.object(C.subprocess, "run", side_effect=fake_run):
             C.intake(388 if is_pr else 384, is_pr, "continue PR #388 from the handoff note above", model, "o/r")
-        return api.call_args.args[2], calls
+        return api_mock.call_args.args[2], calls
 
     def test_on_a_pr_continues_its_branch_and_appends_one_cost_line(self):
-        payload, calls = self._intake(True, "claude-opus-5-5-high")
+        payload, calls = self._intake(True, None)
         self.assertEqual(payload["repos"][0]["prUrl"], f"{C.REPO_URL}/pull/388")
         self.assertIs(payload["workOnCurrentBranch"], True)
         edits = [c for c in calls if c[:3] == ["gh", "pr", "edit"]]
         self.assertEqual(len(edits), 1)
         body = edits[0][edits[0].index("--body") + 1]
-        self.assertEqual(body, f"PR body\n\nCursor-Agent: {AID} model=claude-opus-5-5-high\n")
-        self.assertEqual(C.parse_markers(body), [(AID, "claude-opus-5-5-high", [])])
+        self.assertEqual(body, f"PR body\n\nCursor-Agent: {AID} model=claude-opus-5-5\n")
+        self.assertEqual(C.parse_markers(body), [(AID, "claude-opus-5-5", [])])
         self.assertFalse([c for c in calls if c[:3] == ["gh", "issue", "edit"]])
         comment = next(c for c in calls if c[:3] == ["gh", "issue", "comment"])
         self.assertIn("https://cursor.com/agents/x", comment[comment.index("--body") + 1])
+        self.assertIn("Model: claude-opus-5-5 (reasoning_effort=medium, context_window=300000)",
+                      comment[comment.index("--body") + 1])
 
-    def test_on_a_pr_without_model_uses_the_bare_marker(self):
-        _, calls = self._intake(True, None)
+    def test_on_a_pr_with_unlisted_model_uses_the_bare_marker(self):
+        _, calls = self._intake(True, "claude-opus-9")
         body = next(c for c in calls if c[:3] == ["gh", "pr", "edit"])
         self.assertTrue(body[body.index("--body") + 1].endswith(f"Cursor-Agent: {AID}\n"))
 

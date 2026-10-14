@@ -148,6 +148,12 @@ class ResolveModelTests(unittest.TestCase):
             self.assertEqual(C.resolve_model("claude-sonnet-5-5", ("medium",)),
                              ({"id": "claude-sonnet-5-5"}, "claude-sonnet-5-5 (default variant)"))
 
+    def test_effort_suffixed_catalog_id(self):
+        catalog = {"items": [{"id": "claude-opus-5-5-high"}, {"id": "claude-opus-5-5-medium"}]}
+        with mock.patch.object(C, "_api", return_value=catalog):
+            sel, _ = C.resolve_model("claude-opus-5-5", ("medium", "300k"))
+        self.assertEqual(sel, {"id": "claude-opus-5-5-medium"})
+
     def test_unlisted_id_falls_back_to_account_default(self):
         with mock.patch.object(C, "_api", side_effect=fake_api):
             sel, label = C.resolve_model("claude-opus-9", ("medium",))

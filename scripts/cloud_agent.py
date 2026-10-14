@@ -128,10 +128,12 @@ def resolve_model(model_id: str, wanted: tuple[str, ...]) -> tuple[dict | None, 
 
     For each parameter GET /v1/models lists, pick the value whose value or display name
     matches a `wanted` token (e.g. effort `medium`, context `300k`); unmatched parameters
-    keep the model's default. An id the API does not list returns None (account default)
-    rather than a launch the API would reject."""
+    keep the model's default. Also tries `<id>-<token>` (e.g. `claude-opus-5-5-medium`) for
+    catalogs that encode effort in the id. An id the API does not list returns None
+    (account default) rather than a launch the API would reject."""
     items = _api("GET", "/models").get("items") or []
-    item = next((m for m in items if model_id == m.get("id") or model_id in (m.get("aliases") or [])), None)
+    candidates = [model_id, *(f"{model_id}-{w}" for w in wanted)]
+    item = next((m for c in candidates for m in items if c == m.get("id") or c in (m.get("aliases") or [])), None)
     if item is None:
         return None, f"{model_id} not in GET /v1/models — account default model"
     norm = lambda s: re.sub(r"\s+", "", str(s or "")).lower()  # noqa: E731

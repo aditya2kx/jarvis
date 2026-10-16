@@ -39,7 +39,7 @@ export async function startAdpSync(
     executionName,
     targetDate: date,
     message:
-      "ADP sync queued in the background — usually 5–12 min. You can keep using the page.",
+      "ADP sync queued in the background — usually about 20 minutes. You can keep using the page.",
   };
 }
 

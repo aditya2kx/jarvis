@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useActionToast } from "@/lib/actions/ActionToast";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
+import { decideSyncPoll } from "@/lib/labor/sync-adp-poll";
 import { cn } from "@/lib/utils";
 
 function formatScraped(iso: string | null): string | null {
@@ -28,7 +29,6 @@ function formatScraped(iso: string | null): string | null {
 type SyncPhase = "idle" | "starting" | "running" | "done" | "error";
 
 const POLL_MS = 4000;
-const TIMEOUT_MS = 20 * 60 * 1000;
 
 /** One "Sync ADP": clocked hours, schedule (assigned + open), payroll earnings, rates. */
 export function SyncAdpButton({
@@ -93,12 +93,6 @@ export function SyncAdpButton({
   );
 
   const pollOnce = useCallback(async () => {
-    if (Date.now() - startedAtRef.current > TIMEOUT_MS) {
-      finishErr(
-        "Sync timed out after 20 minutes — check ADP login / Cloud Run logs, then try again.",
-      );
-      return;
-    }
     const ack = await pollAdpSyncAction({
       baselineScrapedAt: baselineRef.current,
       executionName: executionRef.current,
@@ -108,37 +102,23 @@ export function SyncAdpButton({
       return;
     }
     const { scrapedAt: latest, advanced, execution } = ack.data ?? {};
-    // Clocked hours land mid-job (schedule, rates and unavailability follow), so with an
-    // execution to watch, only its completion ends the sync.
-    if (advanced && !executionRef.current) {
+    // Clocked hours land mid-job. With an execution to watch, only its
+    // completion ends the sync — a fixed 20-minute clock does not.
+    const decision = decideSyncPoll({
+      elapsedMs: Date.now() - startedAtRef.current,
+      hasExecution: Boolean(executionRef.current),
+      advanced: Boolean(advanced),
+      execution,
+    });
+    if (decision.kind === "ok") {
       finishOk(latest ?? null);
       return;
     }
-    if (execution?.done && execution.succeeded && advanced) {
-      finishOk(latest ?? null);
+    if (decision.kind === "error") {
+      finishErr(decision.message);
       return;
     }
-    if (execution?.failed) {
-      finishErr(
-        execution.message?.includes("not yet complete")
-          ? "Cloud job failed: Sync ADP path not deployed yet. Use local console with BYPASS_IAP, or merge/deploy this branch first."
-          : `Sync failed: ${execution.message ?? "Cloud Run execution failed"}`,
-      );
-      return;
-    }
-    if (execution?.done && execution.succeeded && !advanced) {
-      finishErr(
-        "Job finished but ADP data did not update — check the ADP scrape logs.",
-      );
-      return;
-    }
-    setStatusText(
-      execution?.done
-        ? "Finishing…"
-        : advanced
-          ? "Clocked hours synced — still reading schedule and pay rates…"
-          : "Syncing ADP… (you can keep using the page)",
-    );
+    setStatusText(decision.status);
   }, [finishErr, finishOk]);
 
   const watch = useCallback(

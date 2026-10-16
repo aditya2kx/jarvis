@@ -621,12 +621,49 @@ _PAYROLL_CARDS_JS = """() => {
 }"""
 
 
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+# ADP's own chrome (support / no-reply links) is on every profile page.
+_IGNORED_EMAIL_DOMAINS = ("adp.com",)
+_PERSONAL_EMAIL_POLLS = 16  # x 500 ms
+
+
+def extract_emails(text) -> list[str]:
+    """Distinct lowercase addresses in page text, in page order, minus ADP's own."""
+    out: list[str] = []
+    for m in _EMAIL_RE.findall(text if isinstance(text, str) else ""):
+        e = m.lower().rstrip(".")
+        if e.split("@", 1)[1].endswith(_IGNORED_EMAIL_DOMAINS) or e in out:
+            continue
+        out.append(e)
+    return out
+
+
+def _read_personal_emails(page) -> list[str]:
+    """Open the profile's Personal info tab and poll its text for an address."""
+    page.evaluate(
+        """() => {
+          const a = document.getElementById('EMPLOYEE_PERSONAL');
+          if (a) { a.click(); return; }
+          const hit = [...document.querySelectorAll('a,button,div,span,li')]
+            .find(e => /^Personal( info)?$/.test((e.innerText || '').trim()));
+          if (hit) hit.click();
+        }"""
+    )
+    for _ in range(_PERSONAL_EMAIL_POLLS):
+        page.wait_for_timeout(500)
+        emails = extract_emails(page.evaluate(_PAGE_TEXT_JS))
+        if emails:
+            return emails
+    return []
+
+
 def scrape_one_pay_info(
     page,
     canonical_name: str,
     *,
     dashboard_url: str,
     accepted_names: Iterable[str] = (),
+    want_email: bool = True,
 ) -> dict:
     """Directory → profile → Payroll info; return rate fields.
 
@@ -659,10 +696,22 @@ def scrape_one_pay_info(
             f"[pay_info] BREADCRUMB pay_rate_card_no_default name={canonical_name!r} "
             f"cards={parsed.get('cards')} took_lowest={parsed['wage_rate_dollars']}"
         )
+    # Email matches staff to their ClickUp account for the missing-punch check
+    # (Issue #397). Best-effort: a miss never costs the rate.
+    emails = extract_emails(pane["text"])
+    if want_email and not emails:
+        try:
+            emails = _read_personal_emails(page)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[pay_info] personal-info read failed name={canonical_name!r}: "
+                  f"{type(exc).__name__}: {exc}")
+        if not emails:
+            print(f"[pay_info] BREADCRUMB email_not_found name={canonical_name!r}")
     return {
         "employee_name": canonical_name,
         "search_name": profile_name,
         **parsed,
+        "emails": emails,
         "body_excerpt": pane["text"][:500],
         "inputs": pane["inputs"][:20],
     }
@@ -784,24 +833,26 @@ def _read_payroll_info(page, *, budget_s: float = _PAYROLL_READY_BUDGET_S) -> di
           return out;
         }"""
     ) or []
-    text = page.evaluate(
-        """() => {
-          const chunks = [];
-          const walk = (node) => {
-            if (!node) return;
-            if (node.nodeType === 3) {
-              const t = (node.textContent || '').trim();
-              if (t) chunks.push(t);
-            }
-            if (node.shadowRoot) walk(node.shadowRoot);
-            const kids = node.childNodes || [];
-            for (let i = 0; i < kids.length; i++) walk(kids[i]);
-          };
-          walk(document.body);
-          return chunks.join(' ').replace(/\\s+/g, ' ').trim();
-        }"""
-    ) or ""
+    text = page.evaluate(_PAGE_TEXT_JS) or ""
     return {**state, "text": text, "inputs": inputs}
+
+
+# Whole-page text including shadow roots (ADP's sdf-* components hide their text there).
+_PAGE_TEXT_JS = """() => {
+  const chunks = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.nodeType === 3) {
+      const t = (node.textContent || '').trim();
+      if (t) chunks.push(t);
+    }
+    if (node.shadowRoot) walk(node.shadowRoot);
+    const kids = node.childNodes || [];
+    for (let i = 0; i < kids.length; i++) walk(kids[i]);
+  };
+  walk(document.body);
+  return chunks.join(' ').replace(/\\s+/g, ' ').trim();
+}"""
 
 
 def _capture_pay_info_failure(page, name: str) -> list[str]:
@@ -833,8 +884,14 @@ def scrape_pay_info_rates(
     dashboard_url: str,
     excluded: Optional[set[str]] = None,
     aliases: Optional[dict] = None,
+    need_email: Optional[set[str]] = None,
+    contacts: Optional[list[dict]] = None,
 ) -> tuple[list[dict], dict[str, str]]:
-    """Scrape Payroll info rates for names. Per-employee failures are soft."""
+    """Scrape Payroll info rates for names. Per-employee failures are soft.
+
+    ``need_email`` (None = everyone) limits the extra Personal-info visit to
+    names with no stored email; any address found is appended to ``contacts``.
+    """
     excluded = excluded or set()
     out: list[dict] = []
     errors: dict[str, str] = {}
@@ -843,7 +900,10 @@ def scrape_pay_info_rates(
             raw = scrape_one_pay_info(
                 page, name, dashboard_url=dashboard_url,
                 accepted_names=accepted_directory_names(name, aliases),
+                want_email=need_email is None or name in need_email,
             )
+            if contacts is not None and raw.get("emails"):
+                contacts.append({"employee_name": name, "emails": raw["emails"]})
             out.append(
                 rate_record(
                     name,
@@ -877,6 +937,7 @@ def write_pay_info_json(
     errors: Optional[dict[str, str]] = None,
     attempted: Optional[list[str]] = None,
     directory: Optional[list[dict]] = None,
+    contacts: Optional[list[dict]] = None,
 ) -> pathlib.Path:
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     path = DOWNLOADS_DIR / f"PayInfoRates-{datetime.date.today().isoformat()}.json"
@@ -889,6 +950,7 @@ def write_pay_info_json(
                 "errors": errors or {},
                 "attempted": attempted or [r.get("employee_name") for r in rates],
                 "directory": directory or [],
+                "contacts": contacts or [],
             },
             indent=2,
         )
@@ -1258,6 +1320,58 @@ def write_directory_status_bq(payload: dict) -> int:
         merge_keys=["store", "employee_name", "scraped_at_utc"],
         column_bq_types={"scraped_at_utc": "TIMESTAMP", "employment_status": "STRING"},
     )
+
+
+def employee_contact_rows(payload: dict) -> list[dict]:
+    """``employee_contacts`` rows from tonight's scrape. An address seen on more
+    than one profile (a shared store inbox, the logged-in admin) is not anyone's
+    own and is dropped; a profile with no address yields no row, so a blank
+    scrape never erases a stored email."""
+    contacts = payload.get("contacts") or []
+    seen: dict[str, int] = {}
+    for c in contacts:
+        for e in set(c.get("emails") or []):
+            seen[e] = seen.get(e, 0) + 1
+    rows = []
+    for c in contacts:
+        emails = [e for e in c.get("emails") or [] if seen.get(e) == 1]
+        if c.get("employee_name") and emails:
+            rows.append({
+                "store": payload.get("store") or "palmetto",
+                "employee_id": c["employee_name"],
+                "emails_json": json.dumps(emails),
+                "source": "adp_profile",
+                "scraped_at_utc": payload.get("scraped_at_utc"),
+            })
+    return rows
+
+
+def write_employee_contacts_bq(payload: dict) -> int:
+    """MERGE tonight's profile emails on (store, employee_id)."""
+    os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+    from core.datastore import ensure_schema, load_rows  # noqa: PLC0415
+
+    rows = employee_contact_rows(payload)
+    if not rows:
+        return 0
+    ensure_schema()
+    return load_rows(
+        "employee_contacts", rows, merge_keys=["store", "employee_id"],
+        column_bq_types={"scraped_at_utc": "TIMESTAMP"},
+    )
+
+
+def names_missing_email_bq(names: list[str], *, store: str = "palmetto") -> set[str]:
+    """The subset of ``names`` with no stored email (all of them if the table is new)."""
+    from core.datastore import fq, read_query  # noqa: PLC0415
+
+    have = {
+        r["employee_id"] for r in read_query(
+            f"SELECT employee_id FROM {fq('employee_contacts')}"
+            f" WHERE store = '{store}' AND emails_json IS NOT NULL"
+        )
+    }
+    return {n for n in names if n not in have}
 
 
 def record_pay_info_outcomes(payload: dict) -> int:

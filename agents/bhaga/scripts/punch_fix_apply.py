@@ -1,7 +1,9 @@
-"""Write operator-approved punch fixes into ADP (Issue #356): a clock-out for an
-open entry, or a whole entry for a scheduled day with no punch.
+"""Write approved punch fixes into ADP (Issues #356, #397): a clock-out for an
+open entry, a clock-in for an entry with only a clock-out, or a whole entry for
+a scheduled day with no punch.
 
-Entry point for the console "Write to ADP" button: the console flips the chosen
+Entry point for the console "Write to ADP" button and the missing-punch check's
+reply sweep (``punch_check.py``): the caller flips the chosen
 ``punch_gap_decisions`` rows to ``applying`` and starts daily_refresh with
 ``BHAGA_PUNCH_FIX_APPLY_ONLY=1`` + ``BHAGA_PUNCH_FIX_DECISION_IDS``. This module
 writes each one in a single ADP session and records ``applied`` /
@@ -151,12 +153,32 @@ def _fail_leftovers(client, store: str, ids: list[str], error: str) -> None:
     ).result()
 
 
-def _expect_in(row: dict) -> Optional[str]:
+def _entry_side(row: dict, side: str) -> Optional[str]:
     entries = json.loads(row["entries_json"] or "[]")
     idx = row["open_entry_index"]
     if idx is None or idx >= len(entries):
         return None
-    return entries[idx].get("in")
+    return entries[idx].get(side)
+
+
+def _expect_in(row: dict) -> Optional[str]:
+    return _entry_side(row, "in")
+
+
+STAFF_PREFIX = "clickup:"
+AUTO_PREFIX = "auto:"
+
+
+def _comment_source(decided_by: Optional[str]) -> dict:
+    """comment_text kwargs naming who decided: the operator in the console, a
+    staff reply in the ClickUp missing-punch thread, or the Monday default."""
+    who = decided_by or "operator"
+    if who.startswith(STAFF_PREFIX):
+        return {"decided_by": who[len(STAFF_PREFIX):], "via": "the ClickUp missing-punch thread",
+                "entered_by": "staff"}
+    if who.startswith(AUTO_PREFIX):
+        return {"decided_by": "BHAGA (no reply before payroll)", "via": "the missing-punch check"}
+    return {"decided_by": who}
 
 
 def _resync_in_session(page, dashboard_url: str, store: str, applied: list[dict],
@@ -248,15 +270,21 @@ def apply_decisions(store: str, ids: list[str]) -> dict:
                 for r in sorted(emp_rows, key=lambda x: x["date"]):
                     date = datetime.date.fromisoformat(r["date"])
                     new_entry = r["kind"] == "no_entry"
+                    missing_in = r["kind"] == "missing_in"
                     expect_in = _expect_in(r)
-                    if new_entry and not (r.get("in_time") and r.get("out_time")):
-                        record(r, tfb.FAILED, "a new entry needs both In and Out times")
+                    expect_out = _entry_side(r, "out") if missing_in else None
+                    if (new_entry or missing_in) and not (r.get("in_time") and r.get("out_time")):
+                        record(r, tfb.FAILED, f"a {r['kind']} fix needs both In and Out times")
                         continue
-                    if not new_entry and (
+                    if missing_in and (not expect_out or expect_out != r["out_time"]):
+                        record(r, tfb.FAILED, f"decision out {r['out_time']} does not match the "
+                                              f"entry's clock-out {expect_out}")
+                        continue
+                    if not (new_entry or missing_in) and (
                         r["kind"] not in ("missing_out", "missing_out_after_break") or not expect_in
                     ):
-                        record(r, tfb.FAILED, f"only open clock-outs and missing entries can be "
-                                              f"written (kind={r['kind']})")
+                        record(r, tfb.FAILED, f"only open clock-outs, missing clock-ins and missing "
+                                              f"entries can be written (kind={r['kind']})")
                         continue
                     if not (month.pay_period_start <= date <= month.pay_period_end):
                         record(r, tfb.FAILED,
@@ -264,12 +292,23 @@ def apply_decisions(store: str, ids: list[str]) -> dict:
                                f"{month.pay_period_start}..{month.pay_period_end}")
                         continue
                     rule = r["rule"] if r["action"] == "accept" else None
+                    source = _comment_source(r["decided_by"])
                     if new_entry:
                         res = tfb.apply_new_entry(
                             ui, date=date, in_time=r["in_time"], out_time=r["out_time"],
                             comment=tfb.comment_text(
-                                in_time=r["in_time"], out_time=r["out_time"],
-                                decided_by=r["decided_by"] or "operator", rule=rule,
+                                in_time=r["in_time"], out_time=r["out_time"], rule=rule, **source,
+                            ),
+                        )
+                        record(r, res.status, res.error, res.evidence_path)
+                        continue
+                    if missing_in:
+                        res = tfb.apply_in_punch(
+                            ui, date=date, entry_index=int(r["open_entry_index"]),
+                            expect_out=expect_out, in_time=r["in_time"],
+                            comment=tfb.comment_text(
+                                in_time=r["in_time"], out_time=r["out_time"], rule=rule,
+                                missing_in=True, **source,
                             ),
                         )
                         record(r, res.status, res.error, res.evidence_path)
@@ -280,11 +319,7 @@ def apply_decisions(store: str, ids: list[str]) -> dict:
                         open_entry_index=int(r["open_entry_index"]),
                         expect_in=expect_in,
                         out_time=r["out_time"],
-                        comment=tfb.comment_text(
-                            out_time=r["out_time"],
-                            decided_by=r["decided_by"] or "operator",
-                            rule=rule,
-                        ),
+                        comment=tfb.comment_text(out_time=r["out_time"], rule=rule, **source),
                     )
                     record(r, res.status, res.error, res.evidence_path)
             if applied:

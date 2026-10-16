@@ -309,6 +309,67 @@ def fetch_messages(
     return all_msgs
 
 
+def fetch_replies(
+    message_id: str,
+    *,
+    team_id: str = DEFAULT_TEAM_ID,
+    max_pages: int = 10,
+    pat: str | None = None,
+) -> list[dict]:
+    """Thread replies to one message, oldest first (each has id, user_id, content, date)."""
+    out: list[dict] = []
+    cursor: str | None = None
+    for _ in range(max_pages):
+        qs = f"limit={PAGE_LIMIT}" + (f"&cursor={urllib.parse.quote(cursor)}" if cursor else "")
+        data = _request(f"/api/v3/workspaces/{team_id}/chat/messages/{message_id}/replies?{qs}", pat=pat)
+        out.extend(data.get("data", []))
+        cursor = data.get("next_cursor")
+        if not cursor:
+            break
+        time.sleep(INTER_PAGE_SLEEP_S)
+    out.sort(key=lambda m: m.get("date") or 0)
+    return out
+
+
+def add_reaction(
+    message_id: str,
+    reaction: str = "white_check_mark",
+    *,
+    team_id: str = DEFAULT_TEAM_ID,
+    pat: str | None = None,
+) -> bool:
+    """React to a message (lowercase emoji name). An existing identical reaction counts as done."""
+    try:
+        _request(
+            f"/api/v3/workspaces/{team_id}/chat/messages/{message_id}/reactions",
+            method="POST", payload={"reaction": reaction}, pat=pat,
+        )
+    except RuntimeError as exc:
+        if "already" in str(exc).lower() or " 409 " in str(exc):
+            return True
+        raise
+    return True
+
+
+def list_members(team_id: str = DEFAULT_TEAM_ID, *, pat: str | None = None) -> list[dict]:
+    """Workspace members as ``{"id", "username", "email"}`` (v2 /team)."""
+    data = _request("/api/v2/team", pat=pat)
+    for team in data.get("teams", []):
+        if str(team.get("id")) == str(team_id):
+            return [
+                {"id": str(u.get("id")), "username": u.get("username") or "",
+                 "email": (u.get("email") or "").strip().lower()}
+                for u in (m.get("user") or {} for m in team.get("members", []))
+                if u.get("id")
+            ]
+    return []
+
+
+def mention(user_id: str, name: str) -> str:
+    """Inline @mention in a text/md chat message (renders as a member chip)."""
+    return f"[@{name}](#user_mention#{user_id})"
+
+
 # ── CLI for ad-hoc exploration / smoke tests ─────────────────────────
 
 

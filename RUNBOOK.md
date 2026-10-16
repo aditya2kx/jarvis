@@ -409,6 +409,7 @@ soft-fail: a Timecards UI error drops `adp_timecard_gaps` from the load and neve
 | Kind | Meaning | Suggestion (`rule`) |
 |---|---|---|
 | `missing_out` / `missing_out_after_break` | an entry with no clock-out (first / later entry) | clock-out that pays at least the day's scheduled hours, capped at shop close (`pay_scheduled_hours`) |
+| `missing_in` | an entry with a clock-out but no clock-in | the scheduled start of the shift that began before the out (`open_at_scheduled_start`); written only from the staff thread (§ Missing-punch check), the console still cannot write it |
 | `in_progress` | open entry, day not over yet (CT) | none |
 | `no_entry` | scheduled, nothing punched | the scheduled shift — first scheduled start, scheduled hours clipped at close (`scheduled_shift`) |
 
@@ -451,6 +452,42 @@ Re-read only the gaps (read-only, no write):
 gcloud run jobs execute bhaga-daily-refresh --project jarvis-bhaga-prod --region us-central1 --async \
   --update-env-vars "BHAGA_ADP_TIMECARD_ONLY=1,BHAGA_IGNORE_HALT=1,BHAGA_SKIP_SQUARE=1,BHAGA_SKIP_KDS=1,BHAGA_STORE=palmetto,REFRESH_DATE=$(TZ=America/Chicago date +%F)"
 ```
+
+### Missing-punch check (Issue #397)
+
+One ClickUp post a day in **Shift Coverage & Trades** (`8cr6661-1617`) at/after **10:00 CT**, only
+when someone has an open gap in the last 14 days (`agents/bhaga/scripts/punch_check.py`). It lists
+missing clock-ins / clock-outs ("we'll use your scheduled time") and scheduled days with no punches
+("not paid until you confirm"), each with an inline @mention. Sundays say "payroll runs Monday morning".
+Config is the `automations` row `punch-check` (seeded enabled on first run; set `enabled=false` to stop
+it). It rides the `bhaga-unavailability-reminder` 15-minute tick (`/unavailability-reminder` runs both
+jobs); at most one post per CT day (`automation_posts`).
+
+- **People → ClickUp:** by email. The nightly pay-info scrape reads each ADP profile's Personal info
+  emails for anyone missing from `employee_contacts` (migration `089_punch_check.sql`; addresses shared
+  by two profiles are dropped) and matches them to ClickUp members (`/api/v2/team`). No email → plain
+  name, no tag (breadcrumb `[pay_info] BREADCRUMB email_not_found name=`).
+- **Replies:** staff answer in the thread; BHAGA never replies. `punch_reply.parse_reply` reads them at
+  **21:00 CT** and **Monday 06:00 CT**. An understood reply becomes a `punch_gap_decisions` row
+  (`decided_by=clickup:<name>`), and the reply gets ✅ once every decision from it is settled
+  (`applied`, `already_resolved`, `not_in_hours`, or a dismissed no-punch day). Anything not understood stays open and reappears in the next daily post.
+- **Monday default:** on the 06:00 sweep, open `missing_out` / `missing_in` items with no answer get the
+  scheduled time (`decided_by=auto:payroll-default`); `no_entry` is never defaulted.
+- **Writing to ADP** needs `BHAGA_PUNCH_CHECK_APPLY=1` on `bhaga-webhook` (`docs/FEATURE_FLAGS.md`).
+  Without it decisions stay `recorded` (visible on `/labor`) and nothing is written. With it the tick starts
+  the console's apply-only job (§ Missing punches above, same statuses, never retried); if that job
+  is busy the claim is released and retried next tick (`BREADCRUMB punch_check apply_job_busy`).
+
+```bash
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.punch_check --dry-run [--date 2026-10-14]
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.punch_check --to-dm      # post to the operator DM, record nothing
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.punch_check --sweep-dry-run  # parse thread replies, write nothing
+# Turn on ADP writes (via /prod-ops or an ADC surface):
+gcloud run services update bhaga-webhook --project jarvis-bhaga-prod --region us-central1 \
+  --update-env-vars BHAGA_PUNCH_CHECK_APPLY=1
+```
+Logs on `bhaga-webhook`: `punch_check result=`; failures `BREADCRUMB punch_check failed`,
+`replies_failed`, `react_failed`.
 
 ### Monthly recognition (Issue #369)
 

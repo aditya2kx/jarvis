@@ -2999,15 +2999,23 @@ def download_adp_bundle(
 
             if names:
                 print(f"[adp_bundle] pay_info refresh for {len(names)}: {names}")
+                need_email: Optional[set[str]] = None
+                try:
+                    need_email = pib.names_missing_email_bq(names, store=store)
+                    print(f"[adp_bundle] pay_info email lookup for {len(need_email)}")
+                except Exception as exc:  # noqa: BLE001 — table missing: look everyone up
+                    print(f"[adp_bundle] pay_info email lookup skipped: {exc}")
+                contacts: list[dict] = []
                 page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
                 page.wait_for_timeout(1500)
                 rates, scrape_errors = pib.scrape_pay_info_rates(
                     page, names, dashboard_url=dashboard_url,
                     excluded=set(excluded), aliases=aliases,
+                    need_email=need_email, contacts=contacts,
                 )
                 path = pib.write_pay_info_json(
                     rates, store=store, errors=scrape_errors, attempted=names,
-                    directory=result.get("directory_roster"),
+                    directory=result.get("directory_roster"), contacts=contacts,
                 )
                 result["pay_info_json"] = path
                 print(f"[adp_bundle] pay_info OK → {path} ({len(rates)} rates)")

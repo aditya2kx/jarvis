@@ -2097,7 +2097,17 @@ class TestUnavailabilityReminderKick:
         with app.test_client() as client:
             resp = client.post("/unavailability-reminder", headers={"X-Team-Pulse-Token": "secret-tp"})
         assert resp.status_code == 200
-        assert [f.__name__ for f in called] == ["_run_unavailability_reminder_job"]
+        assert [f.__name__ for f in called] == ["_run_unavailability_reminder_job",
+                                                "_run_punch_check_job"]
+
+    def test_punch_apply_starts_the_console_apply_job(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(handler, "_trigger_cloud_run_job_with_env",
+                            lambda date, env: seen.append((date, env)) or True)
+        assert handler._apply_punch_decisions(["d1", "d2"]) is True
+        (_date, env), = seen
+        assert env == [("BHAGA_PUNCH_FIX_APPLY_ONLY", "1"), ("BHAGA_PUNCH_FIX_WRITEBACK", "1"),
+                       ("BHAGA_PUNCH_FIX_DECISION_IDS", "d1,d2")]
 
 
 class TestStalenessAlarm:

@@ -77,7 +77,7 @@ export interface PunchGap {
   entries: PunchEntry[];
   scheduled: [string, string][];
   openIndex: number | null;
-  /** no_entry only: the scheduled start the new entry would use. */
+  /** no_entry / missing_in: the scheduled start the clock-in would use. */
   suggestedIn: string | null;
   suggestedOut: string | null;
   suggestedHours: number | null;
@@ -435,13 +435,17 @@ export function pct(min: number, bounds: { start: number; end: number }): number
 
 /**
  * Accepted/edited punches not yet in ADP (or whose write failed) — what the
- * "Write to ADP" button sends: a clock-out for an open entry, or a whole new
- * entry for a scheduled day with no punch.
+ * "Write to ADP" button sends: a clock-out for an open entry, a clock-in for an
+ * entry with only a clock-out (decided by a staff reply in ClickUp), or a whole
+ * new entry for a scheduled day with no punch.
  */
 export function writableToAdp(gaps: PunchGap[]): PunchGap[] {
   return gaps.filter(
     (g) =>
-      (g.kind === "missing_out" || g.kind === "missing_out_after_break" || g.kind === "no_entry") &&
+      (g.kind === "missing_out" ||
+        g.kind === "missing_out_after_break" ||
+        g.kind === "no_entry" ||
+        g.kind === "missing_in") &&
       g.decision != null &&
       g.decision.id != null &&
       g.decision.action !== "reject" &&

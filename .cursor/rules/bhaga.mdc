@@ -92,6 +92,10 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    once, read back, never auto-retry (`RUNBOOK.md` § Missing punches). `applied` means the punch
    is in the Timecard export too (Issue #358): only the read-only download repeats; a fix still
    missing is `not_in_hours`, locked, and flagged on `/labor` + `/payroll` until a sync loads it.
+   Issue #397: the same writer also fills a missing **clock-in**, and `punch_check` posts the one
+   staff-facing daily list to Shift Coverage & Trades. It writes only the blank side, and only from
+   a staff thread reply or the Monday scheduled-time default, behind `BHAGA_PUNCH_CHECK_APPLY`.
+   A no-punch day is never defaulted, and BHAGA never replies in the thread (only ✅).
    Issue #337: the ADP **schedule** write is operator-clicked and flagged
    (`FEATURES.adpScheduleWrite` / `CONSOLE_ADP_SCHEDULE_WRITE`): **Save to ADP as drafts**
    (Team Schedule Create shift / Create open shift → Save as draft) and a separate

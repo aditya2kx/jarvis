@@ -263,3 +263,51 @@ def test_verified_export_is_reused_by_the_resync_without_a_second_login(monkeypa
     # A different target date is a different pay period: never reused.
     assert not runner._xlsx_fresh_for_target(result["timecard_xlsx"], target_date=datetime.date(2026, 10, 3),
                                              min_bytes=10_000)
+
+
+# ── Missing clock-in + staff / auto decisions (Issue #397) ────────
+MISSING_IN = {"decision_id": "d3", "date": "2026-10-03", "employee_id": "Lee, Jordan",
+              "in_time": "14:00", "out_time": "20:31", "kind": "missing_in", "action": "accept",
+              "open_entry_index": 0, "decided_by": "clickup:Jordan Lee",
+              "raw_employee_name": "Lee, Jordan", "rule": "open_at_scheduled_start",
+              "entries_json": '[{"in": null, "out": "20:31", "hours": 0}]'}
+
+
+def _missing_in_session(monkeypatch, row):
+    import types
+
+    from skills.adp_run_automation import timecard_fix_backend as tfb
+
+    statuses = _fake_write_session(monkeypatch, lambda page, url, store, applied, d: [])
+    monkeypatch.setattr(pfa, "_load", lambda c, s, ids: [row])
+    calls: list = []
+
+    def fake_in(ui, **k):
+        calls.append(k)
+        return types.SimpleNamespace(status=tfb.APPLIED, error=None, evidence_path=None)
+
+    monkeypatch.setattr(tfb, "apply_in_punch", fake_in)
+    return statuses, calls
+
+
+def test_missing_in_decision_fills_the_clock_in(monkeypatch):
+    statuses, calls = _missing_in_session(monkeypatch, MISSING_IN)
+    counts = pfa.apply_decisions("palmetto", ["d3"])
+    assert counts["applied"] == 1 and statuses == [("d3", "applied", None)]
+    (k,) = calls
+    assert (k["entry_index"], k["expect_out"], k["in_time"]) == (0, "20:31", "14:00")
+    assert k["comment"] == ("Missing clock-in set to 02:00 PM via the ClickUp missing-punch thread "
+                            "(opens at the scheduled start); approved by Jordan Lee.")
+
+
+def test_missing_in_decision_with_another_clock_out_never_opens_the_day(monkeypatch):
+    statuses, calls = _missing_in_session(monkeypatch, {**MISSING_IN, "out_time": "20:00"})
+    counts = pfa.apply_decisions("palmetto", ["d3"])
+    assert counts["failed"] == 1 and calls == []
+    assert "does not match" in statuses[-1][2]
+
+
+def test_comment_source_names_operator_staff_and_payroll_default():
+    assert pfa._comment_source("adi@mypalmetto.co") == {"decided_by": "adi@mypalmetto.co"}
+    assert pfa._comment_source("clickup:Sam Ortiz")["decided_by"] == "Sam Ortiz"
+    assert pfa._comment_source("auto:payroll-default")["via"] == "the missing-punch check"

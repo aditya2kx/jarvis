@@ -13,7 +13,7 @@ waiver: The bug is the Labor/Payroll poll clock. A live Sync ADP re-click logs i
 
 No change to what Sync ADP scrapes or to wage-rate merge. Read-only toward ADP payroll Submit (bhaga.mdc invariant 6). America/Chicago display of last-synced stays. The page must not report a timeout while the watched execution is still running. A failed execution still stops polling. Idempotent BQ upserts are untouched.
 
-Feature flag: no new flag. This cannot silently produce wrong numbers — it only changes when the page stops watching (`docs/FEATURE_FLAGS.md` unchanged). Out of scope: pay-info blank retries, the Pascone $16.25 → $15.25 write, liability parse skip.
+Feature flag: no new flag. This cannot silently produce wrong numbers — it only changes when the page stops watching (`docs/FEATURE_FLAGS.md` unchanged). Out of scope: pay-info blank retries, the wage-rate overwrite from that run, and the liability parse skip.
 
 ## UX
 

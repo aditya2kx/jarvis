@@ -14,5 +14,9 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# Git exports GIT_DIR into the hook. Left set, verify's temp repos (handoff
+# tests) run git against this checkout and fail remote/cache assertions.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+
 echo "pre-push: running verify --full …" >&2
 exec python3 scripts/verify.py --full

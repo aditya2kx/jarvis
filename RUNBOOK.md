@@ -1442,6 +1442,8 @@ the next save's `DELETE`. See `docs/contributing/cost.md`.
 - **Pre-merge:** record build cost locally (`pr_cost_ledger.py capture-build` or `record-build`),
   then `validate --pr <n> --require-build`. The pre-commit hook (`bash scripts/install-git-hooks.sh`
   once per clone) captures review cost into BQ on each commit (no `git add`, no staged files).
+  The same install's pre-push hook runs `verify.py --full` after unsetting `GIT_DIR`, so
+  handoff tests' temporary repos are not this checkout.
 - **Post-merge:** `pr-cost-finalize.yml` writes `merged_at` + final review cost to BQ via WIF.
 - **Dashboard:** https://steadyangelfish2985.grafana.net/d/jarvis-dev-cost-v1/jarvis-development
   ("Jarvis Development" folder, uid `jarvis-dev-cost-v1`). Deploy/update:

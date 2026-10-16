@@ -2,7 +2,9 @@
 
 ## Cost ledger
 Every PR has a cost ledger in BigQuery (`jarvis_dev`).  The `pre-commit` hook
-captures review cost automatically.  You must record build cost manually:
+captures review cost automatically.  The `pre-push` hook runs `verify.py --full`
+and unsets `GIT_DIR` first, so the suite's temporary git repos are not the
+checkout being pushed.  You must record build cost manually:
 
 ```bash
 python3 scripts/pr_cost_ledger.py record-build --pr N --cost-usd X.XX --model sonnet

@@ -35,10 +35,18 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
+      # Stable Server Action key: a tab opened before this deploy keeps calling
+      # unchanged actions instead of "Server Action … was not found" (Issue #401).
+      # NEXT_DEPLOYMENT_ID makes stale-tab navigations hard-reload.
       - name: Build image
         working-directory: apps/operator-console
         run: |
-          docker build -t ${{ env.REGISTRY }}/operator-console:${{ github.sha }} \
+          KEY=$(gcloud secrets versions access latest \
+                  --secret=operator-console-server-actions-key --project=${{ env.PROJECT_ID }})
+          echo "::add-mask::$KEY"
+          docker build --build-arg "NEXT_DEPLOYMENT_ID=${{ github.sha }}" \
+                       --build-arg "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=$KEY" \
+                       -t ${{ env.REGISTRY }}/operator-console:${{ github.sha }} \
                        -t ${{ env.REGISTRY }}/operator-console:latest .
 
       - name: Push image

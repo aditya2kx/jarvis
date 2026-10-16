@@ -404,7 +404,9 @@ server's local tz.
 ### 5.4 Deploy workflow (`.github/workflows/operator-console-deploy.yml`)
 - Trigger on push to `main` touching `apps/operator-console/**`.
 - Steps: checkout → auth to GCP (WIF, same pattern as `.github/workflows/deploy.yml`)
-  → build container → push to Artifact Registry → `gcloud run deploy operator-console
+  → build container (build args `NEXT_DEPLOYMENT_ID=<sha>` and
+  `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` from Secret Manager `operator-console-server-actions-key`,
+  so Server Action ids survive deploys — Issue #401) → push to Artifact Registry → `gcloud run deploy operator-console
   --image … --region … --no-allow-unauthenticated --iap` →
   `gcloud run services update-traffic operator-console --to-latest` (Issue #240: sticky
   tags must not leave new revisions at 0%) → `gcloud iap web

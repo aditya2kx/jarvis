@@ -629,6 +629,7 @@ gcloud run services update bhaga-webhook \
 | `google_palmetto` | refresh job (Sheets/Drive) | Google OAuth creds for the `palmetto` account |
 | `jarvis-clickup-palmetto-pat` | refresh job (`CLICKUP_PAT`) | ClickUp PAT — read review channel + closing-form inventory ingest |
 | `operator-console-gemini-token` | operator-console (`GEMINI_TOKEN`) | Gemini API key (Generative Language API), restricted to that one API — restock photo parsing (`lib/restock/gemini.ts`). Wired via `--set-secrets` in `operator-console-deploy.yml`; default compute SA holds `secretAccessor` on it. |
+| `operator-console-server-actions-key` | operator-console build (`NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`) | 32-byte base64 key that keeps Server Action ids stable across deploys (Issue #401). Read by the deploy job (WIF SA, project-level `secretAccessor`) and passed as a builder-stage build arg. |
 | `plaid_client_id` | operator-console + bhaga-webhook (`PLAID_CLIENT_ID`) | Plaid dashboard client_id (Issue #158 Accounting). |
 | `plaid_secret` | operator-console + bhaga-webhook (`PLAID_SECRET`) | Plaid secret (sandbox or production per `PLAID_ENV`). |
 | `plaid_access_token_<item_id>` | operator-console + bhaga-webhook (dynamic) | Per linked Item access_token after Plaid Link exchange — never stored in BQ. |
@@ -2458,6 +2459,13 @@ builds the container, applies any pending `core/migrations/*.sql` (same runner a
 so sticky tags never leave the new revision at 0% (Issue #240), then grants
 `roles/iap.httpsResourceAccessor` to each operator account. No manual deploy step. `--iap` is
 idempotent against the one-time Console-only provisioning below — it does not redo it.
+
+**Open tabs across deploys** (Issue #401): the build passes `NEXT_DEPLOYMENT_ID=<sha>` and
+`NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` from Secret Manager `operator-console-server-actions-key`, so
+Server Action ids stay the same across deploys and a tab opened before a deploy can still click
+unchanged buttons. A changed or removed action on an old tab shows "The console was updated since
+this page loaded — reload…" (`useConsoleAction`); nothing ran. Log signature:
+`Failed to find Server Action "<id>"`. Adding a new key version invalidates every open tab once.
 
 **Pre-merge preview** (Issue #384): every PR touching `apps/operator-console/**` gets its own
 service `operator-console-pr<N>` from

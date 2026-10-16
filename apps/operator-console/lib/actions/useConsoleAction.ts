@@ -1,8 +1,13 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { unstable_isUnrecognizedActionError } from "next/navigation";
 import type { ActionAck } from "@/lib/actions/types";
 import { useActionToast } from "@/lib/actions/ActionToast";
+
+/** Next throws UnrecognizedActionError before the action runs — the tab predates a deploy. */
+export const STALE_ACTION_MESSAGE =
+  "The console was updated since this page loaded — reload the page to continue. Nothing was saved.";
 
 export type ConsoleActionLabels = {
   saving?: string;
@@ -57,7 +62,11 @@ export function useConsoleAction() {
         toast.push(display, "info");
         return ack;
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = unstable_isUnrecognizedActionError(e)
+          ? STALE_ACTION_MESSAGE
+          : e instanceof Error
+            ? e.message
+            : String(e);
         setError(msg);
         setStage(null);
         toast.push(msg, "error");

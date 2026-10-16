@@ -13,6 +13,9 @@ COPY . .
 # Per-build id for Next's version-skew protection (next.config.ts). Empty = off.
 ARG NEXT_DEPLOYMENT_ID=""
 ENV NEXT_DEPLOYMENT_ID=$NEXT_DEPLOYMENT_ID
+# Salts Server Action ids. Stable across builds = tabs opened before a deploy keep
+# working; empty = random per build. Builder stage only — not in the pushed image env.
+ARG NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=""
 RUN npm run build
 
 FROM node:22-slim AS runner

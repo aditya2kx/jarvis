@@ -181,6 +181,9 @@ Issue **#175 (Option B):** every mutating control uses the shared
 `useConsoleAction` shell (`lib/actions/`); heavy follow-ups enqueue Cloud Run
 Jobs (`bhaga-daily-refresh`) instead of blocking the click path. Audit + gate:
 `lib/actions/MUTATING_ACTIONS.md`, `scripts/check_operator_console_actions.py`.
+Server Action ids are salted with a stable Secret Manager key so tabs opened before a deploy
+keep working; a changed action on an old tab gets reload copy from `useConsoleAction`
+instead of Next's raw "was not found" error (Issue #401, `RUNBOOK.md` §17 Deploy).
 
 ```mermaid
 flowchart LR

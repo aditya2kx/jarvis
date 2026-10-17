@@ -1818,16 +1818,23 @@ BHAGA_SCHEDULE_WEEK_START=<Mon>` on the job, or `adp_schedule_write --inspect --
 that row fails with the names ADP did list. **Publish week** (enabled once a row is `drafted`) runs
 `BHAGA_ADP_SCHEDULE_WRITE=publish`: Publish drafts for that week — every draft, including ones added by
 hand in ADP — then the week's rows become `published`. If the toolbar count never reads 0 after the
-confirm, the job re-reads the week's grid and treats the publish as done only when no row is left
-`drafted` (else `PublishUnconfirmed`, rows stay `drafted`). A console publish then re-reads ADP from
+confirm, the job reloads the page up to 3 times and reads the week's count fresh
+(`[schedule_write] reload i/3 … publish_drafts=N`; the open grid can keep the old count and the
+open-shift cells' `Drafts: N` for minutes after a publish). Only if no reload reads 0 does it re-read
+the grid and accept the publish when no row is left `drafted` (else `PublishUnconfirmed`, rows stay
+`drafted`). A week ADP shows with 0 drafts while BQ still has `drafted` rows (an earlier publish ADP
+completed but the job could not confirm) is marked `published` and gets the DM. A console publish then re-reads ADP from
 this week through the published week (`refresh_open_shift_window`, so shifts claimed since the last
 sync drop off) and DMs the operator in ClickUp (`notify_published`, team_pulse's DM user) a
 ready-to-post Shift Coverage & Trades note (Issue #381): `@everyone` + the published week, then every
 ADP open shift from **tomorrow** through that week's Sunday, numbered by date with the slots nested.
 Nothing is posted to the team (`BREADCRUMB adp_publish_dm` if the DM fails). If the re-read fails the
-DM still goes out from the last sync and says "open shifts are as of <time>". Re-send that DM from BQ
-alone (no ADP): `BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.adp_schedule_write
---publish-dm --week-start <Mon>`. **Publishing
+DM still goes out from the last sync and says "open shifts are as of <time>". To send that DM again,
+use the console's **Send ClickUp message** (shown once a week has `published` rows;
+`sendPublishMessageAction` → `BHAGA_ADP_SCHEDULE_WRITE=dm`): it re-reads open shifts from ADP the same
+way, then DMs (`BREADCRUMB adp_publish_dm_reread` + the stale note if ADP can't be read; the job exits 1
+if the DM itself fails). Laptop equivalent: `BHAGA_DATASTORE=bigquery python3 -m
+agents.bhaga.scripts.adp_schedule_write --publish-dm --week-start <Mon>`. **Publishing
 in ADP directly also works:** every Team Schedule load (nightly, Sync ADP, after any console write)
 reads each shift's `DRAFT` tag and each day's open-shift `Drafts: N` and flips matching `drafted` rows
 to `published` (`reconcile_published`, `[schedule_write] reconcile … newly_published=N`,

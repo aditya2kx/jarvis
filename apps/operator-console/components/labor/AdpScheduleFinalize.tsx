@@ -6,6 +6,7 @@ import {
   publishWeekAction,
   saveDraftsToAdpAction,
   schedulePushStatusAction,
+  sendPublishMessageAction,
   type ScheduleWriteRun,
 } from "@/app/labor/actions";
 import { Badge } from "@/components/ui/badge";
@@ -117,7 +118,7 @@ export function AdpScheduleFinalize({
   const [loadedWeek, setLoadedWeek] = useState<string | null>(null);
   // Right after a click the Cloud Run execution may not be listed yet; keep polling meanwhile.
   const [graceUntil, setGraceUntil] = useState(0);
-  const [lastAction, setLastAction] = useState<"save" | "publish" | null>(null);
+  const [lastAction, setLastAction] = useState<"save" | "publish" | "dm" | null>(null);
   const [sheet, setSheet] = useState<"save" | "publish" | null>(null);
   const { isPending, run } = useConsoleAction();
   const router = useRouter();
@@ -175,13 +176,14 @@ export function AdpScheduleFinalize({
   const pushRowsNow = running?.pushId ? rows.filter((r) => r.push_id === running.pushId) : [];
   const otherWeek =
     running != null &&
-    (running.mode === "publish" ? running.weekStart !== weekStart : pushRowsNow.length === 0) &&
+    (running.mode === "drafts" ? pushRowsNow.length === 0 : running.weekStart !== weekStart) &&
     graceUntil === 0;
   const saving = !otherWeek && (running?.mode === "drafts" || (graceUntil > 0 && lastAction === "save"));
   const publishing = !otherWeek && (running?.mode === "publish" || (graceUntil > 0 && lastAction === "publish"));
+  const messaging = !otherWeek && (running?.mode === "dm" || (graceUntil > 0 && lastAction === "dm"));
   const savedSoFar = pushRowsNow.filter((r) => r.status !== "queued").length;
 
-  const start = (action: "save" | "publish") => {
+  const start = (action: "save" | "publish" | "dm") => {
     setSheet(null);
     setLastAction(action);
     setGraceUntil(Date.now() + GRACE_MS);
@@ -206,6 +208,14 @@ export function AdpScheduleFinalize({
     if (ack.ok) start("publish");
   };
 
+  const sendMessage = async () => {
+    const ack = await run(() => sendPublishMessageAction(weekStart), {
+      saving: "Starting…",
+      queued: "Sending you the ClickUp message in the background.",
+    });
+    if (ack.ok) start("dm");
+  };
+
   const disabledTitle = enabled ? undefined : "ADP schedule writes are off (CONSOLE_ADP_SCHEDULE_WRITE)";
   const range = weekRangeLabel(weekStart);
   const days = new Set(toSave.map((s) => s.date)).size;
@@ -227,7 +237,9 @@ export function AdpScheduleFinalize({
                 ? `Saving to ADP as drafts — ${savedSoFar} of ${pushRowsNow.length || "…"} done (about 7 s per shift, after ~2 min to sign in to ADP). Safe to leave or reload this page.`
                 : publishing
                   ? "Publishing the week in ADP — employees get notified when it finishes. Safe to leave or reload this page."
-                  : toSave.length
+                  : messaging
+                    ? "Re-reading open shifts from ADP, then sending you the ClickUp message (about 3 min). Safe to leave or reload this page."
+                    : toSave.length
                     ? `The shifts this page drafted for every day of the week (the “+N draft” on each day above): ${toSave.length} shifts — ${toSave.length - open} assigned, ${open} open — ${hoursOf(toSave).toFixed(1)}h. Not in ADP yet.`
                     : drafted.length
                       ? `All ${drafted.length} suggested shifts are ADP drafts — employees don't see them until you publish.`
@@ -290,6 +302,17 @@ export function AdpScheduleFinalize({
         >
           {publishing ? "Publishing…" : `2 · Publish ${range}`}
         </Button>
+        {summary.published ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!enabled || busy || isPending}
+            title={disabledTitle ?? "DMs you the team post for this week, with today's open shifts from ADP"}
+            onClick={() => void sendMessage()}
+          >
+            {messaging ? "Sending ClickUp message…" : "Send ClickUp message"}
+          </Button>
+        ) : null}
       </div>
 
       <Sheet open={sheet != null} onOpenChange={(o) => !o && setSheet(null)}>

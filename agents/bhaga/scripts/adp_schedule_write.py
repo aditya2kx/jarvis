@@ -473,7 +473,7 @@ def open_shifts_between(lo: dt.date, hi: dt.date) -> tuple[list[dict], str | Non
     return out, f"{when:%b} {when.day} {_clock(when.hour * 60 + when.minute)} CT"
 
 
-def notify_published(store: str, week_start: dt.date, *, fresh: bool = True) -> None:
+def notify_published(store: str, week_start: dt.date, *, fresh: bool = True) -> bool:
     """DM the operator a draft team message after a console publish. Best-effort, posts once."""
     from agents.bhaga.scripts.team_pulse import DEFAULT_DM_USER_ID, DEFAULT_WORKSPACE_ID
     from skills.clickup_chat import ensure_dm_channel, post_message
@@ -485,8 +485,9 @@ def notify_published(store: str, week_start: dt.date, *, fresh: bool = True) -> 
         post_message(str(channel["id"]), content, team_id=DEFAULT_WORKSPACE_ID)
     except Exception as exc:  # noqa: BLE001
         print(f"BREADCRUMB adp_publish_dm store={store} week_start={week_start} error={type(exc).__name__}: {exc}"[:500])
-        return
+        return False
     print(f"[schedule_write] publish DM sent week_start={week_start} open_shifts={len(open_shifts)} fresh={fresh}")
+    return True
 
 
 def _drafted_left(store: str, week_start: dt.date) -> int:
@@ -499,9 +500,38 @@ def _drafted_left(store: str, week_start: dt.date) -> int:
     return sum(r["status"] == "drafted" for r in rows)
 
 
+def _reloaded_draft_count(page, week_start: dt.date, *, attempts: int = 3) -> int | None:
+    """The week's "Publish drafts (N)" count on a freshly loaded grid; None if never readable.
+
+    Right after Publish the open grid can keep the pre-publish toolbar count and the
+    open-shift cells' "Drafts: N" for minutes, while a fresh load shows 0.
+    """
+    from skills.adp_run_automation import runner as r
+
+    n = None
+    for i in range(1, attempts + 1):
+        page.wait_for_timeout(10_000)
+        try:
+            page.reload(wait_until="domcontentloaded")
+            frame = r._open_team_schedule(page)
+            page.wait_for_timeout(2500)
+            wb.goto_week(frame, page, week_start)
+            page.wait_for_timeout(2000)
+            n = wb.drafts_pending(frame)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[schedule_write] reload {i}/{attempts} week_start={week_start} unreadable: {type(exc).__name__}: {exc}"[:300])
+            continue
+        print(f"[schedule_write] reload {i}/{attempts} week_start={week_start} publish_drafts={n}")
+        if n == 0:
+            return 0
+    return n
+
+
 def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: bool) -> int:
     from skills.adp_run_automation import runner as r
 
+    # Rows a previous publish left 'drafted' although ADP published them still need marking + the DM.
+    had_drafted = _drafted_left(store, week_start)
     with r.adp_session(store=store, headed=not headless) as (_ctx, page):
         frame = r._open_team_schedule(page)
         page.wait_for_timeout(2500)
@@ -511,16 +541,16 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
             try:
                 pending = wb.publish_drafts(frame, page, dry_run=dry_run)
             except wb.PublishUnconfirmed as exc:
-                # ADP's toolbar count can lag or vanish after a publish; the grid's DRAFT tags decide.
-                print(f"[schedule_write] {exc}; checking the schedule instead")
-                if not refresh_schedule(page, store, week_start) or _drafted_left(store, week_start):
+                print(f"[schedule_write] {exc}; reloading the week to check")
+                if _reloaded_draft_count(page, week_start) == 0:
+                    print(f"[schedule_write] publish confirmed by reload week_start={week_start}")
+                elif refresh_schedule(page, store, week_start) and not _drafted_left(store, week_start):
+                    print(f"[schedule_write] publish confirmed by schedule re-read week_start={week_start}")
+                else:
                     raise
                 pending = exc.pending
-                print(f"[schedule_write] publish confirmed by schedule re-read week_start={week_start}")
+            if (pending or had_drafted) and not dry_run:
                 fresh = refresh_open_shift_window(page, store, week_start)
-            else:
-                if pending and not dry_run:
-                    fresh = refresh_open_shift_window(page, store, week_start)
         except Exception as exc:  # noqa: BLE001
             msg = f"{type(exc).__name__}: {exc}"[:400]
             print(f"BREADCRUMB adp_schedule_publish store={store} week_start={week_start} error={msg}")
@@ -532,7 +562,10 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
                      ("week", "DATE", week_start)],
                 )
             return 1
-    print(f"[schedule_write] publish week_start={week_start} pending_drafts={pending} dry_run={dry_run}")
+    print(
+        f"[schedule_write] publish week_start={week_start} pending_drafts={pending}"
+        f" bq_drafted={had_drafted} dry_run={dry_run}"
+    )
     if dry_run:
         return 0
     _query(
@@ -540,9 +573,25 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
         " WHERE store = @store AND week_start = @week AND status = 'drafted'",
         [("store", "STRING", store), ("week", "DATE", week_start)],
     )
-    if pending:
+    if pending or had_drafted:
         notify_published(store, week_start, fresh=fresh)
     return 0
+
+
+def run_publish_dm(store: str, week_start: dt.date, *, headless: bool) -> int:
+    """Console "Send ClickUp message": re-read ADP's open shifts, then DM the publish draft."""
+    from skills.adp_run_automation import runner as r
+
+    fresh = False
+    try:
+        with r.adp_session(store=store, headed=not headless) as (_ctx, page):
+            frame = r._open_team_schedule(page)
+            page.wait_for_timeout(2500)
+            wb.goto_week(frame, page, week_start)
+            fresh = refresh_open_shift_window(page, store, week_start)
+    except Exception as exc:  # noqa: BLE001 — still DM, flagged as not freshly read
+        print(f"BREADCRUMB adp_publish_dm_reread store={store} week_start={week_start} error={type(exc).__name__}: {exc}"[:500])
+    return 0 if notify_published(store, week_start, fresh=fresh) else 1
 
 
 def run_delete(store: str, week_start: dt.date, row_keys: list[str], *, headless: bool, dry_run: bool) -> int:
@@ -651,7 +700,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--store", default="palmetto")
     p.add_argument("--push-id")
     p.add_argument("--publish", action="store_true")
-    p.add_argument("--publish-dm", action="store_true", help="DM the publish draft for --week-start from BQ only")
+    p.add_argument("--publish-dm", action="store_true", help="re-read ADP's open shifts, then DM the publish draft for --week-start")
     p.add_argument("--inspect", action="store_true", help="read-only: draft count + open shifts for --week-start")
     p.add_argument("--refresh-schedule", action="store_true", help="read-only: reload --week-start's ADP schedule into BQ")
     p.add_argument("--delete", help="';'-separated row_keys of drafted shifts to remove from ADP (--week-start)")
@@ -671,8 +720,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.publish_dm:
         if not a.week_start or a.week_start.weekday() != 0:
             p.error("--publish-dm needs --week-start on a Monday")
-        notify_published(a.store, a.week_start)
-        return 0
+        return run_publish_dm(a.store, a.week_start, headless=a.headless)
     if a.inspect:
         if not a.week_start or a.week_start.weekday() != 0:
             p.error("--inspect needs --week-start on a Monday")

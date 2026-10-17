@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { pushRowKey, type PushRow, type PushShift } from "@/lib/labor/schedule-push";
 
 const status = vi.fn();
+const sendMessage = vi.fn();
 vi.mock("@/app/labor/actions", () => ({
   schedulePushStatusAction: (w: string) => status(w),
   saveDraftsToAdpAction: vi.fn(),
   publishWeekAction: vi.fn(),
+  sendPublishMessageAction: (w: string) => sendMessage(w),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/lib/actions/ActionToast", () => ({ useActionToast: () => ({ push: vi.fn() }) }));
@@ -68,5 +70,22 @@ describe("AdpScheduleFinalize after a save that stopped part-way (Issue #401)", 
     setup(rows, [{ ...UNSURE, inAdp: true }, LEFT], "2026-10-16 21:51:18+00");
     await waitFor(() => expect(screen.getByTestId("adp-finalize-status").textContent).toMatch(/1 shifts/));
     expect(screen.queryByTestId("adp-finalize-checking")).toBeNull();
+  });
+});
+
+describe("AdpScheduleFinalize Send ClickUp message", () => {
+  it("is offered once the week is published and starts the DM job", async () => {
+    sendMessage.mockResolvedValue({ ok: true, data: { weekStart: WEEK } });
+    setup([row(SAVED, "published"), row(LEFT, "published")], [SAVED, LEFT], "2026-10-17 21:51:18+00");
+    const btn = await screen.findByRole("button", { name: "Send ClickUp message" });
+    await waitFor(() => expect((btn as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(btn);
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(WEEK));
+  });
+
+  it("is hidden while nothing is published", async () => {
+    setup([row(SAVED, "drafted")], [SAVED], "2026-10-17 21:51:18+00");
+    await waitFor(() => expect(status).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /Send ClickUp message/ })).toBeNull();
   });
 });

@@ -100,8 +100,27 @@ export async function publishWeekAction(weekStart: string): Promise<ActionAck<{ 
   }
 }
 
-/** Latest ADP push state for a week (poll target for both steps). */
-export type ScheduleWriteRun = { mode: "drafts" | "publish"; pushId?: string; weekStart?: string };
+/** Re-read the week's open shifts from ADP and DM the operator the team post again. */
+export async function sendPublishMessageAction(weekStart: string): Promise<ActionAck<{ weekStart: string }>> {
+  try {
+    requireScheduleWrite();
+    const rows = await weekPushRows(DEFAULT_STORE, weekStart);
+    if (!rows.some((r) => r.status === "published")) {
+      throw new Error("This week isn't published yet — publish it first.");
+    }
+    await startScheduleWrite(DEFAULT_STORE, { mode: "dm", weekStart });
+    return okAck({
+      data: { weekStart },
+      queued: ["adp-schedule-write"],
+      message: "Re-reading open shifts from ADP, then sending you the ClickUp message (about 3 min).",
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Latest ADP push state for a week (poll target for every step). */
+export type ScheduleWriteRun = { mode: "drafts" | "publish" | "dm"; pushId?: string; weekStart?: string };
 
 /** The week's push rows plus the ADP schedule-write job still running, if any (survives a reload). */
 export async function schedulePushStatusAction(
@@ -114,7 +133,7 @@ export async function schedulePushStatusAction(
     ]);
     const mode = hit?.env.BHAGA_ADP_SCHEDULE_WRITE;
     const running: ScheduleWriteRun | null =
-      hit && (mode === "drafts" || mode === "publish")
+      hit && (mode === "drafts" || mode === "publish" || mode === "dm")
         ? { mode, pushId: hit.env.BHAGA_SCHEDULE_PUSH_ID, weekStart: hit.env.BHAGA_SCHEDULE_WEEK_START }
         : null;
     return okAck({ data: { rows, running } });

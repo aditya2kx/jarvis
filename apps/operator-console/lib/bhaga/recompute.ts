@@ -249,7 +249,7 @@ export async function triggerPunchFixApply(
  */
 export async function triggerAdpScheduleWrite(
   store: string,
-  job: { mode: "drafts"; pushId: string } | { mode: "publish"; weekStart: string },
+  job: { mode: "drafts"; pushId: string } | { mode: "publish" | "dm"; weekStart: string },
 ): Promise<{ executionName: string }> {
   if (!store) throw new Error("triggerAdpScheduleWrite: store is required");
   const env = [

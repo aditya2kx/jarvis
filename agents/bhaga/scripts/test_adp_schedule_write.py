@@ -479,13 +479,15 @@ class RefreshWindow(unittest.TestCase):
 class RunPublish(unittest.TestCase):
     W = datetime.date(2026, 10, 12)
 
-    def _run(self, publish, refreshed=True, drafted_left=0):
+    def _run(self, publish, refreshed=True, drafted_left=0, reloaded=None, drafted_before=33):
         sqls = []
+        drafted = iter([drafted_before])
 
         def fq(sql, params):
             sqls.append(sql)
             if sql.startswith("SELECT status"):
-                return [{"status": "drafted"}] * drafted_left + [{"status": "published"}]
+                n = next(drafted, drafted_left)
+                return [{"status": "drafted"}] * n + [{"status": "published"}]
             return []
 
         with mock.patch.object(w, "_query", fq), \
@@ -493,6 +495,7 @@ class RunPublish(unittest.TestCase):
              mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
              mock.patch.object(wb, "goto_week"), \
              mock.patch.object(wb, "publish_drafts", publish), \
+             mock.patch.object(w, "_reloaded_draft_count", return_value=reloaded), \
              mock.patch.object(w, "refresh_schedule", return_value=refreshed), \
              mock.patch.object(w, "notify_published") as notify:
             rc = w.run_publish("palmetto", self.W, headless=True, dry_run=False)
@@ -504,15 +507,62 @@ class RunPublish(unittest.TestCase):
         self.assertEqual((rc, published), (0, True))
         notify.assert_called_once_with("palmetto", self.W, fresh=True)
 
-    def test_lagging_count_confirmed_by_the_schedule_still_succeeds(self):
+    def test_lagging_open_shift_drafts_but_reload_shows_zero_succeeds(self):
+        # Oct 26 week: 26 assigned published, open-shift cells still said "Drafts: N", reload showed 0.
         publish = mock.MagicMock(side_effect=wb.PublishUnconfirmed("still shows drafts", 33))
-        rc, notify, published = self._run(publish)
+        rc, notify, published = self._run(publish, reloaded=0, drafted_left=7)
         self.assertEqual((rc, published), (0, True))
         notify.assert_called_once()
 
-    def test_drafts_still_in_the_schedule_fail_without_a_dm(self):
+    def test_unreadable_reload_confirmed_by_the_schedule_still_succeeds(self):
         publish = mock.MagicMock(side_effect=wb.PublishUnconfirmed("still shows drafts", 33))
-        for kwargs in ({"drafted_left": 2}, {"refreshed": False}):
+        rc, notify, published = self._run(publish, reloaded=None)
+        self.assertEqual((rc, published), (0, True))
+        notify.assert_called_once()
+
+    def test_drafts_still_in_adp_fail_without_a_dm(self):
+        publish = mock.MagicMock(side_effect=wb.PublishUnconfirmed("still shows drafts", 33))
+        for kwargs in ({"drafted_left": 2}, {"refreshed": False}, {"reloaded": 4, "drafted_left": 1}):
             rc, notify, published = self._run(publish, **kwargs)
             self.assertEqual((rc, published), (1, False))
             notify.assert_not_called()
+
+    def test_already_published_in_adp_but_drafted_in_bq_marks_and_sends_the_dm(self):
+        rc, notify, published = self._run(mock.MagicMock(return_value=0), drafted_before=7)
+        self.assertEqual((rc, published), (0, True))
+        notify.assert_called_once_with("palmetto", self.W, fresh=True)
+
+    def test_nothing_to_publish_sends_no_dm(self):
+        rc, notify, _published = self._run(mock.MagicMock(return_value=0), drafted_before=0)
+        self.assertEqual(rc, 0)
+        notify.assert_not_called()
+
+
+class RunPublishDm(unittest.TestCase):
+    W = datetime.date(2026, 10, 26)
+
+    def _run(self, *, session=fake_session, refreshed=True, sent=True):
+        with mock.patch("skills.adp_run_automation.runner.adp_session", session), \
+             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
+             mock.patch.object(wb, "goto_week"), \
+             mock.patch.object(w, "refresh_open_shift_window", return_value=refreshed), \
+             mock.patch.object(w, "notify_published", return_value=sent) as notify:
+            rc = w.run_publish_dm("palmetto", self.W, headless=True)
+        return rc, notify
+
+    def test_re_reads_adp_then_sends(self):
+        rc, notify = self._run()
+        self.assertEqual(rc, 0)
+        notify.assert_called_once_with("palmetto", self.W, fresh=True)
+
+    def test_adp_sign_in_failure_still_sends_flagged_stale(self):
+        def broken(**_kw):
+            raise RuntimeError("login")
+
+        rc, notify = self._run(session=broken)
+        self.assertEqual(rc, 0)
+        notify.assert_called_once_with("palmetto", self.W, fresh=False)
+
+    def test_dm_failure_fails_the_job(self):
+        rc, _notify = self._run(sent=False)
+        self.assertEqual(rc, 1)

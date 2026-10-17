@@ -83,18 +83,51 @@ export function relevantRows(shifts: PushShift[], rows: PushRow[]): PushRow[] {
 }
 
 /**
- * Draft shifts not yet in ADP (never saved, or the save failed) vs already there
- * or in flight. 'skipped' means an earlier save already drafted it.
+ * A save that may or may not have landed — ADP never confirmed it, or the job died
+ * with the row still 'queued' — and ADP's schedule hasn't been re-read since.
+ * Re-saving it then could draft the shift twice.
+ */
+export function awaitingAdpCheck(r: PushRow, stalled: boolean, scheduleReadAt: string | null): boolean {
+  const unsure =
+    (r.status === "queued" && stalled) ||
+    (r.status === "failed" && (r.error ?? "").startsWith("UnconfirmedSave"));
+  if (!unsure) return false;
+  if (!scheduleReadAt || !r.updated_at) return true;
+  return Date.parse(scheduleReadAt) <= Date.parse(r.updated_at);
+}
+
+/**
+ * Draft shifts not yet in ADP (never saved, the save failed, or a stopped save never
+ * got to them) vs already there or in flight. 'skipped' means an earlier save already
+ * drafted it. `checking` = held until ADP's schedule is re-read (see awaitingAdpCheck);
+ * after that a shift ADP's schedule shows (`inAdp`) stays out, the rest are retried.
  */
 export function splitAgainstAdp(
-  shifts: PushShift[],
+  shifts: (PushShift & { inAdp?: boolean })[],
   rows: PushRow[],
-): { toSave: PushShift[]; inAdp: PushShift[] } {
-  const held = new Set(rows.filter((r) => r.status !== "failed").map((r) => shiftKey(rowShift(r))));
+  opts: { stalled?: boolean; scheduleReadAt?: string | null } = {},
+): { toSave: PushShift[]; inAdp: PushShift[]; checking: PushShift[] } {
+  const stalled = opts.stalled ?? false;
+  const readAt = opts.scheduleReadAt ?? null;
+  const retryable = (r: PushRow) => r.status === "failed" || (r.status === "queued" && stalled);
+  const held = new Set<string>();
+  const unsure = new Set<string>();
+  for (const r of rows) {
+    const key = shiftKey(rowShift(r));
+    if (awaitingAdpCheck(r, stalled, readAt)) unsure.add(key);
+    else if (!retryable(r)) held.add(key);
+  }
   const toSave: PushShift[] = [];
   const inAdp: PushShift[] = [];
-  for (const s of shifts) (held.has(shiftKey(s)) ? inAdp : toSave).push(s);
-  return { toSave, inAdp };
+  const checking: PushShift[] = [];
+  for (const s of shifts) {
+    const shift = { date: s.date, employee: s.employee, startMin: s.startMin, endMin: s.endMin };
+    const key = shiftKey(shift);
+    if (s.inAdp || held.has(key)) inAdp.push(shift);
+    else if (unsure.has(key)) checking.push(shift);
+    else toSave.push(shift);
+  }
+  return { toSave, inAdp, checking };
 }
 
 function addDays(iso: string, n: number): string {

@@ -871,6 +871,7 @@ export default async function LaborPage({
             activeStaff={activeStaff}
             savedPushRows={savedPushRows}
             adpWriteEnabled={FEATURES.adpScheduleWrite}
+            scheduleReadAt={scheduleReadAt}
           />
           </CollapsibleSection>
 

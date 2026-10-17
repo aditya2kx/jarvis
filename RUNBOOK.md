@@ -1799,8 +1799,14 @@ by display name) or Create open shift, then **Save as draft**; the toolbar's "Pu
 must reach the count the job expects (it tracks the count itself, so a lagging toolbar never confirms
 the wrong shift). If it doesn't within 20 s, the job reloads the grid and re-reads the count: one more
 draft → the shift exists (`drafted`); no new draft → nothing was saved (`failed`, run continues); any
-other count → `UnconfirmedSave` and the run **stops** (the rest are `not attempted`) — look in ADP
-before re-saving. ADP updates the count late for open shifts, which is what the reload covers.
+other count, or the re-read itself failing → `UnconfirmedSave` and the run **stops** (the rest are
+`not attempted`), then re-reads that week's ADP schedule. A crash anywhere in the run marks every
+unsaved row `failed` (`not attempted: job stopped (…)`) — rows are never left `queued` (Issue #401:
+2026-10-16 `bhaga-daily-refresh-n8mp2` stranded 25). The console re-offers `failed` / stranded rows on
+the next **Save**; an `UnconfirmedSave` (or stranded) shift is held until ADP's schedule
+(`adp_scheduled_shifts.scraped_at_utc`) is newer than the row, then left out if ADP shows it and
+re-offered if not (Sync ADP re-reads it). Never fix the rows by hand. ADP updates the count late for
+open shifts, which is what the reload covers.
 Read-only check of a week (draft count + open shifts): `BHAGA_ADP_SCHEDULE_WRITE=inspect
 BHAGA_SCHEDULE_WEEK_START=<Mon>` on the job, or `adp_schedule_write --inspect --week-start <Mon>`. A person already scheduled that day is not in ADP's list, so
 that row fails with the names ADP did list. **Publish week** (enabled once a row is `drafted`) runs

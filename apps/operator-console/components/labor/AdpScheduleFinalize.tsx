@@ -103,10 +103,14 @@ export function AdpScheduleFinalize({
   weekStart,
   shifts,
   enabled,
+  scheduleReadAt = null,
 }: {
   weekStart: string;
-  shifts: PushShift[];
+  /** inAdp = ADP's synced schedule already has this exact shift. */
+  shifts: (PushShift & { inAdp?: boolean })[];
   enabled: boolean;
+  /** Last time ADP's schedule was read into BQ (adp_scheduled_shifts.scraped_at_utc). */
+  scheduleReadAt?: string | null;
 }) {
   const [allRows, setRows] = useState<PushRow[]>([]);
   const [running, setRunning] = useState<ScheduleWriteRun | null>(null);
@@ -160,7 +164,11 @@ export function AdpScheduleFinalize({
 
   const rows = useMemo(() => relevantRows(shifts, allRows), [shifts, allRows]);
   const summary = useMemo(() => summarizePush(rows), [rows]);
-  const { toSave, inAdp } = useMemo(() => splitAgainstAdp(shifts, rows), [shifts, rows]);
+  const stalled = !polling && summary.queued > 0;
+  const { toSave, inAdp, checking } = useMemo(
+    () => splitAgainstAdp(shifts, rows, { stalled, scheduleReadAt }),
+    [shifts, rows, stalled, scheduleReadAt],
+  );
   const drafted = rows.filter((r) => r.status === "drafted");
   const loaded = loadedWeek === weekStart;
   const busy = polling || !loaded;
@@ -172,7 +180,6 @@ export function AdpScheduleFinalize({
   const saving = !otherWeek && (running?.mode === "drafts" || (graceUntil > 0 && lastAction === "save"));
   const publishing = !otherWeek && (running?.mode === "publish" || (graceUntil > 0 && lastAction === "publish"));
   const savedSoFar = pushRowsNow.filter((r) => r.status !== "queued").length;
-  const stalled = !polling && summary.queued > 0;
 
   const start = (action: "save" | "publish") => {
     setSheet(null);
@@ -230,8 +237,15 @@ export function AdpScheduleFinalize({
         </p>
         {stalled ? (
           <p className="text-xs text-rose-600 dark:text-rose-400">
-            The save stopped with {summary.queued} shift{summary.queued === 1 ? "" : "s"} not saved. Check ADP
-            before saving again.
+            The save stopped with {summary.queued} shift{summary.queued === 1 ? "" : "s"} not saved.
+            {toSave.length ? " Save again to retry them." : ""}
+          </p>
+        ) : null}
+        {!polling && checking.length ? (
+          <p data-testid="adp-finalize-checking" className="text-xs text-amber-700 dark:text-amber-400">
+            {checking.length} shift{checking.length === 1 ? "" : "s"} may already be in ADP (the save
+            wasn&apos;t confirmed). Sync ADP to check — a shift ADP shows stays out of the next save; the rest
+            are offered again.
           </p>
         ) : null}
         {rows.length ? (

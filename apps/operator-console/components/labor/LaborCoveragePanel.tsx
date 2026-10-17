@@ -808,6 +808,7 @@ export function LaborCoveragePanel({
   activeStaff,
   savedPushRows = NO_PUSH_ROWS,
   adpWriteEnabled = false,
+  scheduleReadAt = null,
 }: {
   win: DateWindow;
   actuals: ActualShiftInput[];
@@ -831,6 +832,8 @@ export function LaborCoveragePanel({
   savedPushRows?: PushRow[];
   /** FEATURES.adpScheduleWrite, evaluated on the server. */
   adpWriteEnabled?: boolean;
+  /** Last ADP schedule read (adp_scheduled_shifts.scraped_at_utc) — resolves unconfirmed saves. */
+  scheduleReadAt?: string | null;
 }) {
   const strip = useMemo(
     () => coverageStripDates(win),
@@ -1268,7 +1271,7 @@ export function LaborCoveragePanel({
       [...(weekDraft?.byDay.values() ?? [])]
         .flat()
         .filter((s) => !s.fillsOpen)
-        .map(({ date, employee, startMin, endMin }) => ({ date, employee, startMin, endMin })),
+        .map(({ date, employee, startMin, endMin, inAdp }) => ({ date, employee, startMin, endMin, inAdp })),
     [weekDraft],
   );
 
@@ -1333,7 +1336,12 @@ export function LaborCoveragePanel({
         />
 
         {weekDraft ? (
-          <AdpScheduleFinalize weekStart={weekDraft.weekStart} shifts={weekShifts} enabled={adpWriteEnabled} />
+          <AdpScheduleFinalize
+            weekStart={weekDraft.weekStart}
+            shifts={weekShifts}
+            enabled={adpWriteEnabled}
+            scheduleReadAt={scheduleReadAt}
+          />
         ) : null}
 
         <div className="flex flex-col gap-1">

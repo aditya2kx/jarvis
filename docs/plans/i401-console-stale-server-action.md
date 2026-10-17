@@ -60,6 +60,14 @@ Test `apps/operator-console/__tests__/use-console-action.test.tsx`: `run(() => P
 
 **Verify:** `python3 scripts/check_doc_freshness.py`
 
+## Milestone 4 — Save stays usable after a save that stopped part-way (operator follow-up, same PR)
+
+2026-10-16 21:40Z push `8c3f9320…` (week 2026-10-26): `bhaga-daily-refresh-n8mp2` drafted 8 shifts, then `create_open_shift` raised `UnconfirmedSave` on 2026-10-27 and `recheck` → `wb.drafts_pending` raised `ScheduleWriteError("Publish drafts button not found")` inside the handler (`agents/bhaga/scripts/adp_schedule_write.py` line 240). The job died with 25 rows `queued`; `splitAgainstAdp` (`lib/labor/schedule-push.ts` line 89) counted `queued` as in flight, so `toSave` was empty and the button (`AdpScheduleFinalize.tsx` line 261, `toSave.length === 0`) stayed disabled. Rows were later hand-edited (operator rule B5: never).
+
+Job: a failing recheck is an unconfirmed stop; any crash marks every unsettled row `failed` ("not attempted: job stopped (…)") and re-raises; a stop flushes statuses then re-reads the week (`refresh_schedule`). Console: `awaitingAdpCheck(row, stalled, scheduleReadAt)`; `splitAgainstAdp(shifts, rows, {stalled, scheduleReadAt})` → `{toSave, inAdp, checking}`; `adpScheduleScrapedAt` flows `page.tsx` → `LaborCoveragePanel` → `AdpScheduleFinalize`; shifts carry `inAdp`.
+
+**Verify:** `python3 -m pytest -q agents/bhaga/scripts/test_adp_schedule_write.py && cd apps/operator-console && npx vitest run __tests__/schedule-push.test.ts __tests__/adp-schedule-finalize.test.tsx`
+
 ## Scenarios
 
 Happy: unchanged action on a tab opened before a deploy → succeeds (same id). Changed/removed action on an old tab → reload copy, nothing executed. Legacy: tabs opened on 00132 (random key) fail once after this PR deploys → reload copy. Plain server errors → unchanged message.

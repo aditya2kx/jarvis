@@ -312,6 +312,9 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
                                 expected = count_now(frame, expected)
                                 continue
                             print(f"[schedule_write] adopted {row['row_key']} — already in ADP ({type(exc).__name__})")
+                            expected = count_now(frame, expected)
+                            set_status(row["row_key"], "drafted")
+                            continue
                         if not dry_run:
                             expected = count_now(frame, expected + 1)
                             if not row["employee"]:

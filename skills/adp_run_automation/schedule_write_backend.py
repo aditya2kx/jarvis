@@ -421,7 +421,8 @@ FIND_SHIFT_JS = r"""
     const b = c.getBoundingClientRect(); const d = Math.abs(b.x + b.width / 2 - hx);
     if (d < bd) { bd = d; cell = c; }
   }
-  if (!cell) return { found: false, why: 'no day cell' };
+  // Rows only render days that have something, so the nearest cell can be a neighbour's.
+  if (!cell || bd > hb.width / 2) return { found: false, why: 'no day cell' };
   const shifts = [...cell.querySelectorAll('schedule-calendar-shifts')]
     .filter(s => norm(s).includes(rng) && /draft/i.test(norm(s)));
   if (shifts.length !== 1) return { found: false, why: 'matching draft shifts ' + shifts.length, cell: norm(cell) };

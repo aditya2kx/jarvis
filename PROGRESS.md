@@ -1,3 +1,7 @@
+## 2026-10-17 — Save to ADP drafts confirms open shifts and never saves a shift twice (Issue #404)
+
+**Scope:** every open-shift save read as unconfirmed and stopped the run (week of Oct 26, twice). The cause: after **Save draft**, ADP shows an "open shift … has been created" pane over the draft count, and the job never closed it. It now closes the pane with Back (never its Publish button) and takes the pane as confirmation. A save that still can't be confirmed is settled by looking for that exact shift in ADP, and a shift ADP already has is adopted rather than saved again, so re-clicking Save is always safe. **Evidence:** live ADP check in the PR §4.
+
 ## 2026-10-16 — Console tabs survive deploys; Save to ADP drafts recovers after a save that stopped part-way (Issue #401, PR #403)
 
 **Scope:** clicking "Review & save as ADP drafts" in a tab opened before a deploy failed with "Server Action … was not found", because action ids were re-salted on every build. The deploy now builds with a stable `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` from Secret Manager, and a stale action shows "reload the page" instead of the raw error. In the same PR, `adp_schedule_write --drafts` no longer leaves rows `queued` when it dies mid-save (week of Oct 26: the job crashed in its re-check and left 25 shifts stranded, which disabled the button). Every unsaved row is now marked `failed`, and the console offers those rows again while holding back a shift whose save wasn't confirmed until ADP has been re-read. **Evidence:** PR #403 §4.

@@ -27,7 +27,7 @@ import re
 import subprocess
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
@@ -60,6 +60,16 @@ def _set_status(row_key: str, push_id: str, status: str, error: str | None = Non
         [("status", "STRING", status), ("error", "STRING", error),
          ("push", "STRING", push_id), ("key", "STRING", row_key)],
     )
+
+
+def _known_open_slots(store: str, week: dt.date) -> set[tuple[str, int, int]]:
+    """Open shifts BQ already records as saved in ADP for that week (date_iso, start, end)."""
+    rows = _query(
+        "SELECT DISTINCT date, start_min, end_min FROM {T} WHERE store = @store AND employee IS NULL"
+        " AND status IN ('drafted', 'published') AND date BETWEEN @a AND @b",
+        [("store", "STRING", store), ("a", "DATE", week), ("b", "DATE", week + dt.timedelta(days=6))],
+    )
+    return {(r["date"].isoformat(), r["start_min"], r["end_min"]) for r in rows}
 
 
 def week_start_of(date: dt.date) -> dt.date:
@@ -128,6 +138,7 @@ def refresh_schedule(page, store: str, week: dt.date, *, weeks: int = 1) -> bool
 
     try:
         frame = r._open_team_schedule(page)
+        wb._back_out(frame, page)
         label = frame.get_by_text(re.compile(r"Week of")).first.inner_text(timeout=5000)
         if wb.week_label_start(label) != week:
             raise wb.ScheduleWriteError(f"grid shows {label!r}, not {week}")
@@ -207,14 +218,30 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
         print(f"BREADCRUMB adp_schedule_write push_id={push_id} row_key={row_key} error={msg}")
         set_status(row_key, "failed", msg)
 
-    def recheck(page, week: dt.date, row: dict, expected: int):
-        """After a lagging count: reload the grid and ask ADP whether the shift exists."""
+    def slot(row: dict) -> tuple[str, int, int]:
+        return (row["date"].isoformat(), row["start_min"], row["end_min"])
+
+    def in_adp(frame, page, row: dict, open_before: Counter) -> bool:
+        """Read-only: whether ADP now has this row's shift (open: one more than before)."""
+        if row["employee"]:
+            return wb.has_draft_shift(
+                frame, page, date_iso=row["date"].isoformat(), employee=row["employee"],
+                start_min=row["start_min"], end_min=row["end_min"],
+            )
+        return wb.read_open_shifts(page, frame, week_start_of(row["date"]))[slot(row)] > open_before[slot(row)]
+
+    def reopen(page, week: dt.date):
         frame = r._open_team_schedule(page)
+        wb._back_out(frame, page)
         wb.goto_week(frame, page, week)
         page.wait_for_timeout(1500)
-        n = wb.drafts_pending(frame)
-        print(f"[schedule_write] recheck row_key={row['row_key']} publish_drafts={n} expected={expected + 1}")
-        return frame, n
+        return frame
+
+    def count_now(frame, fallback: int) -> int:
+        try:
+            return wb.drafts_pending(frame)
+        except wb.ScheduleWriteError:
+            return fallback
 
     try:
         with r.adp_session(store=store, headed=not headless) as (_ctx, page):
@@ -223,11 +250,25 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
                 for week in sorted(by_week):
                     wb.goto_week(frame, page, week)
                     expected = wb.drafts_pending(frame)
+                    open_adp: Counter = Counter()
+                    unclaimed: Counter = Counter()
+                    if any(not row["employee"] for row in by_week[week]):
+                        # A save ADP made but never confirmed is in ADP and not in BQ;
+                        # adopt it rather than create a duplicate.
+                        open_adp = wb.read_open_shifts(page, frame, week)
+                        known = _known_open_slots(store, week)
+                        unclaimed = Counter({k: n - (k in known) for k, n in open_adp.items()})
+                        print(f"[schedule_write] week={week} adp_open={dict(open_adp)} known={sorted(known)}")
                     for row in by_week[week]:
                         pending.discard(row["row_key"])
                         iso = row["date"].isoformat()
                         adp_name = "open shift"
                         started = time.monotonic()
+                        if not row["employee"] and unclaimed[slot(row)] > 0:
+                            unclaimed[slot(row)] -= 1
+                            print(f"[schedule_write] adopted {row['row_key']} — already in ADP")
+                            set_status(row["row_key"], "drafted")
+                            continue
                         try:
                             if row["employee"]:
                                 adp_name = wb.create_shift(
@@ -241,30 +282,40 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
                                     end_min=row["end_min"], before=expected, dry_run=dry_run,
                                 )
                         except wb.UnconfirmedSave as exc:
+                            # Ask ADP for this exact shift: a draft count can't tell a lag from a miss.
                             try:
-                                frame, n = recheck(page, week, row, expected)
-                                seen = f"ADP shows {n}, expected {expected + 1}"
-                            except Exception as rexc:  # noqa: BLE001 — unknown count = unconfirmed
-                                n, seen = None, f"recheck failed: {type(rexc).__name__}: {rexc}"
-                            if n == expected:
-                                # ADP has no new draft, so nothing was saved; safe to move on.
-                                failed += 1
-                                fail(row["row_key"], f"not saved — ADP still shows {n} drafts")
-                                continue
-                            if n != expected + 1:
+                                frame = reopen(page, week)
+                                present = in_adp(frame, page, row, open_adp)
+                            except Exception as rexc:  # noqa: BLE001 — unknown = unconfirmed
                                 # The console holds this shift until ADP's schedule is re-read.
-                                fail(row["row_key"], f"UnconfirmedSave: {exc} ({seen})"[:400])
+                                fail(row["row_key"], f"UnconfirmedSave: {exc} (recheck failed: {type(rexc).__name__}: {rexc})"[:400])
                                 for key in sorted(pending):
                                     fail(key, "not attempted: stopped after an unconfirmed save")
                                 changed.add(week)
                                 stopped = True
                                 break
+                            print(f"[schedule_write] recheck row_key={row['row_key']} in_adp={present}")
+                            if not present:
+                                failed += 1
+                                fail(row["row_key"], "not saved — ADP does not show this shift")
+                                expected = count_now(frame, expected)
+                                continue
                         except Exception as exc:  # noqa: BLE001 — one bad shift must not stop the rest
-                            failed += 1
-                            fail(row["row_key"], f"{type(exc).__name__}: {exc}"[:400])
-                            continue
+                            try:
+                                frame = reopen(page, week)
+                                present = not dry_run and bool(row["employee"]) and in_adp(frame, page, row, open_adp)
+                            except Exception:  # noqa: BLE001
+                                present = False
+                            if not present:
+                                failed += 1
+                                fail(row["row_key"], f"{type(exc).__name__}: {exc}"[:400])
+                                expected = count_now(frame, expected)
+                                continue
+                            print(f"[schedule_write] adopted {row['row_key']} — already in ADP ({type(exc).__name__})")
                         if not dry_run:
-                            expected += 1
+                            expected = count_now(frame, expected + 1)
+                            if not row["employee"]:
+                                open_adp[slot(row)] += 1
                             changed.add(week)
                         print(
                             f"[schedule_write] {'checked' if dry_run else 'drafted'} {row['row_key']} "

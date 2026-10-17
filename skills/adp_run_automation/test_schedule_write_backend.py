@@ -90,5 +90,67 @@ class GotoWeek(unittest.TestCase):
         self.assertEqual(go.call_count, 2)
 
 
+class OpenShiftReads(unittest.TestCase):
+    W = datetime.date(2026, 10, 26)
+
+    def test_parse_clock_inverts_fmt_time(self):
+        for m in (0, 390, 720, 810, 1230, 1439):
+            self.assertEqual(wb.parse_clock(wb.fmt_time(m)), m)
+        with self.assertRaises(ValueError):
+            wb.parse_clock("13:00")
+
+    def test_counts_by_day_and_range(self):
+        # As read live 2026-10-17 (adp_schedule_write --inspect --week-start 2026-10-26).
+        cells = [
+            {"heading": "Open Shifts on Tuesday, Oct 27", "shifts": [{"range": "4:30 PM - 8:30 PM"}]},
+            {"heading": "Open Shifts on Saturday, Oct 31",
+             "shifts": [{"range": "1:30 PM - 8:30 PM"}, {"range": "1:30 PM - 8:30 PM"}]},
+        ]
+        self.assertEqual(wb.open_shift_counts(cells, self.W), {
+            ("2026-10-27", 990, 1230): 1, ("2026-10-31", 810, 1230): 2,
+        })
+
+    def test_week_crossing_a_month(self):
+        cells = [{"heading": "Open Shifts on Sunday, Nov 1", "shifts": [{"range": "9:00 AM - 4:30 PM"}]}]
+        self.assertEqual(wb.open_shift_counts(cells, self.W), {("2026-11-01", 540, 990): 1})
+
+    def test_heading_outside_the_week_raises(self):
+        cells = [{"heading": "Open Shifts on Monday, Nov 2", "shifts": [{"range": "9:00 AM - 4:30 PM"}]}]
+        with self.assertRaises(wb.ScheduleWriteError):
+            wb.open_shift_counts(cells, self.W)
+
+
+class CreateOpenShiftConfirm(unittest.TestCase):
+    CREATED = ("An open shift with 1 shift has been created and added to the schedule as a draft shift. "
+               "Shift details 1 of 1 available 3:00 PM - 8:30 PM EditPublish")
+
+    def _create(self, pane_text, counts_match):
+        calls = []
+        with mock.patch.object(wb, "_open_action"), \
+             mock.patch.object(wb, "_fill_times"), \
+             mock.patch.object(wb, "_click", side_effect=lambda _f, _p, what: calls.append(what)), \
+             mock.patch.object(wb, "_visible_button", return_value=object()), \
+             mock.patch.object(wb, "_pane_text", return_value=pane_text), \
+             mock.patch.object(wb, "_wait_for", side_effect=lambda _p, check, _t: check()), \
+             mock.patch.object(wb, "_back_out", side_effect=lambda _f, _p: calls.append("back_out")), \
+             mock.patch.object(wb, "_wait_drafts", side_effect=lambda *_a, **_k: calls.append("count") or counts_match):
+            wb.create_open_shift(mock.MagicMock(), mock.Mock(), date_iso="2026-10-31",
+                                 start_min=900, end_min=1230, before=25)
+        return calls
+
+    def test_created_pane_is_closed_before_the_count_is_read(self):
+        # 2026-10-17: the pane hid the toolbar, so the count never read 26 and the job stopped.
+        calls = self._create(self.CREATED, counts_match=True)
+        self.assertEqual(calls, ["Next", "Save draft", "back_out", "count"])
+        self.assertNotIn("Publish", calls)
+
+    def test_created_pane_confirms_a_lagging_count(self):
+        self._create(self.CREATED, counts_match=False)
+
+    def test_no_created_pane_and_no_count_is_unconfirmed(self):
+        with self.assertRaises(wb.UnconfirmedSave):
+            self._create("Shift details Eligibility Previous Save draft Publish", counts_match=False)
+
+
 if __name__ == "__main__":
     unittest.main()

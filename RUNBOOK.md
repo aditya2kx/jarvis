@@ -1831,7 +1831,10 @@ alone (no ADP): `BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.adp_sc
 in ADP directly also works:** every Team Schedule load (nightly, Sync ADP, after any console write)
 reads each shift's `DRAFT` tag and each day's open-shift `Drafts: N` and flips matching `drafted` rows
 to `published` (`reconcile_published`, `[schedule_write] reconcile … newly_published=N`,
-`BREADCRUMB adp_publish_reconcile` on error); no DM in that case. A failed publish
+`BREADCRUMB adp_publish_reconcile` on error); no DM in that case. The same load flips a `failed` row
+whose exact shift ADP shows (same day, times, and person, or open) to `drafted` / `published` — a save
+ADP made but the job couldn't confirm stops reading as failed after the next schedule read
+(`… failed_found_in_adp=N`, Issue #406). A failed publish
 leaves rows `drafted` with `error='publish failed: …'`. Re-saving only sends failed / new shifts;
 a row_key already drafted is `skipped`. Dry run (fills each wizard, saves nothing):
 `BHAGA_ADP_CDP_URL=http://127.0.0.1:9333 python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --push-id <id> --dry-run`.

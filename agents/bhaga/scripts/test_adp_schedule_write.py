@@ -315,6 +315,56 @@ class PublishedRowKeys(unittest.TestCase):
         self.assertEqual(w.published_row_keys(self.rows, states), [])
 
 
+class FoundFailedRows(unittest.TestCase):
+    def test_failed_rows_adp_shows_take_its_status(self):
+        # 2026-10-17: Oct 31's three open shifts were saved in ADP, but their rows stayed 'failed'.
+        rows = [
+            {"row_key": "o1", "date": "2026-10-31", "employee": None, "start_min": 810, "end_min": 1230},
+            {"row_key": "o2", "date": "2026-10-31", "employee": None, "start_min": 900, "end_min": 1230},
+            {"row_key": "a", "date": "2026-11-01", "employee": "Doe, Alex", "start_min": 390, "end_min": 840},
+            {"row_key": "gone", "date": "2026-11-01", "employee": None, "start_min": 540, "end_min": 990},
+        ]
+        states = [
+            {"date": "2026-10-31", "employee": None, "start_min": 810, "end_min": 1230, "draft": True},
+            {"date": "2026-10-31", "employee": None, "start_min": 900, "end_min": 1230, "draft": False},
+            {"date": "2026-11-01", "employee": "Doe, Alex Q", "start_min": 390, "end_min": 840, "draft": True},
+        ]
+        self.assertEqual(w.found_failed_rows(rows, states), {"o1": "drafted", "o2": "published", "a": "drafted"})
+
+    def test_near_misses_stay_failed(self):
+        rows = [
+            {"row_key": "a", "date": "2026-11-01", "employee": "Doe, Alex", "start_min": 390, "end_min": 840},
+            {"row_key": "o", "date": "2026-11-01", "employee": None, "start_min": 540, "end_min": 990},
+        ]
+        states = [
+            {"date": "2026-10-31", "employee": "Doe, Alex", "start_min": 390, "end_min": 840, "draft": True},
+            {"date": "2026-11-01", "employee": None, "start_min": 390, "end_min": 840, "draft": True},
+            {"date": "2026-11-01", "employee": "Roe, Sam", "start_min": 540, "end_min": 990, "draft": True},
+        ]
+        self.assertEqual(w.found_failed_rows(rows, states), {})
+
+
+class ReconcileWithAdp(unittest.TestCase):
+    def test_failed_row_found_in_adp_updates_only_its_latest_push(self):
+        latest = [
+            {"push_id": "p2", "row_key": "o1", "status": "failed", "date": "2026-10-31",
+             "employee": None, "start_min": 810, "end_min": 1230},
+            {"push_id": "p2", "row_key": "x", "status": "failed", "date": "2026-11-01",
+             "employee": None, "start_min": 540, "end_min": 990},
+        ]
+        calls = []
+
+        def fq(sql, params):
+            calls.append((sql, {n: v for n, _t, v in params}))
+            return latest if sql.startswith("SELECT") else []
+
+        states = [{"date": "2026-10-31", "employee": None, "start_min": 810, "end_min": 1230, "draft": True}]
+        with mock.patch.object(w, "_query", fq):
+            w.reconcile_published("palmetto", states)
+        updates = [p for s, p in calls if s.startswith("UPDATE")]
+        self.assertEqual(updates, [{"store": "palmetto", "status": "drafted", "ids": "p2|o1"}])
+
+
 D = datetime.date
 
 

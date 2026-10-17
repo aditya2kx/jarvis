@@ -1,7 +1,7 @@
 import "server-only";
 import { triggerAdpScheduleWrite } from "@/lib/bhaga/recompute";
 
-export type ScheduleWriteJob = { mode: "drafts"; pushId: string } | { mode: "publish"; weekStart: string };
+export type ScheduleWriteJob = { mode: "drafts"; pushId: string } | { mode: "publish" | "dm"; weekStart: string };
 
 /** Always a Cloud Run job — the ADP browser never runs on the operator's machine. */
 export async function startScheduleWrite(

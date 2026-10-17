@@ -17,19 +17,35 @@ Feature flag: no new flag. This cannot silently produce wrong numbers: it change
 
 ## Milestone 1 — reconcile failed rows (Composer)
 
-`found_failed_rows(rows, states) -> dict[str, str]`; `reconcile_published(store, states)` selects `push_id` too, then UPDATEs by `CONCAT(push_id, '|', row_key)` per status and prints `failed_found_in_adp=N`. Called from `backfill_from_downloads._reconcile_published` on every schedule load (unchanged hook).
+`agents/bhaga/scripts/adp_schedule_write.py:104` `found_failed_rows(rows, states) -> dict[str, str]`; `adp_schedule_write.py:123` `reconcile_published(store, states)` selects `push_id` too, then UPDATEs by `CONCAT(push_id, '|', row_key)` per status and prints `failed_found_in_adp=N`. Called from `agents/bhaga/scripts/backfill_from_downloads.py:488` `_reconcile_published` on every schedule load (unchanged hook).
 
 **Verify:** `python3 -m pytest -q agents/bhaga/scripts/test_adp_schedule_write.py`
 
-## Milestone 2 — docs (Composer)
+## Milestone 2 — live read-only preview (Composer)
+
+`/tmp/reconcile_preview.py`: logs into ADP, goes to week 2026-10-26, `r._schedule_within_session(page, weeks=1)` → `sb.adp_shift_states` → `reconcile_published`, with `_query` printing every UPDATE instead of running it.
+
+**Verify:** `python3 /tmp/reconcile_preview.py` → one WOULD UPDATE to `drafted` with exactly the three `be78d867…|palmetto|2026-10-31|OPEN|…` ids, `failed_found_in_adp=3`, `newly_published=0`.
+
+## Milestone 3 — docs (Composer)
 
 `RUNBOOK.md` publish/reconcile paragraph, `agents/bhaga/scripts/README.md`, `PROGRESS.md`.
 
 **Verify:** `python3 scripts/check_doc_freshness.py`
 
+## Milestone 4 — post-merge (operator Sync ADP)
+
+**Verify:** `bq query … SELECT status, COUNT(*) FROM labor_schedule_pushes WHERE date BETWEEN '2026-10-26' AND '2026-11-01' QUALIFY latest-per-row_key` → 33 `drafted`, 0 `failed`; console card "33 ADP drafts", no failed chip.
+
 ## Scenarios
 
-Failed + ADP draft → `drafted`. Failed + ADP published → `published`. Same times, different person / assigned vs open / other day → stays `failed`. Older pushes' rows for the same key are untouched. Legacy drafted → published unchanged.
+- Happy: failed row + ADP draft at the same slot → `drafted` (`test_failed_rows_adp_shows_take_its_status`, o1).
+- Published: failed row + ADP published → `published` (o2).
+- Person prefix: "Doe, Alex" ↔ ADP "Doe, Alex Q" → `drafted` (a).
+- Failure: ADP lacks the shift → stays `failed` ("gone").
+- Near miss: same times on another day, an open shift at an assigned row's times, another person → stays `failed` (`test_near_misses_stay_failed`).
+- Scope: only the latest push's row is updated (`test_failed_row_found_in_adp_updates_only_its_latest_push`).
+- Legacy: drafted → published (`PublishedRowKeys`) unchanged.
 
 ## PR mechanics
 

@@ -191,12 +191,15 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
     for row in todo:
         by_week[week_start_of(row["date"])].append(row)
     failed = 0
+    stopped = False
     changed: set[dt.date] = set()
     pending = {row["row_key"] for row in todo}
+    settled: set[str] = set()
     # BQ DML takes seconds; one ordered background writer keeps it off the browser's path.
     writer = ThreadPoolExecutor(max_workers=1)
 
     def set_status(row_key: str, status: str, error: str | None = None) -> None:
+        settled.add(row_key)
         if not dry_run:
             writer.submit(_set_status, row_key, push_id, status, error)
 
@@ -216,56 +219,75 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
     try:
         with r.adp_session(store=store, headed=not headless) as (_ctx, page):
             frame = r._open_team_schedule(page)
-            for week in sorted(by_week):
-                wb.goto_week(frame, page, week)
-                expected = wb.drafts_pending(frame)
-                for row in by_week[week]:
-                    pending.discard(row["row_key"])
-                    iso = row["date"].isoformat()
-                    adp_name = "open shift"
-                    started = time.monotonic()
-                    try:
-                        if row["employee"]:
-                            adp_name = wb.create_shift(
-                                frame, page, date_iso=iso, employee=row["employee"],
-                                start_min=row["start_min"], end_min=row["end_min"],
-                                before=expected, dry_run=dry_run,
-                            )
-                        else:
-                            wb.create_open_shift(
-                                frame, page, date_iso=iso, start_min=row["start_min"],
-                                end_min=row["end_min"], before=expected, dry_run=dry_run,
-                            )
-                    except wb.UnconfirmedSave as exc:
-                        frame, n = recheck(page, week, row, expected)
-                        if n == expected:
-                            # ADP has no new draft, so nothing was saved; safe to move on.
+            try:
+                for week in sorted(by_week):
+                    wb.goto_week(frame, page, week)
+                    expected = wb.drafts_pending(frame)
+                    for row in by_week[week]:
+                        pending.discard(row["row_key"])
+                        iso = row["date"].isoformat()
+                        adp_name = "open shift"
+                        started = time.monotonic()
+                        try:
+                            if row["employee"]:
+                                adp_name = wb.create_shift(
+                                    frame, page, date_iso=iso, employee=row["employee"],
+                                    start_min=row["start_min"], end_min=row["end_min"],
+                                    before=expected, dry_run=dry_run,
+                                )
+                            else:
+                                wb.create_open_shift(
+                                    frame, page, date_iso=iso, start_min=row["start_min"],
+                                    end_min=row["end_min"], before=expected, dry_run=dry_run,
+                                )
+                        except wb.UnconfirmedSave as exc:
+                            try:
+                                frame, n = recheck(page, week, row, expected)
+                                seen = f"ADP shows {n}, expected {expected + 1}"
+                            except Exception as rexc:  # noqa: BLE001 — unknown count = unconfirmed
+                                n, seen = None, f"recheck failed: {type(rexc).__name__}: {rexc}"
+                            if n == expected:
+                                # ADP has no new draft, so nothing was saved; safe to move on.
+                                failed += 1
+                                fail(row["row_key"], f"not saved — ADP still shows {n} drafts")
+                                continue
+                            if n != expected + 1:
+                                # The console holds this shift until ADP's schedule is re-read.
+                                fail(row["row_key"], f"UnconfirmedSave: {exc} ({seen})"[:400])
+                                for key in sorted(pending):
+                                    fail(key, "not attempted: stopped after an unconfirmed save")
+                                changed.add(week)
+                                stopped = True
+                                break
+                        except Exception as exc:  # noqa: BLE001 — one bad shift must not stop the rest
                             failed += 1
-                            fail(row["row_key"], f"not saved — ADP still shows {n} drafts")
+                            fail(row["row_key"], f"{type(exc).__name__}: {exc}"[:400])
                             continue
-                        if n != expected + 1:
-                            fail(row["row_key"], f"UnconfirmedSave: {exc} (ADP shows {n}, expected {expected + 1})"[:400])
-                            for key in sorted(pending):
-                                fail(key, "not attempted: stopped after an unconfirmed save")
-                            return 1
-                    except Exception as exc:  # noqa: BLE001 — one bad shift must not stop the rest
-                        failed += 1
-                        fail(row["row_key"], f"{type(exc).__name__}: {exc}"[:400])
-                        continue
-                    if not dry_run:
-                        expected += 1
-                        changed.add(week)
-                    print(
-                        f"[schedule_write] {'checked' if dry_run else 'drafted'} {row['row_key']} "
-                        f"as {adp_name!r} in {time.monotonic() - started:.1f}s"
-                    )
-                    set_status(row["row_key"], "drafted")
-            if changed:
-                # The grid is on the last week written; the console saves one week per click.
-                refresh_schedule(page, store, max(changed))
+                        if not dry_run:
+                            expected += 1
+                            changed.add(week)
+                        print(
+                            f"[schedule_write] {'checked' if dry_run else 'drafted'} {row['row_key']} "
+                            f"as {adp_name!r} in {time.monotonic() - started:.1f}s"
+                        )
+                        set_status(row["row_key"], "drafted")
+                    if stopped:
+                        break
+            finally:
+                if changed and not dry_run:
+                    # Statuses land first: the console trusts a schedule read newer than a row's updated_at.
+                    writer.submit(lambda: None).result()
+                    # The grid is on the last week written; the console saves one week per click.
+                    refresh_schedule(page, store, max(changed))
+    except Exception as exc:
+        # A crash must not strand rows as 'queued' — the console reads that as still in flight.
+        for row in todo:
+            if row["row_key"] not in settled:
+                fail(row["row_key"], f"not attempted: job stopped ({type(exc).__name__}: {exc})"[:400])
+        raise
     finally:
         writer.shutdown(wait=True)
-    return 1 if failed else 0
+    return 1 if failed or stopped else 0
 
 
 def _clock(m: int) -> str:

@@ -56,6 +56,42 @@ describe("splitAgainstAdp", () => {
     expect(toSave).toEqual([B, C]);
     expect(inAdp).toEqual([A, OPEN]);
   });
+
+  // 2026-10-16 week of Oct 26: the job died after 8 drafts and left 25 rows 'queued',
+  // so nothing was left to save and the button stayed disabled.
+  const SAVED_AT = "2026-10-16 21:43:52.000000+00";
+  const BEFORE = "2026-10-16 21:30:00.000000+00";
+  const AFTER = "2026-10-16 21:51:18.000000+00";
+  const at = (r: PushRow): PushRow => ({ ...r, updated_at: SAVED_AT });
+  const B = { ...A, employee: "Roe, Sam" };
+
+  it("keeps queued rows in flight while the job runs, retries them once it has stopped", () => {
+    const rows = [at(row(A, "drafted")), at(row(B, "queued"))];
+    expect(splitAgainstAdp([A, B], rows).toSave).toEqual([]);
+    expect(splitAgainstAdp([A, B], rows, { stalled: true, scheduleReadAt: AFTER })).toEqual({
+      toSave: [B],
+      inAdp: [A],
+      checking: [],
+    });
+  });
+
+  it("holds a stopped save's shifts until ADP's schedule is re-read", () => {
+    const rows = [at(row(B, "queued"))];
+    expect(splitAgainstAdp([B], rows, { stalled: true, scheduleReadAt: BEFORE }).checking).toEqual([B]);
+    expect(splitAgainstAdp([B], rows, { stalled: true, scheduleReadAt: null }).checking).toEqual([B]);
+  });
+
+  it("resolves an unconfirmed save from ADP's re-read schedule", () => {
+    const rows = [at(row(OPEN, "failed", "UnconfirmedSave: ADP did not confirm (recheck failed)"))];
+    expect(splitAgainstAdp([OPEN], rows, { scheduleReadAt: BEFORE }).checking).toEqual([OPEN]);
+    expect(splitAgainstAdp([{ ...OPEN, inAdp: true }], rows, { scheduleReadAt: AFTER }).inAdp).toEqual([OPEN]);
+    expect(splitAgainstAdp([OPEN], rows, { scheduleReadAt: AFTER }).toSave).toEqual([OPEN]);
+  });
+
+  it("retries 'not attempted' rows right away", () => {
+    const rows = [at(row(B, "failed", "not attempted: stopped after an unconfirmed save"))];
+    expect(splitAgainstAdp([B], rows, { scheduleReadAt: BEFORE }).toSave).toEqual([B]);
+  });
 });
 
 describe("savedPlan", () => {

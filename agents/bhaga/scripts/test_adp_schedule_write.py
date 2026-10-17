@@ -111,6 +111,49 @@ class RunDrafts(unittest.TestCase):
         self.assertEqual(fq.updates[0], ("a", "drafted", None))
         self.assertEqual(fq.updates[1][:2], ("b", "failed"))
         self.assertEqual(fq.updates[2], ("c", "failed", "not attempted: stopped after an unconfirmed save"))
+        self.refresh.assert_called_once()
+
+    def test_failed_recheck_stops_without_stranding_queued_rows(self):
+        # 2026-10-16 bhaga-daily-refresh-n8mp2: the recheck itself raised and 25 rows stayed 'queued'.
+        fq = FakeQuery([_row("a", None), _row("b", "Roe, Sam"), _row("c", "Poe, Kim")])
+        recount = [4, wb.ScheduleWriteError("Publish drafts button not found")]
+        with mock.patch.object(w, "_query", fq), \
+             mock.patch.object(wb, "drafts_pending", mock.MagicMock(side_effect=recount)), \
+             mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
+             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
+             mock.patch.object(wb, "goto_week"), \
+             mock.patch.object(wb, "create_open_shift", mock.MagicMock(side_effect=wb.UnconfirmedSave("slow"))), \
+             mock.patch.object(wb, "create_shift") as cs, \
+             mock.patch.object(w, "refresh_schedule") as self.refresh:
+            rc = w.run_drafts("palmetto", "p1", headless=True, dry_run=False)
+        self.assertEqual(rc, 1)
+        cs.assert_not_called()
+        self.assertEqual(fq.updates[0][:2], ("a", "failed"))
+        self.assertIn("UnconfirmedSave", fq.updates[0][2])
+        self.assertIn("recheck failed: ScheduleWriteError", fq.updates[0][2])
+        self.assertEqual(fq.updates[1:], [
+            ("b", "failed", "not attempted: stopped after an unconfirmed save"),
+            ("c", "failed", "not attempted: stopped after an unconfirmed save"),
+        ])
+        self.refresh.assert_called_once()
+
+    def test_crash_marks_every_unsaved_row_failed_and_reraises(self):
+        later = datetime.date(2026, 10, 10)
+        fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam", date=later)])
+        goto = mock.MagicMock(side_effect=[None, RuntimeError("session lost")])
+        with mock.patch.object(wb, "goto_week", goto), self.assertRaises(RuntimeError):
+            with mock.patch.object(w, "_query", fq), \
+                 mock.patch.object(wb, "drafts_pending", mock.MagicMock(side_effect=[0])), \
+                 mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
+                 mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
+                 mock.patch.object(wb, "create_shift", mock.MagicMock(return_value="Doe, Alex")), \
+                 mock.patch.object(w, "refresh_schedule") as refresh:
+                w.run_drafts("palmetto", "p1", headless=True, dry_run=False)
+        self.assertEqual(fq.updates, [
+            ("a", "drafted", None),
+            ("b", "failed", "not attempted: job stopped (RuntimeError: session lost)"),
+        ])
+        refresh.assert_called_once()
 
     def test_dry_run_writes_nothing(self):
         fq = FakeQuery([_row("a", "Doe, Alex")], done_keys=[])

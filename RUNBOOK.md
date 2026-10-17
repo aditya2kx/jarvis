@@ -629,6 +629,7 @@ gcloud run services update bhaga-webhook \
 | `google_palmetto` | refresh job (Sheets/Drive) | Google OAuth creds for the `palmetto` account |
 | `jarvis-clickup-palmetto-pat` | refresh job (`CLICKUP_PAT`) | ClickUp PAT — read review channel + closing-form inventory ingest |
 | `operator-console-gemini-token` | operator-console (`GEMINI_TOKEN`) | Gemini API key (Generative Language API), restricted to that one API — restock photo parsing (`lib/restock/gemini.ts`). Wired via `--set-secrets` in `operator-console-deploy.yml`; default compute SA holds `secretAccessor` on it. |
+| `operator-console-server-actions-key` | operator-console build (`NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`) | 32-byte base64 key that keeps Server Action ids stable across deploys (Issue #401). Read by the deploy job (WIF SA, project-level `secretAccessor`) and passed as a builder-stage build arg. |
 | `plaid_client_id` | operator-console + bhaga-webhook (`PLAID_CLIENT_ID`) | Plaid dashboard client_id (Issue #158 Accounting). |
 | `plaid_secret` | operator-console + bhaga-webhook (`PLAID_SECRET`) | Plaid secret (sandbox or production per `PLAID_ENV`). |
 | `plaid_access_token_<item_id>` | operator-console + bhaga-webhook (dynamic) | Per linked Item access_token after Plaid Link exchange — never stored in BQ. |
@@ -1798,8 +1799,14 @@ by display name) or Create open shift, then **Save as draft**; the toolbar's "Pu
 must reach the count the job expects (it tracks the count itself, so a lagging toolbar never confirms
 the wrong shift). If it doesn't within 20 s, the job reloads the grid and re-reads the count: one more
 draft → the shift exists (`drafted`); no new draft → nothing was saved (`failed`, run continues); any
-other count → `UnconfirmedSave` and the run **stops** (the rest are `not attempted`) — look in ADP
-before re-saving. ADP updates the count late for open shifts, which is what the reload covers.
+other count, or the re-read itself failing → `UnconfirmedSave` and the run **stops** (the rest are
+`not attempted`), then re-reads that week's ADP schedule. A crash anywhere in the run marks every
+unsaved row `failed` (`not attempted: job stopped (…)`) — rows are never left `queued` (Issue #401:
+2026-10-16 `bhaga-daily-refresh-n8mp2` stranded 25). The console re-offers `failed` / stranded rows on
+the next **Save**; an `UnconfirmedSave` (or stranded) shift is held until ADP's schedule
+(`adp_scheduled_shifts.scraped_at_utc`) is newer than the row, then left out if ADP shows it and
+re-offered if not (Sync ADP re-reads it). Never fix the rows by hand. ADP updates the count late for
+open shifts, which is what the reload covers.
 Read-only check of a week (draft count + open shifts): `BHAGA_ADP_SCHEDULE_WRITE=inspect
 BHAGA_SCHEDULE_WEEK_START=<Mon>` on the job, or `adp_schedule_write --inspect --week-start <Mon>`. A person already scheduled that day is not in ADP's list, so
 that row fails with the names ADP did list. **Publish week** (enabled once a row is `drafted`) runs
@@ -2458,6 +2465,13 @@ builds the container, applies any pending `core/migrations/*.sql` (same runner a
 so sticky tags never leave the new revision at 0% (Issue #240), then grants
 `roles/iap.httpsResourceAccessor` to each operator account. No manual deploy step. `--iap` is
 idempotent against the one-time Console-only provisioning below — it does not redo it.
+
+**Open tabs across deploys** (Issue #401): the build passes `NEXT_DEPLOYMENT_ID=<sha>` and
+`NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` from Secret Manager `operator-console-server-actions-key`, so
+Server Action ids stay the same across deploys and a tab opened before a deploy can still click
+unchanged buttons. A changed or removed action on an old tab shows "The console was updated since
+this page loaded — reload…" (`useConsoleAction`); nothing ran. Log signature:
+`Failed to find Server Action "<id>"`. Adding a new key version invalidates every open tab once.
 
 **Pre-merge preview** (Issue #384): every PR touching `apps/operator-console/**` gets its own
 service `operator-console-pr<N>` from

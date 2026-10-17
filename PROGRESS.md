@@ -1,3 +1,7 @@
+## 2026-10-17 — The console never shows a shift as failed when it is in ADP (Issue #406)
+
+**Scope:** after the week of Oct 26 saved, the card still showed "3 failed" for the Oct 31 open shifts, which were in ADP; the drawer correctly left them out, so no save ever updated their rows. Every schedule load (nightly, Sync ADP, after any console write) now flips a `failed` row to `drafted` / `published` when ADP shows its exact shift, alongside the existing drafted → published reconcile. **Evidence:** PR §4 (read-only live preview: exactly the three Oct 31 rows).
+
 ## 2026-10-17 — Save to ADP drafts confirms open shifts and never saves a shift twice (Issue #404)
 
 **Scope:** every open-shift save read as unconfirmed and stopped the run (week of Oct 26, twice). The cause: after **Save draft**, ADP shows an "open shift … has been created" pane over the draft count, and the job never closed it. It now closes the pane with Back (never its Publish button) and takes the pane as confirmation. A save that still can't be confirmed is settled by looking for that exact shift in ADP, and a shift ADP already has is adopted rather than saved again, so re-clicking Save is always safe. **Evidence:** live ADP check in the PR §4.

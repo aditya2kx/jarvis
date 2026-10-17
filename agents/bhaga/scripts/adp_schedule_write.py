@@ -101,13 +101,37 @@ def published_row_keys(rows: list[dict], states: list[dict]) -> list[str]:
     return out
 
 
+def found_failed_rows(rows: list[dict], states: list[dict]) -> dict[str, str]:
+    """Failed rows whose exact shift ADP shows → the status ADP implies ('drafted' / 'published').
+
+    A save ADP made but the job could not confirm, or a shift added in ADP by hand.
+    Exact match only: same day and times, and the same person (or open for an open row).
+    """
+    out: dict[str, str] = {}
+    for r in rows:
+        for s in states:
+            if (
+                s["date"] == str(r["date"]) and s["start_min"] == r["start_min"] and s["end_min"] == r["end_min"]
+                and ((r["employee"] is None and s["employee"] is None)
+                     or (r["employee"] and s["employee"] and _same_person(s["employee"], r["employee"])))
+            ):
+                out[r["row_key"]] = "drafted" if s["draft"] else "published"
+                break
+    return out
+
+
 def reconcile_published(store: str, states: list[dict]) -> int:
-    """Mark drafted rows 'published' when ADP shows them published (e.g. published in ADP)."""
+    """Bring console rows in line with ADP's schedule on every schedule load.
+
+    Drafted rows ADP shows published → 'published' (e.g. published in ADP). Failed rows
+    whose shift ADP shows → 'drafted' / 'published', so the console never reports a
+    shift as failed that is in ADP (Issue #406).
+    """
     dates = sorted({s["date"] for s in states})
     if not dates:
         return 0
     latest = _query(
-        "SELECT row_key, status, CAST(date AS STRING) AS date, employee, start_min, end_min FROM {T}"
+        "SELECT push_id, row_key, status, CAST(date AS STRING) AS date, employee, start_min, end_min FROM {T}"
         " WHERE store = @store AND date BETWEEN @lo AND @hi"
         " QUALIFY ROW_NUMBER() OVER (PARTITION BY row_key ORDER BY updated_at DESC) = 1",
         [("store", "STRING", store), ("lo", "DATE", dates[0]), ("hi", "DATE", dates[-1])],
@@ -119,7 +143,24 @@ def reconcile_published(store: str, states: list[dict]) -> int:
             " WHERE store = @store AND status = 'drafted' AND row_key IN UNNEST(SPLIT(@keys, '\\n'))",
             [("store", "STRING", store), ("keys", "STRING", "\n".join(keys))],
         )
-    print(f"[schedule_write] reconcile store={store} dates={dates[0]}..{dates[-1]} newly_published={len(keys)}")
+    failed = [r for r in latest if r["status"] == "failed"]
+    found = found_failed_rows(failed, states)
+    push_of = {r["row_key"]: r["push_id"] for r in failed}
+    for status in ("drafted", "published"):
+        ids = [f"{push_of[k]}|{k}" for k, v in found.items() if v == status]
+        if ids:
+            _query(
+                "UPDATE {T} SET status = @status, error = NULL, updated_at = CURRENT_TIMESTAMP()"
+                " WHERE store = @store AND status = 'failed'"
+                " AND CONCAT(push_id, '|', row_key) IN UNNEST(SPLIT(@ids, '\\n'))",
+                [("store", "STRING", store), ("status", "STRING", status), ("ids", "STRING", "\n".join(ids))],
+            )
+    for k, v in sorted(found.items()):
+        print(f"[schedule_write] reconcile failed row {k} is in ADP → {v}")
+    print(
+        f"[schedule_write] reconcile store={store} dates={dates[0]}..{dates[-1]} "
+        f"newly_published={len(keys)} failed_found_in_adp={len(found)}"
+    )
     return len(keys)
 
 

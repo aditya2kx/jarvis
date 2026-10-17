@@ -455,6 +455,29 @@ class NotifyPublished(unittest.TestCase):
             w.notify_published("palmetto", D(2026, 10, 19))
         self.assertIn("BREADCRUMB adp_publish_dm", out.call_args[0][0])
 
+    def test_channel_post_starts_at_everyone_in_shift_coverage(self):
+        posted = []
+        with mock.patch.object(w, "_query", return_value=[
+                 {"date": D(2026, 10, 13), "shift_range": "3:00 PM - 8:30 PM", "scraped_at_utc": "2026-10-09T17:58:30+00:00"},
+             ]), \
+             mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
+             mock.patch("core.datastore.fq", lambda t: t), \
+             mock.patch("skills.clickup_chat.post_message", lambda ch, content, team_id: posted.append((ch, team_id, content))):
+            self.assertTrue(w.notify_published("palmetto", D(2026, 10, 19), to="channel"))
+        team_id, channel_id = w.shift_coverage_target("palmetto")
+        ch, team, content = posted[0]
+        self.assertEqual((ch, team), (channel_id, team_id))
+        self.assertTrue(content.startswith("@everyone"))
+        self.assertNotIn("copy and post", content)
+        self.assertNotIn("---", content)
+
+    def test_stale_read_is_not_posted_to_the_team(self):
+        with mock.patch("skills.clickup_chat.post_message") as post, \
+             mock.patch("builtins.print") as out:
+            self.assertFalse(w.notify_published("palmetto", D(2026, 10, 19), fresh=False, to="channel"))
+        post.assert_not_called()
+        self.assertIn("not posted to the team", out.call_args[0][0])
+
 
 class RefreshWindow(unittest.TestCase):
     def test_reads_from_this_week_through_the_published_week(self):
@@ -553,7 +576,16 @@ class RunPublishDm(unittest.TestCase):
     def test_re_reads_adp_then_sends(self):
         rc, notify = self._run()
         self.assertEqual(rc, 0)
-        notify.assert_called_once_with("palmetto", self.W, fresh=True)
+        notify.assert_called_once_with("palmetto", self.W, fresh=True, to="dm")
+
+    def test_channel_choice_is_passed_through(self):
+        with mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
+             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
+             mock.patch.object(wb, "goto_week"), \
+             mock.patch.object(w, "refresh_open_shift_window", return_value=True), \
+             mock.patch.object(w, "notify_published", return_value=True) as notify:
+            w.run_publish_dm("palmetto", self.W, headless=True, to="channel")
+        notify.assert_called_once_with("palmetto", self.W, fresh=True, to="channel")
 
     def test_adp_sign_in_failure_still_sends_flagged_stale(self):
         def broken(**_kw):
@@ -561,7 +593,7 @@ class RunPublishDm(unittest.TestCase):
 
         rc, notify = self._run(session=broken)
         self.assertEqual(rc, 0)
-        notify.assert_called_once_with("palmetto", self.W, fresh=False)
+        notify.assert_called_once_with("palmetto", self.W, fresh=False, to="dm")
 
     def test_dm_failure_fails_the_job(self):
         rc, _notify = self._run(sent=False)

@@ -1,3 +1,7 @@
+## 2026-10-17 — Send ClickUp message can post to Shift Coverage
+
+**Scope:** **Send ClickUp message** now asks where the note goes. **Send me a DM** keeps the draft header. **Post to Shift Coverage** posts the same note starting at `@everyone` to the store's Shift Coverage channel, and only after a fresh ADP read. Publish still only DMs. **Evidence:** unit tests on the split message and the drawer choice.
+
 ## 2026-10-17 — Publish week confirms on a reloaded ADP grid; console "Send ClickUp message" (Issue #408)
 
 **Scope:** publishing the week of Oct 26 published all 33 shifts in ADP but the job failed `PublishUnconfirmed`: the open grid kept the old draft count and the open-shift cells' "Drafts: N", so it stopped before the ClickUp DM. The job now reloads the page and reads the count fresh before falling back to the schedule re-read, and a week ADP already shows published while BQ is still `drafted` is marked and DMed. A new **Send ClickUp message** button (job mode `dm`) re-reads ADP's open shifts and sends the team-post DM on demand. **Evidence:** PR §4 (unit; DM button verified post-deploy on the week of Oct 26).

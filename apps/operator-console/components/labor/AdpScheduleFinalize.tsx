@@ -118,8 +118,8 @@ export function AdpScheduleFinalize({
   const [loadedWeek, setLoadedWeek] = useState<string | null>(null);
   // Right after a click the Cloud Run execution may not be listed yet; keep polling meanwhile.
   const [graceUntil, setGraceUntil] = useState(0);
-  const [lastAction, setLastAction] = useState<"save" | "publish" | "dm" | null>(null);
-  const [sheet, setSheet] = useState<"save" | "publish" | null>(null);
+  const [lastAction, setLastAction] = useState<"save" | "publish" | "dm" | "channel" | null>(null);
+  const [sheet, setSheet] = useState<"save" | "publish" | "message" | null>(null);
   const { isPending, run } = useConsoleAction();
   const router = useRouter();
 
@@ -180,10 +180,14 @@ export function AdpScheduleFinalize({
     graceUntil === 0;
   const saving = !otherWeek && (running?.mode === "drafts" || (graceUntil > 0 && lastAction === "save"));
   const publishing = !otherWeek && (running?.mode === "publish" || (graceUntil > 0 && lastAction === "publish"));
-  const messaging = !otherWeek && (running?.mode === "dm" || (graceUntil > 0 && lastAction === "dm"));
+  const messaging =
+    !otherWeek &&
+    (running?.mode === "dm" || (graceUntil > 0 && (lastAction === "dm" || lastAction === "channel")));
+  const postingChannel =
+    (running?.mode === "dm" && running.to === "channel") || (graceUntil > 0 && lastAction === "channel");
   const savedSoFar = pushRowsNow.filter((r) => r.status !== "queued").length;
 
-  const start = (action: "save" | "publish" | "dm") => {
+  const start = (action: "save" | "publish" | "dm" | "channel") => {
     setSheet(null);
     setLastAction(action);
     setGraceUntil(Date.now() + GRACE_MS);
@@ -208,12 +212,15 @@ export function AdpScheduleFinalize({
     if (ack.ok) start("publish");
   };
 
-  const sendMessage = async () => {
-    const ack = await run(() => sendPublishMessageAction(weekStart), {
+  const sendMessage = async (to: "dm" | "channel") => {
+    const ack = await run(() => sendPublishMessageAction(weekStart, to), {
       saving: "Starting…",
-      queued: "Sending you the ClickUp message in the background.",
+      queued:
+        to === "channel"
+          ? "Posting to Shift Coverage in the background."
+          : "Sending you the ClickUp DM in the background.",
     });
-    if (ack.ok) start("dm");
+    if (ack.ok) start(to);
   };
 
   const disabledTitle = enabled ? undefined : "ADP schedule writes are off (CONSOLE_ADP_SCHEDULE_WRITE)";
@@ -238,7 +245,9 @@ export function AdpScheduleFinalize({
                 : publishing
                   ? "Publishing the week in ADP — employees get notified when it finishes. Safe to leave or reload this page."
                   : messaging
-                    ? "Re-reading open shifts from ADP, then sending you the ClickUp message (about 3 min). Safe to leave or reload this page."
+                    ? postingChannel
+                      ? "Re-reading open shifts from ADP, then posting to Shift Coverage (about 3 min). Safe to leave or reload this page."
+                      : "Re-reading open shifts from ADP, then sending you the ClickUp DM (about 3 min). Safe to leave or reload this page."
                     : toSave.length
                     ? `The shifts this page drafted for every day of the week (the “+N draft” on each day above): ${toSave.length} shifts — ${toSave.length - open} assigned, ${open} open — ${hoursOf(toSave).toFixed(1)}h. Not in ADP yet.`
                     : drafted.length
@@ -307,10 +316,10 @@ export function AdpScheduleFinalize({
             size="sm"
             variant="ghost"
             disabled={!enabled || busy || isPending}
-            title={disabledTitle ?? "DMs you the team post for this week, with today's open shifts from ADP"}
-            onClick={() => void sendMessage()}
+            title={disabledTitle ?? "DM yourself, or post it to Shift Coverage"}
+            onClick={() => setSheet("message")}
           >
-            {messaging ? "Sending ClickUp message…" : "Send ClickUp message"}
+            {messaging ? (postingChannel ? "Posting to Shift Coverage…" : "Sending ClickUp message…") : "Send ClickUp message"}
           </Button>
         ) : null}
       </div>
@@ -359,6 +368,26 @@ export function AdpScheduleFinalize({
                   {isPending ? "Starting…" : `Publish ${range}`}
                 </Button>
                 <SheetClose render={<Button variant="outline">Cancel</Button>} />
+              </SheetFooter>
+            </>
+          ) : sheet === "message" ? (
+            <>
+              <SheetHeader>
+                <SheetTitle>Send the {range} schedule message</SheetTitle>
+                <SheetDescription>
+                  Re-reads this week&apos;s open shifts from ADP (about 3 min), then sends the note you
+                  already got as a DM. A DM keeps the &quot;copy and post&quot; header. Shift Coverage
+                  starts at @everyone and notifies the team. Publish still only DMs you.
+                </SheetDescription>
+              </SheetHeader>
+              <SheetFooter>
+                <Button onClick={() => void sendMessage("dm")} disabled={isPending}>
+                  {isPending ? "Starting…" : "Send me a DM"}
+                </Button>
+                <Button variant="outline" onClick={() => void sendMessage("channel")} disabled={isPending}>
+                  Post to Shift Coverage
+                </Button>
+                <SheetClose render={<Button variant="ghost">Cancel</Button>} />
               </SheetFooter>
             </>
           ) : null}

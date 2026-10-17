@@ -2868,6 +2868,8 @@ def _run_refresh(run_id: str) -> int:
             argv += ["--publish", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
         elif write_mode == "dm":
             argv += ["--publish-dm", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
+            if os.environ.get("BHAGA_SCHEDULE_MESSAGE_TO", "").strip() == "channel":
+                argv += ["--to", "channel"]
         elif write_mode == "inspect":
             argv += ["--inspect", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
         elif write_mode == "refresh":

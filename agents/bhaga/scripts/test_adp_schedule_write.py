@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import unittest
+from collections import Counter
 from unittest import mock
 
 from agents.bhaga.scripts import adp_schedule_write as w
@@ -35,28 +36,86 @@ def fake_session(**_kw):
     yield None, mock.MagicMock()
 
 
+class FakeAdp:
+    """ADP's Team Schedule as run_drafts sees it: a draft count, open shifts, assigned drafts.
+
+    ``create`` lists one outcome per create call: "ok" saves; "unconfirmed" saves but
+    raises UnconfirmedSave; "lost" raises UnconfirmedSave without saving; an exception
+    instance is raised without saving.
+    """
+
+    def __init__(self, count=0, open_shifts=(), assigned=(), create=(), recheck_error=None):
+        self.count = count
+        self.open = Counter(open_shifts)
+        self.assigned = set(assigned)
+        self.create = list(create)
+        self.recheck_error = recheck_error
+        self.befores: list[int] = []
+
+    def _save(self, row_slot, employee):
+        outcome = self.create.pop(0) if self.create else "ok"
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome != "lost":
+            self.count += 1
+            if employee:
+                self.assigned.add((employee, *row_slot))
+            else:
+                self.open[row_slot] += 1
+        if outcome in ("unconfirmed", "lost"):
+            raise wb.UnconfirmedSave("count did not move")
+
+    def create_shift(self, _f, _p, *, date_iso, employee, start_min, end_min, before, dry_run):
+        self.befores.append(before)
+        if not dry_run:
+            self._save((date_iso, start_min, end_min), employee)
+        return employee
+
+    def create_open_shift(self, _f, _p, *, date_iso, start_min, end_min, before, dry_run):
+        self.befores.append(before)
+        if not dry_run:
+            self._save((date_iso, start_min, end_min), None)
+
+    def read_open_shifts(self, _p, _f, _week):
+        return Counter(self.open)
+
+    def has_draft_shift(self, _f, _p, *, date_iso, employee, start_min, end_min):
+        if self.recheck_error:
+            raise self.recheck_error
+        return (employee, date_iso, start_min, end_min) in self.assigned
+
+    def drafts_pending(self, _f):
+        return self.count
+
+
 class RunDrafts(unittest.TestCase):
-    def _run(self, fq, create_shift=None, dry_run=False, counts=(0,)):
+    def _run(self, fq, adp=None, dry_run=False, known=(), goto=None):
+        adp = adp or FakeAdp()
+        self.adp = adp
+        reopen = mock.MagicMock()
+        if adp.recheck_error:
+            reopen.side_effect = [mock.MagicMock(), adp.recheck_error]
         with mock.patch.object(w, "_query", fq), \
-             mock.patch.object(wb, "drafts_pending", mock.MagicMock(side_effect=list(counts))), \
+             mock.patch.object(w, "_known_open_slots", lambda _s, _w: set(known)), \
+             mock.patch.object(wb, "drafts_pending", adp.drafts_pending), \
+             mock.patch.object(wb, "read_open_shifts", adp.read_open_shifts), \
+             mock.patch.object(wb, "has_draft_shift", adp.has_draft_shift), \
+             mock.patch.object(wb, "create_shift", adp.create_shift), \
+             mock.patch.object(wb, "create_open_shift", adp.create_open_shift), \
+             mock.patch.object(wb, "_back_out"), \
              mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
-             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
-             mock.patch.object(wb, "goto_week") as goto, \
-             mock.patch.object(wb, "create_shift", create_shift or mock.MagicMock()) as cs, \
-             mock.patch.object(wb, "create_open_shift") as cos, \
+             mock.patch("skills.adp_run_automation.runner._open_team_schedule", reopen), \
+             mock.patch.object(wb, "goto_week", goto or mock.MagicMock()) as self.goto, \
              mock.patch.object(w, "refresh_schedule") as self.refresh:
-            rc = w.run_drafts("palmetto", "p1", headless=True, dry_run=dry_run)
-        return rc, goto, cs, cos
+            return w.run_drafts("palmetto", "p1", headless=True, dry_run=dry_run)
 
     def test_creates_assigned_and_open_and_skips_duplicates(self):
         fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", None), _row("c", "Roe, Sam")], done_keys=["c"])
-        rc, goto, cs, cos = self._run(fq)
+        rc = self._run(fq)
         self.assertEqual(rc, 0)
-        goto.assert_called_once()
-        self.assertEqual(goto.call_args.args[2], datetime.date(2026, 9, 28))
-        cs.assert_called_once()
-        self.assertEqual(cs.call_args.kwargs["employee"], "Doe, Alex")
-        cos.assert_called_once()
+        self.assertEqual(self.goto.call_args.args[2], datetime.date(2026, 9, 28))
+        self.assertEqual(self.adp.open, Counter({("2026-10-03", 600, 960): 1}))
+        self.assertIn(("Doe, Alex", "2026-10-03", 600, 960), self.adp.assigned)
         self.assertIn(("c", "skipped", "already drafted in ADP by an earlier save"), fq.updates)
         self.assertIn(("a", "drafted", None), fq.updates)
         self.assertIn(("b", "drafted", None), fq.updates)
@@ -65,69 +124,40 @@ class RunDrafts(unittest.TestCase):
 
     def test_one_failure_is_recorded_and_the_rest_continue(self):
         fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam")])
-        boom = mock.MagicMock(side_effect=[wb.ScheduleWriteError("not listed"), "Roe, Sam"])
-        rc, *_ = self._run(fq, create_shift=boom)
+        rc = self._run(fq, FakeAdp(create=[wb.ScheduleWriteError("not listed")]))
         self.assertEqual(rc, 1)
         self.assertEqual(fq.updates[0][:2], ("a", "failed"))
         self.assertIn("not listed", fq.updates[0][2])
         self.assertEqual(fq.updates[1], ("b", "drafted", None))
 
-    def test_each_shift_gets_the_tracked_baseline(self):
+    def test_each_shift_gets_the_count_adp_shows(self):
         fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam")])
-        rc, _g, cs, _c = self._run(fq, counts=(6,))
-        self.assertEqual(rc, 0)
-        self.assertEqual([c.kwargs["before"] for c in cs.call_args_list], [6, 7])
+        self.assertEqual(self._run(fq, FakeAdp(count=6)), 0)
+        self.assertEqual(self.adp.befores, [6, 7])
 
-    def test_lagging_count_confirmed_by_recheck_continues(self):
-        fq = FakeQuery([_row("a", None), _row("b", "Roe, Sam")])
-        with mock.patch.object(wb, "create_open_shift", mock.MagicMock(side_effect=wb.UnconfirmedSave("slow"))):
-            with mock.patch.object(w, "_query", fq), \
-                 mock.patch.object(wb, "drafts_pending", mock.MagicMock(side_effect=[6, 7])), \
-                 mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
-                 mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
-                 mock.patch.object(wb, "goto_week"), \
-                 mock.patch.object(wb, "create_shift") as cs, \
-                 mock.patch.object(w, "refresh_schedule"):
-                rc = w.run_drafts("palmetto", "p1", headless=True, dry_run=False)
+    def test_unconfirmed_open_shift_that_adp_shows_is_drafted_and_the_run_continues(self):
+        # 2026-10-17 bhaga-daily-refresh-8v894: ADP saved the Oct 31 open shift, the job stopped.
+        fq = FakeQuery([_row("a", None), _row("b", "Roe, Sam"), _row("c", None, start=900)])
+        rc = self._run(fq, FakeAdp(count=16, create=["unconfirmed"]))
         self.assertEqual(rc, 0)
-        self.assertEqual(fq.updates, [("a", "drafted", None), ("b", "drafted", None)])
-        self.assertEqual(cs.call_args.kwargs["before"], 7)
+        self.assertEqual(fq.updates, [("a", "drafted", None), ("b", "drafted", None), ("c", "drafted", None)])
+        self.assertEqual(self.adp.befores, [16, 17, 18])
+        self.assertEqual(sum(self.adp.open.values()), 2)
 
-    def test_recheck_showing_no_new_draft_marks_failed_and_continues(self):
+    def test_unconfirmed_save_adp_does_not_show_is_failed_and_the_run_continues(self):
         fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam")])
-        boom = mock.MagicMock(side_effect=[wb.UnconfirmedSave("count did not move"), "Roe, Sam"])
-        rc, _g, cs, _c = self._run(fq, create_shift=boom, counts=(3, 3))
+        rc = self._run(fq, FakeAdp(count=3, create=["lost"]))
         self.assertEqual(rc, 1)
-        self.assertEqual(fq.updates[0][:2], ("a", "failed"))
+        self.assertEqual(fq.updates[0], ("a", "failed", "not saved — ADP does not show this shift"))
         self.assertEqual(fq.updates[1], ("b", "drafted", None))
-        self.assertEqual(cs.call_args.kwargs["before"], 3)
+        self.assertEqual(self.adp.befores, [3, 3])
 
-    def test_unconfirmed_save_stops_the_run(self):
-        fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam"), _row("c", "Poe, Kim")])
-        boom = mock.MagicMock(side_effect=["Doe, Alex", wb.UnconfirmedSave("count did not move")])
-        rc, _g, cs, _c = self._run(fq, create_shift=boom, counts=(0, 5))
-        self.assertEqual(rc, 1)
-        self.assertEqual(cs.call_count, 2)
-        self.assertEqual(fq.updates[0], ("a", "drafted", None))
-        self.assertEqual(fq.updates[1][:2], ("b", "failed"))
-        self.assertEqual(fq.updates[2], ("c", "failed", "not attempted: stopped after an unconfirmed save"))
-        self.refresh.assert_called_once()
-
-    def test_failed_recheck_stops_without_stranding_queued_rows(self):
+    def test_unreadable_recheck_stops_without_stranding_queued_rows(self):
         # 2026-10-16 bhaga-daily-refresh-n8mp2: the recheck itself raised and 25 rows stayed 'queued'.
-        fq = FakeQuery([_row("a", None), _row("b", "Roe, Sam"), _row("c", "Poe, Kim")])
-        recount = [4, wb.ScheduleWriteError("Publish drafts button not found")]
-        with mock.patch.object(w, "_query", fq), \
-             mock.patch.object(wb, "drafts_pending", mock.MagicMock(side_effect=recount)), \
-             mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
-             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
-             mock.patch.object(wb, "goto_week"), \
-             mock.patch.object(wb, "create_open_shift", mock.MagicMock(side_effect=wb.UnconfirmedSave("slow"))), \
-             mock.patch.object(wb, "create_shift") as cs, \
-             mock.patch.object(w, "refresh_schedule") as self.refresh:
-            rc = w.run_drafts("palmetto", "p1", headless=True, dry_run=False)
+        fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam"), _row("c", "Poe, Kim")])
+        adp = FakeAdp(create=["unconfirmed"], recheck_error=wb.ScheduleWriteError("Publish drafts button not found"))
+        rc = self._run(fq, adp)
         self.assertEqual(rc, 1)
-        cs.assert_not_called()
         self.assertEqual(fq.updates[0][:2], ("a", "failed"))
         self.assertIn("UnconfirmedSave", fq.updates[0][2])
         self.assertIn("recheck failed: ScheduleWriteError", fq.updates[0][2])
@@ -137,29 +167,49 @@ class RunDrafts(unittest.TestCase):
         ])
         self.refresh.assert_called_once()
 
+    def test_open_shift_already_in_adp_but_not_in_bq_is_adopted_not_duplicated(self):
+        # Retry of 8v894's week: Oct 27's open shift is recorded; Oct 31's two were saved but not recorded.
+        oct27, oct31 = datetime.date(2026, 10, 27), datetime.date(2026, 10, 31)
+        adp = FakeAdp(count=26, open_shifts={
+            ("2026-10-27", 990, 1230): 1, ("2026-10-31", 810, 1230): 1, ("2026-10-31", 900, 1230): 1,
+        })
+        fq = FakeQuery([
+            _row("a", None, 810, 1230, date=oct31), _row("b", None, 900, 1230, date=oct31),
+            _row("c", None, 960, 1230, date=oct31), _row("d", None, 990, 1230, date=oct27),
+        ])
+        rc = self._run(fq, adp, known={("2026-10-27", 990, 1230)})
+        self.assertEqual(rc, 0)
+        self.assertEqual(fq.updates, [("a", "drafted", None), ("b", "drafted", None),
+                                      ("c", "drafted", None), ("d", "drafted", None)])
+        # a + b adopted; c is new; d matches a recorded shift, so it is a second one ADP lacks.
+        self.assertEqual(adp.befores, [26, 27])
+        self.assertEqual(adp.open, Counter({("2026-10-27", 990, 1230): 2, ("2026-10-31", 810, 1230): 1,
+                                            ("2026-10-31", 900, 1230): 1, ("2026-10-31", 960, 1230): 1}))
+
+    def test_assigned_shift_already_in_adp_is_adopted(self):
+        fq = FakeQuery([_row("a", "Doe, Alex")])
+        adp = FakeAdp(assigned={("Doe, Alex", "2026-10-03", 600, 960)},
+                      create=[wb.ScheduleWriteError("Doe, Alex is not in ADP's unscheduled list")])
+        self.assertEqual(self._run(fq, adp), 0)
+        self.assertEqual(fq.updates, [("a", "drafted", None)])
+
     def test_crash_marks_every_unsaved_row_failed_and_reraises(self):
         later = datetime.date(2026, 10, 10)
         fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", "Roe, Sam", date=later)])
         goto = mock.MagicMock(side_effect=[None, RuntimeError("session lost")])
-        with mock.patch.object(wb, "goto_week", goto), self.assertRaises(RuntimeError):
-            with mock.patch.object(w, "_query", fq), \
-                 mock.patch.object(wb, "drafts_pending", mock.MagicMock(side_effect=[0])), \
-                 mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
-                 mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
-                 mock.patch.object(wb, "create_shift", mock.MagicMock(return_value="Doe, Alex")), \
-                 mock.patch.object(w, "refresh_schedule") as refresh:
-                w.run_drafts("palmetto", "p1", headless=True, dry_run=False)
+        with self.assertRaises(RuntimeError):
+            self._run(fq, goto=goto)
         self.assertEqual(fq.updates, [
             ("a", "drafted", None),
             ("b", "failed", "not attempted: job stopped (RuntimeError: session lost)"),
         ])
-        refresh.assert_called_once()
+        self.refresh.assert_called_once()
 
     def test_dry_run_writes_nothing(self):
-        fq = FakeQuery([_row("a", "Doe, Alex")], done_keys=[])
-        rc, _g, cs, _c = self._run(fq, dry_run=True)
+        fq = FakeQuery([_row("a", "Doe, Alex"), _row("b", None)], done_keys=[])
+        rc = self._run(fq, dry_run=True)
         self.assertEqual(rc, 0)
-        self.assertTrue(cs.call_args.kwargs["dry_run"])
+        self.assertEqual((self.adp.count, self.adp.assigned, sum(self.adp.open.values())), (0, set(), 0))
         self.assertEqual(fq.updates, [])
         self.refresh.assert_not_called()
 

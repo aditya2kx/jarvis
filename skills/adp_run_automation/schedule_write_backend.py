@@ -18,6 +18,8 @@ Wizard shape (read-only spikes 2026-09-27, week of Sep 28 / Oct 5):
                      Visible to employee › Save as draft | Publish
   Create open shift  step 1: count, date, Start / End time, expiration › Next
                      step 2: eligibility summary › Previous | Save draft | Publish
+                     after Save draft: "An open shift … has been created" pane
+                     (Edit | Publish; header Back closes it) — live 2026-10-17
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 import time
+from collections import Counter
 
 TIME_INPUT = "input[placeholder='hh:mm a.m.']"
 PUBLISH_DRAFTS_RE = re.compile(r"Publish drafts\s*\((\d+)\)", re.I)
@@ -99,6 +102,60 @@ def match_employee(names: list[str], canonical: str) -> str | None:
     return prefixed[0] if len(prefixed) == 1 else None
 
 
+def parse_clock(text: str) -> int:
+    """'1:30 PM' → 810 (inverse of fmt_time)."""
+    m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*([AP]M)\s*", text or "", re.I)
+    if not m:
+        raise ValueError(f"unrecognised time: {text!r}")
+    h, mm = int(m.group(1)) % 12, int(m.group(2))
+    return (h + (12 if m.group(3).upper() == "PM" else 0)) * 60 + mm
+
+
+def open_shift_counts(cells: list[dict], week_start: dt.date) -> Counter:
+    """Open-shift pane reads → Counter of (date_iso, start_min, end_min).
+
+    ``cells`` as returned by runner._scrape_open_shifts: heading 'Open Shifts on
+    Saturday, Oct 31', shifts [{'range': '1:30 PM - 8:30 PM'}].
+    """
+    out: Counter = Counter()
+    days = {f"{d:%b} {d.day}": d for d in (week_start + dt.timedelta(i) for i in range(7))}
+    for cell in cells:
+        m = re.search(r"([A-Z][a-z]{2})\w*\s+(\d{1,2})\s*$", cell.get("heading") or "")
+        day = days.get(f"{m.group(1)} {int(m.group(2))}") if m else None
+        if day is None:
+            raise ScheduleWriteError(f"open-shift pane heading not in week {week_start}: {cell.get('heading')!r}")
+        for s in cell.get("shifts") or []:
+            start, end = (parse_clock(t) for t in s["range"].split(" - "))
+            out[(day.isoformat(), start, end)] += 1
+    return out
+
+
+def read_open_shifts(page, frame, week_start: dt.date) -> Counter:
+    """Read-only: the shown week's open shifts as ADP lists them. Raises if unreadable."""
+    from skills.adp_run_automation import runner as r
+
+    _back_out(frame, page)
+    info = r._scrape_open_shifts(page, frame, week_label=str(week_start))
+    if info.get("open_shifts_error"):
+        raise ScheduleWriteError(f"could not read open shifts: {info['open_shifts_error']}")
+    return open_shift_counts(info.get("open_shift_cells") or [], week_start)
+
+
+def has_draft_shift(frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int) -> bool:
+    """Read-only: whether the grid shows ``employee``'s draft at exactly this time on this day."""
+    _back_out(frame, page)
+    d = dt.date.fromisoformat(date_iso)
+    rng = f"{fmt_time(start_min)} - {fmt_time(end_min)}"
+    info: dict = {}
+    for _ in range(20):
+        info = frame.evaluate(FIND_SHIFT_JS, [employee, d.day, rng])
+        if info.get("found") or not info.get("scroll"):
+            break
+        page.wait_for_timeout(400)
+    frame.evaluate("() => document.querySelectorAll('[data-jarvis-del]').forEach(e => e.removeAttribute('data-jarvis-del'))")
+    return bool(info.get("found"))
+
+
 def publish_count(text: str) -> int | None:
     m = PUBLISH_DRAFTS_RE.search(text or "")
     return int(m.group(1)) if m else None
@@ -155,6 +212,13 @@ OPEN_PANE_JS = r"""
 
 def _pane_open(frame) -> bool:
     return bool(frame.evaluate(OPEN_PANE_JS))
+
+
+OPEN_SHIFT_CREATED_RE = re.compile(r"open shift with \d+ shifts? has been created and added to the schedule as a draft", re.I)
+
+
+def _pane_text(frame) -> str:
+    return frame.evaluate(PANE_TEXT_JS) or ""
 
 
 def _wait_for(page, check, timeout_s: float, step_ms: int = 250) -> bool:
@@ -317,10 +381,18 @@ def create_open_shift(
     except Exception:
         _back_out(frame, page)
         raise
-    if not _wait_drafts(frame, page, before + 1):
-        raise UnconfirmedSave(
-            f"ADP did not confirm the open-shift draft on {date_iso} — check ADP before re-saving"
-        )
+    # ADP swaps the wizard for a "has been created … as a draft shift" pane that
+    # hides the toolbar count and carries its own Publish button; Back closes it.
+    created = _wait_for(page, lambda: bool(OPEN_SHIFT_CREATED_RE.search(_pane_text(frame))), 15.0)
+    _back_out(frame, page)
+    if _wait_drafts(frame, page, before + 1):
+        return
+    if created:
+        print(f"[schedule_write] open shift {date_iso} confirmed by ADP's created pane; draft count lagging")
+        return
+    raise UnconfirmedSave(
+        f"ADP did not confirm the open-shift draft on {date_iso} — check ADP before re-saving"
+    )
 
 
 # Marks the one draft shift of ``name`` on ``day`` (day-of-month) spanning ``rng``
@@ -349,7 +421,8 @@ FIND_SHIFT_JS = r"""
     const b = c.getBoundingClientRect(); const d = Math.abs(b.x + b.width / 2 - hx);
     if (d < bd) { bd = d; cell = c; }
   }
-  if (!cell) return { found: false, why: 'no day cell' };
+  // Rows only render days that have something, so the nearest cell can be a neighbour's.
+  if (!cell || bd > hb.width / 2) return { found: false, why: 'no day cell' };
   const shifts = [...cell.querySelectorAll('schedule-calendar-shifts')]
     .filter(s => norm(s).includes(rng) && /draft/i.test(norm(s)));
   if (shifts.length !== 1) return { found: false, why: 'matching draft shifts ' + shifts.length, cell: norm(cell) };

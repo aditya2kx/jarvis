@@ -1828,13 +1828,16 @@ this week through the published week (`refresh_open_shift_window`, so shifts cla
 sync drop off) and DMs the operator in ClickUp (`notify_published`, team_pulse's DM user) a
 ready-to-post Shift Coverage & Trades note (Issue #381): `@everyone` + the published week, then every
 ADP open shift from **tomorrow** through that week's Sunday, numbered by date with the slots nested.
-Nothing is posted to the team (`BREADCRUMB adp_publish_dm` if the DM fails). If the re-read fails the
-DM still goes out from the last sync and says "open shifts are as of <time>". To send that DM again,
-use the console's **Send ClickUp message** (shown once a week has `published` rows;
-`sendPublishMessageAction` → `BHAGA_ADP_SCHEDULE_WRITE=dm`): it re-reads open shifts from ADP the same
-way, then DMs (`BREADCRUMB adp_publish_dm_reread` + the stale note if ADP can't be read; the job exits 1
-if the DM itself fails). Laptop equivalent: `BHAGA_DATASTORE=bigquery python3 -m
-agents.bhaga.scripts.adp_schedule_write --publish-dm --week-start <Mon>`. **Publishing
+Publish itself never posts to the team (`BREADCRUMB adp_publish_dm` if the DM fails). If the re-read fails the
+DM still goes out from the last sync and says "open shifts are as of <time>". To send it again, use
+**Send ClickUp message** (shown once a week has `published` rows). The drawer offers **Send me a DM**
+(`BHAGA_ADP_SCHEDULE_WRITE=dm`) or **Post to Shift Coverage** (`BHAGA_SCHEDULE_MESSAGE_TO=channel`):
+both re-read open shifts from ADP first. The channel post is `team_post` only — it starts at `@everyone`
+and drops the draft header — and goes to `clickup.shift_coverage_channel` in the store profile. A stale
+ADP read is DMed with the "as of" note, but never posted to the team
+(`BREADCRUMB adp_publish_channel … not posted to the team`; the job exits 1). Laptop equivalent:
+`BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.adp_schedule_write --publish-dm
+--week-start <Mon> [--to channel]`. **Publishing
 in ADP directly also works:** every Team Schedule load (nightly, Sync ADP, after any console write)
 reads each shift's `DRAFT` tag and each day's open-shift `Drafts: N` and flips matching `drafted` rows
 to `published` (`reconcile_published`, `[schedule_write] reconcile … newly_published=N`,

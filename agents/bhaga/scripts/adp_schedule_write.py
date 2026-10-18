@@ -10,8 +10,9 @@ Two operator-confirmed modes, each started by one console click:
            Clicks ADP "Publish drafts" for that week and flips the week's 'drafted'
            rows to 'published', re-reads ADP from tomorrow through that week, then
            DMs the operator a Shift Coverage draft listing every open shift left.
-  dm       ... --publish-dm --week-start 2026-10-19
-           Re-sends that DM from BQ alone (no ADP), e.g. to preview the format.
+  dm       ... --publish-dm --week-start 2026-10-19 [--to channel]
+           Re-reads ADP's open shifts, then re-sends the DM. ``--to channel`` posts the
+           team note (from ``@everyone``, no draft header) to the store's Shift Coverage channel.
 
 ``--dry-run`` walks each ADP wizard to its final step and backs out; BQ is
 left untouched. Cloud Run: daily_refresh early-exits here when
@@ -22,12 +23,14 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import re
 import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
@@ -405,22 +408,10 @@ def open_shift_window(week_start: dt.date, today: dt.date) -> tuple[dt.date, dt.
     return today + dt.timedelta(days=1), week_start + dt.timedelta(days=6)
 
 
-def publish_message(week_start: dt.date, open_shifts: list[dict], *, stale_as_of: str | None = None) -> str:
-    """ClickUp DM to the operator: a ready-to-post Shift Coverage note for the team.
-
-    ``open_shifts``: ``{"date": date, "start_min": int, "end_min": int}`` rows, already
-    limited to ``open_shift_window``. ``stale_as_of`` notes that ADP could not be
-    re-read, so claimed shifts may still be listed.
-    """
+def team_post(week_start: dt.date, open_shifts: list[dict]) -> str:
+    """The note the team sees, starting at ``@everyone``. No draft header."""
     week = _week_label(week_start)
-    header = f"Published **{week}** in ADP. Here's a draft for Shift Coverage & Trades — copy and post:"
-    if stale_as_of:
-        header += f"\n\n_ADP re-read failed — open shifts are as of {stale_as_of}; check before posting._"
     lines = [
-        header,
-        "",
-        "---",
-        "",
         f"@everyone 🗞️ Hi team! The schedule for **{week}** is now published in ADP. "
         "Please take a moment to look over your shifts and make sure they work with your availability. "
         "If anything doesn't look right, just let me know in this thread and we'll sort it out together.",
@@ -440,6 +431,28 @@ def publish_message(week_start: dt.date, open_shifts: list[dict], *, stale_as_of
             for j, o in enumerate(sorted(by_day[d], key=lambda x: (x["start_min"], x["end_min"])), 1):
                 lines.append(f"    {j}. {_clock(o['start_min'])} → {_clock(o['end_min'])}")
     return "\n".join(lines)
+
+
+def publish_message(week_start: dt.date, open_shifts: list[dict], *, stale_as_of: str | None = None) -> str:
+    """ClickUp DM to the operator: a ready-to-post Shift Coverage note for the team.
+
+    ``open_shifts``: ``{"date": date, "start_min": int, "end_min": int}`` rows, already
+    limited to ``open_shift_window``. ``stale_as_of`` notes that ADP could not be
+    re-read, so claimed shifts may still be listed. The part after the ``---`` is
+    ``team_post`` — what gets posted to the channel.
+    """
+    week = _week_label(week_start)
+    header = f"Published **{week}** in ADP. Here's a draft for Shift Coverage & Trades — copy and post:"
+    if stale_as_of:
+        header += f"\n\n_ADP re-read failed — open shifts are as of {stale_as_of}; check before posting._"
+    return f"{header}\n\n---\n\n{team_post(week_start, open_shifts)}"
+
+
+def shift_coverage_target(store: str) -> tuple[str, str]:
+    """(ClickUp team id, Shift Coverage channel id) from the store profile."""
+    path = Path(__file__).resolve().parents[3] / "agents/bhaga/knowledge-base/store-profiles" / f"{store}.json"
+    clickup = json.loads(path.read_text())["clickup"]
+    return str(clickup["team_id"]), str(clickup["shift_coverage_channel"]["id"])
 
 
 def open_shifts_between(lo: dt.date, hi: dt.date) -> tuple[list[dict], str | None]:
@@ -473,20 +486,36 @@ def open_shifts_between(lo: dt.date, hi: dt.date) -> tuple[list[dict], str | Non
     return out, f"{when:%b} {when.day} {_clock(when.hour * 60 + when.minute)} CT"
 
 
-def notify_published(store: str, week_start: dt.date, *, fresh: bool = True) -> bool:
-    """DM the operator a draft team message after a console publish. Best-effort, posts once."""
+def notify_published(store: str, week_start: dt.date, *, fresh: bool = True, to: str = "dm") -> bool:
+    """Send the schedule note. ``dm`` (the publish default) or ``channel`` (Shift Coverage).
+
+    A channel post is the team note only, and only after a fresh ADP read — a stale
+    list of open shifts is never posted to the team.
+    """
     from agents.bhaga.scripts.team_pulse import DEFAULT_DM_USER_ID, DEFAULT_WORKSPACE_ID
     from skills.clickup_chat import ensure_dm_channel, post_message
 
+    if to == "channel" and not fresh:
+        print(
+            f"BREADCRUMB adp_publish_channel store={store} week_start={week_start}"
+            " error=stale ADP read; not posted to the team"
+        )
+        return False
     try:
         open_shifts, as_of = open_shifts_between(*open_shift_window(week_start, _today_ct()))
-        content = publish_message(week_start, open_shifts, stale_as_of=None if fresh else (as_of or "unknown"))
-        channel = ensure_dm_channel([DEFAULT_DM_USER_ID], team_id=DEFAULT_WORKSPACE_ID)
-        post_message(str(channel["id"]), content, team_id=DEFAULT_WORKSPACE_ID)
+        if to == "channel":
+            content = team_post(week_start, open_shifts)
+            team_id, channel_id = shift_coverage_target(store)
+            post_message(channel_id, content, team_id=team_id)
+        else:
+            content = publish_message(week_start, open_shifts, stale_as_of=None if fresh else (as_of or "unknown"))
+            channel = ensure_dm_channel([DEFAULT_DM_USER_ID], team_id=DEFAULT_WORKSPACE_ID)
+            post_message(str(channel["id"]), content, team_id=DEFAULT_WORKSPACE_ID)
     except Exception as exc:  # noqa: BLE001
-        print(f"BREADCRUMB adp_publish_dm store={store} week_start={week_start} error={type(exc).__name__}: {exc}"[:500])
+        print(f"BREADCRUMB adp_publish_dm store={store} week_start={week_start} to={to} error={type(exc).__name__}: {exc}"[:500])
         return False
-    print(f"[schedule_write] publish DM sent week_start={week_start} open_shifts={len(open_shifts)} fresh={fresh}")
+    where = "Shift Coverage" if to == "channel" else "DM"
+    print(f"[schedule_write] publish {where} sent week_start={week_start} open_shifts={len(open_shifts)} fresh={fresh}")
     return True
 
 
@@ -578,8 +607,8 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
     return 0
 
 
-def run_publish_dm(store: str, week_start: dt.date, *, headless: bool) -> int:
-    """Console "Send ClickUp message": re-read ADP's open shifts, then DM the publish draft."""
+def run_publish_dm(store: str, week_start: dt.date, *, headless: bool, to: str = "dm") -> int:
+    """Console "Send ClickUp message": re-read ADP's open shifts, then DM or post to Shift Coverage."""
     from skills.adp_run_automation import runner as r
 
     fresh = False
@@ -591,7 +620,7 @@ def run_publish_dm(store: str, week_start: dt.date, *, headless: bool) -> int:
             fresh = refresh_open_shift_window(page, store, week_start)
     except Exception as exc:  # noqa: BLE001 — still DM, flagged as not freshly read
         print(f"BREADCRUMB adp_publish_dm_reread store={store} week_start={week_start} error={type(exc).__name__}: {exc}"[:500])
-    return 0 if notify_published(store, week_start, fresh=fresh) else 1
+    return 0 if notify_published(store, week_start, fresh=fresh, to=to) else 1
 
 
 def run_delete(store: str, week_start: dt.date, row_keys: list[str], *, headless: bool, dry_run: bool) -> int:
@@ -700,7 +729,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--store", default="palmetto")
     p.add_argument("--push-id")
     p.add_argument("--publish", action="store_true")
-    p.add_argument("--publish-dm", action="store_true", help="re-read ADP's open shifts, then DM the publish draft for --week-start")
+    p.add_argument("--publish-dm", action="store_true", help="re-read ADP's open shifts, then send the schedule note for --week-start")
+    p.add_argument("--to", choices=("dm", "channel"), default="dm", help="with --publish-dm: DM the operator, or post to Shift Coverage")
     p.add_argument("--inspect", action="store_true", help="read-only: draft count + open shifts for --week-start")
     p.add_argument("--refresh-schedule", action="store_true", help="read-only: reload --week-start's ADP schedule into BQ")
     p.add_argument("--delete", help="';'-separated row_keys of drafted shifts to remove from ADP (--week-start)")
@@ -720,7 +750,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.publish_dm:
         if not a.week_start or a.week_start.weekday() != 0:
             p.error("--publish-dm needs --week-start on a Monday")
-        return run_publish_dm(a.store, a.week_start, headless=a.headless)
+        return run_publish_dm(a.store, a.week_start, headless=a.headless, to=a.to)
     if a.inspect:
         if not a.week_start or a.week_start.weekday() != 0:
             p.error("--inspect needs --week-start on a Monday")

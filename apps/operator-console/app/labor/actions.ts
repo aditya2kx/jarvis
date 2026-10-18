@@ -100,19 +100,28 @@ export async function publishWeekAction(weekStart: string): Promise<ActionAck<{ 
   }
 }
 
-/** Re-read the week's open shifts from ADP and DM the operator the team post again. */
-export async function sendPublishMessageAction(weekStart: string): Promise<ActionAck<{ weekStart: string }>> {
+/** Re-read the week's open shifts from ADP, then DM the operator or post to Shift Coverage. */
+export async function sendPublishMessageAction(
+  weekStart: string,
+  to: "dm" | "channel" = "dm",
+): Promise<ActionAck<{ weekStart: string }>> {
   try {
     requireScheduleWrite();
+    if (to !== "dm" && to !== "channel") {
+      throw new Error("Choose a DM or Shift Coverage.");
+    }
     const rows = await weekPushRows(DEFAULT_STORE, weekStart);
     if (!rows.some((r) => r.status === "published")) {
       throw new Error("This week isn't published yet — publish it first.");
     }
-    await startScheduleWrite(DEFAULT_STORE, { mode: "dm", weekStart });
+    await startScheduleWrite(DEFAULT_STORE, { mode: "dm", weekStart, to });
     return okAck({
       data: { weekStart },
       queued: ["adp-schedule-write"],
-      message: "Re-reading open shifts from ADP, then sending you the ClickUp message (about 3 min).",
+      message:
+        to === "channel"
+          ? "Re-reading open shifts from ADP, then posting to Shift Coverage (about 3 min)."
+          : "Re-reading open shifts from ADP, then sending you the ClickUp DM (about 3 min).",
     });
   } catch (e) {
     return failAck(e);
@@ -120,7 +129,12 @@ export async function sendPublishMessageAction(weekStart: string): Promise<Actio
 }
 
 /** Latest ADP push state for a week (poll target for every step). */
-export type ScheduleWriteRun = { mode: "drafts" | "publish" | "dm"; pushId?: string; weekStart?: string };
+export type ScheduleWriteRun = {
+  mode: "drafts" | "publish" | "dm";
+  pushId?: string;
+  weekStart?: string;
+  to?: "dm" | "channel";
+};
 
 /** The week's push rows plus the ADP schedule-write job still running, if any (survives a reload). */
 export async function schedulePushStatusAction(
@@ -134,7 +148,12 @@ export async function schedulePushStatusAction(
     const mode = hit?.env.BHAGA_ADP_SCHEDULE_WRITE;
     const running: ScheduleWriteRun | null =
       hit && (mode === "drafts" || mode === "publish" || mode === "dm")
-        ? { mode, pushId: hit.env.BHAGA_SCHEDULE_PUSH_ID, weekStart: hit.env.BHAGA_SCHEDULE_WEEK_START }
+        ? {
+            mode,
+            pushId: hit.env.BHAGA_SCHEDULE_PUSH_ID,
+            weekStart: hit.env.BHAGA_SCHEDULE_WEEK_START,
+            to: hit.env.BHAGA_SCHEDULE_MESSAGE_TO === "channel" ? "channel" : "dm",
+          }
         : null;
     return okAck({ data: { rows, running } });
   } catch (e) {

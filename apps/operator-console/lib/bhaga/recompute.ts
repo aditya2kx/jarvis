@@ -249,7 +249,10 @@ export async function triggerPunchFixApply(
  */
 export async function triggerAdpScheduleWrite(
   store: string,
-  job: { mode: "drafts"; pushId: string } | { mode: "publish" | "dm"; weekStart: string },
+  job:
+    | { mode: "drafts"; pushId: string }
+    | { mode: "publish"; weekStart: string }
+    | { mode: "dm"; weekStart: string; to?: "dm" | "channel" },
 ): Promise<{ executionName: string }> {
   if (!store) throw new Error("triggerAdpScheduleWrite: store is required");
   const env = [
@@ -260,6 +263,9 @@ export async function triggerAdpScheduleWrite(
       ? { name: "BHAGA_SCHEDULE_PUSH_ID", value: job.pushId }
       : { name: "BHAGA_SCHEDULE_WEEK_START", value: job.weekStart },
   ];
+  if (job.mode === "dm" && job.to === "channel") {
+    env.push({ name: "BHAGA_SCHEDULE_MESSAGE_TO", value: "channel" });
+  }
   return runJob(env, `triggerAdpScheduleWrite(store=${store} mode=${job.mode})`, adpJobResource());
 }
 

@@ -6,9 +6,10 @@ invisible to employees until published, which is why the console splits the two
 into separate confirmed clicks.
 
 Every call site is an operator click behind ``FEATURES.adpScheduleWrite``. The
-only commit buttons pressed are ``Save as draft`` / ``Save draft`` and the
-publish dialog's ``Publish``. ``dry_run=True`` walks each wizard to its final
-step and backs out without saving (selector check against live ADP).
+only commit buttons pressed are ``Save as draft`` / ``Save draft``, the
+publish dialog's ``Publish`` and Assign Open Shift's ``Assign`` (Issue #412).
+``dry_run=True`` walks each wizard to its final step and backs out without
+saving (selector check against live ADP).
 
 Wizard shape (read-only spikes 2026-09-27, week of Sep 28 / Oct 5):
   Create shift       step 1: date picker + "Unscheduled employees" radio list
@@ -20,6 +21,10 @@ Wizard shape (read-only spikes 2026-09-27, week of Sep 28 / Oct 5):
                      step 2: eligibility summary › Previous | Save draft | Publish
                      after Save draft: "An open shift … has been created" pane
                      (Edit | Publish; header Back closes it) — live 2026-10-17
+  Assign open shift  Open-shift day pane › shift tile › Shift details (Eligible
+                     employees; Edit | Assign) › Assign Open Shift: one
+                     ``sdf-checkbox`` per eligible employee › Assign — read-only
+                     probe 2026-10-19 (week of Oct 26)
 """
 
 from __future__ import annotations
@@ -508,6 +513,122 @@ def delete_shift(
     _back_out(frame, page)
     if not _wait_drafts(frame, page, before - 1):
         raise UnconfirmedSave(f"ADP did not confirm deleting {employee} on {date_iso} {rng}")
+
+
+# The Assign Open Shift pane is nested in the Shift details pane, so the last visible
+# match is the innermost. Marks it, lists its checkbox names, and marks box ``pick``.
+ASSIGN_PANE_JS = r"""
+(pick) => {
+  const vis = e => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
+  document.querySelectorAll('[data-jarvis-assign]').forEach(e => e.removeAttribute('data-jarvis-assign'));
+  const panes = [...document.querySelectorAll('sdf-focus-pane')]
+    .filter(p => vis(p) && /Assign Open Shift/i.test(p.innerText || ''));
+  const pane = panes[panes.length - 1];
+  if (!pane) return { pane: false, names: [] };
+  pane.setAttribute('data-jarvis-assign', 'pane');
+  const deep = (root, out = []) => {
+    root.querySelectorAll('*').forEach(e => {
+      if (e.tagName === 'SDF-CHECKBOX') out.push(e);
+      if (e.shadowRoot) deep(e.shadowRoot, out);
+    });
+    return out;
+  };
+  const boxes = [...new Set(deep(pane))].filter(vis);
+  const labelOf = b => {
+    const ref = b.getAttribute('aria-labelledby');
+    const root = b.getRootNode();
+    const host = ref && ((root.getElementById && root.getElementById(ref)) || document.getElementById(ref));
+    return (host && host.textContent) || b.getAttribute('label') || b.getAttribute('aria-label')
+      || b.innerText || (b.parentElement && b.parentElement.innerText) || '';
+  };
+  const names = boxes.map(b => labelOf(b).replace(/\s+/g, ' ').trim());
+  if (pick != null && boxes[pick]) boxes[pick].setAttribute('data-jarvis-assign', 'box');
+  const box = pick != null ? boxes[pick] : null;
+  const checked = !!box && (box.checked === true || box.getAttribute('aria-checked') === 'true'
+    || box.hasAttribute('checked'));
+  return { pane: true, names, checked };
+}
+"""
+
+
+def _open_shift_details(frame, page, *, date_iso: str, start_min: int, end_min: int) -> None:
+    """From the grid (on the right week), open the Shift details pane of one open shift."""
+    from skills.adp_run_automation import schedule_backend as sb
+
+    _back_out(frame, page)
+    d = dt.date.fromisoformat(date_iso)
+    week = d - dt.timedelta(days=d.weekday())
+    cells: list[dict] = []
+    for _ in range(30):
+        cells = frame.evaluate(sb.OPEN_SHIFT_CELLS_JS).get("cells") or []
+        if cells:
+            break
+        page.wait_for_timeout(500)
+    cell = next((c for c in cells if c.get("header_index") is not None
+                 and week + dt.timedelta(days=int(c["header_index"])) == d), None)
+    if cell is None:
+        raise ScheduleWriteError(f"ADP lists no open shifts on {date_iso}")
+    frame.locator(".open-shift-count").nth(int(cell["index"])).click(timeout=8000)
+    want = f"{d:%b} {d.day}"
+    if not _wait_for(page, lambda: (frame.evaluate(sb.OPEN_SHIFT_PANE_JS).get("heading") or "").endswith(want), 10.0):
+        _back_out(frame, page)
+        raise ScheduleWriteError(f"open-shift pane for {date_iso} did not open")
+    rng = f"{fmt_time(start_min)} - {fmt_time(end_min)}"
+    tile = frame.locator("sdf-focus-pane").get_by_role("button", name=f"Select open shift {rng}", exact=True)
+    if not tile.count():
+        _back_out(frame, page)
+        raise ScheduleWriteError(f"ADP lists no {rng} open shift on {date_iso}")
+    tile.first.click(timeout=8000)
+    expect = (f"{d:%b} {d.day}, {d.year}", rng, "Shift details")
+    if not _wait_for(page, lambda: all(s in _pane_text(frame) for s in expect), 10.0):
+        _back_out(frame, page)
+        raise ScheduleWriteError(f"shift details for {date_iso} {rng} did not open")
+
+
+def assign_open_shift(
+    frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int, dry_run: bool = False,
+) -> str:
+    """Assign one existing open shift to ``employee`` (Shift details › Assign › tick › Assign).
+
+    ADP offers only the people it lists as eligible for that shift; anyone else
+    raises with that list. Returns the ADP display name. The caller confirms by
+    re-reading the week's open shifts — this only reports what was clicked.
+    """
+    _open_shift_details(frame, page, date_iso=date_iso, start_min=start_min, end_min=end_min)
+    try:
+        # The pane's text paints before its Edit | Assign buttons.
+        _wait_for(page, lambda: _visible_button(frame, r"^\s*Assign\s*$") is not None, 8.0)
+        _click(frame, r"^\s*Assign\s*$", what="Assign")
+        if not _wait_for(page, lambda: frame.evaluate(ASSIGN_PANE_JS, None)["pane"], 8.0):
+            raise ScheduleWriteError("Assign Open Shift pane did not open")
+        _wait_for(page, lambda: bool(frame.evaluate(ASSIGN_PANE_JS, None)["names"]), 8.0)
+        names = frame.evaluate(ASSIGN_PANE_JS, None)["names"]
+        name = match_employee(names, employee)
+        if name is None:
+            raise ScheduleWriteError(
+                f"{employee} is not eligible for this open shift in ADP (eligible: {', '.join(names) or 'nobody'})"
+            )
+        frame.evaluate(ASSIGN_PANE_JS, names.index(name))
+        frame.locator("[data-jarvis-assign='box']").first.click(timeout=5000)
+        if not _wait_for(page, lambda: frame.evaluate(ASSIGN_PANE_JS, names.index(name))["checked"], 5.0):
+            raise ScheduleWriteError(f"could not tick {name} in Assign Open Shift")
+        buttons = frame.locator("[data-jarvis-assign='pane']").get_by_role("button", name=re.compile(r"^\s*Assign\s*$", re.I))
+        visible = [buttons.nth(i) for i in range(buttons.count()) if buttons.nth(i).is_visible()]
+        if len(visible) != 1:
+            raise ScheduleWriteError(f"expected one Assign button in Assign Open Shift, found {len(visible)}")
+        if not _wait_for(page, visible[0].is_enabled, 5.0):
+            raise ScheduleWriteError("Assign stayed disabled after ticking the employee")
+        if dry_run:
+            _back_out(frame, page)
+            return name
+        visible[0].click(timeout=8000)
+    except Exception:
+        _back_out(frame, page)
+        raise
+    _wait_for(page, lambda: not frame.evaluate(ASSIGN_PANE_JS, None)["pane"], 15.0)
+    print(f"[schedule_write] assign clicked {date_iso} {fmt_time(start_min)}-{fmt_time(end_min)} → {name!r}; pane={_pane_text(frame)[:200]!r}")
+    _back_out(frame, page)
+    return name
 
 
 def publish_drafts(frame, page, *, dry_run: bool = False) -> int:

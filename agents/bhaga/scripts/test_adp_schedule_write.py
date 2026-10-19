@@ -214,6 +214,134 @@ class RunDrafts(unittest.TestCase):
         self.refresh.assert_not_called()
 
 
+class FakeAssignQuery:
+    def __init__(self, queued, assigned_keys=()):
+        self.queued, self.assigned_keys, self.updates, self.tables = queued, assigned_keys, [], set()
+
+    def __call__(self, sql, params, *, table="labor_schedule_pushes"):
+        self.tables.add(table)
+        p = {n: v for n, _t, v in params}
+        if sql.startswith("UPDATE"):
+            self.updates.append((p["key"], p["status"], p["error"], p["name"]))
+            return []
+        if "status = 'queued'" in sql:
+            return self.queued
+        return [{"row_key": k} for k in self.assigned_keys]
+
+
+class FakeAssignAdp:
+    """ADP's open shifts; ``outcomes`` per assign click: "ok", "ignored" (ADP keeps it open) or an exception."""
+
+    def __init__(self, open_shifts, outcomes=(), reread_error=None):
+        self.open = Counter(open_shifts)
+        self.outcomes = list(outcomes)
+        self.reread_error = reread_error
+        self.reads = 0
+        self.assigned: list[tuple] = []
+
+    def read_open_shifts(self, _p, _f, _week):
+        self.reads += 1
+        if self.reread_error and self.reads > 1:
+            raise self.reread_error
+        return Counter(self.open)
+
+    def assign_open_shift(self, _f, _p, *, date_iso, employee, start_min, end_min, dry_run):
+        outcome = self.outcomes.pop(0) if self.outcomes else "ok"
+        if isinstance(outcome, Exception):
+            raise outcome
+        if not dry_run and outcome == "ok":
+            self.open[(date_iso, start_min, end_min)] -= 1
+            self.assigned.append((employee, date_iso, start_min, end_min))
+        return employee
+
+
+def _arow(key, employee, start=990, end=1230, date=datetime.date(2026, 10, 27)):
+    return _row(key, employee, start, end, date)
+
+
+class RunAssign(unittest.TestCase):
+    OCT27 = ("2026-10-27", 990, 1230)
+
+    def _run(self, fq, adp, dry_run=False, goto=None):
+        self.adp = adp
+        with mock.patch.object(w, "_query", fq), \
+             mock.patch.object(wb, "read_open_shifts", adp.read_open_shifts), \
+             mock.patch.object(wb, "assign_open_shift", adp.assign_open_shift), \
+             mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
+             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
+             mock.patch.object(wb, "goto_week", goto or mock.MagicMock()) as self.goto, \
+             mock.patch.object(w, "refresh_schedule") as self.refresh:
+            return w.run_assign("palmetto", "a1", headless=True, dry_run=dry_run)
+
+    def test_assigns_queued_rows_skips_earlier_ones_and_re_reads_every_changed_week(self):
+        nov3 = datetime.date(2026, 11, 3)
+        fq = FakeAssignQuery(
+            [_arow("a", "Denton, Cimino"), _arow("b", "Huynh, Hillary", 900, 1230, date=nov3), _arow("c", "Roe, Sam")],
+            assigned_keys=["c"],
+        )
+        adp = FakeAssignAdp({self.OCT27: 1, ("2026-11-03", 900, 1230): 1})
+        self.assertEqual(self._run(fq, adp), 0)
+        self.assertEqual(fq.tables, {"labor_open_shift_assignments"})
+        self.assertEqual(fq.updates, [
+            ("c", "skipped", "already assigned by an earlier Write to ADP", None),
+            ("a", "assigned", None, "Denton, Cimino"),
+            ("b", "assigned", None, "Huynh, Hillary"),
+        ])
+        self.refresh.assert_called_once_with(mock.ANY, "palmetto", datetime.date(2026, 10, 26), weeks=2)
+        self.assertEqual(self.goto.call_args.args[2], datetime.date(2026, 10, 26))
+
+    def test_two_identical_open_shifts_take_two_people(self):
+        fq = FakeAssignQuery([_arow("a", "Denton, Cimino"), _arow("b", "Huynh, Hillary")])
+        adp = FakeAssignAdp({self.OCT27: 2})
+        self.assertEqual(self._run(fq, adp), 0)
+        self.assertEqual([u[1] for u in fq.updates], ["assigned", "assigned"])
+        self.assertEqual(adp.open[self.OCT27], 0)
+
+    def test_shift_no_longer_open_fails_without_a_click(self):
+        fq = FakeAssignQuery([_arow("a", "Denton, Cimino"), _arow("b", "Huynh, Hillary", 900)])
+        adp = FakeAssignAdp({("2026-10-27", 900, 1230): 1})
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertEqual(fq.updates[0][:3], ("a", "failed", "no longer an open shift in ADP (claimed, assigned or removed)"))
+        self.assertEqual(fq.updates[1][:2], ("b", "assigned"))
+        self.assertEqual(adp.assigned, [("Huynh, Hillary", "2026-10-27", 900, 1230)])
+
+    def test_adp_rejecting_a_person_is_recorded_and_the_rest_continue(self):
+        fq = FakeAssignQuery([_arow("a", "Berding, Kenya"), _arow("b", "Huynh, Hillary", 900)])
+        adp = FakeAssignAdp(
+            {self.OCT27: 1, ("2026-10-27", 900, 1230): 1},
+            outcomes=[wb.ScheduleWriteError("Berding, Kenya is not eligible for this open shift in ADP")],
+        )
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertEqual(fq.updates[0][:2], ("a", "failed"))
+        self.assertIn("not eligible", fq.updates[0][2])
+        self.assertEqual(fq.updates[1][:2], ("b", "assigned"))
+
+    def test_assign_adp_does_not_reflect_is_failed(self):
+        fq = FakeAssignQuery([_arow("a", "Denton, Cimino")])
+        self.assertEqual(self._run(fq, FakeAssignAdp({self.OCT27: 1}, outcomes=["ignored"])), 1)
+        self.assertEqual(fq.updates, [("a", "failed", "ADP did not confirm the assignment — the open shift is still listed", None)])
+        self.refresh.assert_called_once()
+
+    def test_unreadable_re_read_is_flagged_unconfirmed(self):
+        fq = FakeAssignQuery([_arow("a", "Denton, Cimino")])
+        adp = FakeAssignAdp({self.OCT27: 1}, reread_error=wb.ScheduleWriteError("pane did not open"))
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertTrue(fq.updates[0][2].startswith("UnconfirmedAssign"))
+
+    def test_dry_run_writes_nothing(self):
+        fq = FakeAssignQuery([_arow("a", "Denton, Cimino")], assigned_keys=["x"])
+        adp = FakeAssignAdp({self.OCT27: 1})
+        self.assertEqual(self._run(fq, adp, dry_run=True), 0)
+        self.assertEqual((fq.updates, adp.assigned), ([], []))
+        self.refresh.assert_not_called()
+
+    def test_crash_marks_unsettled_rows_failed_and_reraises(self):
+        fq = FakeAssignQuery([_arow("a", "Denton, Cimino")])
+        with self.assertRaises(RuntimeError):
+            self._run(fq, FakeAssignAdp({self.OCT27: 1}), goto=mock.MagicMock(side_effect=RuntimeError("session lost")))
+        self.assertEqual(fq.updates, [("a", "failed", "not attempted: job stopped (RuntimeError: session lost)", None)])
+
+
 class RunDelete(unittest.TestCase):
     W = datetime.date(2026, 9, 28)
 

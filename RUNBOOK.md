@@ -1786,9 +1786,32 @@ shortest draft shift (4.5 h — ADP's shortest regular shift). The **Needed** li
 minimum, then day & time rules replace it in their window (e.g. closing duties: 2 people 7:30–8:30 PM).
 The weekly hours goal is a ceiling for order-driven draft shifts, not a target. Drafts start tomorrow.
 ADP open shifts count once (as coverage and hours); the draft only suggests who should take each one
-(free for the whole slot, within hour/shift caps). Those suggestions are assigned in ADP by hand —
-**Save to ADP as drafts** leaves them out, since it can only create new shifts.
+(free for the whole slot, within hour/shift caps). **Save to ADP as drafts** leaves them out, since it
+can only create new shifts; they're assigned with **Write to ADP** (below).
+Each draft row's **Who** picker (Issue #412) lists everyone who fits that shift — the suggestion first, each with
+their own times and hours so far this week — plus **Leave open**. A pick re-drafts the rest of the week around it
+(caps, unavailability and last days still apply; a pick that stops fitting after a rule edit is skipped and
+flagged). Picks live in that browser's local storage per week until the week is saved to ADP, so they don't
+follow you to another device.
 A daytime **Sync ADP** loads Timecard rows only through its target day (never today's in-progress punches).
+
+**Assign ADP open shifts (Issue #412, same flag).** Each future day in Coverage lists that day's ADP open
+shifts — saved/locked weeks too — with a checkbox and the same **Who** picker (only people the draft rules
+allow; "Nobody fits your rules" can't be ticked). Ticks carry across days and reloads (local storage
+`labor-open-assign:v1:<store>`); a ticked shift ADP no longer lists as open is dropped with a note. The
+sticky bar's **Write to ADP** opens a review drawer; its confirm inserts one `labor_open_shift_assignments`
+row per shift (migration 089, status `queued`, one `assign_id`; never `labor_schedule_pushes`, so a week
+never locks) and starts `BHAGA_ADP_SCHEDULE_WRITE=assign BHAGA_SCHEDULE_ASSIGN_ID=<id>` (refused while
+any schedule-write run is going). Per row: the day's open-shift cell → **Select open shift <range>** →
+Shift details **Assign** → tick the person in ADP's eligible list → **Assign**; then the week's open
+shifts are re-read and the row is `assigned` only if that slot's count dropped. A person ADP doesn't list
+as eligible fails with ADP's list (`… is not eligible for this open shift in ADP (eligible: …)`); a slot
+no longer open fails without touching ADP; a row_key already `assigned` is `skipped`; a crash marks the
+rest `not attempted: job stopped (…)`. The job ends by re-reading the touched weeks
+(`refresh_schedule`) and the page reloads. `BREADCRUMB adp_open_shift_assign assign_id=… row_key=…
+error=…` on each failure. Dry run (ticks the person in ADP's eligible list, never presses the final Assign, backs out):
+`BHAGA_ADP_CDP_URL=http://127.0.0.1:9333 python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --assign-id <id> --dry-run`.
+Check: `bq query 'SELECT date, employee, start_min, end_min, status, error, adp_name FROM bhaga.labor_open_shift_assignments ORDER BY requested_at DESC LIMIT 40'`.
 
 **Draft shifts → ADP (Issue #337, flag `CONSOLE_ADP_SCHEDULE_WRITE=1` on the console service).** The
 draft card's **Save to ADP as drafts** opens a drawer listing the week's shifts not yet in ADP; its

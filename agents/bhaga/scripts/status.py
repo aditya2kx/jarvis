@@ -151,6 +151,8 @@ BQ_TARGETS: list[Target] = [
     # complete (same false-alarm class as adp_open_shifts; its read rides the Timecard
     # login, whose freshness signal is adp_shifts) and punch_gap_decisions is
     # operator input. Intentionally NOT BQ_TARGETS entries.
+    # migration 089 (Issue #412): labor_open_shift_assignments is operator input (rows only
+    # on a console Write to ADP) — same class as labor_schedule_pushes. NOT a BQ_TARGETS entry.
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —
     # intentionally NOT a BQ_TARGETS entry (same class as store_config /

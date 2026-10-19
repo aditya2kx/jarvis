@@ -40,6 +40,8 @@ export const MUTATING_ACTIONS = [
   { name: "publishWeekAction", page: "labor", heavy: "adp-schedule-write" },
   { name: "sendPublishMessageAction", page: "labor", heavy: "adp-schedule-write" },
   { name: "schedulePushStatusAction", page: "labor", heavy: null },
+  { name: "assignOpenShiftsAction", page: "labor", heavy: "adp-schedule-write" },
+  { name: "openShiftAssignStatusAction", page: "labor", heavy: null },
   { name: "approveUnavailabilityAction", page: "labor", heavy: "adp-unavail-approve" },
   { name: "pollUnavailabilityApproveAction", page: "labor", heavy: null },
   { name: "decidePunchGapAction", page: "labor", heavy: null },

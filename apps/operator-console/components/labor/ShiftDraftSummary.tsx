@@ -1,6 +1,8 @@
 "use client";
 
+import { ShiftPersonPicker } from "@/components/labor/ShiftPersonPicker";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -126,8 +128,18 @@ export function ShiftDraftSummary({
   dayRules,
   goalHoursWeek,
   locked = false,
+  pickCount = 0,
+  droppedPicks = 0,
+  onPick,
+  onResetPicks,
 }: {
   dayLabel: string;
+  /** This week's operator picks that the draft applied / skipped (person no longer fits). */
+  pickCount?: number;
+  droppedPicks?: number;
+  /** Choose who takes a shift (null = leave open, undefined = back to the suggestion). */
+  onPick?: (slot: string, employee: string | null | undefined) => void;
+  onResetPicks?: () => void;
   /** The week was saved to ADP: these are the saved shifts, not a fresh draft. */
   locked?: boolean;
   shifts: DraftShift[];
@@ -187,6 +199,29 @@ export function ShiftDraftSummary({
               the weekly hours goal to draft more.
             </p>
           ) : null}
+          {!locked && (pickCount > 0 || droppedPicks > 0) ? (
+            <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+              {pickCount > 0 ? (
+                <span>
+                  <span className="font-medium" style={{ color: DRAFT_COLOR }}>
+                    {pickCount} {pickCount === 1 ? "pick" : "picks"}
+                  </span>{" "}
+                  this week — the rest of the draft fits around {pickCount === 1 ? "it" : "them"}.
+                </span>
+              ) : null}
+              {droppedPicks > 0 ? (
+                <span className="text-amber-700 dark:text-amber-400">
+                  {droppedPicks} {droppedPicks === 1 ? "pick no longer fits" : "picks no longer fit"} and{" "}
+                  {droppedPicks === 1 ? "was" : "were"} skipped.
+                </span>
+              ) : null}
+              {onResetPicks ? (
+                <Button variant="link" size="xs" className="h-6 px-0 text-xs" onClick={onResetPicks}>
+                  Reset all
+                </Button>
+              ) : null}
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -199,14 +234,16 @@ export function ShiftDraftSummary({
           <TableHeader>
             <TableRow>
               <TableHead className="h-8">Shift</TableHead>
-              <TableHead className="h-8">Time</TableHead>
-              <TableHead className="h-8 text-right">Hours</TableHead>
-              <TableHead className="h-8">Suggested</TableHead>
+              <TableHead className="hidden h-8 sm:table-cell">Time</TableHead>
+              <TableHead className="hidden h-8 text-right sm:table-cell">Hours</TableHead>
+              <TableHead className="h-8">Who</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {shifts.map((s, i) => {
               const a = s.employee ? byName.get(s.employee) : undefined;
+              const choosable =
+                !locked && onPick && s.slot && !s.inAdp && !s.adpOpen && (s.options?.length ?? 0) > 1;
               return (
                 <TableRow key={`${s.kind}-${s.startMin}-${i}`}>
                   <TableCell className="py-1.5">
@@ -233,17 +270,24 @@ export function ShiftDraftSummary({
                         </Badge>
                       ) : null}
                     </span>
+                    <span className="mt-1 block text-xs tabular-nums text-muted-foreground sm:hidden">
+                      {formatClockMin(s.startMin)}–{formatClockMin(s.endMin)} · {s.hours.toFixed(1)}h
+                    </span>
                   </TableCell>
-                  <TableCell className="py-1.5 tabular-nums">
+                  <TableCell className="hidden py-1.5 tabular-nums sm:table-cell">
                     {formatClockMin(s.startMin)}–{formatClockMin(s.endMin)}
                   </TableCell>
-                  <TableCell className="py-1.5 text-right tabular-nums">
+                  <TableCell className="hidden py-1.5 text-right tabular-nums sm:table-cell">
                     {s.hours.toFixed(1)}
                   </TableCell>
-                  <TableCell className="py-1.5">
-                    {s.employee ? (
-                      <span className="flex flex-wrap items-center gap-x-2">
-                        <span className="font-medium">{s.employee}</span>
+                  <TableCell className="py-1.5 whitespace-normal">
+                    {s.employee || choosable ? (
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        {choosable ? (
+                          <ShiftPersonPicker shift={s} onPick={(employee) => onPick!(s.slot!, employee)} />
+                        ) : (
+                          <span className="font-medium">{s.employee}</span>
+                        )}
                         {a?.targetWeekHours != null ? (
                           <span className="text-xs text-muted-foreground">
                             target {a.targetWeekHours}h/week
@@ -257,9 +301,9 @@ export function ShiftDraftSummary({
                             variant="outline"
                             className="h-4 px-1.5 text-[11px] font-normal"
                             style={{ borderColor: OPEN_COLOR, color: OPEN_COLOR }}
-                            title="Already an open shift in ADP — assign this person there. Not included in Save to ADP."
+                            title="Already an open shift in ADP — tick it under Open shifts in ADP above to write this person to ADP. Not included in Save to ADP."
                           >
-                            fills ADP open shift · assign in ADP
+                            fills ADP open shift
                           </Badge>
                         ) : null}
                       </span>

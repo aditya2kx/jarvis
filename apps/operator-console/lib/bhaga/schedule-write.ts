@@ -4,7 +4,8 @@ import { triggerAdpScheduleWrite } from "@/lib/bhaga/recompute";
 export type ScheduleWriteJob =
   | { mode: "drafts"; pushId: string }
   | { mode: "publish"; weekStart: string }
-  | { mode: "dm"; weekStart: string; to?: "dm" | "channel" };
+  | { mode: "dm"; weekStart: string; to?: "dm" | "channel" }
+  | { mode: "assign"; assignId: string };
 
 /** Always a Cloud Run job — the ADP browser never runs on the operator's machine. */
 export async function startScheduleWrite(

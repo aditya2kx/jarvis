@@ -34,6 +34,12 @@ API_BASE = "https://api.cursor.com/v1"
 REPO_URL = "https://github.com/aditya2kx/jarvis"
 # No model in the marker: price as Opus 5.5 so an unlabeled PR is over- not under-counted.
 FALLBACK_MODEL = "claude-opus-5-5"
+# Cursor's usage API returns 0 tokens for a self-hosted worker (PR #413, bc-a19cf89f).
+# The cost gate rejects $0, so record the median build cost of the 20 most recent
+# opus PRs with cost_usd > 0 in jarvis_dev, as of 2026-10-19 (middle pair $9.04 and
+# $11.41). The row is flagged approximate; a later non-zero reading replaces it.
+ZERO_USAGE_BENCHMARK_TOKENS = 23_000_000
+ZERO_USAGE_BENCHMARK_COST = 10.22
 _MARKER = re.compile(
     r"Cursor-Agent:\s*(bc-[0-9a-fA-F-]{8,})(?:\s+model=([\w.\-]+))?(?:\s+prs=([\d,]+))?"
 )
@@ -195,6 +201,9 @@ def _record_agent(pr: int, agent_id: str, model: str, prs: list[int], title: str
     usage = _api("GET", f"/agents/{agent_id}/usage").get("totalUsage") or {}
     cost = cost_usd(usage, model)
     tokens = int(usage.get("totalTokens") or 0)
+    approximate = tokens <= 0 or cost <= 0
+    if approximate:
+        tokens, cost = ZERO_USAGE_BENCHMARK_TOKENS, ZERO_USAGE_BENCHMARK_COST
     meta = {p: _gh_pr(p) if len(prs) > 1 else {} for p in prs}
     shares = split_shares({p: int(m.get("additions") or 0) + int(m.get("deletions") or 0) for p, m in meta.items()})
     # ts = agent creation time: usage is cumulative, so each push replaces the same row.
@@ -207,10 +216,16 @@ def _record_agent(pr: int, agent_id: str, model: str, prs: list[int], title: str
             L.set_meta(p, title=meta[p].get("title"), branch=(meta[p].get("head") or {}).get("ref"))
         L.record_build_session(
             p, ts=ts, tokens=round(tokens * shares[p]), cost_usd=cost * shares[p],
-            model=model, source="cursor_cloud_agent_api", note=agent_id,
+            model=model,
+            source="benchmark_estimate" if approximate else "cursor_cloud_agent_api",
+            note=(f"{agent_id} APPROXIMATE: usage API returned 0; "
+                  f"median opus PR build cost as of 2026-10-19") if approximate else agent_id,
+            mark_approximate=approximate,
         )
         parts.append(f"PR #{p} {shares[p]:.0%} ${cost * shares[p]:.2f}")
-    return f"cloud-agent cost: {agent_id} model={model} tokens={tokens} cost=${cost:.2f} → " + ", ".join(parts)
+    tag = " approximate" if approximate else ""
+    return (f"cloud-agent cost: {agent_id} model={model} tokens={tokens} "
+            f"cost=${cost:.2f}{tag} → " + ", ".join(parts))
 
 
 def main(argv: list[str] | None = None) -> int:

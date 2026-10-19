@@ -233,5 +233,43 @@ class AssignOpenShift(unittest.TestCase):
         frame.locator.assert_not_called()
 
 
+class PublishDraftsLag(unittest.TestCase):
+    WEEK = datetime.date(2026, 10, 26)
+
+    def _publish(self, fresh):
+        confirm = mock.Mock()
+        with mock.patch.object(wb, "drafts_pending", return_value=1), \
+             mock.patch.object(wb, "_click"), \
+             mock.patch.object(wb, "_visible_button", return_value=confirm), \
+             mock.patch.object(wb, "_wait_drafts", return_value=False), \
+             mock.patch.object(wb, "_shown_week", return_value=self.WEEK), \
+             mock.patch.object(wb, "_drafts_on_fresh_load", return_value=fresh) as reload:
+            try:
+                pending = wb.publish_drafts(mock.Mock(), mock.Mock())
+            except wb.PublishUnconfirmed as exc:
+                pending = exc
+        return pending, reload
+
+    def test_fresh_load_showing_zero_confirms_the_publish(self):
+        pending, reload = self._publish(0)
+        self.assertEqual(pending, 1)
+        reload.assert_called_once()
+
+    def test_fresh_load_still_pending_raises(self):
+        pending, _reload = self._publish(1)
+        self.assertIsInstance(pending, wb.PublishUnconfirmed)
+
+    def test_unreadable_week_raises_without_reloading(self):
+        with mock.patch.object(wb, "drafts_pending", return_value=1), \
+             mock.patch.object(wb, "_click"), \
+             mock.patch.object(wb, "_visible_button", return_value=mock.Mock()), \
+             mock.patch.object(wb, "_wait_drafts", return_value=False), \
+             mock.patch.object(wb, "_shown_week", return_value=None), \
+             mock.patch.object(wb, "_drafts_on_fresh_load") as reload:
+            with self.assertRaises(wb.PublishUnconfirmed):
+                wb.publish_drafts(mock.Mock(), mock.Mock())
+        reload.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

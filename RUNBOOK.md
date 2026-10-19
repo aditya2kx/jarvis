@@ -1440,7 +1440,9 @@ view `vw_pr_cost`). There are no committed `PR-*.json` files or `report.html` in
 Each save replaces a PR's child rows using batched DML inserts; streaming inserts would block
 the next save's `DELETE`. See `docs/contributing/cost.md`.
 
-- **Pre-merge:** record build cost locally (`pr_cost_ledger.py capture-build` or `record-build`),
+- **Pre-merge:** record build cost locally (`pr_cost_ledger.py capture-build` or `record-build`).
+  A self-hosted worker whose Cursor usage API returns 0 tokens gets a flagged-approximate
+  benchmark row from `cloud_agent.py record-cost` instead of failing the gate on $0.
   then `validate --pr <n> --require-build`. The pre-commit hook (`bash scripts/install-git-hooks.sh`
   once per clone) captures review cost into BQ on each commit (no `git add`, no staged files).
   The same install's pre-push hook runs `verify.py --full` after unsetting `GIT_DIR`, so
@@ -1811,7 +1813,10 @@ row_key — one undone in ADP is open again and is assigned again); a crash mark
 rest `not attempted: job stopped (…)`. The job ends by re-reading the touched weeks
 (`refresh_schedule`) and the page reloads. On a saved (locked) week, a saved open shift ADP now shows
 on someone reads "<name> took this open shift in ADP" and counts as in ADP — Save never re-offers it. `BREADCRUMB adp_open_shift_assign assign_id=… row_key=…
-error=…` on each failure. Dry run (ticks the person in ADP's eligible list, never presses the final Assign, backs out):
+error=…` on each failure. Queue the same rows from the command line (refuses while any schedule-write
+execution is still running; `--execute` starts the job with per-run env overrides and does not change the job's own env):
+`python3 -m agents.bhaga.scripts.adp_schedule_write --queue-assign shifts.json [--execute]`.
+Dry run (ticks the person in ADP's eligible list, never presses the final Assign, backs out):
 `BHAGA_ADP_CDP_URL=http://127.0.0.1:9333 python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --assign-id <id> --dry-run`.
 Check: `bq query 'SELECT date, employee, start_min, end_min, status, error, adp_name FROM bhaga.labor_open_shift_assignments ORDER BY requested_at DESC LIMIT 40'`.
 
@@ -1843,7 +1848,8 @@ BHAGA_SCHEDULE_WEEK_START=<Mon>` on the job, or `adp_schedule_write --inspect --
 that row fails with the names ADP did list. **Publish week** (enabled once a row is `drafted`) runs
 `BHAGA_ADP_SCHEDULE_WRITE=publish`: Publish drafts for that week — every draft, including ones added by
 hand in ADP — then the week's rows become `published`. If the toolbar count never reads 0 after the
-confirm, the job reloads the page up to 3 times and reads the week's count fresh
+confirm, `publish_drafts` reloads the week once and accepts the publish when that fresh load reads 0
+(the open grid can keep the old count for the whole wait). If it still doesn't, the job reloads the page up to 3 times and reads the week's count fresh
 (`[schedule_write] reload i/3 … publish_drafts=N`; the open grid can keep the old count and the
 open-shift cells' `Drafts: N` for minutes after a publish). Only if no reload reads 0 does it re-read
 the grid and accept the publish when no row is left `drafted` (else `PublishUnconfirmed`, rows stay

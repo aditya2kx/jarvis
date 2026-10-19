@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import json
+import tempfile
 import unittest
 from collections import Counter
 from unittest import mock
@@ -732,3 +734,64 @@ class RunPublishDm(unittest.TestCase):
     def test_dm_failure_fails_the_job(self):
         rc, _notify = self._run(sent=False)
         self.assertEqual(rc, 1)
+
+
+class QueueAssign(unittest.TestCase):
+    TODAY = datetime.date(2026, 10, 19)
+    ITEM = {"date": "2026-10-27", "employee": "Orourke, Elizabeth", "start_min": 990, "end_min": 1230}
+
+    def _file(self) -> str:
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump([self.ITEM], handle)
+        handle.close()
+        self.addCleanup(lambda: __import__("os").unlink(handle.name))
+        return handle.name
+
+    def test_rejects_today_and_two_shifts_for_one_person(self):
+        with self.assertRaises(ValueError):
+            w.validate_assign_items(
+                [{"date": "2026-10-19", "employee": "A", "start_min": 1, "end_min": 2}], self.TODAY)
+        with self.assertRaises(ValueError) as ctx:
+            w.validate_assign_items([self.ITEM, {**self.ITEM, "start_min": 600, "end_min": 700}], self.TODAY)
+        self.assertIn("already takes", str(ctx.exception))
+
+    def test_a_run_that_does_not_write_the_schedule_does_not_block(self):
+        other = {"name": "exec/2", "template": {"containers": [
+            {"env": [{"name": "BHAGA_SKIP_ADP", "value": "1"}]}]}}
+        self.assertIsNone(w.running_schedule_write([other]))
+
+    def test_busy_execution_refuses_before_insert(self):
+        running = {"name": "exec/1", "template": {"containers": [
+            {"env": [{"name": "BHAGA_ADP_SCHEDULE_WRITE", "value": "assign"}]}]}}
+        with mock.patch.object(w, "_insert_queued_assign") as insert:
+            with self.assertRaises(w.ScheduleWriteBusy):
+                w.queue_assign("palmetto", [self.ITEM], by="t", today=self.TODAY, executions=[running])
+        insert.assert_not_called()
+
+    def test_a_finished_write_does_not_block(self):
+        done = {"name": "exec/1", "completionTime": "t", "template": {"containers": [
+            {"env": [{"name": "BHAGA_ADP_SCHEDULE_WRITE", "value": "publish"}]}]}}
+        with mock.patch.object(w, "_insert_queued_assign", return_value="id-1") as insert:
+            self.assertEqual(
+                w.queue_assign("palmetto", [self.ITEM], by="t", today=self.TODAY, executions=[done]), "id-1")
+        insert.assert_called_once()
+
+    def test_cli_refuses_while_busy_and_does_not_queue(self):
+        running = {"name": "exec/9", "template": {"containers": [
+            {"env": [{"name": "BHAGA_ADP_SCHEDULE_WRITE", "value": "drafts"}]}]}}
+        with mock.patch.object(w, "fetch_job_executions", return_value=[running]), \
+             mock.patch.object(w, "_insert_queued_assign") as insert, \
+             mock.patch.object(w, "start_assign_job") as start:
+            rc = w.main(["--queue-assign", self._file(), "--execute"])
+        self.assertEqual(rc, 1)
+        insert.assert_not_called()
+        start.assert_not_called()
+
+    def test_cli_queues_without_starting_the_job(self):
+        with mock.patch.object(w, "fetch_job_executions", return_value=[]), \
+             mock.patch.object(w, "_insert_queued_assign", return_value="abc") as insert, \
+             mock.patch.object(w, "start_assign_job") as start:
+            rc = w.main(["--queue-assign", self._file()])
+        self.assertEqual(rc, 0)
+        insert.assert_called_once()
+        start.assert_not_called()

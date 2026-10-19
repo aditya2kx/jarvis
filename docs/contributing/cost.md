@@ -62,6 +62,12 @@ Opus-only conversation's total.
 If the gate reports `$0`, check whether a second chat space was editing in the
 same window before reaching for `record-build`.
 
+A self-hosted worker (a cloud agent running on the operator's Mac) is different:
+the Cursor usage API returns 0 tokens for it. `cloud_agent.py record-cost` then
+records a benchmark — the median opus PR build cost as of 2026-10-19, $10.22 —
+with `build_approximate` set and `APPROXIMATE` in the session note. A later
+reading that is actually non-zero replaces that row and clears the flag.
+
 ## Model routing
 Use the cheapest model that does the job well.  Escalate only when stuck.
 

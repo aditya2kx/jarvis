@@ -184,6 +184,35 @@ def _click(frame, pattern: str, *, what: str) -> None:
     btn.click(timeout=8000)
 
 
+def _shown_week(frame) -> dt.date | None:
+    """The week the grid says it is showing, or None when the label can't be read."""
+    try:
+        text = frame.get_by_text(re.compile(r"Week of")).first.inner_text(timeout=3000)
+        return week_label_start(" ".join(text.split()))
+    except Exception:
+        return None
+
+
+def _drafts_on_fresh_load(page, week_start: dt.date) -> int | None:
+    """Publish drafts (N) after a full reload. The open grid keeps the pre-publish count.
+
+    2026-10-19: Publish of one recreated open shift left the toolbar at 1 for the whole
+    30s wait, then a fresh Team Schedule load showed 0 drafts and the shift live.
+    """
+    from skills.adp_run_automation import runner as r
+
+    try:
+        page.reload(wait_until="domcontentloaded")
+        frame = r._open_team_schedule(page)
+        page.wait_for_timeout(2500)
+        goto_week(frame, page, week_start)
+        page.wait_for_timeout(2000)
+        return drafts_pending(frame)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[schedule_write] fresh load unreadable: {type(exc).__name__}: {exc}"[:300])
+        return None
+
+
 def drafts_pending(frame) -> int:
     btn = _visible_button(frame, r"^\s*Publish drafts")
     if btn is None:
@@ -647,5 +676,9 @@ def publish_drafts(frame, page, *, dry_run: bool = False) -> int:
         raise ScheduleWriteError("no Publish confirmation button after Publish drafts")
     confirm.click(timeout=8000)
     if not _wait_drafts(frame, page, 0, timeout_s=30.0):
+        week = _shown_week(frame)
+        if week is not None and _drafts_on_fresh_load(page, week) == 0:
+            print(f"[schedule_write] publish confirmed on a fresh load week_start={week}")
+            return pending
         raise PublishUnconfirmed("ADP still shows unpublished drafts after Publish", pending)
     return pending

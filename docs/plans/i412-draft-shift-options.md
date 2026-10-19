@@ -65,8 +65,9 @@ Invariants preserved: weekly cap / per-period / last-day / ADP-unavailability fi
 Save to ADP / `labor_schedule_pushes` write path untouched (side-effect free until confirm); America/Chicago
 dates unchanged; no hardcoded store ids (store from page props).
 
-Evidence tier: unit-only — waiver: console-only UI change; BHAGA pipeline and ADP write job untouched; live
-prod-data demo + hosted screenshots replace a sandbox run (approved in jam).
+Evidence tier: unit-only — waiver: ADP has no sandbox company for Team Schedule; Scope 1 is console-only, and
+Scope 2's assign job is proven by unit tests, a live prod-ADP dry run, and one live prod-ADP assignment of an
+operator-chosen open shift (B4), plus a prod-data localhost demo with hosted screenshots (approved in jam 2).
 
 ## Milestone 1 — engine options + pins (Opus)
 

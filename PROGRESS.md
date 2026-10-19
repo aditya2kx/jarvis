@@ -1,3 +1,7 @@
+## 2026-10-19 — Follow-ups from the #412 retro
+
+**Scope:** a self-hosted worker whose Cursor usage API returns 0 tokens now gets a flagged-approximate benchmark build cost ($10.22, the median opus PR) instead of failing the cost gate. Publishing drafts reloads the week once before reporting the publish unconfirmed, because ADP's open grid keeps the old count. `verify.py` fails when `~/Documents/build-workspace/jarvis` has `core.bare=true`, uncommitted tracked files, or a `main` behind `origin/main`. `--queue-assign` queues open-shift rows with the console's checks and refuses while a schedule write is running. **Evidence:** unit tests.
+
 ## 2026-10-19 — Labor draft lists every eligible person; ADP open shifts are assigned from Coverage (Issue #412)
 
 **Scope:** each draft shift's Who picker lists everyone the rules allow, and a pick re-drafts the rest of the week. Each future day in Coverage lists that day's ADP open shifts with a checkbox and the same picker; Write to ADP assigns them (`BHAGA_ADP_SCHEDULE_WRITE=assign`, `labor_open_shift_assignments`) and re-reads the week. A saved open shift someone has taken in ADP stays marked in ADP. **Evidence:** PR #413 §4 (unit tests, one live prod-ADP assignment, then reverted).

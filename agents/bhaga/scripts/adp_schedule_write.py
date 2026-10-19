@@ -16,6 +16,11 @@ Two operator-confirmed modes, each started by one console click:
   assign   ... --assign-id <id>
            Assigns each queued ``labor_open_shift_assignments`` row's existing ADP open
            shift to its person (Issue #412), then re-reads the changed weeks.
+  queue    ... --queue-assign shifts.json [--execute]
+           Inserts those open shifts as ``queued`` rows (same checks as the console)
+           and refuses while any ``BHAGA_ADP_SCHEDULE_WRITE`` execution is still
+           running. ``--execute`` then starts the prod job with per-execution env
+           overrides — it does not change the job's own env.
 
 ``--dry-run`` walks each ADP wizard to its final step and backs out; BQ is
 left untouched. Cloud Run: daily_refresh early-exits here when
@@ -32,6 +37,8 @@ import re
 import subprocess
 import sys
 import time
+import urllib.request
+import uuid
 from collections import Counter, defaultdict
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -845,6 +852,139 @@ def run_inspect(store: str, week_start: dt.date, *, headless: bool) -> int:
     return 0
 
 
+_ASSIGN_JOB = ("https://run.googleapis.com/v2/projects/jarvis-bhaga-prod"
+               "/locations/us-central1/jobs/bhaga-daily-refresh")
+_MAX_ASSIGN = 40
+
+
+class ScheduleWriteBusy(RuntimeError):
+    """A BHAGA_ADP_SCHEDULE_WRITE execution is still running."""
+
+
+def validate_assign_items(items, today: dt.date) -> list[dict]:
+    """Same rules as the console's validateAssignItems. Raises ValueError."""
+    if not isinstance(items, list) or not items:
+        raise ValueError("No open shifts selected.")
+    if len(items) > _MAX_ASSIGN:
+        raise ValueError(f"Too many open shifts ({len(items)}); max {_MAX_ASSIGN}.")
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for i, raw in enumerate(items, start=1):
+        where = f"Shift {i}"
+        if not isinstance(raw, dict):
+            raise ValueError(f"{where}: expected an object.")
+        date = raw.get("date")
+        if not isinstance(date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            raise ValueError(f"{where}: bad date.")
+        day = dt.date.fromisoformat(date)
+        if day <= today:
+            raise ValueError(f"{where}: {date} is today or in the past.")
+        start = raw.get("start_min", raw.get("startMin"))
+        end = raw.get("end_min", raw.get("endMin"))
+        if (not all(isinstance(n, int) and not isinstance(n, bool) for n in (start, end))
+                or start < 0 or end > 24 * 60 or end <= start):
+            raise ValueError(f"{where}: bad start/end time.")
+        employee = raw.get("employee")
+        employee = employee.strip() if isinstance(employee, str) else ""
+        if not employee:
+            raise ValueError(f"{where}: choose who takes it.")
+        if (date, employee) in seen:
+            raise ValueError(f"{where}: {employee} already takes another selected shift on {date}.")
+        seen.add((date, employee))
+        out.append({"date": day, "employee": employee, "start_min": start, "end_min": end})
+    return out
+
+
+def execution_env(execution: dict) -> dict[str, str]:
+    containers = ((execution.get("template") or {}).get("containers") or [])
+    return {
+        e["name"]: e.get("value") or ""
+        for c in containers for e in (c.get("env") or []) if e.get("name")
+    }
+
+
+def running_schedule_write(executions: list[dict]) -> str | None:
+    """Name of an unfinished execution whose env sets BHAGA_ADP_SCHEDULE_WRITE."""
+    for execution in executions:
+        if execution.get("completionTime"):
+            continue
+        if execution_env(execution).get("BHAGA_ADP_SCHEDULE_WRITE"):
+            return execution.get("name") or "(unnamed execution)"
+    return None
+
+
+def _gcp_token() -> str:
+    import google.auth
+    import google.auth.transport.requests
+
+    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    creds.refresh(google.auth.transport.requests.Request())
+    if not creds.token:
+        raise RuntimeError("no GCP access token")
+    return creds.token
+
+
+def fetch_job_executions() -> list[dict]:
+    req = urllib.request.Request(
+        f"{_ASSIGN_JOB}/executions?pageSize=10",
+        headers={"Authorization": f"Bearer {_gcp_token()}"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as res:
+        return json.loads(res.read().decode()).get("executions") or []
+
+
+def _insert_queued_assign(store: str, items: list[dict], by: str) -> str:
+    assign_id = str(uuid.uuid4())
+    payload = json.dumps([
+        {"row_key": "|".join([store, i["date"].isoformat(), str(i["start_min"]), str(i["end_min"]), i["employee"]]),
+         "date": i["date"].isoformat(), "employee": i["employee"],
+         "start_min": i["start_min"], "end_min": i["end_min"]}
+        for i in items
+    ])
+    _query(
+        "INSERT INTO {T}"
+        " (store, assign_id, row_key, date, employee, start_min, end_min,"
+        "  status, error, adp_name, requested_by, requested_at, updated_at)"
+        " SELECT @store, @id, JSON_VALUE(s, '$.row_key'), DATE(JSON_VALUE(s, '$.date')),"
+        "        JSON_VALUE(s, '$.employee'), CAST(JSON_VALUE(s, '$.start_min') AS INT64),"
+        "        CAST(JSON_VALUE(s, '$.end_min') AS INT64), 'queued', NULL, NULL, @by,"
+        "        CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()"
+        " FROM UNNEST(JSON_QUERY_ARRAY(@items)) AS s",
+        [("store", "STRING", store), ("id", "STRING", assign_id), ("by", "STRING", by),
+         ("items", "STRING", payload)],
+        table=ASSIGN_TABLE,
+    )
+    return assign_id
+
+
+def queue_assign(store: str, items, *, by: str, today: dt.date | None = None,
+                 executions: list[dict] | None = None) -> str:
+    """Queue open-shift rows, refusing while a schedule-write execution is running."""
+    valid = validate_assign_items(items, today or _today_ct())
+    found = fetch_job_executions() if executions is None else executions
+    hit = running_schedule_write(found)
+    if hit:
+        raise ScheduleWriteBusy(f"ADP is busy with another schedule write ({hit})")
+    return _insert_queued_assign(store, valid, by)
+
+
+def start_assign_job(store: str, assign_id: str) -> str:
+    """Start one assign execution. Overrides apply to this run only, not the job."""
+    body = {"overrides": {"containerOverrides": [{"env": [
+        {"name": "BHAGA_ADP_SCHEDULE_WRITE", "value": "assign"},
+        {"name": "BHAGA_IGNORE_HALT", "value": "1"},
+        {"name": "BHAGA_STORE", "value": store},
+        {"name": "BHAGA_SCHEDULE_ASSIGN_ID", "value": assign_id},
+    ]}]}}
+    req = urllib.request.Request(
+        f"{_ASSIGN_JOB}:run", data=json.dumps(body).encode(), method="POST",
+        headers={"Authorization": f"Bearer {_gcp_token()}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as res:
+        data = json.loads(res.read().decode())
+    return ((data.get("metadata") or {}).get("name")) or data.get("name") or ""
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--store", default="palmetto")
@@ -856,10 +996,34 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--refresh-schedule", action="store_true", help="read-only: reload --week-start's ADP schedule into BQ")
     p.add_argument("--delete", help="';'-separated row_keys of drafted shifts to remove from ADP (--week-start)")
     p.add_argument("--assign-id", help="assign the queued open shifts of this labor_open_shift_assignments run")
+    p.add_argument("--queue-assign", metavar="FILE",
+                   help="queue open shifts from this JSON file ('-' = stdin); refuses while a schedule write is running")
+    p.add_argument("--execute", action="store_true",
+                   help="with --queue-assign: start the prod assign job after the rows are queued")
+    p.add_argument("--requested-by", default="agent:cli")
     p.add_argument("--week-start", type=dt.date.fromisoformat)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--headless", action="store_true")
     a = p.parse_args(argv)
+    if a.queue_assign:
+        if any([a.assign_id, a.publish, a.publish_dm, a.inspect, a.refresh_schedule, a.delete, a.push_id]):
+            p.error("--queue-assign stands alone")
+        text = sys.stdin.read() if a.queue_assign == "-" else Path(a.queue_assign).read_text()
+        try:
+            items = json.loads(text)
+            assign_id = queue_assign(a.store, items, by=a.requested_by)
+        except (ScheduleWriteBusy, ValueError, json.JSONDecodeError) as exc:
+            print(f"refused: {exc}")
+            return 1
+        print(f"queued assign_id={assign_id} rows={len(items)}")
+        if not a.execute:
+            return 0
+        hit = running_schedule_write(fetch_job_executions())
+        if hit:
+            print(f"refused to start: ADP is busy ({hit}); rows stay queued under {assign_id}")
+            return 1
+        print(f"started {start_assign_job(a.store, assign_id)}")
+        return 0
     if a.assign_id:
         return run_assign(a.store, a.assign_id, headless=a.headless, dry_run=a.dry_run)
     if a.refresh_schedule:

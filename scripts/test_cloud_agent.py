@@ -109,6 +109,36 @@ class RecordCostTests(unittest.TestCase):
     def test_split_shares_equal_when_sizes_unknown(self):
         self.assertEqual(C.split_shares({1: 0, 2: 0}), {1: 0.5, 2: 0.5})
 
+    def test_zero_usage_records_the_benchmark_as_approximate(self):
+        def fake_api(method, path, body=None):
+            if path.endswith("/usage"):
+                return {"totalUsage": {"totalTokens": 0}}
+            return {"id": AID, "createdAt": "2026-10-19T14:25:00.000Z"}
+
+        with mock.patch.object(C, "_api", side_effect=fake_api), \
+             mock.patch.object(L, "set_meta"), \
+             mock.patch.object(L, "record_build_session") as rec:
+            out = C.record_cost(413, f"Cursor-Agent: {AID} model=claude-opus-5-5-high", "t", "b")
+        kw = rec.call_args.kwargs
+        self.assertEqual(kw["tokens"], C.ZERO_USAGE_BENCHMARK_TOKENS)
+        self.assertAlmostEqual(kw["cost_usd"], C.ZERO_USAGE_BENCHMARK_COST)
+        self.assertEqual(kw["source"], "benchmark_estimate")
+        self.assertIs(kw["mark_approximate"], True)
+        self.assertIn("APPROXIMATE:", kw["note"])
+        self.assertIn("approximate", out)
+
+    def test_measured_usage_clears_an_estimate_it_replaces(self):
+        rec = {"build": {"sessions": [], "approximate": None}, "review": {"runs": []}}
+        with mock.patch.object(L, "load_record", return_value=rec), \
+             mock.patch.object(L, "save_record"):
+            L.record_build_session(1, ts="t", tokens=1, cost_usd=10.22, model="m",
+                                   note=f"{AID} APPROXIMATE: usage API returned 0", mark_approximate=True)
+            self.assertIs(rec["build"]["approximate"], True)
+            L.record_build_session(1, ts="t", tokens=13_000_000, cost_usd=31.0, model="m",
+                                   note=AID, mark_approximate=False)
+        self.assertIs(rec["build"]["approximate"], False)
+        self.assertEqual(rec["build"]["sessions"][0]["note"], AID)
+
     def test_skips_without_marker(self):
         with mock.patch.object(C, "_api") as api:
             self.assertIn("skipped", C.record_cost(1, "no marker", "t", "b"))

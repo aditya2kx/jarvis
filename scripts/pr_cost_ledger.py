@@ -675,6 +675,7 @@ def capture_build(
 def record_build_session(
     pr: int, *, ts: str, tokens: int, cost_usd: float,
     model: str, source: str | None = None, note: str | None = None,
+    mark_approximate: bool | None = None,
 ) -> dict[str, Any]:
     rec = load_record(pr)
     if source:
@@ -686,6 +687,12 @@ def record_build_session(
         "cost_usd": round(float(cost_usd), 4), "note": note,
     })
     rec["build"]["sessions"].sort(key=lambda s: s.get("ts") or "")
+    if mark_approximate is True:
+        rec["build"]["approximate"] = True
+    elif mark_approximate is False:
+        rec["build"]["approximate"] = any(
+            "APPROXIMATE:" in (s.get("note") or "") for s in rec["build"]["sessions"]
+        )
     save_record(rec)
     return rec
 

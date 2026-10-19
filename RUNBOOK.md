@@ -1806,9 +1806,11 @@ any schedule-write run is going). Per row: the day's open-shift cell → **Selec
 Shift details **Assign** → tick the person in ADP's eligible list → **Assign**; then the week's open
 shifts are re-read and the row is `assigned` only if that slot's count dropped. A person ADP doesn't list
 as eligible fails with ADP's list (`… is not eligible for this open shift in ADP (eligible: …)`); a slot
-no longer open fails without touching ADP; a row_key already `assigned` is `skipped`; a crash marks the
+no longer open fails without touching ADP (`skipped` instead when an earlier Write to ADP assigned that
+row_key — one undone in ADP is open again and is assigned again); a crash marks the
 rest `not attempted: job stopped (…)`. The job ends by re-reading the touched weeks
-(`refresh_schedule`) and the page reloads. `BREADCRUMB adp_open_shift_assign assign_id=… row_key=…
+(`refresh_schedule`) and the page reloads. On a saved (locked) week, a saved open shift ADP now shows
+on someone reads "<name> took this open shift in ADP" and counts as in ADP — Save never re-offers it. `BREADCRUMB adp_open_shift_assign assign_id=… row_key=…
 error=…` on each failure. Dry run (ticks the person in ADP's eligible list, never presses the final Assign, backs out):
 `BHAGA_ADP_CDP_URL=http://127.0.0.1:9333 python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --assign-id <id> --dry-run`.
 Check: `bq query 'SELECT date, employee, start_min, end_min, status, error, adp_name FROM bhaga.labor_open_shift_assignments ORDER BY requested_at DESC LIMIT 40'`.

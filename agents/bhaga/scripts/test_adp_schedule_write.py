@@ -283,12 +283,18 @@ class RunAssign(unittest.TestCase):
         self.assertEqual(self._run(fq, adp), 0)
         self.assertEqual(fq.tables, {"labor_open_shift_assignments"})
         self.assertEqual(fq.updates, [
-            ("c", "skipped", "already assigned by an earlier Write to ADP", None),
             ("a", "assigned", None, "Denton, Cimino"),
+            ("c", "skipped", "already assigned by an earlier Write to ADP", None),
             ("b", "assigned", None, "Huynh, Hillary"),
         ])
         self.refresh.assert_called_once_with(mock.ANY, "palmetto", datetime.date(2026, 10, 26), weeks=2)
         self.assertEqual(self.goto.call_args.args[2], datetime.date(2026, 10, 26))
+
+    def test_earlier_assignment_undone_in_adp_is_assigned_again(self):
+        fq = FakeAssignQuery([_arow("a", "Orourke, Elizabeth")], assigned_keys=["a"])
+        adp = FakeAssignAdp({self.OCT27: 1})
+        self.assertEqual(self._run(fq, adp), 0)
+        self.assertEqual(fq.updates, [("a", "assigned", None, "Orourke, Elizabeth")])
 
     def test_two_identical_open_shifts_take_two_people(self):
         fq = FakeAssignQuery([_arow("a", "Denton, Cimino"), _arow("b", "Huynh, Hillary")])

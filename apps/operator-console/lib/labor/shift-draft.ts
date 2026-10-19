@@ -106,6 +106,8 @@ export type DraftShift = {
   inAdp?: boolean;
   /** Saved for a person, but ADP now shows it as an open shift (e.g. approved unavailability). */
   adpOpen?: boolean;
+  /** Saved as an open shift that this person has since taken in ADP. */
+  takenBy?: string;
   /** Stable id of the draft step behind this shift — the key for an operator pick. */
   slot?: string;
   /** Everyone who could take this shift, best fit first; `employee: null` = leave it open. */

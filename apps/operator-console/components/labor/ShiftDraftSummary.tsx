@@ -307,6 +307,11 @@ export function ShiftDraftSummary({
                           </Badge>
                         ) : null}
                       </span>
+                    ) : s.takenBy ? (
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="font-medium">{s.takenBy}</span>
+                        <span className="text-xs text-muted-foreground">took this open shift in ADP</span>
+                      </span>
                     ) : (
                       <span className="text-muted-foreground">
                         Unassigned — posts as an open shift

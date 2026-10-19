@@ -436,14 +436,8 @@ def run_assign(store: str, assign_id: str, *, headless: bool, dry_run: bool) -> 
         print(f"BREADCRUMB adp_open_shift_assign assign_id={assign_id} row_key={row_key} error={msg}"[:500])
         set_status(row_key, "failed", msg[:400])
 
-    todo = []
-    for row in rows:
-        if row["row_key"] in done:
-            print(f"[schedule_write] skip already-assigned {row['row_key']}")
-            set_status(row["row_key"], "skipped", "already assigned by an earlier Write to ADP")
-        else:
-            todo.append(row)
-    print(f"[schedule_write] assign_id={assign_id} queued={len(rows)} to_assign={len(todo)} dry_run={dry_run}")
+    todo = rows
+    print(f"[schedule_write] assign_id={assign_id} queued={len(rows)} dry_run={dry_run}")
     if not todo:
         return 0
 
@@ -467,8 +461,13 @@ def run_assign(store: str, assign_id: str, *, headless: bool, dry_run: bool) -> 
                     open_now = wb.read_open_shifts(page, frame, week)
                     for row in by_week[week]:
                         key = row["row_key"]
+                        # An earlier 'assigned' row only counts while ADP agrees: one undone in ADP is open again.
                         if open_now[slot(row)] <= 0:
-                            fail(key, "no longer an open shift in ADP (claimed, assigned or removed)")
+                            if key in done:
+                                print(f"[schedule_write] skip already-assigned {key}")
+                                set_status(key, "skipped", "already assigned by an earlier Write to ADP")
+                            else:
+                                fail(key, "no longer an open shift in ADP (claimed, assigned or removed)")
                             continue
                         try:
                             name = wb.assign_open_shift(

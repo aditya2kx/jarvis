@@ -57,7 +57,8 @@ import {
   type DraftShift,
   type MealRule,
 } from "@/lib/labor/shift-draft";
-import { inAdpSchedule, savedPlan, type PushRow, type PushShift, type PushStatus } from "@/lib/labor/schedule-push";
+import { savedPlan, type PushRow } from "@/lib/labor/schedule-push";
+import { planShift } from "@/lib/labor/saved-plan-shift";
 import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
 import {
   applyDayRules,
@@ -147,26 +148,6 @@ const NO_OPEN: OpenShiftInput[] = [];
 const NO_RULES_HISTORY: RulesVersion[] = [];
 const NO_UNAVAILABILITY: UnavailabilityInput[] = [];
 const NO_PUSH_ROWS: PushRow[] = [];
-
-function planShift(
-  s: PushShift & { status: PushStatus },
-  lanes: readonly CoveragePersonDay[],
-  meal: MealRule,
-): DraftShift {
-  const kind = s.startMin <= 450 ? "open" : s.endMin >= 1200 ? "close" : "mid";
-  const adp = lanes.map((l) => ({
-    employee: l.employee,
-    open: isOpenLane(l),
-    segments: l.segments.filter((g) => g.kind !== "actual"),
-  }));
-  const asPerson = inAdpSchedule(s, adp);
-  // ADP unassigns a saved shift when the person's unavailability is approved; it's still in ADP, as an open shift.
-  const adpOpen =
-    !asPerson && s.employee != null && (s.status === "drafted" || s.status === "published") &&
-    inAdpSchedule({ ...s, employee: null }, adp);
-  const { status: _status, ...shift } = s;
-  return { ...shift, kind, hours: paidHours(s.startMin, s.endMin, meal), trimmed: false, inAdp: asPerson || adpOpen, adpOpen };
-}
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {
   const [y, m, d] = iso.split("-").map(Number);
@@ -1265,7 +1246,7 @@ export function LaborCoveragePanel({
       const byDay = new Map<string, DraftShift[]>();
       for (const d of state) {
         const shifts = plan
-          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan.filter((s) => s.date === d.iso).map((s) => planShift(s, lanesFor(d.iso), meal))]
+          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan.filter((s) => s.date === d.iso).map((s, _i, day) => planShift(s, lanesFor(d.iso), meal, day))]
           : d.shifts;
         if (shifts.length) byDay.set(d.iso, [...shifts].sort((a, b) => a.startMin - b.startMin));
       }

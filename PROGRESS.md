@@ -1,3 +1,7 @@
+## 2026-10-19 — Labor draft lists every eligible person; ADP open shifts are assigned from Coverage (Issue #412)
+
+**Scope:** each draft shift's Who picker lists everyone the rules allow, and a pick re-drafts the rest of the week. Each future day in Coverage lists that day's ADP open shifts with a checkbox and the same picker; Write to ADP assigns them (`BHAGA_ADP_SCHEDULE_WRITE=assign`, `labor_open_shift_assignments`) and re-reads the week. A saved open shift someone has taken in ADP stays marked in ADP. **Evidence:** PR #413 §4 (unit tests, one live prod-ADP assignment, then reverted).
+
 ## 2026-10-17 — Send ClickUp message can post to Shift Coverage
 
 **Scope:** **Send ClickUp message** now asks where the note goes. **Send me a DM** keeps the draft header. **Post to Shift Coverage** posts the same note starting at `@everyone` to the store's Shift Coverage channel, and only after a fresh ADP read. Publish still only DMs. **Evidence:** unit tests on the split message and the drawer choice.

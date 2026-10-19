@@ -97,7 +97,10 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    (Team Schedule Create shift / Create open shift → Save as draft) and a separate
    **Publish week** (Publish drafts + a ClickUp DM to the operator with every open shift from
    tomorrow through the published week — Issue #381; Publish only DMs; **Send ClickUp message**
-   can re-DM or post the note from `@everyone` to Shift Coverage after re-reading ADP). Never on the nightly. The only request
+   can re-DM or post the note from `@everyone` to Shift Coverage after re-reading ADP), plus
+   Issue #412 **Write to ADP** (same flag): assigns operator-ticked existing ADP open shifts to
+   the person chosen, only from ADP's own eligible list, confirmed by a re-read open-shift count
+   (`labor_open_shift_assignments`, `BHAGA_ADP_SCHEDULE_WRITE=assign`). Never on the nightly. The only request
    write is the operator's **Approve** on one pending unavailability request
    (`FEATURES.adpUnavailabilityApprove` / `CONSOLE_ADP_UNAVAIL_APPROVE`): clicks APPROVE on
    the single matching card, never Reject, never retried. Every other Team Schedule touch

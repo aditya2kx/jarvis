@@ -13,6 +13,9 @@ Two operator-confirmed modes, each started by one console click:
   dm       ... --publish-dm --week-start 2026-10-19 [--to channel]
            Re-reads ADP's open shifts, then re-sends the DM. ``--to channel`` posts the
            team note (from ``@everyone``, no draft header) to the store's Shift Coverage channel.
+  assign   ... --assign-id <id>
+           Assigns each queued ``labor_open_shift_assignments`` row's existing ADP open
+           shift to its person (Issue #412), then re-reads the changed weeks.
 
 ``--dry-run`` walks each ADP wizard to its final step and backs out; BQ is
 left untouched. Cloud Run: daily_refresh early-exits here when
@@ -37,7 +40,10 @@ from zoneinfo import ZoneInfo
 from skills.adp_run_automation import schedule_write_backend as wb
 
 
-def _bq():
+ASSIGN_TABLE = "labor_open_shift_assignments"
+
+
+def _bq(table: str = "labor_schedule_pushes"):
     from google.cloud import bigquery
 
     from core.datastore import fq, get_client
@@ -45,11 +51,11 @@ def _bq():
     client = get_client()
     if client is None:
         raise RuntimeError("BigQuery datastore is not enabled (BHAGA_DATASTORE=bigquery)")
-    return client, fq("labor_schedule_pushes"), bigquery
+    return client, fq(table), bigquery
 
 
-def _query(sql: str, params: list[tuple[str, str, object]]) -> list[dict]:
-    client, table, bigquery = _bq()
+def _query(sql: str, params: list[tuple[str, str, object]], *, table: str = "labor_schedule_pushes") -> list[dict]:
+    client, table, bigquery = _bq(table)
     cfg = bigquery.QueryJobConfig(
         query_parameters=[bigquery.ScalarQueryParameter(n, t, v) for n, t, v in params]
     )
@@ -386,6 +392,121 @@ def run_drafts(store: str, push_id: str, *, headless: bool, dry_run: bool) -> in
     finally:
         writer.shutdown(wait=True)
     return 1 if failed or stopped else 0
+
+
+def run_assign(store: str, assign_id: str, *, headless: bool, dry_run: bool) -> int:
+    """Assign each queued ``labor_open_shift_assignments`` row's ADP open shift to its person.
+
+    Confirmed only when ADP's open-shift list for that slot drops by one. A slot ADP no
+    longer lists open fails without a click — an assigned shift is never open, so a
+    retry can't assign twice. Then re-reads the changed weeks into BQ.
+    """
+    def aq(sql: str, params: list[tuple[str, str, object]]) -> list[dict]:
+        return _query(sql, params, table=ASSIGN_TABLE)
+
+    rows = aq(
+        "SELECT * FROM {T} WHERE store = @store AND assign_id = @id AND status = 'queued' ORDER BY date, start_min",
+        [("store", "STRING", store), ("id", "STRING", assign_id)],
+    )
+    done = {
+        r["row_key"]
+        for r in aq(
+            "SELECT DISTINCT row_key FROM {T} WHERE store = @store AND assign_id != @id AND status = 'assigned'",
+            [("store", "STRING", store), ("id", "STRING", assign_id)],
+        )
+    }
+    settled: set[str] = set()
+
+    def set_status(row_key: str, status: str, error: str | None = None, adp_name: str | None = None) -> None:
+        settled.add(row_key)
+        if dry_run:
+            return
+        aq(
+            "UPDATE {T} SET status = @status, error = @error, adp_name = @name, updated_at = CURRENT_TIMESTAMP()"
+            " WHERE assign_id = @id AND row_key = @key",
+            [("status", "STRING", status), ("error", "STRING", error), ("name", "STRING", adp_name),
+             ("id", "STRING", assign_id), ("key", "STRING", row_key)],
+        )
+
+    failed = 0
+
+    def fail(row_key: str, msg: str) -> None:
+        nonlocal failed
+        failed += 1
+        print(f"BREADCRUMB adp_open_shift_assign assign_id={assign_id} row_key={row_key} error={msg}"[:500])
+        set_status(row_key, "failed", msg[:400])
+
+    todo = rows
+    print(f"[schedule_write] assign_id={assign_id} queued={len(rows)} dry_run={dry_run}")
+    if not todo:
+        return 0
+
+    from skills.adp_run_automation import runner as r
+
+    by_week: dict[dt.date, list[dict]] = defaultdict(list)
+    for row in todo:
+        by_week[week_start_of(row["date"])].append(row)
+    changed: set[dt.date] = set()
+
+    def slot(row: dict) -> tuple[str, int, int]:
+        return (row["date"].isoformat(), row["start_min"], row["end_min"])
+
+    try:
+        with r.adp_session(store=store, headed=not headless) as (_ctx, page):
+            frame = r._open_team_schedule(page)
+            try:
+                for week in sorted(by_week):
+                    wb.goto_week(frame, page, week)
+                    page.wait_for_timeout(1500)
+                    open_now = wb.read_open_shifts(page, frame, week)
+                    for row in by_week[week]:
+                        key = row["row_key"]
+                        # An earlier 'assigned' row only counts while ADP agrees: one undone in ADP is open again.
+                        if open_now[slot(row)] <= 0:
+                            if key in done:
+                                print(f"[schedule_write] skip already-assigned {key}")
+                                set_status(key, "skipped", "already assigned by an earlier Write to ADP")
+                            else:
+                                fail(key, "no longer an open shift in ADP (claimed, assigned or removed)")
+                            continue
+                        try:
+                            name = wb.assign_open_shift(
+                                frame, page, date_iso=row["date"].isoformat(), employee=row["employee"],
+                                start_min=row["start_min"], end_min=row["end_min"], dry_run=dry_run,
+                            )
+                        except Exception as exc:  # noqa: BLE001 — one shift must not stop the rest
+                            fail(key, f"{type(exc).__name__}: {exc}")
+                            continue
+                        if dry_run:
+                            print(f"[schedule_write] checked {key} as {name!r}")
+                            settled.add(key)
+                            continue
+                        changed.add(week)
+                        try:
+                            after = wb.read_open_shifts(page, frame, week)
+                        except Exception as exc:  # noqa: BLE001 — unknown; a retry can't double-assign
+                            fail(key, f"UnconfirmedAssign: could not re-read ADP's open shifts ({type(exc).__name__}: {exc})")
+                            continue
+                        if after[slot(row)] < open_now[slot(row)]:
+                            print(f"[schedule_write] assigned {key} as {name!r}")
+                            set_status(key, "assigned", adp_name=name)
+                        else:
+                            fail(key, "ADP did not confirm the assignment — the open shift is still listed")
+                        open_now = after
+            finally:
+                if changed and not dry_run:
+                    lo, hi = min(changed), max(changed)
+                    try:
+                        wb.goto_week(r._open_team_schedule(page), page, lo)
+                        refresh_schedule(page, store, lo, weeks=(hi - lo).days // 7 + 1)
+                    except Exception as exc:  # noqa: BLE001 — the assignments already happened
+                        print(f"BREADCRUMB adp_schedule_refresh store={store} week_start={lo} error={type(exc).__name__}: {exc}"[:500])
+    except Exception as exc:
+        for row in todo:
+            if row["row_key"] not in settled:
+                fail(row["row_key"], f"not attempted: job stopped ({type(exc).__name__}: {exc})")
+        raise
+    return 1 if failed else 0
 
 
 def _clock(m: int) -> str:
@@ -734,10 +855,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--inspect", action="store_true", help="read-only: draft count + open shifts for --week-start")
     p.add_argument("--refresh-schedule", action="store_true", help="read-only: reload --week-start's ADP schedule into BQ")
     p.add_argument("--delete", help="';'-separated row_keys of drafted shifts to remove from ADP (--week-start)")
+    p.add_argument("--assign-id", help="assign the queued open shifts of this labor_open_shift_assignments run")
     p.add_argument("--week-start", type=dt.date.fromisoformat)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--headless", action="store_true")
     a = p.parse_args(argv)
+    if a.assign_id:
+        return run_assign(a.store, a.assign_id, headless=a.headless, dry_run=a.dry_run)
     if a.refresh_schedule:
         if not a.week_start or a.week_start.weekday() != 0:
             p.error("--refresh-schedule needs --week-start on a Monday")

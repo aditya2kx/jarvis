@@ -16,6 +16,8 @@ import { saveScheduleRules } from "@/lib/labor/schedule-rules-store";
 import { queueDraftPush, weekPushRows } from "@/lib/labor/schedule-push-store";
 import { validatePushShifts, type PushRow } from "@/lib/labor/schedule-push";
 import { startScheduleWrite } from "@/lib/bhaga/schedule-write";
+import { validateAssignItems, type AssignRow } from "@/lib/labor/open-shift-assign";
+import { assignRows, queueAssign } from "@/lib/labor/open-shift-assign-store";
 import { runningAdpExecution } from "@/lib/bhaga/recompute";
 import { chicagoTodayIso } from "@/lib/filters/range";
 import {
@@ -156,6 +158,42 @@ export async function schedulePushStatusAction(
           }
         : null;
     return okAck({ data: { rows, running } });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Assign the selected ADP open shifts to the chosen people (Issue #412). */
+export async function assignOpenShiftsAction(
+  items: unknown,
+): Promise<ActionAck<{ assignId: string; count: number }>> {
+  try {
+    requireScheduleWrite();
+    const valid = validateAssignItems(items, chicagoTodayIso());
+    if (await runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE")) {
+      throw new Error("ADP is busy with another schedule write — try again when it finishes.");
+    }
+    const assignId = await queueAssign(DEFAULT_STORE, valid, await operatorEmail());
+    await startScheduleWrite(DEFAULT_STORE, { mode: "assign", assignId });
+    return okAck({
+      data: { assignId, count: valid.length },
+      queued: ["adp-schedule-write"],
+      message: `Assigning ${valid.length} open shift${valid.length === 1 ? "" : "s"} in ADP — about 2 min to sign in, then ~20 s each.`,
+    });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** A Write to ADP run's rows, plus the assign job still running (so a reload resumes it). */
+export async function openShiftAssignStatusAction(
+  assignId: string | null,
+): Promise<ActionAck<{ rows: AssignRow[]; running: string | null }>> {
+  try {
+    const hit = await runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE", "assign");
+    const running = hit?.env.BHAGA_SCHEDULE_ASSIGN_ID || null;
+    const id = assignId ?? running;
+    return okAck({ data: { rows: id ? await assignRows(id) : [], running } });
   } catch (e) {
     return failAck(e);
   }

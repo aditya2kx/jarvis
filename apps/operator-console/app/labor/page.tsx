@@ -858,6 +858,7 @@ export default async function LaborPage({
 
           <CollapsibleSection id="coverage" title="Coverage & shift draft">
           <LaborCoveragePanel
+            store={DEFAULT_STORE}
             win={chartWin}
             actuals={coverageActuals}
             scheduled={coverageScheduled}

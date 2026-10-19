@@ -152,5 +152,86 @@ class CreateOpenShiftConfirm(unittest.TestCase):
             self._create("Shift details Eligibility Previous Save draft Publish", counts_match=False)
 
 
+class FakeAssignFrame:
+    """The Assign Open Shift pane as read live 2026-10-19: one checkbox per eligible employee."""
+
+    def __init__(self, names):
+        self.names, self.picked, self.checked, self.open, self.clicked = names, None, False, True, []
+
+    def evaluate(self, js, arg=None):
+        if js is not wb.ASSIGN_PANE_JS:
+            raise AssertionError("unexpected script")
+        if arg is not None:
+            self.picked = arg
+        return {"pane": self.open, "names": self.names, "checked": self.checked}
+
+    def locator(self, sel):
+        if sel == "[data-jarvis-assign='box']":
+            box = mock.MagicMock()
+            box.first.click.side_effect = lambda **_k: setattr(self, "checked", True)
+            return box
+        btn = mock.MagicMock()
+        btn.is_visible.return_value = True
+        btn.is_enabled.side_effect = lambda: self.checked
+        btn.click.side_effect = lambda **_k: (self.clicked.append(self.names[self.picked]), setattr(self, "open", False))
+        buttons = mock.MagicMock()
+        buttons.count.return_value = 1
+        buttons.nth.return_value = btn
+        pane = mock.MagicMock()
+        pane.get_by_role.return_value = buttons
+        return pane
+
+
+class AssignOpenShift(unittest.TestCase):
+    ELIGIBLE = ["Denton, Cimino R", "Huynh, Hillary", "Orourke, Elizabeth"]
+
+    def _assign(self, employee, dry_run=False):
+        frame = FakeAssignFrame(self.ELIGIBLE)
+        backs = []
+        with mock.patch.object(wb, "_open_shift_details") as details, \
+             mock.patch.object(wb, "_click") as click, \
+             mock.patch.object(wb, "_visible_button", return_value=object()), \
+             mock.patch.object(wb, "_pane_text", return_value=""), \
+             mock.patch.object(wb, "_wait_for", side_effect=lambda _p, check, _t: check()), \
+             mock.patch.object(wb, "_back_out", side_effect=lambda _f, _p: backs.append(1)):
+            try:
+                name = wb.assign_open_shift(frame, mock.Mock(), date_iso="2026-10-27", employee=employee,
+                                            start_min=990, end_min=1230, dry_run=dry_run)
+            except wb.ScheduleWriteError as exc:
+                name = exc
+        details.assert_called_once_with(frame, mock.ANY, date_iso="2026-10-27", start_min=990, end_min=1230)
+        click.assert_called_once_with(frame, r"^\s*Assign\s*$", what="Assign")
+        return name, frame, backs
+
+    def test_ticks_the_eligible_person_and_assigns(self):
+        name, frame, backs = self._assign("Denton, Cimino")
+        self.assertEqual(name, "Denton, Cimino R")
+        self.assertEqual(frame.clicked, ["Denton, Cimino R"])
+        self.assertEqual(backs, [1])
+
+    def test_person_adp_does_not_list_fails_without_assigning(self):
+        err, frame, backs = self._assign("Berding, Kenya")
+        self.assertIsInstance(err, wb.ScheduleWriteError)
+        self.assertIn("not eligible", str(err))
+        self.assertIn("Huynh, Hillary", str(err))
+        self.assertEqual(frame.clicked, [])
+        self.assertEqual(backs, [1])
+
+    def test_dry_run_reaches_an_enabled_assign_and_backs_out(self):
+        name, frame, backs = self._assign("Huynh, Hillary", dry_run=True)
+        self.assertEqual(name, "Huynh, Hillary")
+        self.assertTrue(frame.checked)
+        self.assertEqual(frame.clicked, [])
+        self.assertEqual(backs, [1])
+
+    def test_a_day_without_open_shifts_raises(self):
+        frame = mock.MagicMock()
+        frame.evaluate.return_value = {"cells": [{"index": 0, "header_index": 5, "summary": "Open Shifts (5)"}]}
+        with mock.patch.object(wb, "_back_out"), self.assertRaises(wb.ScheduleWriteError) as ctx:
+            wb._open_shift_details(frame, mock.Mock(), date_iso="2026-10-27", start_min=990, end_min=1230)
+        self.assertIn("no open shifts on 2026-10-27", str(ctx.exception))
+        frame.locator.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

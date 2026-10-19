@@ -245,14 +245,16 @@ export async function triggerPunchFixApply(
 
 /**
  * Enqueue an ADP Team Schedule write (Issue #337): create a push's draft shifts,
- * or publish a week's drafts. Short-circuits via BHAGA_ADP_SCHEDULE_WRITE.
+ * publish a week's drafts, or assign open shifts (Issue #412). Short-circuits via
+ * BHAGA_ADP_SCHEDULE_WRITE.
  */
 export async function triggerAdpScheduleWrite(
   store: string,
   job:
     | { mode: "drafts"; pushId: string }
     | { mode: "publish"; weekStart: string }
-    | { mode: "dm"; weekStart: string; to?: "dm" | "channel" },
+    | { mode: "dm"; weekStart: string; to?: "dm" | "channel" }
+    | { mode: "assign"; assignId: string },
 ): Promise<{ executionName: string }> {
   if (!store) throw new Error("triggerAdpScheduleWrite: store is required");
   const env = [
@@ -261,7 +263,9 @@ export async function triggerAdpScheduleWrite(
     { name: "BHAGA_STORE", value: store },
     job.mode === "drafts"
       ? { name: "BHAGA_SCHEDULE_PUSH_ID", value: job.pushId }
-      : { name: "BHAGA_SCHEDULE_WEEK_START", value: job.weekStart },
+      : job.mode === "assign"
+        ? { name: "BHAGA_SCHEDULE_ASSIGN_ID", value: job.assignId }
+        : { name: "BHAGA_SCHEDULE_WEEK_START", value: job.weekStart },
   ];
   if (job.mode === "dm" && job.to === "channel") {
     env.push({ name: "BHAGA_SCHEDULE_MESSAGE_TO", value: "channel" });

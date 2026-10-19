@@ -405,6 +405,81 @@ describe("fillOpenShift", () => {
   });
 });
 
+describe("shift options and operator picks", () => {
+  const iso = "2026-09-28";
+  const roster: Availability[] = [
+    { employee: "Ann", maxWeekHours: 40, windows: all([360, 1260]) },
+    { employee: "Ben", maxWeekHours: 40, windows: all([360, 1260]) },
+    { employee: "Cy", maxWeekHours: 40, targetWeekHours: 20, windows: all([360, 720]) },
+    { employee: "Working", maxWeekHours: 40, windows: all([360, 1260]) },
+    { employee: "Capped", maxWeekHours: 30, windows: all([360, 1260]) },
+    { employee: "Away", maxWeekHours: 40, windows: all([360, 1260]) },
+    { employee: "Gone", maxWeekHours: 40, lastDay: "2026-09-27", windows: all([360, 1260]) },
+  ];
+  const day = (pins?: Map<string, string | null>, weekHours = new Map([["Capped", 28]])) =>
+    draftDay({
+      iso, mins, onFloor: zeros, need: floorNeed, roster, weekHours, busy: new Set(["Working"]), pins,
+      unavailable: new Map([["Away", [{ fromMin: 0, toMin: 1440, status: "approved" as const }]]]),
+    });
+  const coverOk = (out: ReturnType<typeof day>) =>
+    mins.every((t, i) => out.filter((s) => t >= s.startMin && t < s.endMin).length >= floorNeed[i]!);
+
+  it("lists everyone who could take a shift, the suggestion first, then leave open", () => {
+    const [first] = day();
+    const names = first!.options!.map((o) => o.employee);
+    expect(names[0]).toBe(first!.employee);
+    expect(names.at(-1)).toBeNull();
+    expect(new Set(names)).toEqual(new Set(["Ann", "Ben", "Cy", null]));
+    const cy = first!.options!.find((o) => o.employee === "Cy")!;
+    expect(cy).toMatchObject({ endMin: 720, weekHours: 0, cap: 20, target: 20 });
+    expect(first!.picked).toBeUndefined();
+  });
+
+  it("gives a picked person the shift and drafts the rest of the day around them", () => {
+    const base = day();
+    const first = base[0]!;
+    const other = first.options!.find((o) => o.employee && o.employee !== first.employee)!.employee!;
+    const weekHours = new Map([["Capped", 28]]);
+    const out = day(new Map([[first.slot!, other]]), weekHours);
+    const shift = out.find((s) => s.slot === first.slot)!;
+    expect(shift).toMatchObject({ employee: other, picked: true });
+    expect(out.filter((s) => s.employee === other)).toHaveLength(1);
+    expect(coverOk(out)).toBe(true);
+    for (const a of roster) expect(weekHours.get(a.employee) ?? 0).toBeLessThanOrEqual(a.targetWeekHours ?? a.maxWeekHours);
+  });
+
+  it("leaves a shift open when picked open — it still counts as coverage", () => {
+    const first = day()[0]!;
+    const out = day(new Map([[first.slot!, null]]));
+    expect(out.find((s) => s.slot === first.slot)).toMatchObject({ employee: null, picked: true });
+    expect(coverOk(out)).toBe(true);
+  });
+
+  it("ignores a pick that no longer fits instead of dropping the shift", () => {
+    const first = day()[0]!;
+    const out = day(new Map([[first.slot!, "Away"]]));
+    const shift = out.find((s) => s.slot === first.slot)!;
+    expect(shift.employee).not.toBe("Away");
+    expect(shift.picked).toBeUndefined();
+    expect(coverOk(out)).toBe(true);
+  });
+
+  it("drafts the same day with no picks as before", () => {
+    const strip = (out: ReturnType<typeof day>) => out.map(({ employee, startMin, endMin }) => ({ employee, startMin, endMin }));
+    expect(strip(day(new Map()))).toEqual(strip(day()));
+  });
+
+  it("offers and honours picks for ADP open shifts", () => {
+    const slot = { iso: "2026-09-29", startMin: 540, endMin: 960 };
+    const fill = (pins?: Map<string, string | null>) =>
+      fillOpenShift({ ...slot, roster: roster.slice(0, 2), weekHours: new Map([["Ann", 10]]), busy: new Set(), pins });
+    const auto = fill()!;
+    expect(auto.options!.map((o) => o.employee)).toEqual(["Ben", "Ann"]);
+    expect(fill(new Map([[auto.slot!, "Ann"]]))).toMatchObject({ employee: "Ann", picked: true });
+    expect(fill(new Map([[auto.slot!, "Nobody"]]))).toMatchObject({ employee: "Ben" });
+  });
+});
+
 describe("last working day", () => {
   const leaving: Availability = { employee: "Leaving", maxWeekHours: 40, lastDay: "2026-09-30", windows: all([360, 1260]) };
   const fill = (iso: string) =>

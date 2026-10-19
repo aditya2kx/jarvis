@@ -50,12 +50,15 @@ import {
   canWorkDay,
   draftDay,
   fillOpenShift,
+  isOpenShiftSlot,
+  openShiftSlot,
   paidHours,
   type DraftPreference,
   type DraftShift,
   type MealRule,
 } from "@/lib/labor/shift-draft";
-import { inAdpSchedule, savedPlan, type PushRow, type PushShift, type PushStatus } from "@/lib/labor/schedule-push";
+import { savedPlan, type PushRow } from "@/lib/labor/schedule-push";
+import { planShift } from "@/lib/labor/saved-plan-shift";
 import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
 import {
   applyDayRules,
@@ -70,6 +73,12 @@ import {
 import { payPeriodStartFor } from "@/lib/payroll/openPeriod";
 import { AdpScheduleFinalize } from "@/components/labor/AdpScheduleFinalize";
 import { DRAFT_COLOR, ShiftDraftSummary } from "@/components/labor/ShiftDraftSummary";
+import {
+  OpenShiftAssignBar,
+  OpenShiftDayList,
+  type AssignSelection,
+  type DayOpenShift,
+} from "@/components/labor/OpenShiftAssign";
 import { useSuggestedHours } from "@/components/labor/SuggestedHoursContext";
 import type { OpenShift } from "@/lib/labor/open-shifts-insight";
 import { ScheduleInputsPanel } from "@/components/labor/ScheduleInputsPanel";
@@ -139,26 +148,6 @@ const NO_OPEN: OpenShiftInput[] = [];
 const NO_RULES_HISTORY: RulesVersion[] = [];
 const NO_UNAVAILABILITY: UnavailabilityInput[] = [];
 const NO_PUSH_ROWS: PushRow[] = [];
-
-function planShift(
-  s: PushShift & { status: PushStatus },
-  lanes: readonly CoveragePersonDay[],
-  meal: MealRule,
-): DraftShift {
-  const kind = s.startMin <= 450 ? "open" : s.endMin >= 1200 ? "close" : "mid";
-  const adp = lanes.map((l) => ({
-    employee: l.employee,
-    open: isOpenLane(l),
-    segments: l.segments.filter((g) => g.kind !== "actual"),
-  }));
-  const asPerson = inAdpSchedule(s, adp);
-  // ADP unassigns a saved shift when the person's unavailability is approved; it's still in ADP, as an open shift.
-  const adpOpen =
-    !asPerson && s.employee != null && (s.status === "drafted" || s.status === "published") &&
-    inAdpSchedule({ ...s, employee: null }, adp);
-  const { status: _status, ...shift } = s;
-  return { ...shift, kind, hours: paidHours(s.startMin, s.endMin, meal), trimmed: false, inAdp: asPerson || adpOpen, adpOpen };
-}
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {
   const [y, m, d] = iso.split("-").map(Number);
@@ -793,7 +782,36 @@ function CoverageTimeline({
   );
 }
 
+/** Operator picks per week (Monday) → slot → person (null = leave open); kept in this browser until Save to ADP. */
+type WeekPicks = Record<string, Record<string, string | null>>;
+
+const picksKey = (store: string) => `labor-draft-picks:v1:${store}`;
+/** ADP open-shift slots ticked for Write to ADP, across days. */
+const assignKey = (store: string) => `labor-open-assign:v1:${store}`;
+
+const weekOf = (iso: string) => shiftCalendarDate(iso, "day", -isoWeekdayMon0(iso));
+
+/** A saved week's own shifts are fixed, but who takes its ADP open shifts is still the operator's pick. */
+function openShiftPicks(p: Record<string, string | null> | undefined): Record<string, string | null> {
+  return Object.fromEntries(Object.entries(p ?? {}).filter(([slot]) => isOpenShiftSlot(slot)));
+}
+
+/** A day's ADP open segments with their slot ids (identical times numbered in order). */
+function openSlotsOn(iso: string, lanes: readonly CoveragePersonDay[]) {
+  const seen = new Map<string, number>();
+  return lanes
+    .filter(isOpenLane)
+    .flatMap((p) => p.segments)
+    .map((seg) => {
+      const k = `${seg.startMin}|${seg.endMin}`;
+      const nth = seen.get(k) ?? 0;
+      seen.set(k, nth + 1);
+      return { seg, nth, slot: openShiftSlot(iso, seg.startMin, seg.endMin, nth) };
+    });
+}
+
 export function LaborCoveragePanel({
+  store,
   win,
   actuals,
   scheduled,
@@ -810,6 +828,8 @@ export function LaborCoveragePanel({
   adpWriteEnabled = false,
   scheduleReadAt = null,
 }: {
+  /** Scopes the operator's draft picks in local storage. */
+  store: string;
   win: DateWindow;
   actuals: ActualShiftInput[];
   scheduled: ScheduledShiftInput[];
@@ -960,6 +980,56 @@ export function LaborCoveragePanel({
     return byWeek;
   }, [savedPushRows]);
 
+  const [picks, setPicks] = useState<WeekPicks>({});
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(picksKey(store)) ?? "{}") as WeekPicks;
+      const thisWeek = shiftCalendarDate(todayIso, "day", -isoWeekdayMon0(todayIso));
+      setPicks(Object.fromEntries(Object.entries(stored).filter(([w]) => w >= thisWeek)));
+    } catch {
+      setPicks({});
+    }
+  }, [store, todayIso]);
+  const updatePicks = useCallback(
+    (fn: (prev: WeekPicks) => WeekPicks) =>
+      setPicks((prev) => {
+        const next = Object.fromEntries(Object.entries(fn(prev)).filter(([, p]) => Object.keys(p).length));
+        try {
+          window.localStorage.setItem(picksKey(store), JSON.stringify(next));
+        } catch {
+          // Storage full or blocked: picks still apply for this visit.
+        }
+        return next;
+      }),
+    [store],
+  );
+  // A saved week shows exactly what was saved; only its open-shift picks still apply.
+  useEffect(() => {
+    const stale = Object.entries(picks).some(
+      ([w, p]) => plans.has(w) && Object.keys(p).some((slot) => !isOpenShiftSlot(slot)),
+    );
+    if (stale) {
+      updatePicks((prev) =>
+        Object.fromEntries(Object.entries(prev).map(([w, p]) => [w, plans.has(w) ? openShiftPicks(p) : p])),
+      );
+    }
+  }, [picks, plans, updatePicks]);
+  const pickShift = useCallback(
+    (weekStart: string, slot: string, employee: string | null | undefined) =>
+      updatePicks((prev) => {
+        const week = { ...prev[weekStart] };
+        if (employee === undefined) delete week[slot];
+        else week[slot] = employee;
+        return { ...prev, [weekStart]: week };
+      }),
+    [updatePicks],
+  );
+  const resetPicks = useCallback(
+    (weekStart: string) =>
+      updatePicks((prev) => ({ ...prev, [weekStart]: {} })),
+    [updatePicks],
+  );
+
   const buildDrafts = useCallback((r: ScheduleRules) => {
     if (!demand?.length) return null;
     const meal: MealRule = { afterMin: r.staffing.mealAfterMin, unpaidMin: r.staffing.unpaidMealMin };
@@ -999,6 +1069,8 @@ export function LaborCoveragePanel({
       return counts;
     };
     const draftWeek = (weekStart: string) => {
+      const weekPicks = plans.has(weekStart) ? openShiftPicks(picks[weekStart]) : (picks[weekStart] ?? {});
+      const pins = new Map(Object.entries(weekPicks));
       const days = Array.from({ length: 7 }, (_, i) => shiftCalendarDate(weekStart, "day", i));
       const peopleByDay = new Map(days.map((iso) => [iso, lanesFor(iso)]));
       const weekHours = new Map<string, number>();
@@ -1051,10 +1123,18 @@ export function LaborCoveragePanel({
             canWorkDay(a, d.iso, blocksOn(unavail, d.iso).get(employee), r.staffing.minShiftMin),
         ).length;
       };
-      const run = (d: (typeof state)[number], need: number[], maxShifts?: number, prefer?: DraftPreference) =>
+      const run = (
+        d: (typeof state)[number],
+        need: number[],
+        slotPrefix: string,
+        maxShifts?: number,
+        prefer?: DraftPreference,
+      ) =>
         draftDay({
           prefer,
           daysLeft,
+          pins,
+          slotPrefix,
           iso: d.iso,
           mins: d.mins,
           onFloor: d.cover,
@@ -1075,12 +1155,12 @@ export function LaborCoveragePanel({
 
       // ADP open shifts already count as coverage and hours; only suggest who takes them.
       for (const d of state) {
-        const slots = peopleByDay.get(d.iso)!.filter(isOpenLane).flatMap((p) => p.segments);
-        for (const slot of slots) {
+        for (const { seg: slot, nth } of openSlotsOn(d.iso, peopleByDay.get(d.iso)!)) {
           const fill = fillOpenShift({
             iso: d.iso,
             startMin: slot.startMin,
             endMin: slot.endMin,
+            nth,
             roster,
             weekHours,
             weekShifts,
@@ -1088,6 +1168,7 @@ export function LaborCoveragePanel({
             periodShifts: shiftsInPeriod(d.iso),
             unavailable: blocksOn(unavail, d.iso),
             meal,
+            pins,
           });
           if (fill) d.shifts.push(fill);
         }
@@ -1111,7 +1192,7 @@ export function LaborCoveragePanel({
           dayRules: r.dayRules,
           deliveries: inputs.deliveries,
         });
-        const drafted = run(d, d.floorNeed);
+        const drafted = run(d, d.floorNeed, `${d.iso}|f`);
         add(d, drafted);
         done.add(d.iso);
         addDay(breakdown, split, drafted.reduce((a, s) => a + s.hours, 0));
@@ -1125,6 +1206,7 @@ export function LaborCoveragePanel({
             state.reduce((a, d) => a + newShifts(d.shifts).reduce((b, s) => b + s.hours, 0), 0)
           : Infinity;
       let peakLeftHours = 0;
+      const peakPlaced = new Map<string, number>();
       for (;;) {
         const gaps = state
           .map((d) => ({
@@ -1137,9 +1219,11 @@ export function LaborCoveragePanel({
         // Biggest gap first; if its shift doesn't fit the goal, a smaller gap's might.
         let placed = false;
         for (const g of gaps) {
-          const next = run(g.d, g.d.need, 1, "regulars")[0];
+          const placedOnDay = peakPlaced.get(g.d.iso) ?? 0;
+          const next = run(g.d, g.d.need, `${g.d.iso}|p${placedOnDay}`, 1, "regulars")[0];
           if (next && next.hours <= budget) {
             add(g.d, [next]);
+            peakPlaced.set(g.d.iso, placedOnDay + 1);
             budget -= next.hours;
             breakdown.peak += next.hours;
             placed = true;
@@ -1162,14 +1246,19 @@ export function LaborCoveragePanel({
       const byDay = new Map<string, DraftShift[]>();
       for (const d of state) {
         const shifts = plan
-          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan.filter((s) => s.date === d.iso).map((s) => planShift(s, lanesFor(d.iso), meal))]
+          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan.filter((s) => s.date === d.iso).map((s, _i, day) => planShift(s, lanesFor(d.iso), meal, day))]
           : d.shifts;
         if (shifts.length) byDay.set(d.iso, [...shifts].sort((a, b) => a.startMin - b.startMin));
       }
       const all = newShifts([...byDay.values()].flat());
+      const applied = new Set(
+        [...byDay.values()].flat().flatMap((s) => (s.picked && s.slot ? [s.slot] : [])),
+      );
       return {
         weekStart,
         byDay,
+        pickCount: applied.size,
+        droppedPicks: Object.keys(weekPicks).filter((k) => !applied.has(k)).length,
         existingHours,
         draftHours: all.reduce((a, s) => a + s.hours, 0),
         draftCount: all.length,
@@ -1195,6 +1284,7 @@ export function LaborCoveragePanel({
     goalHoursWeek,
     unavailability,
     plans,
+    picks,
   ]);
   const drafts = useMemo(() => buildDrafts(rules), [buildDrafts, rules]);
   const savedDrafts = useMemo(
@@ -1256,6 +1346,100 @@ export function LaborCoveragePanel({
     }
     publishOpen(rows, rules.staffing.maxWeekHours);
   }, [strip, todayIso, drafts, lanesFor, showDraft, rules.staffing.maxWeekHours, publishOpen]);
+
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const [dropped, setDropped] = useState(0);
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(assignKey(store)) ?? "[]") as string[];
+      setSelected(new Set(stored.filter((slot) => slot.slice(0, 10) > todayIso)));
+    } catch {
+      setSelected(new Set());
+    }
+  }, [store, todayIso]);
+  const updateSelected = useCallback(
+    (fn: (prev: ReadonlySet<string>) => Set<string>) =>
+      setSelected((prev) => {
+        const next = fn(prev);
+        try {
+          window.localStorage.setItem(assignKey(store), JSON.stringify([...next]));
+        } catch {
+          // Storage full or blocked: the selection still applies for this visit.
+        }
+        return next;
+      }),
+    [store],
+  );
+
+  const openSlots = useMemo(() => {
+    const bySlot = new Map<string, DayOpenShift>();
+    if (!drafts) return bySlot;
+    for (const iso of strip) {
+      if (iso <= todayIso) continue;
+      const day = drafts.byDay.get(iso) ?? [];
+      for (const { seg, slot } of openSlotsOn(iso, lanesFor(iso))) {
+        bySlot.set(slot, {
+          slot,
+          date: iso,
+          startMin: seg.startMin,
+          endMin: seg.endMin,
+          hours: seg.hours,
+          fill: day.find((s) => s.fillsOpen && s.slot === slot) ?? null,
+        });
+      }
+    }
+    return bySlot;
+  }, [drafts, strip, todayIso, lanesFor]);
+
+  // ADP may no longer list a selected shift (claimed or assigned elsewhere); days outside the strip are kept.
+  useEffect(() => {
+    if (!drafts) return;
+    const inStrip = new Set(strip.filter((iso) => iso > todayIso));
+    const gone = [...selected].filter((slot) => inStrip.has(slot.slice(0, 10)) && !openSlots.has(slot));
+    const unfillable = [...selected].filter((slot) => openSlots.has(slot) && !openSlots.get(slot)!.fill?.employee);
+    if (!gone.length && !unfillable.length) return;
+    if (gone.length) setDropped((n) => n + gone.length);
+    const drop = new Set([...gone, ...unfillable]);
+    updateSelected((prev) => new Set([...prev].filter((slot) => !drop.has(slot))));
+  }, [drafts, strip, todayIso, selected, openSlots, updateSelected]);
+
+  const dayOpen = useMemo(
+    () => [...openSlots.values()].filter((s) => s.date === activeDay),
+    [openSlots, activeDay],
+  );
+  const selectedItems = useMemo<AssignSelection[]>(
+    () =>
+      [...selected].flatMap((slot) => {
+        const s = openSlots.get(slot);
+        const employee = s?.fill?.employee;
+        return s && employee ? [{ slot, date: s.date, startMin: s.startMin, endMin: s.endMin, employee }] : [];
+      }),
+    [selected, openSlots],
+  );
+  const toggleOpen = useCallback(
+    (slots: string[], on: boolean) =>
+      updateSelected((prev) => {
+        const next = new Set(prev);
+        for (const slot of slots) {
+          if (on) next.add(slot);
+          else next.delete(slot);
+        }
+        return next;
+      }),
+    [updateSelected],
+  );
+  const onAssigned = useCallback(
+    (slots: string[]) => {
+      const done = new Set(slots);
+      updateSelected((prev) => new Set([...prev].filter((slot) => !done.has(slot))));
+      updatePicks((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).map(([w, p]) => [w, Object.fromEntries(Object.entries(p).filter(([slot]) => !done.has(slot)))]),
+        ),
+      );
+    },
+    [updateSelected, updatePicks],
+  );
 
   const weekDraft =
     drafts && activeDay && activeDay > todayIso
@@ -1381,6 +1565,17 @@ export function LaborCoveragePanel({
           ) : null}
         </div>
 
+        {dayOpen.length ? (
+          <OpenShiftDayList
+            dayLabel={`${label.weekday} ${label.monthDay}`}
+            shifts={dayOpen}
+            selected={selected}
+            enabled={adpWriteEnabled}
+            onToggle={toggleOpen}
+            onPick={(slot, employee) => pickShift(weekOf(slot.slice(0, 10)), slot, employee)}
+          />
+        ) : null}
+
         {showDraft && weekDraft ? (
           <ShiftDraftSummary
             dayLabel={`${label.weekday} ${label.monthDay}`}
@@ -1395,6 +1590,10 @@ export function LaborCoveragePanel({
             dayRules={rules.dayRules}
             goalHoursWeek={goalHoursWeek}
             locked={weekDraft.locked}
+            pickCount={weekDraft.pickCount}
+            droppedPicks={weekDraft.droppedPicks}
+            onPick={(slot, employee) => pickShift(weekDraft.weekStart, slot, employee)}
+            onResetPicks={() => resetPicks(weekDraft.weekStart)}
           />
         ) : null}
 
@@ -1467,6 +1666,17 @@ export function LaborCoveragePanel({
             </span>
           ) : null}
         </div>
+
+        <OpenShiftAssignBar
+          items={selectedItems}
+          dropped={dropped}
+          enabled={adpWriteEnabled}
+          onClear={() => {
+            updateSelected(() => new Set());
+            setDropped(0);
+          }}
+          onAssigned={onAssigned}
+        />
       </CardContent>
     </Card>
   );

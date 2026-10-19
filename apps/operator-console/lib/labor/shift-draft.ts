@@ -106,7 +106,32 @@ export type DraftShift = {
   inAdp?: boolean;
   /** Saved for a person, but ADP now shows it as an open shift (e.g. approved unavailability). */
   adpOpen?: boolean;
+  /** Saved as an open shift that this person has since taken in ADP. */
+  takenBy?: string;
+  /** Stable id of the draft step behind this shift — the key for an operator pick. */
+  slot?: string;
+  /** Everyone who could take this shift, best fit first; `employee: null` = leave it open. */
+  options?: ShiftOption[];
+  /** The operator picked this person (or left it open) instead of the suggestion. */
+  picked?: boolean;
 };
+
+/** One person who could take a drafted shift, on their own times (trimmed / paced). */
+export type ShiftOption = {
+  employee: string | null;
+  startMin: number;
+  endMin: number;
+  hours: number;
+  trimmed: boolean;
+  /** Paid hours already this week, before this shift. */
+  weekHours?: number;
+  /** Their weekly cap (hour target, else max hours). */
+  cap?: number;
+  target?: number;
+};
+
+/** Operator picks by shift slot: a person, or null to leave the shift open. */
+export type DraftPins = ReadonlyMap<string, string | null>;
 
 const hm = (h: number, m = 0) => h * 60 + m;
 
@@ -177,6 +202,10 @@ type DraftDayArgs = {
   /** Days left this week (including this one) the person could still be drafted — paces hour targets. */
   daysLeft?: (employee: string) => number;
   prefer?: DraftPreference;
+  /** Operator picks, keyed by `DraftShift.slot`; one whose person no longer fits is ignored. */
+  pins?: DraftPins;
+  /** Slot ids start with this (default `iso`) — keeps separate draft passes on a day apart. */
+  slotPrefix?: string;
 };
 
 /**
@@ -340,91 +369,130 @@ function draftCore(
       n--;
       continue;
     }
-    const forced = n === 0 ? opts.force : undefined;
-    const choice = forced ?? (opts.lookahead ? bestChoice(n) : { long: opts.rolloutLong });
-    const block =
-      args.shiftTimes === "need" ? needBlock(short, firstIdx, !!choice.long) : templateBlock(short, args.mins[firstIdx]!);
-    if (!block) break;
-    let { start: blockStart, end: blockEnd } = block;
-    const { mustCover } = block;
-    // Nobody arrives the minute someone leaves: overlap the handover instead, but at most one
-    // over the need — when two leave together, only one arrival overlaps.
-    if (overlap > 0) {
-      const at = (t: number) => args.mins.indexOf(t);
-      const roomFor = (from: number, to: number) =>
-        args.mins.every((t, k) => t < from || t >= to || cover[k]! <= args.need[k]!);
-      const i = at(blockStart);
-      const padStart = Math.max(dayStart, blockStart - overlap);
-      if (i > 0 && cover[i - 1]! > cover[i]! && roomFor(padStart, blockStart)) blockStart = padStart;
-      const j = at(blockEnd);
-      const padEnd = Math.min(dayEnd, blockEnd + overlap);
-      if (j > 0 && cover[j]! > cover[j - 1]! && roomFor(blockEnd, padEnd)) blockEnd = padEnd;
+    // Seeded lookahead rollouts count the same shifts, so they derive the same slot ids.
+    const slotBase = `${args.slotPrefix ?? args.iso}|${g0}|`;
+    const slot = slotBase + out.filter((o) => o.slot?.startsWith(slotBase)).length;
+
+    const candidates = (choice: DraftChoice) => {
+      const block =
+        args.shiftTimes === "need" ? needBlock(short, firstIdx, !!choice.long) : templateBlock(short, args.mins[firstIdx]!);
+      if (!block) return null;
+      let { start: blockStart, end: blockEnd } = block;
+      const { mustCover } = block;
+      // Nobody arrives the minute someone leaves: overlap the handover instead, but at most one
+      // over the need — when two leave together, only one arrival overlaps.
+      if (overlap > 0) {
+        const at = (t: number) => args.mins.indexOf(t);
+        const roomFor = (from: number, to: number) =>
+          args.mins.every((t, k) => t < from || t >= to || cover[k]! <= args.need[k]!);
+        const i = at(blockStart);
+        const padStart = Math.max(dayStart, blockStart - overlap);
+        if (i > 0 && cover[i - 1]! > cover[i]! && roomFor(padStart, blockStart)) blockStart = padStart;
+        const j = at(blockEnd);
+        const padEnd = Math.min(dayEnd, blockEnd + overlap);
+        if (j > 0 && cover[j]! > cover[j - 1]! && roomFor(blockEnd, padEnd)) blockEnd = padEnd;
+      }
+      blockStart = snapDown(blockStart);
+      blockEnd = snapUp(blockEnd);
+
+      // A person with a longer own longest shift may stay on through the rest of the short run.
+      let runEnd = firstIdx;
+      while (runEnd + 1 < short.length && short[runEnd + 1]! > 0) runEnd++;
+      const reach = Math.min(dayEnd, Math.max(blockEnd, args.mins[runEnd]! + step));
+
+      const eligible = args.roster
+        .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
+        .map((a) => {
+          const [ws, we] = a.windows[dow]!;
+          const lo = Math.max(ws, blockStart);
+          let hi = Math.min(we, blockEnd);
+          const own = a.maxShiftMin;
+          if (own != null) {
+            hi = own > blockEnd - blockStart ? Math.min(we, Math.min(reach, blockStart + own)) : Math.min(hi, lo + own);
+          }
+          const [s0, free0] = freeSegment(lo, hi, args.unavailable?.get(a.employee));
+          const s = snapUp(s0);
+          const free = snapDown(free0);
+          let e = own != null ? Math.min(free, s + own) : free;
+          // Spread an hour target evenly over as few days as their longest shift allows
+          // (40 h at 9 h → 5 days of 8 h; at 7 h → 6 days of 6.75 h), never more days than are left.
+          const left = a.targetWeekHours != null && args.daysLeft ? args.daysLeft(a.employee) : 0;
+          if (left > 0 && !choice.long) {
+            const remaining = (a.targetWeekHours! - weekOf(a)) * 60;
+            const days = Math.max(1, Math.min(left, Math.ceil(remaining / (own ?? maxLen))));
+            e = Math.min(e, s + Math.max(minLen, Math.ceil(remaining / days / step) * step));
+          }
+          // A last shift may end early to land on the weekly cap instead of being skipped.
+          e = snapDown(Math.min(e, s + Math.floor(((weekCap(a) - weekOf(a)) * 60) / step) * step));
+          // "Trimmed" = cut short by their availability, not by pacing or their own longest shift.
+          const trimmed = s > lo || free < hi || lo > blockStart || (own == null && hi < blockEnd);
+          return { a, s, e, len: e - s, gain: gain(short, args.mins, s, e), trimmed };
+        })
+        .filter(
+          ({ a, len, gain }) =>
+            len >= minLen &&
+            gain > 0 &&
+            weekOf(a) + paid(0, len) <= weekCap(a) &&
+            (a.maxShiftsPerPeriod == null ||
+              (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod),
+        );
+      const starts = eligible
+        .filter(({ s, e }) => mustCover == null || (s <= mustCover && mustCover < e))
+        .sort((x, y) => priority(x.a, y.a));
+      // Nobody can start the gap: whoever covers the most of it takes their part.
+      const rest = eligible
+        .filter((x) => !starts.includes(x))
+        .sort((x, y) => y.gain - x.gain || priority(x.a, y.a));
+      return { kind: block.kind, blockStart, blockEnd, ranked: [...starts, ...rest] };
+    };
+
+    const pin = args.pins?.get(slot) ?? null;
+    let c = args.pins?.has(slot) ? candidates({ person: pin }) : null;
+    if (c && pin !== null && !c.ranked.some((x) => x.a.employee === pin)) c = null;
+    const pinned = c != null;
+    let choice: DraftChoice = { person: pin };
+    if (!c) {
+      choice = (n === 0 ? opts.force : undefined) ?? (opts.lookahead ? bestChoice(n) : { long: opts.rolloutLong });
+      c = candidates(choice);
     }
-    blockStart = snapDown(blockStart);
-    blockEnd = snapUp(blockEnd);
-
-    // A person with a longer own longest shift may stay on through the rest of the short run.
-    let runEnd = firstIdx;
-    while (runEnd + 1 < short.length && short[runEnd + 1]! > 0) runEnd++;
-    const reach = Math.min(dayEnd, Math.max(blockEnd, args.mins[runEnd]! + step));
-
-    const eligible = args.roster
-      .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
-      .map((a) => {
-        const [ws, we] = a.windows[dow]!;
-        const lo = Math.max(ws, blockStart);
-        let hi = Math.min(we, blockEnd);
-        const own = a.maxShiftMin;
-        if (own != null) {
-          hi = own > blockEnd - blockStart ? Math.min(we, Math.min(reach, blockStart + own)) : Math.min(hi, lo + own);
-        }
-        const [s0, free0] = freeSegment(lo, hi, args.unavailable?.get(a.employee));
-        const s = snapUp(s0);
-        const free = snapDown(free0);
-        let e = own != null ? Math.min(free, s + own) : free;
-        // Spread an hour target evenly over as few days as their longest shift allows
-        // (40 h at 9 h → 5 days of 8 h; at 7 h → 6 days of 6.75 h), never more days than are left.
-        const left = a.targetWeekHours != null && args.daysLeft ? args.daysLeft(a.employee) : 0;
-        if (left > 0 && !choice.long) {
-          const remaining = (a.targetWeekHours! - weekOf(a)) * 60;
-          const days = Math.max(1, Math.min(left, Math.ceil(remaining / (own ?? maxLen))));
-          e = Math.min(e, s + Math.max(minLen, Math.ceil(remaining / days / step) * step));
-        }
-        // A last shift may end early to land on the weekly cap instead of being skipped.
-        e = snapDown(Math.min(e, s + Math.floor(((weekCap(a) - weekOf(a)) * 60) / step) * step));
-        // "Trimmed" = cut short by their availability, not by pacing or their own longest shift.
-        const trimmed = s > lo || free < hi || lo > blockStart || (own == null && hi < blockEnd);
-        return { a, s, e, len: e - s, gain: gain(short, args.mins, s, e), trimmed };
-      })
-      .filter(
-        ({ a, len, gain }) =>
-          len >= minLen &&
-          gain > 0 &&
-          weekOf(a) + paid(0, len) <= weekCap(a) &&
-          (a.maxShiftsPerPeriod == null ||
-            (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod),
-      );
-    const starts = eligible
-      .filter(({ s, e }) => mustCover == null || (s <= mustCover && mustCover < e))
-      .sort((x, y) => priority(x.a, y.a));
-    // Nobody can start the gap: whoever covers the most of it takes their part.
+    if (!c) break;
+    const { blockStart, blockEnd, ranked } = c;
     const pick =
       choice.person === null
         ? undefined
         : choice.person !== undefined
-          ? eligible.find((x) => x.a.employee === choice.person)
-          : (starts[0] ?? eligible.sort((x, y) => y.gain - x.gain || priority(x.a, y.a))[0]);
+          ? ranked.find((x) => x.a.employee === choice.person)
+          : ranked[0];
     if (choice.person && !pick) return null;
     const s = pick ? pick.s : blockStart;
     const e = pick ? pick.e : blockEnd;
     out.push({
       date: args.iso,
-      kind: block.kind,
+      kind: c.kind,
       startMin: s,
       endMin: e,
       hours: paid(s, e),
       employee: pick?.a.employee ?? null,
       trimmed: !!pick && pick.trimmed,
+      slot,
+      ...(opts.lookahead
+        ? {
+            options: [
+              ...(pick ? [pick, ...ranked.filter((x) => x !== pick)] : ranked).map((x) => ({
+                employee: x.a.employee,
+                startMin: x.s,
+                endMin: x.e,
+                hours: paid(x.s, x.e),
+                trimmed: x.trimmed,
+                weekHours: weekOf(x.a),
+                cap: weekCap(x.a),
+                target: x.a.targetWeekHours,
+              })),
+              { employee: null, startMin: blockStart, endMin: blockEnd, hours: paid(blockStart, blockEnd), trimmed: false },
+            ],
+          }
+        : {}),
+      ...(pinned ? { picked: true } : {}),
     });
     if (pick) {
       busy.add(pick.a.employee);
@@ -444,6 +512,13 @@ function draftCore(
  * past their last day, within their weekly hours / shift caps, ranked like `draftDay`. The slot's
  * time is the operator's, so no trimming — nobody fits → null.
  */
+/** Stable id of one ADP open shift: `iso|adp|start|end`, plus `|n` for the nth identical one that day. */
+export function openShiftSlot(iso: string, startMin: number, endMin: number, nth = 0): string {
+  return `${iso}|adp|${startMin}|${endMin}${nth ? `|${nth}` : ""}`;
+}
+
+export const isOpenShiftSlot = (slot: string) => slot.includes("|adp|");
+
 export function fillOpenShift(args: {
   iso: string;
   startMin: number;
@@ -459,12 +534,17 @@ export function fillOpenShift(args: {
   periodShifts?: Map<string, number>;
   unavailable?: Map<string, Block[]>;
   meal?: MealRule;
+  /** Operator picks by slot (`openShiftSlot`); null isn't offered — the slot is already open. */
+  pins?: DraftPins;
+  /** Earlier open shifts with the same times that day. */
+  nth?: number;
 }): DraftShift | null {
   const { startMin: s, endMin: e } = args;
   const dow = isoWeekdayMon0(args.iso);
   const hours = paidHours(s, e, args.meal);
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
-  const pick = args.roster
+  const slot = openShiftSlot(args.iso, s, e, args.nth);
+  const ranked = args.roster
     .filter((a) => {
       const w = a.windows[dow];
       if (args.busy.has(a.employee) || !w || w[0] > s || w[1] < e || !worksOn(a, args.iso)) return false;
@@ -478,14 +558,39 @@ export function fillOpenShift(args: {
           (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod)
       );
     })
-    .sort(byPriority(weekOf, (a) => args.weekShifts?.get(a.employee) ?? 0))[0];
+    .sort(byPriority(weekOf, (a) => args.weekShifts?.get(a.employee) ?? 0));
+  const pin = args.pins?.get(slot);
+  const pinned = ranked.find((a) => a.employee === pin);
+  const pick = pinned ?? ranked[0];
   if (!pick) return null;
+  const options: ShiftOption[] = [pick, ...ranked.filter((a) => a !== pick)].map((a) => ({
+    employee: a.employee,
+    startMin: s,
+    endMin: e,
+    hours,
+    trimmed: false,
+    weekHours: weekOf(a),
+    cap: weekCap(a),
+    target: a.targetWeekHours,
+  }));
   args.busy.add(pick.employee);
   args.weekHours.set(pick.employee, weekOf(pick) + hours);
   args.weekShifts?.set(pick.employee, (args.weekShifts.get(pick.employee) ?? 0) + 1);
   args.periodShifts?.set(pick.employee, (args.periodShifts.get(pick.employee) ?? 0) + 1);
   const kind: ShiftKind = s <= hm(7, 30) ? "open" : e >= hm(20) ? "close" : "mid";
-  return { date: args.iso, kind, startMin: s, endMin: e, hours, employee: pick.employee, trimmed: false, fillsOpen: true };
+  return {
+    date: args.iso,
+    kind,
+    startMin: s,
+    endMin: e,
+    hours,
+    employee: pick.employee,
+    trimmed: false,
+    fillsOpen: true,
+    slot,
+    options,
+    ...(pinned ? { picked: true } : {}),
+  };
 }
 
 const STORE_HOURS: [number, number] = [hm(6), hm(21)];

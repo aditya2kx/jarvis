@@ -465,8 +465,8 @@ export default async function PayrollPage({
             <div
               className={
                 showSolo
-                  ? "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-9"
-                  : "grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7"
+                  ? "grid grid-cols-2 gap-4 max-sm:gap-2.5 max-sm:[&>*:last-child:nth-child(odd)]:col-span-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-9"
+                  : "grid grid-cols-2 gap-4 max-sm:gap-2.5 max-sm:[&>*:last-child:nth-child(odd)]:col-span-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7"
               }
             >
               <HeadlineStat

@@ -75,10 +75,11 @@ export function SeriesToggles({
 }
 
 export function ReadoutBody({ readout, compact = false }: { readout: Readout; compact?: boolean }) {
+  // One series per line: names like "Part-time (scheduled)" don't survive a two-column grid.
   return (
     <>
       <p className={cn("font-medium text-foreground", compact ? "mb-1.5" : "mb-1")}>{readout.title}</p>
-      <ul className={cn(compact ? "flex flex-col gap-1" : "grid grid-cols-2 gap-x-4 gap-y-1")}>
+      <ul className="flex flex-col gap-1">
         {readout.rows.map((row) => (
           <li key={row.label} className="flex min-w-0 items-center justify-between gap-3">
             <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">

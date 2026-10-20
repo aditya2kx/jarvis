@@ -845,7 +845,7 @@ export function DataTable<TData>({
         updateScrollEnd();
         return;
       }
-      const heads = el.querySelectorAll<HTMLElement>('thead th[data-pinned="left"]');
+      const heads = el.querySelectorAll<HTMLElement>('thead tr:last-child th[data-pinned="left"]');
       const next = accumulateDomPinOffsets(
         Array.from(heads).map((h) => ({
           colId: h.dataset.colId || "",
@@ -874,6 +874,28 @@ export function DataTable<TData>({
     // pinLeft identity + column defs (not row data) — data churn must not
     // re-measure sticky left (ResizeObserver ↔ setState loop).
   }, [columns, pins, metaPinOffsets]);
+
+  // Grouped headers stack several sticky rows; each row sticks below the ones above it.
+  const headerGroups = table.getHeaderGroups();
+  const theadRef = useRef<HTMLTableSectionElement>(null);
+  const [rowTops, setRowTops] = useState<number[]>([]);
+  useLayoutEffect(() => {
+    const thead = theadRef.current;
+    if (!thead || headerGroups.length < 2) return;
+    const measure = () => {
+      let top = 0;
+      const next = Array.from(thead.rows).map((r) => {
+        const t = top;
+        top += r.offsetHeight;
+        return t;
+      });
+      setRowTops((prev) => (prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(thead);
+    return () => ro.disconnect();
+  }, [headerGroups.length]);
 
   const lastPinnedId = pins[pins.length - 1];
   const pinnedClass = (id: string) =>
@@ -938,11 +960,30 @@ export function DataTable<TData>({
           containerClassName="max-md:max-h-[70dvh] max-md:overscroll-x-contain"
           className={cn(useFixedLayout ? "table-fixed" : "min-w-max", "max-md:text-[13px]")}
         >
-          <TableHeader>
-            {table.getHeaderGroups().map((hg) => (
+          <TableHeader ref={theadRef}>
+            {headerGroups.map((hg, rowIndex) => (
               <TableRow key={hg.id}>
                 {hg.headers.map((header) => {
                   const pinned = header.column.getIsPinned();
+                  const top = rowTops[rowIndex] ?? 0;
+                  const groupRow = rowIndex < headerGroups.length - 1;
+                  if (groupRow) {
+                    return (
+                      <TableHead
+                        key={header.id}
+                        colSpan={header.colSpan}
+                        data-pinned={pinned || undefined}
+                        style={{ top, ...(pinned ? { left: pinOffsets[header.column.id] ?? 0 } : {}) }}
+                        className={cn(
+                          "sticky z-20 h-8 bg-(--table-bg) text-xs max-md:px-2",
+                          !header.isPlaceholder && "border-x border-border text-center font-semibold",
+                          pinned && cn(pinnedClass(header.column.id), "z-30"),
+                        )}
+                      >
+                        {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                      </TableHead>
+                    );
+                  }
                   const sortable = header.column.getCanSort();
                   const sortDir = header.column.getIsSorted();
                   const meta = header.column.columnDef.meta;
@@ -956,11 +997,12 @@ export function DataTable<TData>({
                       data-pinned={pinned || undefined}
                       data-col-id={header.column.id}
                       style={{
+                        top,
                         ...(pinned ? { left: pinOffsets[header.column.id] ?? 0 } : {}),
                         ...columnLayoutStyle(meta),
                       }}
                       className={cn(
-                        "sticky top-0 z-20 bg-(--table-bg) align-top max-md:px-2",
+                        "sticky z-20 bg-(--table-bg) align-top max-md:px-2",
                         meta?.wrap && "whitespace-normal",
                         pinned && cn(pinnedClass(header.column.id), "z-30"),
                       )}

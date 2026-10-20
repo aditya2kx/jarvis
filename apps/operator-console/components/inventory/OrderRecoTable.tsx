@@ -78,6 +78,7 @@ export function OrderRecoTable({
       {
         accessorKey: "Current Qty",
         enableSorting: false,
+        meta: { align: "right" },
         header: () => (
           <span className="inline-flex items-center gap-1">
             Current Qty
@@ -166,6 +167,7 @@ export function OrderRecoTable({
           {
             accessorKey: `Order Tubs ${slot}`,
             enableSorting: false,
+            meta: { align: "right" },
             header: () => (
               <span className="inline-flex items-center gap-1">
                 Order tubs

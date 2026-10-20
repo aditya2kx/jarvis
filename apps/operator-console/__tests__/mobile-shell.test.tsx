@@ -196,4 +196,19 @@ describe("DataTable on phones", () => {
     fireEvent.click(screen.getByRole("button", { name: /Show 5 more/ }));
     expect(within(screen.getByTestId("data-table-cards")).getAllByRole("listitem")).toHaveLength(25);
   });
+
+  it("long tables render 50 rows, then page in 50s; figures right-align", () => {
+    stubPhone(false);
+    const many: Row[] = Array.from({ length: 120 }, (_, i) => ({ employee: `P${i}`, hours: i, tips: i, note: null }));
+    render(<DataTable columns={columns} data={many} />);
+    const bodyRows = () => screen.getAllByRole("row").length - 1;
+    expect(bodyRows()).toBe(50);
+    expect(screen.getByText("Showing 50 of 120 rows")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show 50 more" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 20 more" }));
+    expect(bodyRows()).toBe(120);
+    expect(screen.queryByRole("button", { name: /more$/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /Hours/ })).toHaveClass("text-right");
+    expect(screen.getByRole("columnheader", { name: /Employee/ })).not.toHaveClass("text-right");
+  });
 });

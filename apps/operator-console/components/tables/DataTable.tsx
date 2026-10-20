@@ -44,6 +44,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -57,7 +58,7 @@ import { parsePerkReasons } from "@/lib/payroll/perkLabels";
 import { classifyAdpDiff } from "@/lib/payroll/adpDiff";
 import { formatBucket, type Grain } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
-import { runTone, WARN_BADGE_CLASS } from "@/lib/run-status";
+import { OK_BADGE_CLASS, runTone, WARN_BADGE_CLASS } from "@/lib/run-status";
 import {
   facetedMultiOptions,
   filterTextOrMulti,
@@ -121,7 +122,17 @@ declare module "@tanstack/react-table" {
     maxWidth?: number;
     /** Preferred column width in px (`table-layout: fixed`). */
     width?: number;
+    /** Override alignment; numeric formats right-align by default. */
+    align?: "left" | "right";
   }
+}
+
+const NUMERIC_FORMATS = new Set<ColumnFormat["kind"]>(["dollars", "cents", "pct", "number", "adp_diff"]);
+
+/** Figures right-align so digits line up down the column. */
+function alignRight(meta: { format?: ColumnFormat; align?: "left" | "right" } | undefined): boolean {
+  if (meta?.align) return meta.align === "right";
+  return meta?.format ? NUMERIC_FORMATS.has(meta.format.kind) : false;
 }
 
 function columnLayoutStyle(meta: { maxWidth?: number; width?: number } | undefined): CSSProperties {
@@ -225,6 +236,13 @@ function renderFormatted(
       if (runTone(value as string) === "warn") {
         return (
           <Badge variant="outline" className={WARN_BADGE_CLASS}>
+            {value as string}
+          </Badge>
+        );
+      }
+      if (statusVariant(value as string) === "default") {
+        return (
+          <Badge variant="outline" className={OK_BADGE_CLASS}>
             {value as string}
           </Badge>
         );
@@ -456,6 +474,8 @@ function isBlank(value: unknown): boolean {
 }
 
 const PHONE_PAGE = 20;
+/** Table rows rendered before "Show more" — long ledgers otherwise make 9,000px pages. */
+export const TABLE_PAGE = 50;
 const CARD_FIELDS = 6;
 
 /**
@@ -468,12 +488,15 @@ function PhoneToolbar<TData>({
   setSorting,
   view,
   setView,
+  scrollable,
 }: {
   table: TanTable<TData>;
   sorting: SortingState;
   setSorting: (next: SortingState) => void;
   view: "cards" | "table";
   setView: (next: "cards" | "table") => void;
+  /** Columns overflow the screen — only then is "swipe sideways" true. */
+  scrollable: boolean;
 }) {
   const sortable = table.getAllLeafColumns().filter((c) => c.getCanSort());
   const items = [
@@ -484,7 +507,9 @@ function PhoneToolbar<TData>({
   return (
     <div className="flex items-center justify-end gap-2 md:hidden" data-testid="data-table-phone-toolbar">
       {view === "table" ? (
-        <p className="mr-auto text-xs text-muted-foreground">Swipe sideways for more columns · tap a header to sort</p>
+        <p className="mr-auto text-xs text-muted-foreground">
+          {scrollable ? "Swipe sideways for more columns · tap a header to sort" : "Tap a header to sort"}
+        </p>
       ) : (
       <>
       <Select
@@ -692,6 +717,7 @@ export function DataTable<TData>({
   // ledgers (Accounting) without replacing page-level FilterSelect controls.
   const [sorting, setSorting] = useState<SortingState>(initialSorting);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+  const [rowLimit, setRowLimit] = useState(TABLE_PAGE);
 
   const table = useReactTable({
     data,
@@ -941,6 +967,7 @@ export function DataTable<TData>({
         setSorting={setSorting}
         view={phoneView}
         setView={setPhoneView}
+        scrollable={!(atStart && atEnd)}
       />
       {phoneView === "cards" ? (
         <PhoneCards
@@ -976,7 +1003,7 @@ export function DataTable<TData>({
                         style={{ top, ...(pinned ? { left: pinOffsets[header.column.id] ?? 0 } : {}) }}
                         className={cn(
                           "sticky z-20 h-8 bg-(--table-bg) text-xs max-md:px-2",
-                          !header.isPlaceholder && "border-x border-border text-center font-semibold",
+                          !header.isPlaceholder && "border-x border-border font-semibold text-foreground",
                           pinned && cn(pinnedClass(header.column.id), "z-30"),
                         )}
                       >
@@ -1003,6 +1030,7 @@ export function DataTable<TData>({
                       }}
                       className={cn(
                         "sticky z-20 bg-(--table-bg) align-top max-md:px-2",
+                        alignRight(meta) && "text-right [&>div]:items-end",
                         meta?.wrap && "whitespace-normal",
                         pinned && cn(pinnedClass(header.column.id), "z-30"),
                       )}
@@ -1063,7 +1091,7 @@ export function DataTable<TData>({
           </TableHeader>
           <TableBody>
             {table.getRowModel().rows.length ? (
-              table.getRowModel().rows.map((row) => (
+              table.getRowModel().rows.slice(0, rowLimit).map((row) => (
                 <TableRow key={row.id} className={rowClassName(row.original)}>
                   {row.getVisibleCells().map((cell) => {
                     const meta = cell.column.columnDef.meta;
@@ -1077,6 +1105,7 @@ export function DataTable<TData>({
                         }}
                         className={cn(
                           "max-md:px-2",
+                          alignRight(meta) && "text-right",
                           meta?.wrap
                             ? "whitespace-normal break-words align-top"
                             : undefined,
@@ -1091,7 +1120,7 @@ export function DataTable<TData>({
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
+                <TableCell colSpan={table.getVisibleLeafColumns().length} className="text-center text-muted-foreground">
                   No rows.
                 </TableCell>
               </TableRow>
@@ -1099,9 +1128,19 @@ export function DataTable<TData>({
           </TableBody>
         </Table>
         {!atEnd ? (
-          <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background" />
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-(--table-bg)" />
         ) : null}
       </div>
+      {(phoneView === "table" || !phone) && table.getRowModel().rows.length > rowLimit ? (
+        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span className="tabular-nums">
+            Showing {rowLimit.toLocaleString()} of {table.getRowModel().rows.length.toLocaleString()} rows
+          </span>
+          <Button type="button" variant="outline" size="sm" onClick={() => setRowLimit((n) => n + TABLE_PAGE)}>
+            Show {Math.min(TABLE_PAGE, table.getRowModel().rows.length - rowLimit)} more
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

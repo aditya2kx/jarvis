@@ -238,7 +238,13 @@ function MetricRow({ metric: m }: { metric: HealthMetric }) {
       </div>
 
       {tracked ? (
-        <GoalBar status={m.status} pace={m.pace} actual={m.actual} goal={m.goal} goalLabel={m.goalFormatted} />
+        <GoalBar
+          status={m.status}
+          pace={m.pace}
+          actual={m.bar ? m.bar.actual : m.actual}
+          goal={m.bar ? m.bar.goal : m.goal}
+          goalLabel={m.goalFormatted}
+        />
       ) : null}
 
       {editing && field ? (

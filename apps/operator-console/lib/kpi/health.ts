@@ -52,6 +52,8 @@ export interface HealthMetric {
   deltaFormatted?: string;
   /** Secondary fact shown beside the label, e.g. "31.2% of sales". */
   detail?: string;
+  /** GoalBar scale when the goal is a ratio (labor % of sales) rather than the displayed $. */
+  bar?: { actual: number | null; goal: number | null };
 }
 
 export interface HealthGroup {
@@ -349,7 +351,8 @@ export async function loadHealthScorecard(
       status: ptPct != null ? statusFor(ptPace) : "no-goal",
       pace: ptPct != null ? ptPace : null,
       formatted: fmtDollars(ptLabor$),
-      goalFormatted: "—",
+      goalFormatted: fmtPct(goalPtLaborPct),
+      bar: { actual: ptPct, goal: goalPtLaborPct },
       goalKey: "goal_hourly_labor_pct_max",
       rawGoal: goalRaw(config, "goal_hourly_labor_pct_max"),
       lowerIsBetter: true,
@@ -376,31 +379,33 @@ export async function loadHealthScorecard(
       label: "Total labor (ADP rates)",
       detail: ofSales(totalRatesPct),
       actual: totalRatesLabor$,
-      goal: gLabor$.value,
+      goal: null,
       status: totalRatesPct != null ? statusFor(totalRatesPace) : "no-goal",
       pace: totalRatesPct != null ? totalRatesPace : null,
       formatted: fmtDollars(totalRatesLabor$),
-      goalFormatted: fmtDollars(gLabor$.value),
-      goalKey: gLabor$.key,
-      rawGoal: gLabor$.raw,
+      goalFormatted: fmtPct(goalTotalLaborPct),
+      bar: { actual: totalRatesPct, goal: goalTotalLaborPct },
+      goalKey: "goal_labor_pct_max",
+      rawGoal: goalRaw(config, "goal_labor_pct_max"),
       lowerIsBetter: true,
-      deltaFormatted: deltaLabel(totalRatesLabor$, gLabor$.value, true, "dollars"),
-      info: "PT + FT wage cost from ADP rates. Not the same as bank payroll cash.",
+      deltaFormatted: totalRatesPct != null ? deltaLabelPct(totalRatesPct, goalTotalLaborPct) : undefined,
+      info: "PT + FT wage cost from ADP rates, tracked against the total labor % of net sales max. Not the same as bank payroll cash.",
     }),
     metric({
       key: "labor_bank",
       label: "Labor paid (bank)",
       detail: ofSales(bankLaborPct),
       actual: bankLabor$,
-      goal: null,
+      goal: gLabor$.value,
       status: statusFor(bankLaborPace),
       pace: bankLaborPace,
       formatted: fmtDollars(bankLabor$),
-      goalFormatted: "—",
-      goalKey: null,
-      rawGoal: undefined,
+      goalFormatted: fmtDollars(gLabor$.value),
+      goalKey: gLabor$.key,
+      rawGoal: gLabor$.raw,
       lowerIsBetter: true,
-      info: "Bank payroll category spend — matches Cost / Accounting payroll parent for this period.",
+      deltaFormatted: deltaLabel(bankLabor$, gLabor$.value, true, "dollars"),
+      info: "Bank payroll category spend — matches Cost / Accounting payroll parent for this period. Tracked against the labor cost max for the period.",
     }),
   ];
 

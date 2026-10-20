@@ -67,6 +67,7 @@ import {
   computeMetaPinOffsets,
   pinOffsetsEqual,
 } from "@/lib/tables/pin-offsets";
+import { useIsPhone } from "@/components/shell/useIsPhone";
 
 // Threshold coloring for numeric/pct/dollars columns (Figma: red/amber/green
 // on p95, % late, Days-left, wage-diff). `warn`/`bad` are in the same unit as
@@ -339,7 +340,7 @@ export function MultiSelectFilter({
         onClick={(e) => e.stopPropagation()}
         aria-label={`Filter ${label}`}
         className={cn(
-          "flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors",
+          "flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors max-md:h-9 max-md:min-w-24 max-md:text-sm",
           "focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40",
           active
             ? "border-primary/50 bg-primary/10 text-foreground"
@@ -403,7 +404,7 @@ export function MultiSelectFilter({
                         role="option"
                         aria-selected={checked}
                         className={cn(
-                          "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+                          "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted max-md:min-h-11 max-md:items-center max-md:text-sm",
                           checked && "bg-muted/70",
                         )}
                         onClick={() => toggle(opt)}
@@ -458,8 +459,8 @@ const PHONE_PAGE = 20;
 const CARD_FIELDS = 6;
 
 /**
- * Phone-only (below md) controls: sort by any sortable column — headers aren't visible in
- * card view — and a Cards/Table switch for when the operator wants the dense grid back.
+ * Phone-only (below md) controls: a Table/Cards switch, and in card view (no headers to
+ * tap) a sort-by-column picker.
  */
 function PhoneToolbar<TData>({
   table,
@@ -481,7 +482,11 @@ function PhoneToolbar<TData>({
   ];
   const current = sorting[0];
   return (
-    <div className="flex items-center gap-2 md:hidden" data-testid="data-table-phone-toolbar">
+    <div className="flex items-center justify-end gap-2 md:hidden" data-testid="data-table-phone-toolbar">
+      {view === "table" ? (
+        <p className="mr-auto text-xs text-muted-foreground">Swipe sideways for more columns · tap a header to sort</p>
+      ) : (
+      <>
       <Select
         items={items}
         value={current?.id ?? ""}
@@ -510,11 +515,13 @@ function PhoneToolbar<TData>({
       >
         {current?.desc ? <ArrowDownIcon className="size-4" /> : <ArrowUpIcon className="size-4" />}
       </button>
+      </>
+      )}
       <div role="group" aria-label="Row layout" className="flex shrink-0 items-center rounded-lg bg-secondary p-0.5">
         {(
           [
-            ["cards", LayoutListIcon, "Cards"],
             ["table", Table2Icon, "Table"],
+            ["cards", LayoutListIcon, "Cards"],
           ] as const
         ).map(([value, Icon, label]) => (
           <button
@@ -566,7 +573,7 @@ function PhoneCards<TData>({
   return (
     <div className="flex flex-col gap-2 md:hidden" data-testid="data-table-cards">
       {filterHint ? (
-        <p className="text-xs text-muted-foreground">Switch to Table layout to filter by column.</p>
+        <p className="text-xs text-muted-foreground">Column filters stay applied here; switch to Table to change them.</p>
       ) : null}
       <ul className="flex flex-col gap-2">
         {shown.map((row) => {
@@ -671,9 +678,13 @@ export function DataTable<TData>({
   /** Stable row id (Accounting: transaction_id). Omit to use TanStack index default. */
   getRowId?: (row: TData, index: number) => string;
 }) {
+  // A phone is too narrow for several frozen columns (Accounting's five are 568px on a
+  // 390px screen), so below md only the first one stays frozen and the rest scroll.
+  const phone = useIsPhone();
+  const pins = useMemo(() => (phone ? pinLeft.slice(0, 1) : pinLeft), [phone, pinLeft]);
   const columnPinning = useMemo<ColumnPinningState>(
-    () => ({ left: [...pinLeft], right: [] }),
-    [pinLeft],
+    () => ({ left: [...pins], right: [] }),
+    [pins],
   );
   // Client-side sort across every column — Grafana's table panels let an
   // operator click any header to sort; this is the console-side equivalent.
@@ -798,15 +809,16 @@ export function DataTable<TData>({
   const containerRef = useRef<HTMLDivElement>(null);
   const [domPinOffsets, setDomPinOffsets] = useState<Record<string, number>>({});
   const [atEnd, setAtEnd] = useState(true);
+  const [atStart, setAtStart] = useState(true);
   const measuringRef = useRef(false);
 
   const metaPinOffsets = useMemo(
     () =>
       computeMetaPinOffsets(
         columns as { accessorKey?: string; id?: string; meta?: { width?: number } }[],
-        pinLeft,
+        pins,
       ),
-    [columns, pinLeft],
+    [columns, pins],
   );
   const pinOffsets = metaPinOffsets ?? domPinOffsets;
 
@@ -817,6 +829,8 @@ export function DataTable<TData>({
     const updateScrollEnd = () => {
       const end = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
       setAtEnd((prev) => (prev === end ? prev : end));
+      const start = el.scrollLeft <= 0;
+      setAtStart((prev) => (prev === start ? prev : start));
     };
 
     // Meta path: offsets are render-time constants — only track scroll fade.
@@ -859,14 +873,20 @@ export function DataTable<TData>({
     };
     // pinLeft identity + column defs (not row data) — data churn must not
     // re-measure sticky left (ResizeObserver ↔ setState loop).
-  }, [columns, pinLeft, metaPinOffsets]);
+  }, [columns, pins, metaPinOffsets]);
 
-  const lastPinnedId = pinLeft[pinLeft.length - 1];
+  const lastPinnedId = pins[pins.length - 1];
+  const pinnedClass = (id: string) =>
+    cn(
+      "sticky bg-background max-md:max-w-[40vw]",
+      id === lastPinnedId && "border-r border-border",
+      id === lastPinnedId && !atStart && "shadow-[6px_0_8px_-6px_rgb(0_0_0/0.35)]",
+    );
   const useFixedLayout = columns.some((c) => {
     const meta = c.meta as { wrap?: boolean; maxWidth?: number; width?: number } | undefined;
     return Boolean(meta?.maxWidth != null || meta?.width != null);
   });
-  const [phoneView, setPhoneView] = useState<"cards" | "table">("cards");
+  const [phoneView, setPhoneView] = useState<"cards" | "table">("table");
 
   return (
     <div className="flex flex-col gap-2" data-testid="data-table">
@@ -910,7 +930,8 @@ export function DataTable<TData>({
       >
         <Table
           containerRef={containerRef}
-          className={cn(useFixedLayout ? "table-fixed" : "min-w-max")}
+          containerClassName="max-md:max-h-[70dvh] max-md:overscroll-x-contain"
+          className={cn(useFixedLayout ? "table-fixed" : "min-w-max", "max-md:text-[13px]")}
         >
           <TableHeader>
             {table.getHeaderGroups().map((hg) => (
@@ -934,10 +955,9 @@ export function DataTable<TData>({
                         ...columnLayoutStyle(meta),
                       }}
                       className={cn(
-                        "align-top",
+                        "sticky top-0 z-20 bg-background align-top max-md:px-2",
                         meta?.wrap && "whitespace-normal",
-                        pinned && "sticky z-10 bg-background",
-                        pinned && header.column.id === lastPinnedId && "border-r border-border",
+                        pinned && cn(pinnedClass(header.column.id), "z-30"),
                       )}
                     >
                       <div className="flex flex-col gap-1.5">
@@ -945,7 +965,7 @@ export function DataTable<TData>({
                           <button
                             type="button"
                             onClick={header.column.getToggleSortingHandler()}
-                            className="flex items-center gap-1 hover:text-foreground"
+                            className="flex items-center gap-1 text-left hover:text-foreground max-md:min-h-8"
                             aria-label={`Sort by ${String(header.column.columnDef.header)}`}
                           >
                             {flexRender(header.column.columnDef.header, header.getContext())}
@@ -981,7 +1001,8 @@ export function DataTable<TData>({
                               onChange={(e) => header.column.setFilterValue(e.target.value)}
                               onClick={(e) => e.stopPropagation()}
                               placeholder="Filter…"
-                              className="h-7 w-full min-w-0 px-2 text-xs font-normal"
+                              data-compact
+                              className="h-7 w-full min-w-0 px-2 text-xs font-normal max-md:h-9 max-md:min-w-24"
                               aria-label={`Filter ${String(header.column.columnDef.header)}`}
                             />
                           )
@@ -1008,11 +1029,11 @@ export function DataTable<TData>({
                           ...columnLayoutStyle(meta),
                         }}
                         className={cn(
+                          "max-md:px-2",
                           meta?.wrap
                             ? "whitespace-normal break-words align-top"
                             : undefined,
-                          pinned && "sticky z-10 bg-background",
-                          pinned && cell.column.id === lastPinnedId && "border-r border-border",
+                          pinned && cn(pinnedClass(cell.column.id), "z-10 max-md:whitespace-normal max-md:break-words"),
                         )}
                       >
                         {cellContent(cell)}

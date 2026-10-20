@@ -1,12 +1,11 @@
 "use client";
 
-import { useId, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import {
   Bar,
   BarChart,
   CartesianGrid,
   Cell,
-  Legend,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -17,18 +16,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { Series } from "./LineChartCard";
 import { chartColorAt } from "@/lib/charts/palette";
 import { useIsPhone } from "@/components/shell/useIsPhone";
+import {
+  FloatingReadout,
+  ReadoutSlot,
+  ScrubReadout,
+  SeriesToggles,
+  axisLabel,
+  useHiddenSeries,
+  type Readout,
+  type ReadoutRow,
+} from "./ChartInteraction";
 
 export type BarValueFormat = "dollars" | "percent" | "number";
-
-type TooltipRow = {
-  dataKey?: string | number;
-  name?: string;
-  value?: number | string;
-  color?: string;
-  fill?: string;
-  /** Full chart row (Recharts); may include `tooltipLines: string[]`. */
-  payload?: Record<string, unknown>;
-};
 
 /** Per-bar fill from the signed value (e.g. cash flow green/red). */
 export type SignedValueColors = {
@@ -60,97 +59,46 @@ function formatTooltipValue(value: unknown, format: BarValueFormat): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 
-/** Custom tooltip: series sorted by value descending (largest first).
- *  When the chart row carries `tooltipEntries`, those replace the series list
- *  (fixed order; values already formatted). `tooltipLines` remain as footnotes. */
-function SortedBarTooltip({
-  active,
-  payload,
-  label,
-  valueFormat,
-}: {
-  active?: boolean;
-  payload?: TooltipRow[];
-  label?: string | number;
-  valueFormat: BarValueFormat;
-}) {
-  if (!active || !payload?.length) return null;
-
-  const basePayload = payload[0]?.payload;
-  const customEntries = basePayload?.tooltipEntries;
-  const useCustom =
-    Array.isArray(customEntries) &&
-    customEntries.length > 0 &&
-    customEntries.every(
+function isEntryList(v: unknown): v is { label: string; value: string; color?: string }[] {
+  return (
+    Array.isArray(v) &&
+    v.length > 0 &&
+    v.every(
       (e) =>
         e != null &&
         typeof e === "object" &&
         typeof (e as { label?: unknown }).label === "string" &&
         typeof (e as { value?: unknown }).value === "string",
-    );
-
-  const rows = useCustom
-    ? null
-    : [...payload]
-        .filter((p) => p != null && p.value != null && !Number.isNaN(Number(p.value)))
-        .sort((a, b) => Number(b.value) - Number(a.value));
-  if (!useCustom && (!rows || !rows.length)) return null;
-
-  const extras = basePayload?.tooltipLines;
-  const extraLines = Array.isArray(extras)
-    ? extras.filter((line): line is string => typeof line === "string" && line.length > 0)
-    : [];
-
-  const entryList = useCustom
-    ? (customEntries as { label: string; value: string; color?: string }[])
-    : [];
-
-  return (
-    <div
-      className="rounded-md border border-border px-2.5 py-2 text-xs shadow-md"
-      style={{ background: "var(--popover)", color: "var(--popover-foreground)" }}
-    >
-      <p className="mb-1.5 font-medium">{String(label ?? "").replace(/,\n/g, ", ").replace(/\n/g, " · ")}</p>
-      <ul className="flex flex-col gap-1">
-        {useCustom
-          ? entryList.map((row) => (
-              <li key={row.label} className="flex items-center justify-between gap-4">
-                <span className="flex items-center gap-1.5">
-                  {row.color ? (
-                    <span
-                      className="inline-block size-2.5 shrink-0 rounded-sm"
-                      style={{ background: row.color }}
-                    />
-                  ) : null}
-                  <span>{row.label}</span>
-                </span>
-                <span className="tabular-nums font-medium">{row.value}</span>
-              </li>
-            ))
-          : rows!.map((row) => (
-              <li key={String(row.dataKey)} className="flex items-center justify-between gap-4">
-                <span className="flex items-center gap-1.5">
-                  <span
-                    className="inline-block size-2.5 shrink-0 rounded-sm"
-                    style={{ background: String(row.color ?? row.fill ?? "#888") }}
-                  />
-                  <span>{row.name}</span>
-                </span>
-                <span className="tabular-nums font-medium">
-                  {formatTooltipValue(row.value, valueFormat)}
-                </span>
-              </li>
-            ))}
-      </ul>
-      {extraLines.length ? (
-        <ul className="mt-1.5 flex flex-col gap-0.5 border-t border-border pt-1.5 text-muted-foreground">
-          {extraLines.map((line) => (
-            <li key={line}>{line}</li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
+    )
   );
+}
+
+/** Readout for one bar group: visible series by value, largest first. A row's
+ *  `tooltipEntries` replace the series list (fixed order; values pre-formatted) and
+ *  `tooltipLines` become footnotes. */
+function barReadout(
+  label: unknown,
+  row: Record<string, unknown> | undefined,
+  visible: Series[],
+  colorOf: (s: Series, row: Record<string, unknown>) => string,
+  valueFormat: BarValueFormat,
+): Readout | null {
+  if (!row) return null;
+  const notes = Array.isArray(row.tooltipLines)
+    ? row.tooltipLines.filter((line): line is string => typeof line === "string" && line.length > 0)
+    : [];
+  const rows: ReadoutRow[] = isEntryList(row.tooltipEntries)
+    ? row.tooltipEntries
+    : visible
+        .filter((s) => row[s.key] != null && !Number.isNaN(Number(row[s.key])))
+        .sort((a, b) => Number(row[b.key]) - Number(row[a.key]))
+        .map((s) => ({
+          label: s.label,
+          value: formatTooltipValue(row[s.key], valueFormat),
+          color: colorOf(s, row),
+        }));
+  if (!rows.length && !notes.length) return null;
+  return { title: axisLabel(label), rows, notes };
 }
 
 function signedFill(value: unknown, colors: SignedValueColors): string {
@@ -224,6 +172,14 @@ export function BarChartCard({
   // SVG url(#id) breaks on useId's colons; one chart can render twice per page.
   const patternPrefix = `hatch-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   const hatched = series.filter((s) => s.pattern === "hatch");
+  const { hidden, toggle } = useHiddenSeries();
+  const [readoutEl, setReadoutEl] = useState<HTMLDivElement | null>(null);
+  const baseColor = (s: Series) => s.color ?? chartColorAt(series.indexOf(s));
+  const colorOf = (s: Series, row: Record<string, unknown>) =>
+    signedValueColors?.dataKey === s.key ? signedFill(row[s.key], signedValueColors) : baseColor(s);
+  const visible = series.filter((s) => !hidden.has(s.key));
+  const readoutFor = (label: unknown, row: Record<string, unknown> | undefined) =>
+    barReadout(label, row, visible, colorOf, valueFormat);
   return (
     <Card>
       <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-2 space-y-0">
@@ -235,8 +191,14 @@ export function BarChartCard({
         </div>
         {headerRight ? <div className="shrink-0">{headerRight}</div> : null}
       </CardHeader>
-      <CardContent>
-        <ResponsiveContainer width="100%" height={height}>
+      <CardContent className="flex flex-col gap-3">
+        <SeriesToggles
+          items={series.map((s) => ({ key: s.key, label: s.label, color: baseColor(s) }))}
+          hidden={hidden}
+          onToggle={toggle}
+        />
+        {phone ? <ReadoutSlot onMount={setReadoutEl} /> : null}
+        <ResponsiveContainer width="100%" height={height} className="touch-pan-y">
           <BarChart
             data={data}
             margin={{ top: 8, right: 12, left: -4, bottom: multilineX ? 8 : 0 }}
@@ -275,11 +237,20 @@ export function BarChartCard({
               width={52}
             />
             <Tooltip
-              content={<SortedBarTooltip valueFormat={valueFormat} />}
-              cursor={{ fill: "var(--muted)", opacity: 0.35 }}
+              content={({ active, label, payload }) =>
+                phone || !active ? null : (
+                  <FloatingReadout
+                    readout={readoutFor(label, payload?.[0]?.payload as Record<string, unknown> | undefined)}
+                  />
+                )
+              }
+              cursor={{ fill: "var(--muted)", opacity: phone ? 0.6 : 0.35 }}
             />
-            {series.length > 1 ? (
-              <Legend wrapperStyle={{ fontSize: 12 }} />
+            {phone ? (
+              <ScrubReadout
+                target={readoutEl}
+                build={(label) => readoutFor(label, data.find((row) => String(row[xKey] ?? "") === label))}
+              />
             ) : null}
             {series.map((s, i) => {
               const stackId =
@@ -289,7 +260,7 @@ export function BarChartCard({
                     ? "stack"
                     : undefined;
               const useSigned = signedValueColors?.dataKey === s.key;
-              const color = s.color ?? chartColorAt(i);
+              const color = baseColor(s);
               const hatch = s.pattern === "hatch";
               const outline = s.pattern === "outline";
               return (
@@ -297,6 +268,7 @@ export function BarChartCard({
                   key={s.key}
                   dataKey={s.key}
                   name={s.label}
+                  hide={hidden.has(s.key)}
                   fill={hatch ? `url(#${patternPrefix}-${s.key})` : color}
                   fillOpacity={outline ? 0.15 : undefined}
                   stroke={hatch || outline ? color : undefined}

@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { Topbar } from "@/components/shell/Topbar";
@@ -9,9 +9,12 @@ import { IapLoginBeacon } from "@/components/shell/IapLoginBeacon";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ActionToastProvider } from "@/lib/actions/ActionToast";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Inter's optical-size axis gives 12–13px table and chart text the open "text" cut and
+// page titles the tighter "display" cut; figures are tabular where numbers stack.
+const inter = Inter({
+  variable: "--font-inter",
   subsets: ["latin"],
+  axes: ["opsz"],
 });
 
 const geistMono = Geist_Mono({
@@ -52,7 +55,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
       <head>
         {/* Apply saved theme before paint to avoid a light flash (default = dark). */}

@@ -117,7 +117,19 @@ const rows: Row[] = Array.from({ length: 25 }, (_, i) => ({
   note: i === 0 ? "Trainer" : null,
 }));
 
-describe("DataTable phone cards", () => {
+function stubPhone(matches: boolean) {
+  vi.stubGlobal(
+    "matchMedia",
+    (query: string) => ({
+      matches,
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    }),
+  );
+}
+
+describe("DataTable on phones", () => {
   beforeEach(() => {
     vi.stubGlobal(
       "ResizeObserver",
@@ -127,8 +139,26 @@ describe("DataTable phone cards", () => {
       },
     );
   });
-  it("renders the first column as the card title and skips blank fields", () => {
+
+  it("defaults to the table, freezing only the first pinned column", () => {
+    stubPhone(true);
+    render(<DataTable columns={columns} data={rows} pinLeft={["employee", "hours"]} />);
+    expect(screen.queryByTestId("data-table-cards")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Table layout" })).toHaveAttribute("aria-pressed", "true");
+    const frozen = screen.getAllByRole("columnheader").filter((th) => th.hasAttribute("data-pinned"));
+    expect(frozen.map((th) => th.dataset.colId)).toEqual(["employee"]);
+  });
+
+  it("keeps every pinned column frozen on desktop", () => {
+    stubPhone(false);
+    render(<DataTable columns={columns} data={rows} pinLeft={["employee", "hours"]} />);
+    const frozen = screen.getAllByRole("columnheader").filter((th) => th.hasAttribute("data-pinned"));
+    expect(frozen.map((th) => th.dataset.colId)).toEqual(["employee", "hours"]);
+  });
+
+  it("cards: first column is the title, blank fields are skipped", () => {
     render(<DataTable columns={columns} data={rows} pinLeft={["employee"]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Cards layout" }));
     const cards = within(screen.getByTestId("data-table-cards")).getAllByRole("listitem");
     expect(cards).toHaveLength(20);
     expect(within(cards[0]).getByText("Person 00")).toBeInTheDocument();
@@ -137,16 +167,10 @@ describe("DataTable phone cards", () => {
     expect(within(cards[1]).getByText("$101.00")).toBeInTheDocument();
   });
 
-  it("pages in 20s", () => {
+  it("cards page in 20s", () => {
     render(<DataTable columns={columns} data={rows} />);
+    fireEvent.click(screen.getByRole("button", { name: "Cards layout" }));
     fireEvent.click(screen.getByRole("button", { name: /Show 5 more/ }));
     expect(within(screen.getByTestId("data-table-cards")).getAllByRole("listitem")).toHaveLength(25);
-  });
-
-  it("switches to the table layout", () => {
-    render(<DataTable columns={columns} data={rows} />);
-    fireEvent.click(screen.getByRole("button", { name: "Table layout" }));
-    expect(screen.queryByTestId("data-table-cards")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Table layout" })).toHaveAttribute("aria-pressed", "true");
   });
 });

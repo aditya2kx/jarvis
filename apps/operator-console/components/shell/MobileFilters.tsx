@@ -36,7 +36,7 @@ export function MobileFilters({ title, children }: { title: string; children: Re
       </SheetTrigger>
       <SheetContent
         side="bottom"
-        className="max-h-[85dvh] gap-0 rounded-t-2xl pb-[env(safe-area-inset-bottom)]"
+        className="max-h-[85dvh] gap-0 rounded-t-2xl"
       >
         <div aria-hidden className="mx-auto mt-2 h-1 w-10 rounded-full bg-muted-foreground/30" />
         <SheetHeader className="px-4 pt-3 pb-1">

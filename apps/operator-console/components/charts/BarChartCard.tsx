@@ -16,6 +16,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { Series } from "./LineChartCard";
 import { chartColorAt } from "@/lib/charts/palette";
+import { useIsPhone } from "@/components/shell/useIsPhone";
 
 export type BarValueFormat = "dollars" | "percent" | "number";
 
@@ -218,6 +219,8 @@ export function BarChartCard({
   signedValueColors?: SignedValueColors;
 }) {
   const multilineX = data.some((row) => String(row[xKey] ?? "").includes("\n"));
+  // Every multi-line day tick fits on desktop; at 390px a month of them overlaps.
+  const phone = useIsPhone();
   // SVG url(#id) breaks on useId's colons; one chart can render twice per page.
   const patternPrefix = `hatch-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   const hatched = series.filter((s) => s.pattern === "hatch");
@@ -263,8 +266,8 @@ export function BarChartCard({
               dataKey={xKey}
               tick={multilineX ? <MultilineXTick /> : { fontSize: 12 }}
               height={multilineX ? 36 : undefined}
-              interval={multilineX ? 0 : undefined}
-              minTickGap={multilineX ? 0 : undefined}
+              interval={multilineX ? (phone ? "preserveStartEnd" : 0) : undefined}
+              minTickGap={multilineX ? (phone ? 6 : 0) : undefined}
             />
             <YAxis
               tick={{ fontSize: 12 }}

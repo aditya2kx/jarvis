@@ -591,7 +591,8 @@ function PhoneCards<TData>({
                   <span className="min-w-0 break-words text-sm font-semibold">{cellContent(titleCell)}</span>
                   {subtitleCell && !isBlank(subtitleCell.getValue()) ? (
                     <span className="min-w-0 truncate text-right text-xs text-muted-foreground">
-                      {cellContent(subtitleCell)}
+                      {columnLabel(subtitleCell.column)}{" "}
+                      <span className="font-medium text-foreground tabular-nums">{cellContent(subtitleCell)}</span>
                     </span>
                   ) : null}
                 </div>

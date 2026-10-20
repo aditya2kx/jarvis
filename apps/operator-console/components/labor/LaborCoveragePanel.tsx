@@ -189,12 +189,15 @@ function DayStrip({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLButtonElement>(null);
 
-  // Keep the active chip in view when selection / Period changes.
+  // Keep the active chip in view when selection / Period changes. Scroll the chip strip
+  // only — scrollIntoView also scrolls the page, which jumped Labor to this panel on load.
   useEffect(() => {
-    selectedRef.current?.scrollIntoView({
+    const strip = scrollerRef.current;
+    const chip = selectedRef.current;
+    if (!strip || !chip) return;
+    strip.scrollTo({
+      left: chip.offsetLeft - (strip.clientWidth - chip.offsetWidth) / 2,
       behavior: "smooth",
-      inline: "center",
-      block: "nearest",
     });
   }, [selected, chips.length]);
 

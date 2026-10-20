@@ -17,6 +17,7 @@ import { formatCents, formatDate, formatDollars, formatHours } from "@/lib/forma
 import { storeDisplayName } from "@/lib/config/stores";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { InfoNote } from "@/components/shell/InfoNote";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { FilterMultiSelect } from "@/components/filters/FilterMultiSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -69,14 +70,14 @@ function HeadlineStat({
   hintWarn?: boolean;
 }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-sm font-medium text-muted-foreground">
+    <Card className="max-md:gap-1 max-md:py-3">
+      <CardHeader className="max-md:px-3.5">
+        <CardTitle className="text-sm font-medium text-muted-foreground max-md:text-xs">
           {label}
         </CardTitle>
       </CardHeader>
-      <CardContent>
-        <p className="text-2xl font-semibold tabular-nums">{display}</p>
+      <CardContent className="max-md:px-3.5">
+        <p className="text-2xl font-semibold tabular-nums max-md:text-xl">{display}</p>
         {hint ? (
           <p
             className={
@@ -532,13 +533,13 @@ export default async function PayrollPage({
                 )}
               />
             </div>
-            <p className="text-xs text-muted-foreground">
+            <InfoNote summary="How these totals compare to ADP">
               {showPreviewHints
                 ? "Against last ADP Preview: Hours → Total hours, Total pay → Gross (wages + tips + bonus + perks). Total hours includes OT and solo hours — the OT and solo columns are slices of it, not extras to add. ADP's Enter-payroll Regular Hours column excludes OT, so it reads lower than Total hours by the OT figure. Preview URLs are not shown — they are session hashes. People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."
                 : awaitingEarnings
                   ? "Submitted in ADP. Earnings & Hours is not in BigQuery yet, so there is nothing to compare — Hours / Wages / Total pay are our estimate only. Wage vs ADP appears once that scrape lands."
                   : "People and hours are 1:1 with Enter payroll. Total hours includes OT and solo hours — the OT and solo columns are slices of it, not extras to add. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."}
-            </p>
+            </InfoNote>
           </div>
 
           <div className="flex flex-col gap-2">

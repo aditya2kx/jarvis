@@ -2531,8 +2531,15 @@ service `operator-console-pr<N>` from
 identity on the preview only, for the `smoke` job: every mobile menu tap on the real preview in
 iPhone WebKit). `IAP_SERVICE_NAME` is the preview's own name — the IAP JWT audience is per service,
 so the prod default would fail identity on the preview. A sticky
-PR comment carries the URL and `/home` + `/inventory` screenshots. Deleted on PR close; a nightly
-sweep removes any preview whose PR is no longer open. Never deploy a branch onto `operator-console`
+PR comment carries the URL and `/home` + `/inventory` screenshots. Deleted on PR close; an hourly
+sweep removes any preview whose PR is no longer open.
+
+**Pre-PR branch preview** (Issue #415): push `preview/<name>` (that prefix opens no PR) to get the
+same read-only IAP service, `operator-console-pv-<slug>-<hash>` (`python3 scripts/console_preview.py
+--branch preview/<name> --print-service`), URL in the workflow run summary. It lives at most 24 h
+(label `expires`, hourly sweep), and is deleted when the branch is deleted or when the PR for
+`<prefix>/<name>` deploys its own preview. Respawn: re-push the branch
+(`git push origin :preview/<name> && git push origin HEAD:preview/<name>`). Never deploy a branch onto `operator-console`
 itself: a revision's env becomes the service template (`/prod-ops` refuses `CONSOLE_PREVIEW`).
 Cloud Agent prod access: `/prod-read` + `/prod-ops`
 ([docs/contributing/dev-anywhere.md](docs/contributing/dev-anywhere.md)).

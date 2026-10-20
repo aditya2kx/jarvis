@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { PipelineRunRow, SourcePullRow } from "@/lib/bq/queries";
-import { runTone, WARN_BADGE_CLASS } from "@/lib/run-status";
+import { OK_BADGE_CLASS, runTone, WARN_BADGE_CLASS } from "@/lib/run-status";
 
 export const dynamic = "force-dynamic";
 
@@ -19,8 +19,14 @@ function StatusBadge({ status }: { status: string | null }) {
       </Badge>
     );
   }
-  const variant = tone === "ok" ? "default" : tone === "bad" ? "destructive" : "secondary";
-  return <Badge variant={variant}>{status ?? "unknown"}</Badge>;
+  if (tone === "ok") {
+    return (
+      <Badge variant="outline" className={OK_BADGE_CLASS}>
+        {status}
+      </Badge>
+    );
+  }
+  return <Badge variant={tone === "bad" ? "destructive" : "secondary"}>{status ?? "unknown"}</Badge>;
 }
 
 export default async function PipelinePage() {
@@ -110,12 +116,12 @@ export default async function PipelinePage() {
           </div>
 
           <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">Source freshness</h2>
+            <h2 className="mb-2 text-sm font-semibold text-foreground">Source freshness</h2>
             <DataTable columns={sourceColumns} data={Array.from(latestPerSource.values())} />
           </div>
 
           <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">Run history</h2>
+            <h2 className="mb-2 text-sm font-semibold text-foreground">Run history</h2>
             <DataTable columns={runColumns} data={runs} />
           </div>
         </>

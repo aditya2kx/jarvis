@@ -47,8 +47,9 @@ export function PageHeader({
             data-testid="page-header-controls"
             className={
               "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 " +
-              // Phones: one swipeable row of equal-height pills (Filters first, then actions).
-              "max-md:order-2 max-md:-mx-4 max-md:mt-2 max-md:flex-nowrap max-md:overflow-x-auto max-md:px-4 max-md:pb-1 max-md:[scrollbar-width:none] max-md:[mask-image:linear-gradient(90deg,black_92%,transparent)] " +
+              // Phones: equal-height pills (Filters first, then actions) that wrap rather than
+              // scroll, so no action hides off-screen.
+              "max-md:order-2 max-md:mt-2 " +
               "max-md:[&_[data-slot=button]]:h-10 max-md:[&_[data-slot=button]]:shrink-0 max-md:[&_[data-slot=button]]:min-h-10 max-md:[&_[data-slot=button]]:rounded-full max-md:[&_[data-slot=button]]:px-4"
             }
           >

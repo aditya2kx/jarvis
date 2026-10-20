@@ -1482,7 +1482,7 @@ export function LaborCoveragePanel({
   return (
     <Card>
       <CardHeader className="gap-1">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
+        <CardTitle className="text-sm font-semibold text-foreground">
           Staffing coverage
         </CardTitle>
         <CardDescription>

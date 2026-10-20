@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { Badge } from "@/components/ui/badge";
+import { OK_BADGE_CLASS } from "@/lib/run-status";
+import { formatDateTime } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getAutomation, listAutomationPosts } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
@@ -76,7 +78,7 @@ export default async function AutomationsPage() {
                   Review-bonus leaderboard + motivating closer → ClickUp chat
                 </p>
               </div>
-              <Badge variant={enabled ? "default" : "secondary"}>
+              <Badge variant={enabled ? "outline" : "secondary"} className={enabled ? OK_BADGE_CLASS : undefined}>
                 {enabled ? "Enabled" : "Off"}
               </Badge>
             </CardHeader>
@@ -90,7 +92,7 @@ export default async function AutomationsPage() {
               </p>
               <p>
                 Last post:{" "}
-                <span className="text-foreground">{lastPost ?? "—"}</span>
+                <span className="text-foreground">{lastPost ? formatDateTime(lastPost) : "—"}</span>
               </p>
             </CardContent>
           </Card>
@@ -110,14 +112,14 @@ export default async function AutomationsPage() {
                   DMs you a ready-to-post nudge to update ADP unavailability before the Friday publish
                 </p>
               </div>
-              <Badge variant={reminderOn ? "default" : "secondary"}>
+              <Badge variant={reminderOn ? "outline" : "secondary"} className={reminderOn ? OK_BADGE_CLASS : undefined}>
                 {reminderOn ? "Enabled" : "Off"}
               </Badge>
             </CardHeader>
             <CardContent className="flex flex-col gap-1 text-sm text-muted-foreground">
               <p>{reminderCadence}</p>
               <p>
-                Last sent: <span className="text-foreground">{reminderLast ?? "—"}</span>
+                Last sent: <span className="text-foreground">{reminderLast ? formatDateTime(reminderLast) : "—"}</span>
               </p>
             </CardContent>
           </Card>

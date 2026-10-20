@@ -73,3 +73,23 @@ export function formatDate(value: string | Date | null | undefined): string {
     day: "numeric",
   }).format(d);
 }
+
+/** BQ TIMESTAMP ("2026-10-20T02:48:52.798661000Z" / "2026-09-27 18:35:40.304467+00") → "Oct 19, 9:48 PM CT". */
+export function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const iso = value
+    .replace(" ", "T")
+    .replace(/\+00$/, "Z")
+    .replace(/(\.\d{3})\d+/, "$1");
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return value;
+  return (
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: CHICAGO,
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(d) + " CT"
+  );
+}

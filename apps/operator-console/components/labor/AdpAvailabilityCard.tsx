@@ -176,10 +176,10 @@ export function AdpAvailabilityCard({
     <Card data-testid="adp-availability">
       <CardHeader className="gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Unavailability</CardTitle>
+          <CardTitle className="text-sm font-semibold text-foreground">Unavailability</CardTitle>
           <div className="flex flex-wrap items-center gap-2">
             <LocalMultiSelect label="People" selected={selected} options={everyone} onChange={setSelected} />
-            <div className="flex items-center gap-1 rounded-lg border border-border p-0.5" role="group" aria-label="Unavailability status">
+            <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-border p-0.5 [scrollbar-width:none]" role="group" aria-label="Unavailability status">
               {views.map(([value, label]) => (
                 <button
                   key={value}
@@ -187,7 +187,7 @@ export function AdpAvailabilityCard({
                   onClick={() => setView(value)}
                   aria-pressed={view === value}
                   className={cn(
-                    "h-7 rounded-md px-2 text-xs font-medium tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "h-7 rounded-md px-2 text-xs font-medium whitespace-nowrap tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-md:h-9",
                     view === value ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
                   )}
                 >

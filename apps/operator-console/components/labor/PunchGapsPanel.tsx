@@ -702,7 +702,7 @@ export function PunchGapsPanel({
     <Card data-testid="labor-punch-gaps">
       <CardHeader className="gap-1">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">
+          <CardTitle className="text-sm font-semibold text-foreground">
             Punches — {periodLabel}
           </CardTitle>
           <div className="flex items-center gap-2">

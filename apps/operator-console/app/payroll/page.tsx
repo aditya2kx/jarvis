@@ -543,7 +543,7 @@ export default async function PayrollPage({
           </div>
 
           <div className="flex flex-col gap-2">
-            <h2 className="text-sm font-medium text-muted-foreground">
+            <h2 className="text-sm font-semibold text-foreground">
               Per-employee, per-period
             </h2>
             <DataTable
@@ -618,14 +618,14 @@ export default async function PayrollPage({
           ) : null}
 
           <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+            <h2 className="mb-2 text-sm font-semibold text-foreground">
               Google review bonuses — last 30 days
             </h2>
             <DataTable columns={reviewColumns} data={reviews} />
           </div>
 
           <div className="flex flex-col gap-2">
-            <h2 className="text-sm font-medium text-muted-foreground">
+            <h2 className="text-sm font-semibold text-foreground">
               Recognition bonuses — last 2 periods
             </h2>
             <DataTable columns={recognitionColumns} data={recognitions} />

@@ -217,7 +217,7 @@ export function TipExemptionsEditor({
       ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-medium text-muted-foreground">
+        <h2 className="text-sm font-semibold text-foreground">
           Shifts · tip exemptions · {periodLabel}
         </h2>
         {editable ? (
@@ -343,7 +343,7 @@ export function TipExemptionsEditor({
       </div>
 
       <div className="flex flex-col gap-2" data-testid="tip-exemptions-result">
-        <h2 className="text-sm font-medium text-muted-foreground">Exemptions table</h2>
+        <h2 className="text-sm font-semibold text-foreground">Exemptions table</h2>
         <div className={`overflow-auto rounded-md border ${TABLE_MAX_H}`}>
           <table className="w-full text-sm">
             <thead className={THEAD}>

@@ -88,12 +88,13 @@ jobs:
             fi
             SERVICE="$(python3 scripts/console_preview.py --branch "$GITHUB_REF_NAME" --print-service)"
             TAG="${SERVICE#operator-console-}"
-            LABELS="jarvis-preview=operator-console-branch,expires=$(( $(date +%s) + BRANCH_TTL_HOURS * 3600 ))"
+            EXPIRES_AT="$(( $(date +%s) + BRANCH_TTL_HOURS * 3600 ))"
+            LABELS="jarvis-preview=operator-console-branch,expires=$EXPIRES_AT"
             ISSUE="$(echo "${GITHUB_REF_NAME#preview/}" | grep -oE '^[0-9]+' || true)"
             [ -n "$ISSUE" ] && LABELS="$LABELS,issue=$ISSUE"
             STALE=""
           fi
-          { echo "SERVICE=$SERVICE"; echo "TAG=$TAG"; echo "LABELS=$LABELS"; echo "STALE=$STALE"; } >> "$GITHUB_ENV"
+          { echo "SERVICE=$SERVICE"; echo "TAG=$TAG"; echo "LABELS=$LABELS"; echo "STALE=$STALE"; echo "EXPIRES_AT=${EXPIRES_AT:-}"; } >> "$GITHUB_ENV"
           echo "service=$SERVICE" >> "$GITHUB_OUTPUT"
           echo "preview: target $SERVICE labels=$LABELS"
 
@@ -180,7 +181,7 @@ jobs:
         if: github.event_name == 'push'
         run: |
           URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app"
-          EXPIRES="$(date -u -d "@${LABELS##*expires=}" '+%Y-%m-%d %H:%M UTC')"
+          EXPIRES="$(date -u -d "@$EXPIRES_AT" '+%Y-%m-%d %H:%M UTC')"
           printf '### Operator Console branch preview\n**[%s/home](%s/home)** — `%s` commit `%s`\n\nRead-only, prod data, prod IAP allowlist. Deleted at %s or when the branch is deleted; re-push `%s` to respawn.\n' \
             "$URL" "$URL" "$GITHUB_REF_NAME" "${HEAD_SHA::7}" "$EXPIRES" "$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
           echo "preview: deployed $SERVICE url=$URL sha=${HEAD_SHA::7} expires=$EXPIRES"

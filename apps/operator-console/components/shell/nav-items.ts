@@ -15,8 +15,8 @@ export interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
-  /** Short label for the phone bottom tab bar; items with one get a tab, the rest live in More. */
-  tab?: string;
+  /** Short label when this page holds a slot in the phone bottom tab bar. */
+  tab: string;
 }
 
 export interface NavGroup {
@@ -38,8 +38,8 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/sales", label: "Sales", icon: LineChart, tab: "Sales" },
       { href: "/labor", label: "Labor", icon: Clock, tab: "Labor" },
-      { href: "/order-quality", label: "Order Quality", icon: ShieldCheck },
-      { href: "/accounting", label: "Accounting", icon: Landmark },
+      { href: "/order-quality", label: "Order Quality", icon: ShieldCheck, tab: "Quality" },
+      { href: "/accounting", label: "Accounting", icon: Landmark, tab: "Accounting" },
     ],
   },
   {
@@ -48,13 +48,13 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     label: "Inventory",
-    items: [{ href: "/inventory", label: "Inventory / Ordering", icon: PackageSearch }],
+    items: [{ href: "/inventory", label: "Inventory / Ordering", icon: PackageSearch, tab: "Inventory" }],
   },
   {
     label: "System",
     items: [
-      { href: "/automations", label: "Automations", icon: Bot },
-      { href: "/pipeline", label: "Pipeline Health", icon: Activity },
+      { href: "/automations", label: "Automations", icon: Bot, tab: "Automations" },
+      { href: "/pipeline", label: "Pipeline Health", icon: Activity, tab: "Pipeline" },
     ],
   },
 ];
@@ -63,9 +63,12 @@ export function isNavItemActive(pathname: string | null, href: string): boolean 
   return pathname === href || (pathname?.startsWith(href + "/") ?? false);
 }
 
-const ALL_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
+export const ALL_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
 
-export const TAB_ITEMS: NavItem[] = ALL_ITEMS.filter((i) => i.tab);
+/** Phone tab bar before this device has any history (see recentTabs.ts). */
+export const DEFAULT_TAB_HREFS = ["/home", "/sales", "/labor", "/payroll"] as const;
+
+export const TAB_ITEMS: NavItem[] = DEFAULT_TAB_HREFS.map((href) => ALL_ITEMS.find((i) => i.href === href)!);
 
 /** The nav item that owns `pathname` (longest matching href), for the phone top-bar title. */
 export function activeNavItem(pathname: string | null): NavItem | undefined {

@@ -12,21 +12,24 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { NAV_GROUPS, TAB_ITEMS, isNavItemActive } from "./nav-items";
+import { NAV_GROUPS, isNavItemActive } from "./nav-items";
+import { useRecentTabs } from "./recentTabs";
 
 const TAB =
   "flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring active:bg-muted";
 
 /**
- * Phone navigation (below md): a fixed bottom tab bar for the four pages an operator
- * checks most, plus More — a bottom sheet with every page from NAV_GROUPS. Thumb-reachable
+ * Phone navigation (below md): a fixed bottom tab bar holding the four most recently used
+ * pages on this device (useRecentTabs), plus More — a bottom sheet with every page from
+ * NAV_GROUPS; opening a page from More gives it a tab. Thumb-reachable
  * and one tap per page, unlike the old top-left hamburger. The bar pads for the iOS home
  * indicator so it sits above it in Safari and as a home-screen app.
  */
 export function MobileTabBar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
-  const onTab = TAB_ITEMS.some((i) => isNavItemActive(pathname, i.href));
+  const tabs = useRecentTabs(pathname);
+  const onTab = tabs.some((i) => isNavItemActive(pathname, i.href));
 
   return (
     <nav
@@ -35,7 +38,7 @@ export function MobileTabBar() {
       className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg supports-[backdrop-filter]:bg-background/75 md:hidden"
     >
       <div className="mx-auto flex h-[var(--tabbar-h)] max-w-lg items-stretch gap-1 px-2 py-1">
-        {TAB_ITEMS.map((item) => {
+        {tabs.map((item) => {
           const active = isNavItemActive(pathname, item.href);
           return (
             <Link
@@ -45,7 +48,7 @@ export function MobileTabBar() {
               className={cn(TAB, active ? "text-primary" : "text-muted-foreground")}
             >
               <item.icon className="size-5" strokeWidth={active ? 2.25 : 1.75} aria-hidden />
-              {item.tab}
+              <span className="max-w-full truncate px-0.5">{item.tab}</span>
             </Link>
           );
         })}

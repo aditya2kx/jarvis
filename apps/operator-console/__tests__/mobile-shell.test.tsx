@@ -32,10 +32,12 @@ const { MobileTabBar } = await import("@/components/shell/MobileTabBar");
 const { PageHeader } = await import("@/components/shell/PageHeader");
 const { DataTable } = await import("@/components/tables/DataTable");
 const { activeNavItem, TAB_ITEMS } = await import("@/components/shell/nav-items");
+const { DEFAULT_SLOTS, parseSlots, recordVisit } = await import("@/components/shell/recentTabs");
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  window.localStorage.clear();
   pathname = "/sales";
 });
 
@@ -63,10 +65,45 @@ describe("MobileTabBar", () => {
     expect(screen.getByRole("link", { name: "Pipeline Health" })).toHaveAttribute("href", "/pipeline");
   });
 
-  it("highlights More on a page without its own tab", () => {
-    pathname = "/inventory";
+  it("highlights More on a route that isn't a page in the nav", () => {
+    pathname = "/nope";
     render(<MobileTabBar />);
     expect(screen.getByRole("button", { name: "More pages" })).toHaveClass("text-primary");
+  });
+
+  it("a page opened from More takes the least recently used tab, in place", () => {
+    const tabNames = () =>
+      within(screen.getByTestId("mobile-tab-bar"))
+        .getAllByRole("link")
+        .map((a) => a.textContent);
+    pathname = "/home";
+    const { rerender } = render(<MobileTabBar />);
+    expect(tabNames()).toEqual(["Home", "Sales", "Labor", "Payroll"]);
+    pathname = "/inventory";
+    rerender(<MobileTabBar />);
+    expect(tabNames()).toEqual(["Home", "Sales", "Labor", "Inventory"]);
+    expect(within(screen.getByTestId("mobile-tab-bar")).getByRole("link", { name: "Inventory" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    pathname = "/sales";
+    rerender(<MobileTabBar />);
+    pathname = "/automations/team-pulse";
+    rerender(<MobileTabBar />);
+    expect(tabNames()).toEqual(["Home", "Sales", "Automations", "Inventory"]);
+  });
+});
+
+describe("recordVisit", () => {
+  it("refreshes a tab already in the bar without moving it", () => {
+    const next = recordVisit(DEFAULT_SLOTS, "/labor", 10);
+    expect(next.map((s) => s.href)).toEqual(["/home", "/sales", "/labor", "/payroll"]);
+    expect(recordVisit(next, "/pipeline", 11).map((s) => s.href)).toEqual(["/home", "/sales", "/labor", "/pipeline"]);
+  });
+
+  it("falls back to the defaults on corrupt or stale storage", () => {
+    expect(parseSlots("not json")).toBe(DEFAULT_SLOTS);
+    expect(parseSlots(JSON.stringify([{ href: "/gone", usedAt: 1 }]))).toBe(DEFAULT_SLOTS);
   });
 });
 

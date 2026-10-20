@@ -10,9 +10,10 @@ name: Operator Console preview
 #
 # Pre-PR branch previews: push `preview/<name>` (no PR is opened for that prefix) to deploy
 # `operator-console-pv-<slug>-<hash>` (scripts/console_preview.py --branch … --print-service),
-# same IAP + read-only setup, URL in the run summary. It lives at most 24 h (label `expires`,
-# hourly sweep), is deleted when the preview branch is deleted, and when the PR for
-# `cursor/<name>` (any `<prefix>/<name>`) deploys its own preview. Re-push the branch to respawn.
+# same IAP + read-only setup, URL in the run summary. Keep the name short, `preview/<issue>-<slug>`:
+# the WIF subject carries the ref and GCP caps it at 127 bytes. It lives at most 24 h (label
+# `expires`, hourly sweep), is deleted when the preview branch is deleted, and when a PR whose
+# branch is `<prefix>/<issue>-…` deploys its own preview (label `issue`). Re-push to respawn.
 #
 # Every preview runs CONSOLE_PREVIEW=1: all non-GET requests are refused in
 # middleware.ts and no secrets are mounted, so it can read prod data but not change it.
@@ -77,12 +78,19 @@ jobs:
             SERVICE="$(python3 scripts/console_preview.py --pr "$PR" --print-service)"
             TAG="pr$PR"
             LABELS="jarvis-preview=operator-console,pr=$PR"
-            # This PR's pre-PR branch preview (preview/<name> for <prefix>/<name>) is superseded.
-            STALE="$(python3 scripts/console_preview.py --branch "preview/${HEAD_REF#*/}" --print-service)"
+            # Branch previews for this PR's issue (`<prefix>/<issue>-…` ↔ `preview/<issue>-…`) are superseded.
+            STALE="$(echo "${HEAD_REF#*/}" | grep -oE '^[0-9]+' || true)"
           else
+            # WIF maps the token subject `repo:<owner/repo>:ref:refs/heads/<branch>`; GCP caps it at 127 bytes.
+            SUBJECT="repo:$GITHUB_REPOSITORY:ref:$GITHUB_REF"
+            if [ "${#SUBJECT}" -gt 127 ]; then
+              echo "::error::preview: branch name too long for GCP auth (${#SUBJECT}/127 bytes) — use a short preview/<issue>-<slug>"; exit 1
+            fi
             SERVICE="$(python3 scripts/console_preview.py --branch "$GITHUB_REF_NAME" --print-service)"
             TAG="${SERVICE#operator-console-}"
             LABELS="jarvis-preview=operator-console-branch,expires=$(( $(date +%s) + BRANCH_TTL_HOURS * 3600 ))"
+            ISSUE="$(echo "${GITHUB_REF_NAME#preview/}" | grep -oE '^[0-9]+' || true)"
+            [ -n "$ISSUE" ] && LABELS="$LABELS,issue=$ISSUE"
             STALE=""
           fi
           { echo "SERVICE=$SERVICE"; echo "TAG=$TAG"; echo "LABELS=$LABELS"; echo "STALE=$STALE"; } >> "$GITHUB_ENV"
@@ -157,13 +165,16 @@ jobs:
             set_iap /tmp/iap.json
           fi
 
-      - name: Delete the superseded branch preview
+      - name: Delete superseded branch previews
         if: env.STALE != ''
         run: |
-          if gcloud run services describe "$STALE" --region "$REGION" --project "$PROJECT_ID" >/dev/null 2>&1; then
-            gcloud run services delete "$STALE" --region "$REGION" --project "$PROJECT_ID" --quiet
-            echo "preview: deleted branch preview $STALE (PR #$PR has its own)"
-          fi
+          gcloud run services list --region "$REGION" --project "$PROJECT_ID" \
+            --filter "metadata.labels.jarvis-preview=operator-console-branch AND metadata.labels.issue=$STALE" \
+            --format "value(metadata.name)" |
+          while read -r name; do
+            gcloud run services delete "$name" --region "$REGION" --project "$PROJECT_ID" --quiet
+            echo "preview: deleted branch preview $name (issue #$STALE, PR #$PR has its own)"
+          done
 
       - name: Branch preview URL
         if: github.event_name == 'push'

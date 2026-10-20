@@ -2534,11 +2534,13 @@ so the prod default would fail identity on the preview. A sticky
 PR comment carries the URL and `/home` + `/inventory` screenshots. Deleted on PR close; an hourly
 sweep removes any preview whose PR is no longer open.
 
-**Pre-PR branch preview** (Issue #415): push `preview/<name>` (that prefix opens no PR) to get the
-same read-only IAP service, `operator-console-pv-<slug>-<hash>` (`python3 scripts/console_preview.py
---branch preview/<name> --print-service`), URL in the workflow run summary. It lives at most 24 h
-(label `expires`, hourly sweep), and is deleted when the branch is deleted or when the PR for
-`<prefix>/<name>` deploys its own preview. Respawn: re-push the branch
+**Pre-PR branch preview** (Issue #415): push a short `preview/<issue>-<slug>` (that prefix opens
+no PR; the WIF token subject carries the ref and GCP caps it at 127 bytes, so long names fail auth
+with `size of mapped attribute google.subject exceeds the 127 bytes limit`) to get the same
+read-only IAP service, `operator-console-pv-<slug>-<hash>` (`python3 scripts/console_preview.py
+--branch preview/<issue>-<slug> --print-service`), URL in the workflow run summary. It lives at
+most 24 h (label `expires`, hourly sweep), and is deleted when the branch is deleted or when a PR
+whose branch starts `<prefix>/<issue>-` deploys its own preview (label `issue`). Respawn: re-push
 (`git push origin :preview/<name> && git push origin HEAD:preview/<name>`). Never deploy a branch onto `operator-console`
 itself: a revision's env becomes the service template (`/prod-ops` refuses `CONSOLE_PREVIEW`).
 Cloud Agent prod access: `/prod-read` + `/prod-ops`

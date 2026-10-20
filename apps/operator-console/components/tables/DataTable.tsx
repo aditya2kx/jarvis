@@ -905,10 +905,14 @@ export function DataTable<TData>({
   const headerGroups = table.getHeaderGroups();
   const theadRef = useRef<HTMLTableSectionElement>(null);
   const [rowTops, setRowTops] = useState<number[]>([]);
+  const [frozenWidth, setFrozenWidth] = useState(0);
   useLayoutEffect(() => {
     const thead = theadRef.current;
     if (!thead || headerGroups.length < 2) return;
     const measure = () => {
+      const frozen = Array.from(thead.querySelectorAll<HTMLElement>('tr:last-child th[data-pinned="left"]'));
+      const width = frozen.reduce((w, th) => w + th.offsetWidth, 0);
+      setFrozenWidth((prev) => (prev === width ? prev : width));
       let top = 0;
       const next = Array.from(thead.rows).map((r) => {
         const t = top;
@@ -1007,7 +1011,13 @@ export function DataTable<TData>({
                           pinned && cn(pinnedClass(header.column.id), "z-30"),
                         )}
                       >
-                        {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                        {header.isPlaceholder ? null : (
+                          // Rides along the frozen edge so the group name stays in view while
+                          // any of its columns are on screen.
+                          <span className="sticky inline-block" style={{ left: frozenWidth + 8 }}>
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                          </span>
+                        )}
                       </TableHead>
                     );
                   }

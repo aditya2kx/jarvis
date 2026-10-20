@@ -841,7 +841,7 @@ export function AccountingLedger({
           subtitle={
             asPct
               ? `Bank money in / out / cash flow as % of Square net sales for the same ${grainLabel} · green=in, red=out, sky/fuchsia=net`
-              : "Green = money in · red = money out · sky/fuchsia = cash flow (by sign) · excludes excluded categories"
+              : "Cash flow is sky when positive, fuchsia when negative · excluded categories left out"
           }
           data={cashChart}
           xKey="date"

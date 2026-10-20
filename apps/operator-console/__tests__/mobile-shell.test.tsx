@@ -156,6 +156,29 @@ describe("DataTable on phones", () => {
     expect(frozen.map((th) => th.dataset.colId)).toEqual(["employee", "hours"]);
   });
 
+  it("grouped columns get a spanning group header above their leaf headers", () => {
+    stubPhone(false);
+    type R = { item: string; onHand: number; after: number };
+    const grouped: ColumnDef<R>[] = [
+      { accessorKey: "item", header: "Item" },
+      {
+        id: "delivery-1",
+        header: "Delivery Oct 21",
+        columns: [
+          { accessorKey: "onHand", header: "On hand" },
+          { accessorKey: "after", header: "After restock" },
+        ],
+      },
+    ];
+    render(<DataTable columns={grouped} data={[{ item: "Acai", onHand: 2, after: 9 }]} pinLeft={["item"]} />);
+    const [groupRow, leafRow] = within(screen.getByTestId("data-table")).getAllByRole("row");
+    const group = within(groupRow!).getByText("Delivery Oct 21").closest("th")!;
+    expect(group).toHaveAttribute("colspan", "2");
+    expect(within(groupRow!).queryByText("Item")).not.toBeInTheDocument();
+    expect(within(leafRow!).getByRole("button", { name: "Sort by After restock" })).toBeInTheDocument();
+    expect(screen.getAllByText("Item")).toHaveLength(1);
+  });
+
   it("cards: first column is the title, blank fields are skipped", () => {
     render(<DataTable columns={columns} data={rows} pinLeft={["employee"]} />);
     fireEvent.click(screen.getByRole("button", { name: "Cards layout" }));

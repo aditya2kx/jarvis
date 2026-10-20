@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import type { GoalStatus } from "@/lib/kpi/health";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-const STATUS_COLOR: Record<GoalStatus, string> = {
+export const STATUS_COLOR: Record<GoalStatus, string> = {
   "on-track": "bg-emerald-500",
   "at-risk": "bg-amber-500",
   "off-track": "bg-red-500",

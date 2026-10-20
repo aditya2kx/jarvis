@@ -389,6 +389,10 @@ export default async function PayrollPage({
                 ...(selectedPeriodStart ? { period: selectedPeriodStart } : {}),
               }}
             />
+          </>
+        }
+        actions={
+          <>
             {FEATURES.adpPayrollDraft && selectedPeriodStart && periodEnd ? (
               <PayrollDraftButton
                 periodStart={selectedPeriodStart}

@@ -988,7 +988,7 @@ export function AccountingLedger({
           if (!open) setExplain(null);
         }}
       >
-        <SheetContent side="right" className="sm:max-w-md overflow-y-auto">
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
           <SheetHeader>
             <SheetTitle>
               {explain?.transaction_name || explain?.category || "Transaction"}

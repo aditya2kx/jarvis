@@ -7,7 +7,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
@@ -130,5 +130,13 @@
   }
   html {
     @apply font-sans;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
   }
+}
+
+/* Height of the phone bottom tab bar (components/shell/MobileTabBar.tsx), excluding the
+   home-indicator inset. Main content pads by this so the last row is never hidden. */
+:root {
+  --tabbar-h: 3.75rem;
 }

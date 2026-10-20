@@ -11,6 +11,7 @@ import { FEATURES } from "@/lib/config/features";
 import { isConsolePreview } from "@/lib/config/preview";
 import { storeDisplayName } from "@/lib/config/stores";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { InfoNote } from "@/components/shell/InfoNote";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
@@ -232,10 +233,7 @@ export default async function AccountingPage({
         }
       />
 
-      <div
-        role="note"
-        className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
-      >
+      <InfoNote summary="Bank feed vs Square sales">
         <p>
           <span className="font-medium text-foreground">Bank feed</span> (checking + card) drives
           money in / out / cash flow and the transaction ledger.{" "}
@@ -250,7 +248,7 @@ export default async function AccountingPage({
             This period Square net sales: {formatDollars(squareTotal)}
           </p>
         ) : null}
-      </div>
+      </InfoNote>
 
       {error ? (
         <p className="text-sm text-muted-foreground">

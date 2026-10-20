@@ -40,17 +40,15 @@ export default async function HomePage({
         title="Home"
         subtitle={`Your store at a glance · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
-          <div className="flex flex-wrap items-center gap-2">
-            <FilterSelect
-              label="Period"
-              param="range"
-              value={win.preset}
-              options={RANGE_PRESETS}
-              basePath="/home"
-            />
-            {FEATURES.writeGoals ? <GoalsDrawer current={goals} /> : null}
-          </div>
+          <FilterSelect
+            label="Period"
+            param="range"
+            value={win.preset}
+            options={RANGE_PRESETS}
+            basePath="/home"
+          />
         }
+        actions={FEATURES.writeGoals ? <GoalsDrawer current={goals} /> : null}
       />
 
       <p className="text-xs text-muted-foreground">

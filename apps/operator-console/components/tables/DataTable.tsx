@@ -10,8 +10,11 @@ import {
   type ReactNode,
 } from "react";
 import {
+  type Cell,
+  type Column,
   type ColumnDef,
   type ColumnFiltersState,
+  type Table as TanTable,
   type ColumnPinningState,
   type RowData,
   type SortingState,
@@ -27,6 +30,9 @@ import {
   ChevronsUpDownIcon,
   ChevronDownIcon,
   CheckIcon,
+  ArrowUpDownIcon,
+  LayoutListIcon,
+  Table2Icon,
 } from "lucide-react";
 import { Popover } from "@base-ui/react/popover";
 import {
@@ -39,6 +45,13 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
 import { parsePerkReasons } from "@/lib/payroll/perkLabels";
 import { classifyAdpDiff } from "@/lib/payroll/adpDiff";
@@ -422,6 +435,213 @@ export function MultiSelectFilter({
   );
 }
 
+function cellContent<TData>(cell: Cell<TData, unknown>): ReactNode {
+  const format = cell.column.columnDef.meta?.format;
+  return format
+    ? renderFormatted(format, cell.getValue(), cell.row.original as Record<string, unknown>)
+    : flexRender(cell.column.columnDef.cell, cell.getContext());
+}
+
+/** Plain-text column label; grouped columns read "Group · Column" so a card stays unambiguous. */
+function columnLabel<TData>(column: Column<TData, unknown>): string {
+  const own = column.columnDef.header;
+  const label = typeof own === "string" ? own : column.id;
+  const parent = column.parent?.columnDef.header;
+  return typeof parent === "string" && parent ? `${parent} · ${label}` : label;
+}
+
+function isBlank(value: unknown): boolean {
+  return value == null || value === "";
+}
+
+const PHONE_PAGE = 20;
+const CARD_FIELDS = 6;
+
+/**
+ * Phone-only (below md) controls: sort by any sortable column — headers aren't visible in
+ * card view — and a Cards/Table switch for when the operator wants the dense grid back.
+ */
+function PhoneToolbar<TData>({
+  table,
+  sorting,
+  setSorting,
+  view,
+  setView,
+}: {
+  table: TanTable<TData>;
+  sorting: SortingState;
+  setSorting: (next: SortingState) => void;
+  view: "cards" | "table";
+  setView: (next: "cards" | "table") => void;
+}) {
+  const sortable = table.getAllLeafColumns().filter((c) => c.getCanSort());
+  const items = [
+    { value: "", label: "Default order" },
+    ...sortable.map((c) => ({ value: c.id, label: columnLabel(c) })),
+  ];
+  const current = sorting[0];
+  return (
+    <div className="flex items-center gap-2 md:hidden" data-testid="data-table-phone-toolbar">
+      <Select
+        items={items}
+        value={current?.id ?? ""}
+        onValueChange={(id) =>
+          setSorting(id ? [{ id, desc: current?.id === id ? current.desc : false }] : [])
+        }
+      >
+        <SelectTrigger className="h-9 min-w-0 flex-1 text-sm" aria-label="Sort rows by">
+          <ArrowUpDownIcon className="size-3.5 text-muted-foreground" aria-hidden />
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {items.map((it) => (
+            <SelectItem key={it.value || "default"} value={it.value}>
+              {it.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <button
+        type="button"
+        disabled={!current}
+        onClick={() => current && setSorting([{ id: current.id, desc: !current.desc }])}
+        aria-label={current?.desc ? "Sorted descending — switch to ascending" : "Sorted ascending — switch to descending"}
+        className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-input text-muted-foreground transition-colors active:bg-muted disabled:opacity-40"
+      >
+        {current?.desc ? <ArrowDownIcon className="size-4" /> : <ArrowUpIcon className="size-4" />}
+      </button>
+      <div role="group" aria-label="Row layout" className="flex shrink-0 items-center rounded-lg bg-secondary p-0.5">
+        {(
+          [
+            ["cards", LayoutListIcon, "Cards"],
+            ["table", Table2Icon, "Table"],
+          ] as const
+        ).map(([value, Icon, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={view === value}
+            aria-label={`${label} layout`}
+            onClick={() => setView(value)}
+            className={cn(
+              "flex size-8 items-center justify-center rounded-md transition-colors",
+              view === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground",
+            )}
+          >
+            <Icon className="size-4" aria-hidden />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Phone row cards: the first column (or first pinned one) is the card title, the rest are
+ * label/value pairs in two columns. Long rows show the first few fields with a per-card
+ * expander, and the list pages in 20s so a 500-row ledger doesn't render at once.
+ */
+function PhoneCards<TData>({
+  table,
+  rowClassName,
+  filterHint,
+}: {
+  table: TanTable<TData>;
+  rowClassName: (row: TData) => string | undefined;
+  filterHint: boolean;
+}) {
+  const [limit, setLimit] = useState(PHONE_PAGE);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const rows = table.getRowModel().rows;
+  const shown = rows.slice(0, limit);
+
+  if (!rows.length) {
+    return (
+      <p className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground md:hidden">
+        No rows.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2 md:hidden" data-testid="data-table-cards">
+      {filterHint ? (
+        <p className="text-xs text-muted-foreground">Switch to Table layout to filter by column.</p>
+      ) : null}
+      <ul className="flex flex-col gap-2">
+        {shown.map((row) => {
+          const cells = row.getVisibleCells();
+          const pinned = cells.filter((c) => c.column.getIsPinned());
+          const [titleCell, subtitleCell] = pinned.length ? pinned : cells.slice(0, 1);
+          const rest = cells.filter(
+            (c) => c !== titleCell && c !== subtitleCell && !isBlank(c.getValue()),
+          );
+          const open = expanded.has(row.id);
+          const fields = open ? rest : rest.slice(0, CARD_FIELDS);
+          return (
+            <li
+              key={row.id}
+              className={cn(
+                "rounded-xl border border-border bg-card px-3.5 py-3 text-card-foreground",
+                rowClassName(row.original),
+              )}
+            >
+              {titleCell ? (
+                <div className="mb-2 flex items-baseline justify-between gap-3">
+                  <span className="min-w-0 break-words text-sm font-semibold">{cellContent(titleCell)}</span>
+                  {subtitleCell && !isBlank(subtitleCell.getValue()) ? (
+                    <span className="min-w-0 truncate text-right text-xs text-muted-foreground">
+                      {cellContent(subtitleCell)}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 border-t border-border/60 pt-2">
+                {fields.map((cell) => (
+                  <div
+                    key={cell.id}
+                    className={cn("flex min-w-0 flex-col", cell.column.columnDef.meta?.wrap && "col-span-2")}
+                  >
+                    <dt className="truncate text-[11px] text-muted-foreground">{columnLabel(cell.column)}</dt>
+                    <dd className="min-w-0 break-words text-sm tabular-nums">{cellContent(cell)}</dd>
+                  </div>
+                ))}
+              </dl>
+              {rest.length > CARD_FIELDS ? (
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  onClick={() =>
+                    setExpanded((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(row.id)) next.delete(row.id);
+                      else next.add(row.id);
+                      return next;
+                    })
+                  }
+                  className="mt-2 flex min-h-9 w-full items-center justify-center gap-1 rounded-lg text-xs font-medium text-muted-foreground transition-colors active:bg-muted"
+                >
+                  {open ? "Fewer fields" : `All ${rest.length} fields`}
+                  <ChevronDownIcon className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+                </button>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {rows.length > limit ? (
+        <button
+          type="button"
+          onClick={() => setLimit((n) => n + PHONE_PAGE)}
+          className="flex min-h-11 items-center justify-center rounded-xl border border-border text-sm font-medium transition-colors active:bg-muted"
+        >
+          Show {Math.min(PHONE_PAGE, rows.length - limit)} more · {rows.length - limit} left
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 // Thin TanStack wrapper. `pinLeft` mirrors Grafana panel 83's
 // `options.frozenColumns.left` — used by the M3 dual-date reco table to keep
 // Item/Current Qty/Avg per day visible while scrolling the date groups.
@@ -645,9 +865,10 @@ export function DataTable<TData>({
     const meta = c.meta as { wrap?: boolean; maxWidth?: number; width?: number } | undefined;
     return Boolean(meta?.maxWidth != null || meta?.width != null);
   });
+  const [phoneView, setPhoneView] = useState<"cards" | "table">("cards");
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2" data-testid="data-table">
       {enableColumnFilters ? (
         <p className="text-xs text-muted-foreground">
           Showing {filteredCount.toLocaleString()} of {data.length.toLocaleString()} transactions
@@ -666,7 +887,26 @@ export function DataTable<TData>({
           ) : null}
         </p>
       ) : null}
-      <div className="relative overflow-hidden rounded-md border border-border">
+      <PhoneToolbar
+        table={table}
+        sorting={sorting}
+        setSorting={setSorting}
+        view={phoneView}
+        setView={setPhoneView}
+      />
+      {phoneView === "cards" ? (
+        <PhoneCards
+          table={table}
+          rowClassName={rowClassName}
+          filterHint={enableColumnFilters}
+        />
+      ) : null}
+      <div
+        className={cn(
+          "relative overflow-hidden rounded-md border border-border",
+          phoneView === "cards" && "max-md:hidden",
+        )}
+      >
         <Table
           containerRef={containerRef}
           className={cn(useFixedLayout ? "table-fixed" : "min-w-max")}
@@ -757,7 +997,6 @@ export function DataTable<TData>({
               table.getRowModel().rows.map((row) => (
                 <TableRow key={row.id} className={rowClassName(row.original)}>
                   {row.getVisibleCells().map((cell) => {
-                    const format = cell.column.columnDef.meta?.format;
                     const meta = cell.column.columnDef.meta;
                     const pinned = cell.column.getIsPinned();
                     return (
@@ -775,13 +1014,7 @@ export function DataTable<TData>({
                           pinned && cell.column.id === lastPinnedId && "border-r border-border",
                         )}
                       >
-                        {format
-                          ? renderFormatted(
-                              format,
-                              cell.getValue(),
-                              cell.row.original as Record<string, unknown>,
-                            )
-                          : flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        {cellContent(cell)}
                       </TableCell>
                     );
                   })}

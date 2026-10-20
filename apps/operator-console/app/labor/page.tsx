@@ -51,6 +51,7 @@ import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
 import { AdpAvailabilityCard } from "@/components/labor/AdpAvailabilityCard";
 import type { ScheduledShift } from "@/lib/labor/unavailability";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { InfoNote } from "@/components/shell/InfoNote";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { FilterMultiSelect } from "@/components/filters/FilterMultiSelect";
 import { FilterPills } from "@/components/filters/FilterPills";
@@ -742,6 +743,10 @@ export default async function LaborPage({
                 ...personExtra,
               }}
             />
+          </>
+        }
+        actions={
+          <>
             <LaborWeeklyHoursGoal current={goalLaborHoursWeek} />
             <SyncAdpButton
               lastScrapedAt={hoursScrapedAt}
@@ -756,10 +761,7 @@ export default async function LaborPage({
 
       <PunchFixesNotInHoursNotice rows={fixesNotInHours} />
 
-      <div
-        role="note"
-        className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
-      >
+      <InfoNote summary="How to read these charts">
         <p>
           <span className="font-medium text-foreground">Actual</span> (solid colors) =
           ADP clocked hours, through the last day they have been ingested for.{" "}
@@ -811,7 +813,7 @@ export default async function LaborPage({
           their hours by the page&apos;s Aggregation, on the same axis and handoff as
           the Hours chart.
         </p>
-      </div>
+      </InfoNote>
 
       {error ? (
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>

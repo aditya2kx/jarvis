@@ -1,8 +1,9 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { Topbar } from "@/components/shell/Topbar";
+import { MobileTabBar } from "@/components/shell/MobileTabBar";
 import { HealthBanner } from "@/components/shell/HealthBanner";
 import { IapLoginBeacon } from "@/components/shell/IapLoginBeacon";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -21,6 +22,25 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Palmetto, Texas — Operator Console",
   description: "Operator console — replaces the Grafana dashboard.",
+  applicationName: "Operator Console",
+  appleWebApp: {
+    capable: true,
+    title: "Palmetto",
+    statusBarStyle: "black-translucent",
+  },
+  formatDetection: { telephone: false },
+};
+
+// viewport-fit=cover lets the shell paint under the notch / home indicator; Topbar and
+// MobileTabBar pad by env(safe-area-inset-*) so nothing interactive sits there.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+  ],
 };
 
 export default function RootLayout({
@@ -46,14 +66,17 @@ export default function RootLayout({
         <TooltipProvider>
           <ActionToastProvider>
             <IapLoginBeacon />
-            <div className="flex h-screen overflow-hidden">
+            <div className="flex h-dvh overflow-hidden">
               <Sidebar />
-              <div className="flex flex-1 flex-col overflow-hidden">
+              <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                 <Topbar />
                 <HealthBanner />
-                <main className="flex-1 overflow-y-auto p-4 md:p-6">{children}</main>
+                <main className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+1.5rem)] md:p-6">
+                  {children}
+                </main>
               </div>
             </div>
+            <MobileTabBar />
           </ActionToastProvider>
         </TooltipProvider>
       </body>

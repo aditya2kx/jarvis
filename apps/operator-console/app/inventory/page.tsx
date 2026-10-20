@@ -171,17 +171,19 @@ export default async function InventoryPage({
                 committed={win.preset === "custom"}
               />
             ) : null}
-            {FEATURES.writeRestock ? (
-              <>
-                <CapacityEdit currentMaxTubs={maxTubs} />
-                <RestockImportDrawer
-                  dates={liveDates.length ? liveDates : dates}
-                  scheduledDates={scheduledDates}
-                  estimateByDate={estimateByDate}
-                />
-              </>
-            ) : null}
           </>
+        }
+        actions={
+          FEATURES.writeRestock ? (
+            <>
+              <CapacityEdit currentMaxTubs={maxTubs} />
+              <RestockImportDrawer
+                dates={liveDates.length ? liveDates : dates}
+                scheduledDates={scheduledDates}
+                estimateByDate={estimateByDate}
+              />
+            </>
+          ) : null
         }
       />
 

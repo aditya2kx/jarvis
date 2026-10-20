@@ -159,6 +159,14 @@
   select:not([aria-hidden="true"]) {
     min-height: 2.75rem;
   }
+  input[type="number"] {
+    appearance: textfield;
+  }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
+  }
   input[type="checkbox"]:not([aria-hidden="true"]),
   input[type="radio"]:not([aria-hidden="true"]) {
     width: 1.25rem;

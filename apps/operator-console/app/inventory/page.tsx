@@ -29,6 +29,7 @@ import {
 import { RANGE_PRESETS, wantsCustom } from "@/lib/filters/range";
 import { resolvePageRange } from "@/lib/filters/period";
 import { ACTIVE_BASES, type RestockRow } from "@/lib/restock/parse";
+import { InfoNote } from "@/components/shell/InfoNote";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
 import { CapacityEdit } from "@/components/drawers/CapacityEdit";
@@ -200,7 +201,7 @@ export default async function InventoryPage({
               count back from, so those columns appear once one is registered.
             </p>
           ) : (
-            <p className="text-xs text-muted-foreground">
+            <InfoNote summary="How the order numbers work">
               Days left = Current Qty ÷ Avg/day — how long this base lasts with no restocking
               at all. Days left after is the same figure counted from a delivery, assuming
               that order arrives. Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs;
@@ -210,7 +211,7 @@ export default async function InventoryPage({
               dates pin Manual values; Actuals dates update uploaded Actuals. Capacity is a
               hard cap per delivery: pinning more tubs on one base leaves fewer for the
               Estimated bases on that date. Apply once recomputes the recommendation.
-            </p>
+            </InfoNote>
           )}
           <OrderRecoTable
             dates={dates}

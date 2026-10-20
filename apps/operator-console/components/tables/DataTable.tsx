@@ -878,7 +878,7 @@ export function DataTable<TData>({
   const lastPinnedId = pins[pins.length - 1];
   const pinnedClass = (id: string) =>
     cn(
-      "sticky bg-background max-md:max-w-[40vw]",
+      "sticky bg-(--table-bg) max-md:max-w-[40vw]",
       id === lastPinnedId && "border-r border-border",
       id === lastPinnedId && !atStart && "shadow-[6px_0_8px_-6px_rgb(0_0_0/0.35)]",
     );
@@ -889,7 +889,12 @@ export function DataTable<TData>({
   const [phoneView, setPhoneView] = useState<"cards" | "table">("table");
 
   return (
-    <div className="flex flex-col gap-2" data-testid="data-table">
+    // Frozen cells and the sticky header need an opaque fill that matches what's behind the
+    // table — the page, or the card it usually sits in.
+    <div
+      className="flex flex-col gap-2 [--table-bg:var(--background)] in-data-[slot=card]:[--table-bg:var(--card)]"
+      data-testid="data-table"
+    >
       {enableColumnFilters ? (
         <p className="text-xs text-muted-foreground">
           Showing {filteredCount.toLocaleString()} of {data.length.toLocaleString()} transactions
@@ -955,7 +960,7 @@ export function DataTable<TData>({
                         ...columnLayoutStyle(meta),
                       }}
                       className={cn(
-                        "sticky top-0 z-20 bg-background align-top max-md:px-2",
+                        "sticky top-0 z-20 bg-(--table-bg) align-top max-md:px-2",
                         meta?.wrap && "whitespace-normal",
                         pinned && cn(pinnedClass(header.column.id), "z-30"),
                       )}
@@ -1002,7 +1007,7 @@ export function DataTable<TData>({
                               onClick={(e) => e.stopPropagation()}
                               placeholder="Filter…"
                               data-compact
-                              className="h-7 w-full min-w-0 px-2 text-xs font-normal max-md:h-9 max-md:min-w-24"
+                              className="h-7 w-full min-w-0 px-2 text-xs font-normal max-md:h-9"
                               aria-label={`Filter ${String(header.column.columnDef.header)}`}
                             />
                           )

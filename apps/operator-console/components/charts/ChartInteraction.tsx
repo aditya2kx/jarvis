@@ -38,7 +38,12 @@ export function SeriesToggles({
   if (items.length < 2) return null;
   const visible = items.length - items.filter((i) => hidden.has(i.key)).length;
   return (
-    <div role="group" aria-label="Show or hide series" className="flex flex-wrap gap-1.5" data-testid="series-toggles">
+    <div
+      role="group"
+      aria-label="Show or hide series"
+      className="flex flex-wrap gap-1.5 max-md:-mx-1 max-md:flex-nowrap max-md:overflow-x-auto max-md:px-1 max-md:[scrollbar-width:none] max-md:[&>*]:shrink-0"
+      data-testid="series-toggles"
+    >
       {items.map((item) => {
         const on = !hidden.has(item.key);
         return (

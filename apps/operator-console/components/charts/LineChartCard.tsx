@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useIsPhone } from "@/components/shell/useIsPhone";
+import { LABOR_CHART_COLORS, seriesColorAt } from "@/lib/charts/palette";
 import {
   FloatingReadout,
   ReadoutSlot,
@@ -59,8 +60,10 @@ function formatTick(value: number, format: LineValueFormat): string {
     return `${Math.round(n)}`;
   }
   const n = Number(value);
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
-  return `$${n.toFixed(0)}`;
+  const sign = n < 0 ? "−" : "";
+  const abs = Math.abs(n);
+  if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(abs % 1000 === 0 ? 0 : 1)}k`;
+  return `${sign}$${abs.toFixed(0)}`;
 }
 
 function formatPct(value: unknown): string {
@@ -73,7 +76,7 @@ function formatPct(value: unknown): string {
 }
 
 function lineColor(s: Series, i: number): string {
-  return s.color ?? `var(--chart-${(i % 5) + 1})`;
+  return s.color ?? seriesColorAt(i);
 }
 
 /** Visible series at one x; Compare rows also carry `prior_bucket` and a `pct_*` change. */
@@ -141,9 +144,9 @@ export function LineChartCard({
   return (
     <Card>
       <CardHeader className="gap-1">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        <CardTitle className="text-sm font-semibold">{title}</CardTitle>
         {subtitle ? (
-          <p className="text-xs text-muted-foreground/80">{subtitle}</p>
+          <p className="text-xs text-muted-foreground">{subtitle}</p>
         ) : null}
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -160,11 +163,13 @@ export function LineChartCard({
             data={data}
             margin={{ top: 8, right: hasRight ? 8 : 12, left: -12, bottom: 0 }}
           >
-            <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-            <XAxis dataKey={xKey} tick={{ fontSize: 12 }} />
+            <CartesianGrid vertical={false} className="stroke-border/70" />
+            <XAxis dataKey={xKey} tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
             <YAxis
               yAxisId="left"
               tick={{ fontSize: 12 }}
+              tickLine={false}
+              axisLine={false}
               tickFormatter={
                 valueFormat
                   ? (v) => formatTick(Number(v), valueFormat)
@@ -176,6 +181,8 @@ export function LineChartCard({
                 yAxisId="right"
                 orientation="right"
                 tick={{ fontSize: 12 }}
+                tickLine={false}
+                axisLine={false}
                 tickFormatter={(v) => `${v}%`}
                 width={48}
               />
@@ -215,9 +222,10 @@ export function LineChartCard({
               <ReferenceLine
                 yAxisId="left"
                 y={goal}
-                stroke="var(--destructive)"
+                stroke={LABOR_CHART_COLORS.goalLine}
                 strokeDasharray="4 4"
-                label={{ value: goalLabel ?? "Goal", position: "insideTopRight", fontSize: 11 }}
+                strokeWidth={1.5}
+                label={{ value: goalLabel ?? "Goal", position: "insideTopRight", fontSize: 11, fill: LABOR_CHART_COLORS.goalLine }}
               />
             ) : null}
           </LineChart>

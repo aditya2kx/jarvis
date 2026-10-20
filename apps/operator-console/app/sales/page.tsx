@@ -22,6 +22,7 @@ import {
   GRAINS,
   enumerateBucketStarts,
   formatBucket,
+  grainDisplayLabel,
   grainTitleLabel,
   priorWindow,
   wantsCustom,
@@ -222,6 +223,10 @@ export default async function SalesPage({
 
   const grainLabel = grainTitleLabel(grain);
   const statPrefix = showStat && stat === "avg" ? "Average " : showStat ? "Total " : "";
+  const grainNoun = grainDisplayLabel(grain);
+  /** "Net sales by day", "Average orders by weekday". */
+  const chartTitle = (metric: string) =>
+    `${statPrefix}${statPrefix ? metric.toLowerCase() : metric} by ${grainNoun}`;
   const statSubtitle =
     showStat && stat === "avg"
       ? grain === "hour"
@@ -392,7 +397,7 @@ export default async function SalesPage({
           {mode === "composition" ? (
             <>
               <BarChartCard
-                title={`${statPrefix}Net sales by ${grainLabel}`}
+                title={chartTitle("Net sales")}
                 subtitle={statSubtitle}
                 data={netChart.data}
                 xKey="date"
@@ -400,10 +405,10 @@ export default async function SalesPage({
                 stacked={breakdown && netChart.series.length > 1}
                 valueFormat="dollars"
                 goal={showGoal ? goalWeekly : undefined}
-                goalLabel={showGoal ? "Weekly goal / 7" : undefined}
+                goalLabel={showGoal ? "Daily goal" : undefined}
               />
               <BarChartCard
-                title={`${statPrefix}Orders by ${grainLabel}`}
+                title={chartTitle("Orders")}
                 subtitle={statSubtitle}
                 data={ordersChart.data}
                 xKey="date"
@@ -412,7 +417,7 @@ export default async function SalesPage({
                 valueFormat="number"
               />
               <BarChartCard
-                title={`${statPrefix}Items sold by ${grainLabel}`}
+                title={chartTitle("Items sold")}
                 subtitle={statSubtitle}
                 data={itemsChart.data}
                 xKey="date"
@@ -424,7 +429,7 @@ export default async function SalesPage({
           ) : (
             <>
               <LineChartCard
-                title={`${statPrefix}Net sales by ${grainLabel}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
+                title={`${chartTitle("Net sales")}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
                 subtitle={[statSubtitle, priorSubtitle].filter(Boolean).join(" · ") || undefined}
                 data={netChart.data}
                 xKey="date"
@@ -432,7 +437,7 @@ export default async function SalesPage({
                 valueFormat="dollars"
               />
               <LineChartCard
-                title={`${statPrefix}Orders by ${grainLabel}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
+                title={`${chartTitle("Orders")}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
                 subtitle={[statSubtitle, priorSubtitle].filter(Boolean).join(" · ") || undefined}
                 data={ordersChart.data}
                 xKey="date"
@@ -440,7 +445,7 @@ export default async function SalesPage({
                 valueFormat="number"
               />
               <LineChartCard
-                title={`${statPrefix}Items sold by ${grainLabel}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
+                title={`${chartTitle("Items sold")}${compareOn ? ` vs ${compareLabel.toLowerCase()}` : ""}`}
                 subtitle={[statSubtitle, priorSubtitle].filter(Boolean).join(" · ") || undefined}
                 data={itemsChart.data}
                 xKey="date"
@@ -451,7 +456,7 @@ export default async function SalesPage({
           )}
 
           <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+            <h2 className="mb-2 text-sm font-semibold text-foreground">
               {statPrefix}
               {grainLabel} detail
               {detailSuffix}

@@ -14,7 +14,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { Series } from "./LineChartCard";
-import { chartColorAt } from "@/lib/charts/palette";
+import { LABOR_CHART_COLORS, seriesColorAt } from "@/lib/charts/palette";
 import { useIsPhone } from "@/components/shell/useIsPhone";
 import {
   FloatingReadout,
@@ -47,8 +47,10 @@ function formatTick(value: number, format: BarValueFormat): string {
     return Number.isInteger(n) ? `${n}` : n.toFixed(1);
   }
   const n = Number(value);
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
-  return `$${n.toFixed(0)}`;
+  const sign = n < 0 ? "−" : "";
+  const abs = Math.abs(n);
+  if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(abs % 1000 === 0 ? 0 : 1)}k`;
+  return `${sign}$${abs.toFixed(0)}`;
 }
 
 function formatTooltipValue(value: unknown, format: BarValueFormat): string {
@@ -142,7 +144,7 @@ export function BarChartCard({
   series,
   goal,
   goalLabel,
-  goalStroke = "var(--destructive)",
+  goalStroke = LABOR_CHART_COLORS.goalLine,
   height = 260,
   stacked = false,
   subtitle,
@@ -174,7 +176,7 @@ export function BarChartCard({
   const hatched = series.filter((s) => s.pattern === "hatch");
   const { hidden, toggle } = useHiddenSeries();
   const [readoutEl, setReadoutEl] = useState<HTMLDivElement | null>(null);
-  const baseColor = (s: Series) => s.color ?? chartColorAt(series.indexOf(s));
+  const baseColor = (s: Series) => s.color ?? seriesColorAt(series.indexOf(s));
   const colorOf = (s: Series, row: Record<string, unknown>) =>
     signedValueColors?.dataKey === s.key ? signedFill(row[s.key], signedValueColors) : baseColor(s);
   const visible = series.filter((s) => !hidden.has(s.key));
@@ -184,7 +186,7 @@ export function BarChartCard({
     <Card>
       <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-2 space-y-0">
         <div className="flex flex-col gap-1">
-          <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+          <CardTitle className="text-sm font-semibold">{title}</CardTitle>
           {subtitle ? (
             <p className="text-xs text-muted-foreground">{subtitle}</p>
           ) : null}
@@ -206,7 +208,7 @@ export function BarChartCard({
             {hatched.length ? (
               <defs>
                 {hatched.map((s) => {
-                  const color = s.color ?? chartColorAt(series.indexOf(s));
+                  const color = s.color ?? seriesColorAt(series.indexOf(s));
                   return (
                     <pattern
                       key={s.key}
@@ -223,10 +225,12 @@ export function BarChartCard({
                 })}
               </defs>
             ) : null}
-            <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+            <CartesianGrid vertical={false} className="stroke-border/70" />
             <XAxis
               dataKey={xKey}
               tick={multilineX ? <MultilineXTick /> : { fontSize: 12 }}
+              tickLine={false}
+              axisLine={false}
               height={multilineX ? 36 : undefined}
               interval={multilineX ? (phone ? "preserveStartEnd" : 0) : undefined}
               minTickGap={multilineX ? (phone ? 6 : 0) : undefined}
@@ -235,6 +239,8 @@ export function BarChartCard({
               tick={{ fontSize: 12 }}
               tickFormatter={(v) => formatTick(Number(v), valueFormat)}
               width={52}
+              tickLine={false}
+              axisLine={false}
             />
             <Tooltip
               content={({ active, label, payload }) =>
@@ -274,7 +280,7 @@ export function BarChartCard({
                   stroke={hatch || outline ? color : undefined}
                   strokeWidth={hatch ? 1 : outline ? 1.5 : undefined}
                   strokeDasharray={hatch ? "3 2" : outline ? "4 3" : undefined}
-                  radius={stackId && i < series.length - 1 ? 0 : 2}
+                  radius={stackId && i < series.length - 1 ? 0 : [3, 3, 0, 0]}
                   stackId={stackId}
                 >
                   {useSigned

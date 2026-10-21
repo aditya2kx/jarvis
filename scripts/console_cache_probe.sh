@@ -21,7 +21,7 @@ committed=$(date +%s.%N)
 while :; do
   now=$(version)
   if [ "$now" != "$before" ]; then
-    python3 -c "import sys; s,c,e=map(float,sys.argv[1:]); print(f'probe: version {sys.argv[4]} -> {sys.argv[5]}; insert took {c-s:.1f}s; bump landed {e-c:.1f}s after commit')" \
+    python3 -c "import sys; s,c,e=map(float,sys.argv[1:4]); print(f'probe: version {sys.argv[4]} -> {sys.argv[5]}; insert took {c-s:.1f}s; bump landed {e-c:.1f}s after commit')" \
       "$start" "$committed" "$(date +%s.%N)" "$before" "$now"
     exit 0
   fi

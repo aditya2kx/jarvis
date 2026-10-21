@@ -5,7 +5,7 @@
 # gateway secrets. Run from an owner ADC surface (Cloud Shell / laptop):
 #   bash scripts/provision_cloud_agent_identity.sh
 # Trust is limited to Cloud Agents owned by the operator's Cursor user on aditya2kx/jarvis. The SA
-# holds secretAccessor on github-bot-pat only; previews add it to their IAP list
+# holds secretAccessor on github-bot-pat and slack-bot-token (operator_ping.py) only; previews add it to their IAP list
 # (operator-console-preview.yml) — never prod. docs/contributing/gcp-access.md recipe F.
 set -euo pipefail
 
@@ -58,6 +58,8 @@ bind jarvis-dev-gateway-token "$DEPLOY_SA" roles/secretmanager.secretAccessor
 bind github-bot-pat "$DEPLOY_SA" roles/secretmanager.secretAccessor
 bind github-bot-pat "$DEPLOY_SA" roles/secretmanager.secretVersionAdder
 bind github-bot-pat "serviceAccount:$AGENT_SA" roles/secretmanager.secretAccessor
+# scripts/operator_ping.py: Slack DM the operator for a 2-Step tap / code / click (Hard Lesson #7).
+bind slack-bot-token "serviceAccount:$AGENT_SA" roles/secretmanager.secretAccessor
 
 echo "cloud-agent identity: pool=$POOL provider=$PROVIDER aud=$AUD"
 echo "cloud-agent identity: $PRINCIPALS → $AGENT_SA (secretAccessor on github-bot-pat)"

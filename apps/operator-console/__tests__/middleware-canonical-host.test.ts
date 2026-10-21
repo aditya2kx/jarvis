@@ -33,3 +33,17 @@ describe("middleware host policy (Issue #208 — no cross-host bounce)", () => {
     spy.mockRestore();
   });
 });
+
+describe("middleware ?cache= switch", () => {
+  it("forwards ?cache=off|verify as the x-console-cache request header", () => {
+    for (const mode of ["off", "verify"]) {
+      const res = middleware(new NextRequest(`https://${CANONICAL_CONSOLE_HOST}/payroll?cache=${mode}`));
+      expect(res.headers.get("x-middleware-request-x-console-cache")).toBe(mode);
+    }
+  });
+
+  it("ignores other values", () => {
+    const res = middleware(new NextRequest(`https://${CANONICAL_CONSOLE_HOST}/payroll?cache=nope`));
+    expect(res.headers.get("x-middleware-request-x-console-cache")).toBeNull();
+  });
+});

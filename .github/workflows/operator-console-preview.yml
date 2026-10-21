@@ -134,6 +134,13 @@ jobs:
           bq query --project_id "$PROJECT_ID" --use_legacy_sql=false --quiet \
             "ALTER TABLE \`$PROJECT_ID.bhaga.$ACCESS_TABLE\` SET OPTIONS (expiration_timestamp = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 7 DAY))" >/dev/null
           echo "preview: access sandbox table $ACCESS_TABLE"
+          # The query cache is only safe while the audit-log feed bumps versions
+          # (scripts/provision_console_cache.sh); a preview without it reads BigQuery live.
+          QUERY_CACHE=off
+          if gcloud pubsub subscriptions describe console-cache-versions --project "$PROJECT_ID" >/dev/null 2>&1; then
+            QUERY_CACHE=on
+          fi
+          echo "preview: CONSOLE_QUERY_CACHE=$QUERY_CACHE"
           # Owners as prod, plus the Cursor Cloud Agent identity so agents can capture Access-page evidence.
           gcloud run deploy "$SERVICE" \
             --image "$IMAGE" \
@@ -142,7 +149,7 @@ jobs:
             --no-allow-unauthenticated --iap \
             --memory 512Mi --min-instances 0 --max-instances 1 \
             --labels "$LABELS" \
-            --set-env-vars "^|^BQ_PROJECT=$PROJECT_ID|BQ_DATASET=bhaga|CONSOLE_PREVIEW=1|IAP_SERVICE_NAME=$SERVICE|CONSOLE_ACCESS_TABLE=$ACCESS_TABLE|CONSOLE_OWNER_EMAILS=adi@mypalmetto.co,aditya.2ky@gmail.com,$AGENT_SA"
+            --set-env-vars "^|^BQ_PROJECT=$PROJECT_ID|BQ_DATASET=bhaga|CONSOLE_PREVIEW=1|CONSOLE_QUERY_CACHE=$QUERY_CACHE|IAP_SERVICE_NAME=$SERVICE|CONSOLE_ACCESS_TABLE=$ACCESS_TABLE|CONSOLE_OWNER_EMAILS=adi@mypalmetto.co,aditya.2ky@gmail.com,$AGENT_SA"
 
       # Same Google sign-in and allowlist as prod: IAP's service agent may invoke
       # the service, and the IAP accessor policy is copied from prod each deploy, plus

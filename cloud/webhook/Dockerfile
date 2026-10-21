@@ -7,6 +7,7 @@ COPY cloud/webhook/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY cloud/webhook/handler.py .
+COPY cloud/webhook/cache_versions.py .
 COPY skills/__init__.py ./skills/__init__.py
 COPY skills/plaid_api ./skills/plaid_api
 # Team pulse (Issue #216 / #223): handler imports agents.bhaga.scripts.team_pulse.

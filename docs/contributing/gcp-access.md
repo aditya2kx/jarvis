@@ -147,6 +147,7 @@ no project roles — only per-resource grants:
 | Grant | Use |
 |---|---|
 | `secretAccessor` on `github-bot-pat` | `cloud_git_identity.sh`: git + `gh` as `jarvis-agent-bot328` |
+| `secretAccessor` on `slack-bot-token` | `operator_ping.py`: Slack DM the operator for a 2-Step tap / code / click |
 | `iap.httpsResourceAccessor` on each **preview** (`operator-console-preview.yml`) | `console_preview.py`: open / screenshot a PR or `preview/**` branch preview with an ID token — never prod |
 
 One-time, idempotent, from an owner ADC surface (an agent can drive Cloud Shell, signing in with
@@ -158,7 +159,8 @@ bash scripts/provision_cloud_agent_identity.sh   # also creates the jarvis-dev g
 
 Provisioned 2026-10-11 (Cloud Shell as `aditya.2ky@gmail.com`, vault item `Google (aditya.2ky)`;
 `adi@mypalmetto.co` has no IAM on the project). Until that item carries an authenticator code, the
-sign-in stops at Google's 2-Step phone prompt. The script only creates `github-bot-pat` empty; its
+sign-in stops at Google's 2-Step phone prompt — pick "Tap Yes" (or SMS) and DM the operator with
+`scripts/operator_ping.py` (the SA can read `slack-bot-token` for exactly this). The script only creates `github-bot-pat` empty; its
 value is `ADMIN_PAT`, copied by `jarvis-dev-gateway-deploy.yml` (PR self-test or main deploy) — a
 fresh project needs one such run before `cloud_git_identity.sh` finds a token.
 

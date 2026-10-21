@@ -50,8 +50,14 @@ import time
 import urllib.request
 from typing import Callable, Optional
 
+try:  # the container runs handler.py top-level; sandbox_refresh_driver imports cloud.webhook.handler
+    import cache_versions
+except ImportError:
+    from cloud.webhook import cache_versions
 from flask import Flask, Response, jsonify, request
+from google.auth.transport import requests as google_requests
 from google.cloud import firestore
+from google.oauth2 import id_token
 
 # ---------------------------------------------------------------------------
 # Configuration — all from env vars (set by Cloud Run / Secret Manager)
@@ -1873,6 +1879,55 @@ def plaid_sync_kick():
         return Response("unauthorized", status=403)
     _dispatch_async(_plaid_sync_all_items)
     return jsonify({"status": "accepted"})
+
+
+# ---------------------------------------------------------------------------
+# Operator Console query cache — BigQuery audit log → version bumps
+# (docs/operator-console/ARCHITECTURE.md §15, RUNBOOK §17)
+# ---------------------------------------------------------------------------
+
+_CACHE_PUSH_AUDIENCE = os.environ.get("CACHE_PUSH_AUDIENCE", "")
+_CACHE_PUSH_SA = os.environ.get("CACHE_PUSH_SA", "")
+_CACHE_BQ_DATASET = os.environ.get("CACHE_BQ_DATASET", "bhaga")
+
+
+def _pubsub_push_authorized() -> bool:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    try:
+        claims = id_token.verify_oauth2_token(
+            auth[len("Bearer "):], google_requests.Request(), audience=_CACHE_PUSH_AUDIENCE
+        )
+    except ValueError:
+        return False
+    return claims.get("email") == _CACHE_PUSH_SA and bool(claims.get("email_verified"))
+
+
+@app.route("/cache/bq-write", methods=["POST"])
+def cache_bq_write():
+    """Pub/Sub push of one BigQuery audit-log entry → bump console cache versions.
+
+    Fail-closed: unconfigured → 503 (Pub/Sub retries, nothing is silently dropped);
+    a bad token → 403. A malformed or out-of-dataset entry is acked with a log line —
+    retrying it can never succeed.
+    """
+    if not _CACHE_PUSH_AUDIENCE or not _CACHE_PUSH_SA or db is None:
+        log.error("console_cache_push_unconfigured audience=%s sa=%s db=%s",
+                  bool(_CACHE_PUSH_AUDIENCE), bool(_CACHE_PUSH_SA), db is not None)
+        return Response("unconfigured", status=503)
+    if not _pubsub_push_authorized():
+        return Response("forbidden", status=403)
+    entry = cache_versions.decode_push(request.get_json(force=True, silent=True) or {})
+    if entry is None:
+        log.warning("console_cache_push_malformed")
+        return Response(status=204)
+    docs = cache_versions.docs_to_bump(entry, _BQ_PROJECT, _CACHE_BQ_DATASET)
+    if docs:
+        cache_versions.bump(db, docs, source="audit-log", firestore_module=firestore)
+        log.info("console_cache_bump docs=%s resource=%s", ",".join(docs),
+                 (entry.get("protoPayload") or {}).get("resourceName"))
+    return Response(status=204)
 
 
 # ---------------------------------------------------------------------------

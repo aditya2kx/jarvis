@@ -2510,6 +2510,31 @@ The payroll Tip Exemptions **Update** button is disabled while a `bhaga-daily-re
 live (`hasRunningBhagaJob()` at render), since applying exemptions queues a model recompute that the
 server would refuse anyway.
 
+### Query cache (2026-10)
+
+Page renders read BigQuery through one shared read-through cache in Firestore
+(`apps/operator-console/lib/bq/cache/`, design in `docs/operator-console/ARCHITECTURE.md` §15).
+A cached result is addressed by a version counter for every table and view the query reads.
+**Any** write to `bhaga` — nightly, Slack, console, a manual `bq` fix, a future webhook — moves
+those counters: the console's own writes before the save returns, everyone else's via the
+BigQuery audit log → log sink `bhaga-bq-writes` → Pub/Sub subscription `console-cache-versions`
+→ `bhaga-webhook` `POST /cache/bq-write` (OIDC as `console-cache-push@`), within seconds.
+Server actions (status polls, writes) always read live.
+
+| Need | Do |
+|---|---|
+| Is it serving? | `GET /api/cache-stats` (IAP-signed-in): hit/miss counts, recent reads (query id, ms, tables — no row data), store state |
+| Is the change feed alive? | Firestore `console_cache_meta/audit_feed.last_event_at` (last push); `console_cache_versions/<table>.source` (`audit-log` / `console`); webhook logs `console_cache_bump docs=<…>` |
+| Prove an outside write lands | `bash scripts/console_cache_probe.sh` (Cloud Shell): `bq` INSERT into `bhaga.console_cache_probe`, prints how long until `console_cache_versions/console_cache_probe` moves; then `GET /api/cache-probe` on the console shows the new row |
+| Prove cached == live | `?cache=verify` on any page → `verify-match` / `verify-diff` in `/api/cache-stats`; a diff also logs `console_cache_verify-diff sql=<id> tables=<…>` |
+| Time a page without it | `?cache=off`; previews: `python3 apps/operator-console/scripts/cache_benchmark.py --branch preview/<name>` (or `--pr N`) |
+| Turn it off / on | Opt-in: reads go to BigQuery unless `CONSOLE_QUERY_CACHE=on`. `gcloud run services update operator-console --region us-central1 --update-env-vars CONSOLE_QUERY_CACHE=off` (config change, no deploy; `=on` to restore). Only set `on` while the feed is live — `provision_console_cache.sh prod` does it after a probe bump; previews turn it on only when subscription `console-cache-versions` exists |
+| Provision / repoint the feed | `bash scripts/provision_console_cache.sh prod` from Cloud Shell (idempotent: topic, sink + publisher grant, push SA, subscription, Firestore TTL on `console_query_cache_entries.expire_at`, `datastore.user` for the console SA, `CACHE_PUSH_*` env on bhaga-webhook). `sandbox` mode builds a private `bhaga-webhook-cachepv` from the checkout for pre-merge proof; `prod` deletes it, runs `console_cache_probe.sh` and, only if the bump lands, sets `CONSOLE_QUERY_CACHE=on` on operator-console |
+
+Breadcrumbs: `console_cache_store_unavailable op=<…>` (Firestore down → reads go to BigQuery for
+60 s, never stale), `console_cache_error`, `console_cache_push_unconfigured` (webhook returns 503 so
+Pub/Sub keeps the message), `console_cache_push_malformed`.
+
 Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
 + decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).
 App-level dev loop: [`apps/operator-console/README.md`](apps/operator-console/README.md).

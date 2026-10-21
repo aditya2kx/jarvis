@@ -71,7 +71,7 @@ Grafana panel 83's `frozenColumns.left = 3`).
 | Concern | Choice | Notes |
 |---|---|---|
 | Warehouse client | **`@google-cloud/bigquery`** (server-only) | Parameterized queries; ADC on Cloud Run |
-| Reads | RSC, `export const dynamic = "force-dynamic"` | Not `revalidate` — Next's Full Route Cache would serve a cached render at the CDN edge to a *new* unauthenticated caller even after Cloud Run's IAM check passed for the original request, bypassing auth for that path (found 2026-07-05 while re-locking the preview: `/home` kept returning cached 200s after IAM was re-enabled). Views still refresh nightly; the per-request BQ read is cheap enough that always-dynamic has no material cost here. |
+| Reads | RSC, `export const dynamic = "force-dynamic"`; query results (not routes) cached by `lib/bq/cache` (§15) | Not `revalidate` — Next's Full Route Cache would serve a cached render at the CDN edge to a *new* unauthenticated caller even after Cloud Run's IAM check passed for the original request, bypassing auth for that path (found 2026-07-05 while re-locking the preview: `/home` kept returning cached 200s after IAM was re-enabled). Views still refresh nightly; the per-request BQ read is cheap enough that always-dynamic has no material cost here. |
 | Client interactivity | **TanStack Query** (only where needed) | Most screens are static RSC |
 | Writes | **Next.js server actions** → BQ MERGE | Same contracts as `handler.py` |
 | Auth | **Cloud Run direct IAP** (`--no-allow-unauthenticated --iap`, custom External OAuth client) | Reverses the 2026-07-04 "no IAP" pivot: that pivot hit the Google-managed brand flow, which needs a Workspace org; a custom **External** OAuth client (Console-only, one-time) works without one — see PLAN.md decisions log 2026-07-05. Browser-native Google sign-in; access is `roles/iap.httpsResourceAccessor` IAM, no app-level allowlist |
@@ -578,3 +578,54 @@ same contract as Sales).
 
 Legacy spike notes for ADP schedule / burden: `docs/operator-console/adp-forward-labor-spike.md`.
 
+
+## 15. Query cache (one shared layer, table-versioned)
+
+Each page view used to run 10–30 BigQuery jobs, and BigQuery charges ~0.5–2 s of fixed
+overhead per job however small the data. `q()` (`lib/bq/client.ts`) now reads through
+`lib/bq/cache/`; writes (`mutate`, `submitQuery`, any non-SELECT `q()`) are unchanged.
+Routes stay `force-dynamic`, so IAP still checks every request — only query *results* are cached.
+
+There is **one** cache layer, in Firestore, shared by every console instance: no per-instance
+memory, so two people (or two Cloud Run instances) never see different numbers.
+
+```mermaid
+flowchart LR
+  R[Page render q()] --> K{key = SQL + params\n+ version of every table/view read\n+ ~schema + UTC hour}
+  K -->|hit| FS[(Firestore console_query_cache)]
+  K -->|miss| BQ[(BigQuery)] --> FS
+  W[Any writer: nightly · Slack · console · bq CLI · future webhooks] --> BQ
+  BQ -->|audit log| SINK[log sink bhaga-bq-writes] --> PS[Pub/Sub] -->|OIDC push| WH[bhaga-webhook /cache/bq-write]
+  WH -->|v += 1| V[(Firestore console_cache_versions)]
+  C[console mutate()] -->|v += 1, before returning| V
+  V --> K
+```
+
+- **Versions, not deletes.** `console_cache_versions/{table}` `{v, updated_at, source}` holds a
+  counter per table; `~schema` moves on any table/view/routine (re)definition. Every committed
+  write to the `bhaga` dataset — whoever makes it — lands in BigQuery's data-access audit log
+  (always on), which the sink forwards to Pub/Sub and `cloud/webhook/cache_versions.py` turns
+  into atomic increments. A bump changes every key that read the table; the old entry is never
+  addressed again and expires by Firestore TTL (`expire_at`, 6 h). A future Square / ClickUp
+  webhook that writes BigQuery is covered with no cache code. Provisioning:
+  `scripts/provision_console_cache.sh`.
+- **Freshness.** The console's own writes bump before `mutate()` returns, so the re-render after
+  a save is fresh. Outside writes are fresh once the audit log → push lands (seconds; the agreed
+  bound is ≤ 60 s). Each request reads the versions once (`React.cache`).
+- **Dependencies.** `deps.ts` gets each query's tables from a free dry run (`referencedTables`,
+  views and table functions expanded by BigQuery), plus every `bhaga.<name>` the SQL names.
+- **Server actions never use it** (`next-action` header): status polls and writes read live.
+- **Clock.** Keys carry the UTC hour, which covers `CURRENT_DATE('America/Chicago')` in views;
+  SQL reading the clock (`CURRENT_TIMESTAMP` …) gets a per-minute key; `RAND` / `GENERATE_UUID`
+  is never cached. `__tests__/query-cache-policy.test.ts` fails if a migration adds a view or
+  table function that reads the clock beyond `CURRENT_DATE`.
+- **Exactness.** Only results that survive a JSON round trip unchanged are cached; a hit is a
+  fresh parse, so callers can mutate rows. `?cache=verify` (header `x-console-cache: verify`)
+  re-runs reads live and records `verify-match` / `verify-diff` (`/api/cache-stats`);
+  `?cache=off` bypasses.
+- **Fail live, never stale.** Firestore unreachable, a failed dry run, other datasets or ≥ 50
+  referenced tables → the read goes to BigQuery. Previews read the shared versions but write
+  entries under their own namespace and never bump.
+- **Opt-in.** Reads go to BigQuery unless `CONSOLE_QUERY_CACHE=on`; `provision_console_cache.sh prod`
+  sets it only after a probe write bumps a version, so the cache is never active without the feed.
+- Operating it (stats, probe, switch `CONSOLE_QUERY_CACHE`): `RUNBOOK.md` §17.

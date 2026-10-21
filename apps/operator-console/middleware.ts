@@ -33,6 +33,14 @@ export function middleware(request: NextRequest) {
       }),
     );
   }
+  // `?cache=off|verify` → the query cache's request header (lib/bq/cache), so a page can be
+  // compared with and without the cache from a phone browser.
+  const cacheMode = request.nextUrl.searchParams.get("cache");
+  if (cacheMode === "off" || cacheMode === "verify") {
+    const headers = new Headers(request.headers);
+    headers.set("x-console-cache", cacheMode);
+    return NextResponse.next({ request: { headers } });
+  }
   return NextResponse.next();
 }
 

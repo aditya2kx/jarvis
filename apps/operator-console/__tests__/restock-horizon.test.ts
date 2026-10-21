@@ -81,6 +81,7 @@ describe("parseHorizon", () => {
     expect(parseHorizon(null)).toBe(2);
     expect(parseHorizon("")).toBe(2);
     expect(parseHorizon("x")).toBe(2);
+    expect(parseHorizon("3abc")).toBe(2);
   });
   it("parses integers", () => {
     expect(parseHorizon("3")).toBe(3);

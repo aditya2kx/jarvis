@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for new_requirement.py."""
 
+import io
 import os
 import sys
 import tempfile
@@ -160,6 +161,22 @@ class TestNewRequirement(unittest.TestCase):
         _, kwargs = mock_session.call_args
         self.assertEqual(kwargs.get("mode"), N.S.DEFAULT_JAM_HANDOFF_MODE)
         self.assertEqual(kwargs.get("model"), N.S.DEFAULT_JAM_HANDOFF_MODEL)
+
+    @patch("new_requirement.create_worktree")
+    @patch("new_requirement.start_session_in_worktree")
+    @patch("new_requirement._repo_root", return_value=Path("/repo/jarvis"))
+    def test_dry_run_reports_attach_vs_new_window(self, _root, mock_session, _wt):
+        mock_session.return_value = (Path("/b.md"), Path("/l.html"), "cursor://test")
+        base = ["--requirement", "Test requirement", "--branch", "fix/test-req", "--dry-run"]
+        for extra, env, expected in (
+            ([], {"CURSOR_LAYOUT": "glass", "CURSOR_AGENT": "1"}, "CONTINUE_IN_THIS_CHAT=1"),
+            (["--new-window"], {"CURSOR_LAYOUT": "glass", "CURSOR_AGENT": "1"}, "new Cursor window"),
+            ([], {"CURSOR_LAYOUT": "", "CURSOR_AGENT": ""}, "new Cursor window"),
+        ):
+            with self.subTest(extra=extra, env=env), patch.dict("os.environ", env), \
+                 patch("sys.stdout", new_callable=io.StringIO) as out:
+                self.assertEqual(N.main(base + extra), 0)
+                self.assertIn(expected, out.getvalue())
 
     @patch("dev_event_listener.ensure_daemon", create=True)
     @patch("new_requirement.S.open_cursor_handoff")

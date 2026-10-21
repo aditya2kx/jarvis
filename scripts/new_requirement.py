@@ -594,7 +594,10 @@ def _run_one(
             _post_worktree_comment(int(m.group(1)), wt, branch, dry_run=dry_run)
 
     if dry_run:
-        print("(dry-run — no Cursor opened)")
+        if not new_window and S.prefer_attach_here():
+            print("(dry-run — would attach worktree to this chat: CONTINUE_IN_THIS_CHAT=1, no new window)")
+        else:
+            print("(dry-run — would open a new Cursor window; no Cursor opened)")
         if issue_url:
             print(f"Tracking issue → {issue_url}")
         return 0

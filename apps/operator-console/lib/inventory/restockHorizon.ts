@@ -90,7 +90,6 @@ export function planHorizonAdditions(opts: {
 }
 
 export function parseHorizon(raw: string | null | undefined): number {
-  if (raw == null || !String(raw).trim()) return DEFAULT_HORIZON;
-  const n = Number.parseInt(String(raw).trim(), 10);
-  return Number.isFinite(n) ? n : DEFAULT_HORIZON;
+  const s = String(raw ?? "").trim();
+  return /^[+-]?\d+$/.test(s) ? Number(s) : DEFAULT_HORIZON;
 }

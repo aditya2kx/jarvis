@@ -10,6 +10,7 @@ import {
   type UsageDayAuditRow,
 } from "@/lib/bq/queries";
 import { ensureOrderRecoFresh } from "@/lib/bhaga/orderReco";
+import { ensureRestockHorizon } from "@/lib/bq/writes";
 import { DEFAULT_STORE, operatorEmail } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -96,7 +97,18 @@ export default async function InventoryPage({
     // table still renders when status is unavailable.
     try {
       const by = await operatorEmail().catch(() => "page-open");
-      recoStatus = (await ensureOrderRecoFresh(DEFAULT_STORE, by)).status;
+      // Top up Friday (configured weekday) dates before nextDates() reads the view.
+      let horizonAdded: string[] = [];
+      if (FEATURES.writeRestock) {
+        try {
+          horizonAdded = await ensureRestockHorizon(DEFAULT_STORE);
+        } catch (e) {
+          console.error(`restock_horizon_ensure_failed store=${DEFAULT_STORE}: ${String(e)}`);
+        }
+      }
+      recoStatus = (
+        await ensureOrderRecoFresh(DEFAULT_STORE, by, { pageEdited: horizonAdded.length > 0 })
+      ).status;
     } catch (e) {
       console.error(`order_reco_status_unavailable store=${DEFAULT_STORE}: ${String(e)}`);
     }

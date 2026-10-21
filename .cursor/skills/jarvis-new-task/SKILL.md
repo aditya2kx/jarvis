@@ -41,14 +41,21 @@ through verbatim — do **not** ask a clarifying question about the issue number
 the requirement text is identical.  If no issue number is present the branch is
 `fix/<slug>` with an automatic `-2`, `-3`, … suffix on collision.
 
-4. After the script launches (Mac: creates or links a worktree, branch, GitHub issue, and opens a new Cursor window; cloud: opens the issue, and the agent link is commented on it), **stop**. Do NOT continue implementing in the current chat.
-5. Confirm to the operator that the new worktree is being set up and that they should continue work in the new Cursor window.
+4. After the script runs, read its stdout:
+   - If it prints `CONTINUE_IN_THIS_CHAT=1` (Agents Window / Glass attach): **do not stop**.
+     The worktree was created for *this* chat. `cd` to the printed Worktree path, read the
+     Brief, and continue the jam in this conversation (restate requirement + §4). Do **not**
+     open another Cursor window.
+   - Otherwise (new window handoff): **stop**. Confirm the new worktree/window and tell the
+     operator to continue there. Do NOT implement in the current chat.
+5. Cloud path: issue is opened / commented; agent link appears on the issue — stop after confirming.
 
 ## Hard rules
 
-- NEVER implement the requirement inline in the current chat or branch.
+- NEVER implement the requirement inline in the *calling* chat when a new window was opened.
+- When `CONTINUE_IN_THIS_CHAT=1`, this chat *is* the new task space — continue the jam here.
 - NEVER ask clarifying questions before running the script — the front door accepts rough text; refinement happens in the jam gate of the new chat space.
-- This is a one-shot action: run the script and stop.
+- Pass `--new-window` only when the operator explicitly wants a separate Cursor window from Glass.
 
 ## See also
 

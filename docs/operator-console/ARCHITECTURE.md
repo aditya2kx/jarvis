@@ -257,6 +257,17 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   `vw_inventory_order_assistant`) → order-reco refresh requested; the status banner
   shows progress and the table repaints when the run commits.
   Reset all clears overrides so ClickUp closings win again.
+- **Restock horizon (Issue #416):** on page load, `ensureRestockHorizon` reads
+  `store_config restock_delivery_weekday` / `restock_horizon_dates` and
+  INSERT-only tops up live `inventory_restock_schedule` dates (same planner as
+  `core/restock_horizon.py`, wired into `refresh_order_reco`). Unset weekday =
+  off; skipped in preview and when `FEATURES.writeRestock` is off. Live dates
+  start tomorrow once today's base closing is in, so Friday evening already
+  adds the Friday after next. A date the operator removed (latest edit-log row
+  is a `restock_schedule` clear) is never re-added. When it inserts, the page
+  requests the refresh itself (`ensureOrderRecoFresh(..., { pageEdited })`,
+  trigger `restock-horizon`) instead of waiting out the 60 s edit grace.
+  Never deletes dates or touches Actuals.
 - **Per-date column group ×N** (live dates from `vw_order_reco_next_dates`,
   capped by `order_reco_max_slots` default 4 — migration 052; includes
   **today** until a base closing for today exists — migration 051): `On Hand

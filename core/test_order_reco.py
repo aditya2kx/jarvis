@@ -12,6 +12,27 @@ from unittest.mock import MagicMock, patch
 
 
 class TestRefreshOrderRecoProcedure(unittest.TestCase):
+    def setUp(self):
+        horizon = patch("core.restock_horizon.ensure_restock_horizon", return_value=[])
+        self.ensure_horizon = horizon.start()
+        self.addCleanup(horizon.stop)
+
+    def test_tops_up_restock_horizon_first(self):
+        with patch("core.datastore.get_client", return_value=self._client()):
+            from core.order_reco import refresh_order_reco
+            refresh_order_reco("austin")
+        self.ensure_horizon.assert_called_once_with("austin")
+
+    def test_horizon_failure_does_not_block_refresh(self):
+        self.ensure_horizon.side_effect = RuntimeError("boom")
+        client = self._client()
+        with patch("core.datastore.get_client", return_value=client), \
+             self.assertLogs("core.order_reco", level="ERROR") as logs:
+            from core.order_reco import refresh_order_reco
+            refresh_order_reco("palmetto", trigger="nightly")
+        self.assertIn("restock_horizon_ensure_failed store=palmetto trigger=nightly", logs.output[0])
+        self.assertIn("sp_refresh_order_reco", client.query.call_args.args[0])
+
     def _client(self):
         client = MagicMock()
         client.query.return_value.result.return_value = []

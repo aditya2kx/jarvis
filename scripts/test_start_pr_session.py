@@ -66,6 +66,17 @@ class TestStartPrSession(unittest.TestCase):
         with self.assertRaises(ValueError):
             S.make_deeplink("x" * 3000)
 
+    def test_prefer_attach_here_glass_agent(self):
+        self.assertTrue(
+            S.prefer_attach_here({"CURSOR_LAYOUT": "glass", "CURSOR_AGENT": "1"}),
+        )
+        self.assertFalse(S.prefer_attach_here({"CURSOR_LAYOUT": "glass"}))
+        self.assertFalse(S.prefer_attach_here({"CURSOR_AGENT": "1"}))
+        self.assertFalse(S.prefer_attach_here({}))
+
+    def test_make_glass_deeplink(self):
+        self.assertEqual(S.make_glass_deeplink(), "cursor://anysphere.cursor-deeplink/glass")
+
     def test_seed_prompt_is_short(self):
         req = (
             "Dashboard on a free visualization tool (Looker Studio / Chartio) — "

@@ -15,6 +15,7 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Inventory | Order-reco status poll | `orderRecoStatusAction` | — (read-only; `OrderRecoStatusProvider`) |
 | Inventory | Order-reco Retry / Update now | `retryOrderRecoAction` | `order-reco` |
 | Inventory | Page self-heal | `ensureOrderRecoFresh` (RSC, `lib/bhaga/orderReco.ts`) | `order-reco` only when the live inputs fingerprint ≠ last committed run; never auto-retries a failed run |
+| Inventory | Restock horizon self-heal (Issue #416) | `ensureRestockHorizon` (RSC, `lib/bq/writes.ts`) | INSERT-only Friday schedule rows when below `restock_horizon_dates`; then `order-reco` (trigger `restock-horizon`). Skipped in preview / `writeRestock` off |
 | Payroll | Tip exemptions Update | `applyTipExemptionsAction` | `model-recompute` job |
 | Payroll | Run ADP Preview | `runPayrollDraftAction` / `pollPayrollDraftAction` | Headless `adp-payroll-draft` (local laptop when BYPASS_IAP); BQ stores Preview hours + Gross |
 | Payroll | Recognition bonus | `addRecognitionBonusAction` | — |

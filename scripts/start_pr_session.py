@@ -431,6 +431,50 @@ def make_deeplink(
     return link
 
 
+def make_glass_deeplink() -> str:
+    """Open / focus the Agents Window (Glass). No prompt payload."""
+    return "cursor://anysphere.cursor-deeplink/glass"
+
+
+def prefer_attach_here(env: dict | None = None) -> bool:
+    """True when this process is already an Agents Window (Glass) agent chat.
+
+    Detected via ``CURSOR_LAYOUT=glass`` + ``CURSOR_AGENT=1`` (set on the private
+    worker / Remote Control session). In that case ``/jarvis-new-task`` should
+    create the worktree and continue in *this* chat rather than opening another
+    Cursor window.
+    """
+    import os
+
+    e = env if env is not None else os.environ
+    return e.get("CURSOR_LAYOUT") == "glass" and bool(e.get("CURSOR_AGENT"))
+
+
+CONTINUE_IN_THIS_CHAT_MARKER = "CONTINUE_IN_THIS_CHAT=1"
+
+
+def attach_worktree_here(*, folder: Path, brief: Path, issue_url: str | None = None) -> None:
+    """Best-effort rebind + print machine-readable continue marker for the skill."""
+    folder = folder.resolve()
+    cursor = find_cursor_cli()
+    if cursor is not None:
+        # Reuse the focused window on the new worktree when the CLI allows it.
+        try:
+            subprocess.Popen([str(cursor), "-r", str(folder)])
+        except OSError as exc:
+            print(f"(attach: cursor -r failed non-fatal: {exc})", file=sys.stderr)
+    print("\n─── ATTACH HERE (Agents Window) ───")
+    print(CONTINUE_IN_THIS_CHAT_MARKER)
+    print(f"Worktree: {folder}")
+    print(f"Brief:    {brief}")
+    if issue_url:
+        print(f"Tracking issue: {issue_url}")
+    print(
+        "Do NOT open a second Cursor window. Continue the jam in THIS chat: "
+        f"read the brief, restate requirements, draft §4."
+    )
+
+
 _CURSOR_CANDIDATES = (
     "cursor",
     "/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
@@ -462,10 +506,11 @@ def open_cursor_handoff(
     delay_sec: float = 3.5,
     mode: str = DEFAULT_HANDOFF_MODE,
 ) -> None:
-    """Open ``folder`` in a new Cursor window, then seed chat via deeplink + launcher backup.
+    """Open ``folder``, prefer Agents Window, then seed chat via deeplink.
 
-    Order matters: open the worktree folder **first**, then fire the deeplink so
-    the new chat attaches to the correct workspace (not whichever window was focused).
+    Order matters: open the worktree folder **first**, focus Agents Window
+    (``/glass``), then fire the ``/prompt`` deeplink so the new chat attaches
+    to that workspace (not whichever editor window was focused).
     """
     import time
 
@@ -485,6 +530,10 @@ def open_cursor_handoff(
     print(f"Opening Cursor → {folder}")
     subprocess.Popen([str(cursor), "-n", str(folder)])
     time.sleep(delay_sec)
+    # Prefer Agents Window so /remote-control and Remote Control default apply.
+    print("Opening Agents Window (glass)…")
+    subprocess.run(["open", make_glass_deeplink()], check=False)
+    time.sleep(min(1.5, delay_sec))
     print(f"Seeding {mode} chat (approve Cursor's deeplink dialog if prompted)…")
     subprocess.run(["open", deeplink], check=False)
     # launch_html is the fallback for when the deeplink or Cursor CLI fails;

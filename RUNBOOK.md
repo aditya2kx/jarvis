@@ -2400,6 +2400,14 @@ fallback while the BQ table is being seeded. After seeding, Sheet config becomes
 > Deploy refreshes reco after schema so prod Operator Console updates on merge.
 >
 > Optional: `/bhaga-cloud config set order_reco_max_slots <N>` to raise/lower the column cap.
+>
+> **Restock Friday horizon (Issue #416):** `/bhaga-cloud config set restock_delivery_weekday friday`
+> and `restock_horizon_dates 2` keep ≥2 live schedule dates on `/inventory` without weekly
+> manual "Register date only". Automation INSERT-only (`updated_by=restock-horizon`); skips an
+> ISO week that already has any live date, and never re-adds a date removed via the console
+> (holiday with no delivery: just remove it). Friday-evening nightly (after closing) already
+> adds the Friday after next. Breadcrumbs: `restock_horizon_added`, `restock_horizon_insert_failed`,
+> `restock_horizon_ensure_failed`. Unset weekday = off.
 
 > **`data_window_end` is DERIVED — never stored in `store_config`.** It is computed
 > live as `MAX(square_transactions.date_local)` via `core.store_config.resolve_data_window_end()`.

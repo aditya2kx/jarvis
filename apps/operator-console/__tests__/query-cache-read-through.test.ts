@@ -39,12 +39,26 @@ let sqlN = 0;
 const freshSql = () => `SELECT * FROM \`jarvis-bhaga-prod.bhaga.vw\` WHERE n = ${++sqlN}`;
 
 beforeEach(() => {
+  vi.stubEnv("CONSOLE_QUERY_CACHE", "on");
   hdrs.current = new Headers();
   store.up = true;
   vi.mocked(bumpVersions).mockClear();
 });
 
 describe("readThrough (shared store)", () => {
+  it("reads live unless CONSOLE_QUERY_CACHE=on (the feed is provisioned)", async () => {
+    const sql = freshSql();
+    const live = vi.fn(async () => [{ a: 1 }]);
+    for (const value of [undefined, "", "off", "1"]) {
+      vi.stubEnv("CONSOLE_QUERY_CACHE", value);
+      await readThrough(sql, undefined, live);
+      await readThrough(sql, undefined, live);
+    }
+    expect(live).toHaveBeenCalledTimes(8);
+    expect(cacheStats().disabled).toBe(true);
+    expect(cacheStats().recent[0].outcome).toBe("off");
+  });
+
   it("serves the second render from the shared store, as an independent copy", async () => {
     const sql = freshSql();
     const live = vi.fn(async () => [{ a: 1 }]);

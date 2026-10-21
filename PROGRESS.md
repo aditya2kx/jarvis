@@ -1,3 +1,7 @@
+## 2026-10-21 — Operator Console: per-person page and section access (PR #419)
+
+**Scope:** the owner-only `/access` page and a "Manage access" drawer on each page set which pages and sections each Google email can see; hidden sections are never rendered and their actions refuse server-side. Grants are append-only (`console_access_grants`, migration 090); saving or removing someone also adds or removes their IAP sign-in. Existing accounts keep full access (`CONSOLE_ACCESS_DEFAULT=full`); new people start with nothing. Owners can "View as" someone. **Decision:** keep IAP for sign-in and add app-level authorization rather than moving to Auth.js or Identity Platform. **Evidence:** PR #419 §4 (unit tests, local walkthrough, and the PR preview with its own sandbox grants table).
+
 ## 2026-10-19 — Follow-ups from the #412 retro
 
 **Scope:** a self-hosted worker whose Cursor usage API returns 0 tokens now gets a flagged-approximate benchmark build cost ($10.22, the median opus PR) instead of failing the cost gate. Publishing drafts reloads the week once before reporting the publish unconfirmed, because ADP's open grid keeps the old count. `verify.py` fails when `~/Documents/build-workspace/jarvis` has `core.bare=true`, uncommitted tracked files, or a `main` behind `origin/main`. `--queue-assign` queues open-shift rows with the console's checks and refuses while a schedule write is running. **Evidence:** unit tests.

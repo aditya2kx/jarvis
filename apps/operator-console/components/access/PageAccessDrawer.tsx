@@ -144,7 +144,7 @@ export function PageAccessDrawer({ page }: { page: PageId }) {
           </Button>
         }
       />
-      <SheetContent className="w-full overflow-y-auto sm:max-w-lg" data-testid="page-access-drawer">
+      <SheetContent className="w-full overflow-y-auto data-[side=right]:sm:max-w-lg" data-testid="page-access-drawer">
         <SheetHeader>
           <SheetTitle>Who can see {meta.label}</SheetTitle>
           <SheetDescription>

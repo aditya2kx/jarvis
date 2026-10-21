@@ -69,7 +69,7 @@ export function PersonAccessDrawer({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-lg" data-testid="person-access-drawer">
+      <SheetContent className="w-full overflow-y-auto data-[side=right]:sm:max-w-lg" data-testid="person-access-drawer">
         <SheetHeader>
           <SheetTitle>{adding ? "Add person" : person.email}</SheetTitle>
           <SheetDescription>

@@ -71,7 +71,7 @@ Grafana panel 83's `frozenColumns.left = 3`).
 | Concern | Choice | Notes |
 |---|---|---|
 | Warehouse client | **`@google-cloud/bigquery`** (server-only) | Parameterized queries; ADC on Cloud Run |
-| Reads | RSC, `export const dynamic = "force-dynamic"` | Not `revalidate` — Next's Full Route Cache would serve a cached render at the CDN edge to a *new* unauthenticated caller even after Cloud Run's IAM check passed for the original request, bypassing auth for that path (found 2026-07-05 while re-locking the preview: `/home` kept returning cached 200s after IAM was re-enabled). Views still refresh nightly; the per-request BQ read is cheap enough that always-dynamic has no material cost here. |
+| Reads | RSC, `export const dynamic = "force-dynamic"`; query results (not routes) cached by `lib/bq/cache` (§15) | Not `revalidate` — Next's Full Route Cache would serve a cached render at the CDN edge to a *new* unauthenticated caller even after Cloud Run's IAM check passed for the original request, bypassing auth for that path (found 2026-07-05 while re-locking the preview: `/home` kept returning cached 200s after IAM was re-enabled). Views still refresh nightly; the per-request BQ read is cheap enough that always-dynamic has no material cost here. |
 | Client interactivity | **TanStack Query** (only where needed) | Most screens are static RSC |
 | Writes | **Next.js server actions** → BQ MERGE | Same contracts as `handler.py` |
 | Auth | **Cloud Run direct IAP** (`--no-allow-unauthenticated --iap`, custom External OAuth client) | Reverses the 2026-07-04 "no IAP" pivot: that pivot hit the Google-managed brand flow, which needs a Workspace org; a custom **External** OAuth client (Console-only, one-time) works without one — see PLAN.md decisions log 2026-07-05. Browser-native Google sign-in; access is `roles/iap.httpsResourceAccessor` IAM, no app-level allowlist |
@@ -578,3 +578,40 @@ same contract as Sales).
 
 Legacy spike notes for ADP schedule / burden: `docs/operator-console/adp-forward-labor-spike.md`.
 
+
+## 15. Query cache (read-through, table-versioned)
+
+Each page view used to run 10–30 BigQuery jobs, and BigQuery charges ~0.5–2 s of fixed
+overhead per job however small the data. `q()` (`lib/bq/client.ts`) now reads through
+`lib/bq/cache/`; writes (`mutate`, `submitQuery`, any non-SELECT `q()`) are unchanged.
+Routes stay `force-dynamic`, so IAP still checks every request — only query *results* are cached.
+
+```mermaid
+flowchart LR
+  R[Page render q()] --> K{key = SQL + params\n+ last_modified of every table/view read\n+ UTC hour + build}
+  K -->|hit| L1[(L1 memory)]
+  K -->|miss| L2[(L2 Firestore, opt-in)]
+  L2 -->|miss| BQ[(BigQuery)]
+  W[Any writer: nightly · Slack · console · webhook] -->|commit moves last_modified| CAT[__TABLES__ catalog]
+  CAT --> K
+```
+
+- **Versions, not deletes.** `catalog.ts` reads `bhaga.__TABLES__` (`last_modified_time` per
+  table/view); `deps.ts` gets each query's tables from a free dry run (`referencedTables`, views
+  and table functions expanded by BigQuery). A write anywhere moves a version, the key changes,
+  the old entry is never addressed again. No writer needs a hook — a future Square / ClickUp
+  webhook that writes BigQuery is covered as is. No writer uses streaming inserts (whose buffer
+  does not move `last_modified_time` reliably); keep it that way or add an explicit bump.
+- **Freshness bound.** Catalog younger than 10 s is used as is; 10–45 s is used while refreshing;
+  older is awaited. This instance's writes and any server action mark it dirty, so the page
+  re-rendered after a save (or after a polled job finishes) waits for fresh versions.
+- **Server actions never use it** (`next-action` header): status polls and writes read live.
+- **Clock.** Keys carry the UTC hour, which covers `CURRENT_DATE('America/Chicago')` in views;
+  SQL reading the clock (`CURRENT_TIMESTAMP` …) gets a per-minute key; `RAND` / `GENERATE_UUID`
+  is never cached. `__tests__/query-cache-policy.test.ts` fails if a migration adds a view or
+  table function that reads the clock beyond `CURRENT_DATE`.
+- **Exactness.** Only results that survive a JSON round trip unchanged are cached; a hit is a
+  fresh parse, so callers can mutate rows. `x-console-cache: verify` re-runs reads live and
+  records `verify-match` / `verify-diff` (`/api/cache-stats`); `x-console-cache: off` bypasses.
+- **Unknowns read live:** other datasets, ≥ 50 referenced tables, a failed dry run or catalog.
+- Operating it (stats, kill switch `CONSOLE_QUERY_CACHE=off`, L2 provisioning): `RUNBOOK.md` §17.

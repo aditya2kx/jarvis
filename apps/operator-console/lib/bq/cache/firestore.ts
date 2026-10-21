@@ -24,10 +24,12 @@ const ENTRIES = "console_query_cache_entries";
 export const MAX_PAYLOAD_CHARS = 900_000;
 const ENTRY_TTL_MS = 6 * 3600_000;
 const BACKOFF_MS = 60_000;
+const FAILURES_BEFORE_BACKOFF = 5;
 
 const st = shared("firestore", () => ({
   auth: null as GoogleAuth | null,
   disabledUntil: 0,
+  consecutiveFailures: 0,
   lastError: null as string | null,
 }));
 
@@ -46,6 +48,7 @@ export function storeState(): { namespace: string; available: boolean; lastError
 /** A failing store turns the cache off for a minute (reads go to BigQuery), never stale. */
 function backOff(op: string, err: string): void {
   st.disabledUntil = Date.now() + BACKOFF_MS;
+  st.consecutiveFailures = 0;
   st.lastError = `${op}: ${err.slice(0, 200)}`;
   console.error(`console_cache_store_unavailable op=${op} for_s=${BACKOFF_MS / 1000} err=${err.slice(0, 200)}`);
 }
@@ -71,10 +74,16 @@ async function call(op: string, url: string, init: RequestInit, timeoutMs: numbe
       headers: { Authorization: `Bearer ${await token()}`, "content-type": "application/json", ...init.headers },
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (res.ok || res.status === 404) return res;
+    if (res.ok || res.status === 404) {
+      st.consecutiveFailures = 0;
+      return res;
+    }
     backOff(op, `HTTP ${res.status} ${await res.text()}`);
   } catch (e) {
-    backOff(op, String(e));
+    // One slow call (cold connection pool, a burst of parallel reads) only makes this read live;
+    // a run of them means the store is unhealthy and every read should stop waiting on it.
+    st.lastError = `${op}: ${String(e).slice(0, 200)}`;
+    if (++st.consecutiveFailures >= FAILURES_BEFORE_BACKOFF) backOff(op, String(e));
   }
   return null;
 }

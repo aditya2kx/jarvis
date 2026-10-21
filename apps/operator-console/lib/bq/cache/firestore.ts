@@ -10,14 +10,15 @@ import { shared } from "./shared";
  *
  * - `console_cache_versions/{table}` `{v, updated_at, source}` — bumped by bhaga-webhook
  *   `/cache/bq-write` from BigQuery's audit log (every writer) and by this app's own writes.
- *   `__schema__` moves on any view / routine (re)definition.
+ *   `~schema` moves on any view / routine (re)definition.
  * - `console_query_cache/{ns}/console_query_cache_entries/{key}` `{payload, expire_at}` —
  *   TTL policy on `expire_at`. Previews use their own `ns`, so code under review never
  *   writes entries prod reads.
  */
 const DB = process.env.BHAGA_FIRESTORE_DB ?? "(default)";
 export const VERSIONS = "console_cache_versions";
-export const SCHEMA_DOC = "__schema__";
+// Firestore rejects IDs matching __.*__; `~` keeps it clear of every BigQuery table name.
+export const SCHEMA_DOC = "~schema";
 const ENTRIES_ROOT = "console_query_cache";
 const ENTRIES = "console_query_cache_entries";
 /** Firestore caps a document at 1 MiB. */

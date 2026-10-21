@@ -17,7 +17,8 @@ import re
 from typing import Iterable
 
 VERSIONS_COLLECTION = "console_cache_versions"
-SCHEMA_DOC = "__schema__"
+# Firestore rejects IDs matching __.*__; `~` keeps it clear of every BigQuery table name.
+SCHEMA_DOC = "~schema"
 META_DOC = ("console_cache_meta", "audit_feed")
 
 _TABLE_EVENTS = ("tableDataChange", "tableCreation", "tableChange", "tableDeletion")

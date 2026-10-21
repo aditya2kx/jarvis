@@ -17,7 +17,7 @@ const store = {
   entries: new Map<string, string>(),
 };
 vi.mock("@/lib/bq/cache/firestore", () => ({
-  SCHEMA_DOC: "__schema__",
+  SCHEMA_DOC: "~schema",
   readVersions: async () => (store.up ? new Map(store.versions) : null),
   bumpVersions: vi.fn(async (tables: string[]) => {
     for (const t of tables) store.versions.set(t, (store.versions.get(t) ?? 0) + 1);
@@ -84,7 +84,7 @@ describe("readThrough (shared store)", () => {
     const sql = freshSql();
     const live = vi.fn(async () => [{ a: 1 }]);
     await readThrough(sql, undefined, live);
-    store.versions.set("__schema__", (store.versions.get("__schema__") ?? 0) + 1);
+    store.versions.set("~schema", (store.versions.get("~schema") ?? 0) + 1);
     await readThrough(sql, undefined, live);
     expect(live).toHaveBeenCalledTimes(2);
   });

@@ -22,6 +22,7 @@ SUB=console-cache-versions
 PUSH_SA_NAME=console-cache-push
 PUSH_SA=$PUSH_SA_NAME@$P.iam.gserviceaccount.com
 CONSOLE_SA=$PN-compute@developer.gserviceaccount.com
+CI_SA=bhaga-orchestrator@$P.iam.gserviceaccount.com
 SANDBOX_SVC=bhaga-webhook-cachepv
 REGISTRY=$REGION-docker.pkg.dev/$P/jarvis-images
 
@@ -95,6 +96,9 @@ else
     --push-auth-service-account=$PUSH_SA --push-auth-token-audience="$URL" \
     --ack-deadline=30 --min-retry-delay=5s --max-retry-delay=60s
 fi
+# operator-console-preview.yml turns a preview's cache on only if CI can see this subscription.
+gcloud pubsub subscriptions add-iam-policy-binding $SUB --project $P \
+  --member="serviceAccount:$CI_SA" --role=roles/pubsub.viewer >/dev/null
 
 if [ "$MODE" = prod ] && gcloud run services describe $SANDBOX_SVC --region $REGION --project $P >/dev/null 2>&1; then
   gcloud run services delete $SANDBOX_SVC --region $REGION --project $P --quiet

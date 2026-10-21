@@ -591,7 +591,7 @@ memory, so two people (or two Cloud Run instances) never see different numbers.
 
 ```mermaid
 flowchart LR
-  R[Page render q()] --> K{key = SQL + params\n+ version of every table/view read\n+ __schema__ + UTC hour}
+  R[Page render q()] --> K{key = SQL + params\n+ version of every table/view read\n+ ~schema + UTC hour}
   K -->|hit| FS[(Firestore console_query_cache)]
   K -->|miss| BQ[(BigQuery)] --> FS
   W[Any writer: nightly · Slack · console · bq CLI · future webhooks] --> BQ
@@ -602,7 +602,7 @@ flowchart LR
 ```
 
 - **Versions, not deletes.** `console_cache_versions/{table}` `{v, updated_at, source}` holds a
-  counter per table; `__schema__` moves on any table/view/routine (re)definition. Every committed
+  counter per table; `~schema` moves on any table/view/routine (re)definition. Every committed
   write to the `bhaga` dataset — whoever makes it — lands in BigQuery's data-access audit log
   (always on), which the sink forwards to Pub/Sub and `cloud/webhook/cache_versions.py` turns
   into atomic increments. A bump changes every key that read the table; the old entry is never

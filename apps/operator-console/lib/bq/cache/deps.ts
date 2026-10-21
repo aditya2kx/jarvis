@@ -40,7 +40,7 @@ async function dryRun(sql: string, params: Record<string, unknown> | undefined):
 /**
  * Every table and view a SELECT reads, from a (free) BigQuery dry run — BigQuery expands
  * views and table functions itself, so nothing here parses view SQL. Memoised per query
- * text until any view or routine is redefined (`__schema__` version).
+ * text until any view or routine is redefined (`~schema` version).
  */
 export function dependencies(
   sql: string,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -32,9 +33,9 @@ def _push(entry: dict) -> dict:
     [
         (f"projects/{P}/datasets/{D}/tables/model_daily", ["tableDataChange"], ["model_daily"]),
         (f"projects/{P}/datasets/{D}/tables/orders$20261021", ["tableDataChange"], ["orders"]),
-        (f"projects/{P}/datasets/{D}/tables/v_payroll", ["tableChange"], ["v_payroll", "__schema__"]),
-        (f"projects/{P}/datasets/{D}/tables/new_t", ["tableCreation"], ["new_t", "__schema__"]),
-        (f"projects/{P}/datasets/{D}/routines/fn_x", ["routineChange"], ["__schema__"]),
+        (f"projects/{P}/datasets/{D}/tables/v_payroll", ["tableChange"], ["v_payroll", "~schema"]),
+        (f"projects/{P}/datasets/{D}/tables/new_t", ["tableCreation"], ["new_t", "~schema"]),
+        (f"projects/{P}/datasets/{D}/routines/fn_x", ["routineChange"], ["~schema"]),
         (f"projects/{P}/datasets/bhaga_sandbox/tables/model_daily", ["tableDataChange"], []),
         (f"projects/other/datasets/{D}/tables/model_daily", ["tableDataChange"], []),
         (f"projects/{P}/datasets/{D}/tables/model_daily", ["tableDataRead"], []),
@@ -55,7 +56,7 @@ def test_decode_push_round_trip_and_malformed():
 def test_bump_uses_atomic_increments_in_one_batch():
     db = MagicMock()
     fs = MagicMock()
-    cache_versions.bump(db, ["a", "__schema__", "a"], source="audit-log", firestore_module=fs)
+    cache_versions.bump(db, ["a", "~schema", "a"], source="audit-log", firestore_module=fs)
     batch = db.batch.return_value
     # two distinct version docs + the meta doc, one commit
     assert batch.set.call_count == 3
@@ -64,6 +65,13 @@ def test_bump_uses_atomic_increments_in_one_batch():
     assert payload["v"] is fs.Increment.return_value
     assert payload["source"] == "audit-log"
     fs.Increment.assert_called_with(1)
+
+
+def test_version_doc_ids_are_writable_firestore_ids():
+    # Firestore returns 400 for IDs matching __.*__, failing the whole bump batch (seen live).
+    for doc in (cache_versions.SCHEMA_DOC, *cache_versions.META_DOC):
+        assert not re.fullmatch(r"__.*__", doc) and "/" not in doc and doc not in (".", "..")
+    assert not re.fullmatch(r"[A-Za-z0-9_]+", cache_versions.SCHEMA_DOC), "could collide with a table name"
 
 
 def test_bump_nothing_is_a_no_op():

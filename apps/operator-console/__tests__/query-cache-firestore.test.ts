@@ -9,7 +9,7 @@ vi.mock("google-auth-library", () => ({
   },
 }));
 
-const { getEntry, storeAvailable } = await import("@/lib/bq/cache/firestore");
+const { getEntry, SCHEMA_DOC, storeAvailable } = await import("@/lib/bq/cache/firestore");
 
 const timeout = () => Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
 const ok = () => Promise.resolve(new Response(JSON.stringify({ name: "x", fields: { payload: { stringValue: "[1]" } } })));
@@ -32,5 +32,12 @@ describe("Firestore store health", () => {
     expect(storeAvailable()).toBe(false);
     expect(await getEntry("during-backoff")).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(10);
+  });
+});
+
+describe("version doc ids", () => {
+  it("the schema doc is a writable Firestore id that no BigQuery table can share", () => {
+    expect(SCHEMA_DOC).not.toMatch(/^__.*__$/);
+    expect(SCHEMA_DOC).not.toMatch(/^[A-Za-z0-9_]+$/);
   });
 });

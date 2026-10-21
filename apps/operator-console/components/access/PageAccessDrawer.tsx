@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { KeyRoundIcon, Loader2Icon } from "lucide-react";
+import { KeyRoundIcon, UserPlusIcon } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -16,7 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { RoleBadge } from "./AccessManager";
+import { PageIcon, PersonAvatar, RoleBadge } from "./visuals";
 import { postAccess } from "@/lib/access/client";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { accessPage, type PageId } from "@/lib/access/registry";
@@ -134,6 +134,8 @@ export function PageAccessDrawer({ page }: { page: PageId }) {
     }
   }
 
+  const seeing = rows.filter((p) => valueFor(p) !== null).length;
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetTrigger
@@ -144,39 +146,71 @@ export function PageAccessDrawer({ page }: { page: PageId }) {
           </Button>
         }
       />
-      <SheetContent className="w-full overflow-y-auto data-[side=right]:sm:max-w-lg" data-testid="page-access-drawer">
-        <SheetHeader>
-          <SheetTitle>Who can see {meta.label}</SheetTitle>
-          <SheetDescription>
-            Give the whole page or pick sections. Seeing a section means they can use its buttons too.
-          </SheetDescription>
+      <SheetContent className="w-full gap-0 data-[side=right]:sm:max-w-xl" data-testid="page-access-drawer">
+        <SheetHeader className="border-b pb-4">
+          <div className="flex items-center gap-3 pr-8">
+            <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <PageIcon page={page} className="size-5" />
+            </span>
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <SheetTitle className="truncate text-base">Who can see {meta.label}</SheetTitle>
+              <SheetDescription className="text-xs">
+                {people === null
+                  ? "Whole page or just some sections. Seeing a section means they can use its buttons too."
+                  : `${seeing} of ${rows.length} people · seeing a section means they can use its buttons too`}
+              </SheetDescription>
+            </div>
+          </div>
         </SheetHeader>
 
-        <div className="flex flex-col gap-3 px-4">
+        <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-4 py-5">
           {loadError ? (
             <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {loadError}
             </p>
           ) : people === null ? (
-            <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-              <Loader2Icon className="size-4 animate-spin" aria-hidden /> Loading people…
+            <div className="flex flex-col gap-2" aria-busy>
+              <span className="sr-only">Loading people…</span>
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="flex h-16 items-center gap-3 rounded-xl border px-3">
+                  <span className="size-9 animate-pulse rounded-full bg-muted" />
+                  <span className="h-3 w-40 animate-pulse rounded bg-muted" />
+                </div>
+              ))}
             </div>
           ) : (
             rows.map((p) => {
               const v = valueFor(p);
               const mode = modeOf(v);
               const isOwner = p.role === "owner";
+              const edited = !isOwner && !same(v, pageValue(p, page));
               return (
-                <div key={p.email} className="rounded-lg border" data-testid={`page-access-row-${p.email}`}>
+                <div
+                  key={p.email}
+                  className={cn(
+                    "overflow-hidden rounded-xl border transition-colors",
+                    edited ? "border-primary/50 bg-primary/[0.04]" : "bg-card",
+                  )}
+                  data-testid={`page-access-row-${p.email}`}
+                >
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
+                    <PersonAvatar email={p.email} muted={mode === "none"} />
                     <div className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-sm font-medium">{p.email}</span>
-                      {p.note ? <span className="truncate text-xs text-muted-foreground">{p.note}</span> : null}
+                      <span className={cn("truncate text-sm font-medium", mode === "none" && "text-muted-foreground")}>
+                        {p.email}
+                      </span>
+                      <span className="truncate text-xs text-muted-foreground">
+                        {edited ? "Unsaved change" : p.note ?? (isOwner ? "Always sees everything" : "\u00a0")}
+                      </span>
                     </div>
                     {isOwner ? (
                       <RoleBadge role="owner" />
                     ) : (
-                      <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5" role="radiogroup" aria-label={`${p.email} access to ${meta.label}`}>
+                      <div
+                        className="flex items-center gap-0.5 rounded-lg bg-muted p-0.5 max-sm:w-full"
+                        role="radiogroup"
+                        aria-label={`${p.email} access to ${meta.label}`}
+                      >
                         {MODES.map(([m, label]) => (
                           <button
                             key={m}
@@ -188,8 +222,10 @@ export function PageAccessDrawer({ page }: { page: PageId }) {
                               setValue(p, m === "none" ? null : m === "all" ? "all" : mode === "some" ? v : [meta.sections[0].id])
                             }
                             className={cn(
-                              "h-7 rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 max-md:h-9",
-                              mode === m ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
+                              "h-7 rounded-md px-2.5 text-xs font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 max-sm:h-9 max-sm:flex-1",
+                              mode === m
+                                ? "bg-background text-foreground shadow-sm"
+                                : "text-muted-foreground hover:text-foreground",
                             )}
                           >
                             {label}
@@ -199,11 +235,14 @@ export function PageAccessDrawer({ page }: { page: PageId }) {
                     )}
                   </div>
                   {mode === "some" && Array.isArray(v) ? (
-                    <div className="grid gap-x-4 gap-y-1 border-t bg-muted/30 px-3 py-2 sm:grid-cols-2">
+                    <div className="grid gap-x-4 border-t bg-muted/30 px-3 py-2 sm:grid-cols-2">
                       {meta.sections.map((s) => (
                         <label
                           key={s.id}
-                          className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-md px-1 text-sm text-muted-foreground hover:text-foreground"
+                          className={cn(
+                            "flex min-h-9 cursor-pointer items-center gap-2.5 rounded-md px-1 text-sm transition-colors hover:text-foreground",
+                            v.includes(s.id) ? "text-foreground" : "text-muted-foreground",
+                          )}
                         >
                           <Checkbox
                             checked={v.includes(s.id)}
@@ -225,7 +264,7 @@ export function PageAccessDrawer({ page }: { page: PageId }) {
 
           {people !== null ? (
             <form
-              className="flex gap-2"
+              className="mt-2 flex gap-2"
               onSubmit={(e) => {
                 e.preventDefault();
                 addPerson();
@@ -235,32 +274,41 @@ export function PageAccessDrawer({ page }: { page: PageId }) {
                 type="email"
                 inputMode="email"
                 placeholder="Add someone by Google email"
+                className="h-10"
                 value={newEmail}
                 onChange={(e) => setNewEmail(e.target.value)}
                 aria-label="Add someone by Google email"
               />
-              <Button type="submit" variant="outline" disabled={!isValidEmail(newEmail)}>
+              <Button type="submit" variant="outline" className="h-10" disabled={!isValidEmail(newEmail)}>
+                <UserPlusIcon data-icon="inline-start" />
                 Add
               </Button>
             </form>
           ) : null}
-          <p className="text-xs text-muted-foreground">
-            Other pages are unchanged. Someone left with no pages at all loses sign-in too.{" "}
-            <Link href="/access" className="underline underline-offset-2 hover:text-foreground">
-              All people and pages
-            </Link>
-          </p>
         </div>
 
-        <SheetFooter className="flex-row flex-wrap items-center gap-2 border-t">
+        <SheetFooter className="mt-0 gap-3 border-t bg-popover">
           {stage || error ? (
-            <p className={cn("w-full text-xs", error ? "text-destructive" : "text-muted-foreground")} role="status">
+            <p className={cn("text-xs", error ? "text-destructive" : "text-muted-foreground")} role="status">
               {error ?? stage}
             </p>
           ) : null}
-          <Button className="ml-auto min-h-11 sm:min-h-8" disabled={isPending || changed.length === 0} onClick={save}>
-            {changed.length ? `Save ${changed.length} change${changed.length === 1 ? "" : "s"}` : "Save"}
-          </Button>
+          <div className="flex items-center gap-3">
+            <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+              Other pages stay as they are; anyone left with no pages loses sign-in.{" "}
+              <Link href="/access" className="font-medium text-foreground underline-offset-2 hover:underline">
+                All people and pages
+              </Link>
+            </p>
+            <Button
+              className="min-h-11 min-w-28 sm:min-h-9"
+              disabled={isPending || changed.length === 0}
+              onClick={save}
+              data-testid="save-page-access"
+            >
+              {changed.length ? `Save ${changed.length} change${changed.length === 1 ? "" : "s"}` : "No changes"}
+            </Button>
+          </div>
         </SheetFooter>
       </SheetContent>
     </Sheet>

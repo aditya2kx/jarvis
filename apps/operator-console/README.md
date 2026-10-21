@@ -44,6 +44,8 @@ add its id there, gate it on the page, and give any action it renders an `access
 action without a check. Local dev signs in as an owner (`BYPASS_IAP_EMAIL` is added to the
 owners unless `CONSOLE_OWNER_EMAILS` is set); to try a non-owner locally set
 `CONSOLE_OWNER_EMAILS` and `CONSOLE_ACCESS_FILE=/tmp/access.json` (a JSON-file store instead of BigQuery).
+A new section with an obvious audience may also belong in a preset (`lib/access/presets.ts`);
+presets are only starting points in the drawer, never stored as such.
 
 ### Read-only preview mode
 

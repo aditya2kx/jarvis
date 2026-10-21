@@ -1,39 +1,53 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { EyeIcon, PencilIcon, UserPlusIcon } from "lucide-react";
+import { EyeIcon, SearchIcon, ShieldAlertIcon, UserPlusIcon } from "lucide-react";
 import { DataTable } from "@/components/tables/DataTable";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { PersonAccessDrawer } from "./PersonAccessDrawer";
+import { PageChips, PersonAvatar, RoleBadge, relativeTime } from "./visuals";
 import { postAccess } from "@/lib/access/client";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { formatDateTime } from "@/lib/format";
 import type { AccessPerson, PersonRole } from "@/lib/access/people";
 import type { GrantVersion } from "@/lib/access/policy";
+import { cn } from "@/lib/utils";
 
-const ROLE: Record<PersonRole, { label: string; className: string }> = {
-  owner: { label: "Owner", className: "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300" },
-  full: { label: "Full access", className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" },
-  custom: { label: "Custom", className: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300" },
-  default: { label: "Not set", className: "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300" },
-  removed: { label: "No access", className: "text-muted-foreground" },
-};
+type Filter = "all" | Exclude<PersonRole, "owner">;
 
-export function RoleBadge({ role }: { role: PersonRole }) {
-  return (
-    <Badge variant="outline" className={ROLE[role].className}>
-      {ROLE[role].label}
-    </Badge>
-  );
-}
+const FILTERS: { id: Filter; label: string; tone?: string }[] = [
+  { id: "all", label: "Everyone" },
+  { id: "full", label: "Everything", tone: "bg-emerald-500" },
+  { id: "custom", label: "Custom", tone: "bg-sky-500" },
+  { id: "default", label: "Unreviewed", tone: "bg-amber-500" },
+  { id: "removed", label: "No access", tone: "bg-muted-foreground/40" },
+];
 
 export function AccessManager({ people, history }: { people: AccessPerson[]; history: GrantVersion[] }) {
   const [editing, setEditing] = useState<AccessPerson | null>(null);
   const [open, setOpen] = useState(false);
   const [opened, setOpened] = useState(0);
+  const [filter, setFilter] = useState<Filter>("all");
+  const [query, setQuery] = useState("");
   const { isPending, run } = useConsoleAction();
+
+  const counts = useMemo(() => {
+    const c: Record<Filter, number> = { all: people.length, full: 0, custom: 0, default: 0, removed: 0 };
+    for (const p of people) if (p.role !== "owner") c[p.role] += 1;
+    return c;
+  }, [people]);
+
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return people.filter(
+      (p) =>
+        (filter === "all" || p.role === filter) &&
+        (!q || p.email.includes(q) || (p.note ?? "").toLowerCase().includes(q)),
+    );
+  }, [people, filter, query]);
 
   function edit(p: AccessPerson | null) {
     setEditing(p);
@@ -51,37 +65,61 @@ export function AccessManager({ people, history }: { people: AccessPerson[]; his
     {
       accessorKey: "email",
       header: "Person",
-      cell: ({ row }) => (
-        <div className="flex min-w-0 flex-col">
-          <span className="truncate font-medium">{row.original.email}</span>
-          {row.original.note ? (
-            <span className="truncate text-xs text-muted-foreground">{row.original.note}</span>
-          ) : null}
-        </div>
-      ),
+      cell: ({ row }) => {
+        const p = row.original;
+        return (
+          <button
+            type="button"
+            onClick={() => (p.role === "owner" ? undefined : edit(p))}
+            disabled={p.role === "owner"}
+            className="group flex min-w-0 items-center gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+          >
+            <PersonAvatar email={p.email} muted={p.role === "removed"} />
+            <span className="flex min-w-0 flex-col">
+              <span
+                className={cn(
+                  "truncate font-medium",
+                  p.role !== "owner" && "group-hover:underline group-hover:underline-offset-2",
+                  p.role === "removed" && "text-muted-foreground",
+                )}
+              >
+                {p.email}
+              </span>
+              {p.note ? <span className="truncate text-xs text-muted-foreground">{p.note}</span> : null}
+            </span>
+          </button>
+        );
+      },
     },
     {
       accessorKey: "role",
-      header: "Role",
+      header: "Access",
       cell: ({ row }) => <RoleBadge role={row.original.role} />,
     },
     {
       accessorKey: "summary",
       header: "Can see",
-      cell: ({ row }) => (
-        <span className="line-clamp-2 max-w-md text-sm text-muted-foreground">{row.original.summary}</span>
-      ),
+      enableSorting: false,
+      cell: ({ row }) =>
+        row.original.role === "owner" ? (
+          <span className="text-sm text-muted-foreground">Everything · manages access</span>
+        ) : row.original.role === "removed" ? (
+          <span className="text-sm text-muted-foreground">Nothing</span>
+        ) : (
+          <PageChips grant={row.original.grant} className="max-w-md" />
+        ),
     },
     {
       accessorKey: "signIn",
-      header: "Google sign-in",
+      header: "Sign-in",
       cell: ({ row }) => {
         const s = row.original.signIn;
         if (s === null) return <span className="text-muted-foreground">—</span>;
-        return s ? (
-          <span className="text-sm">Allowed</span>
-        ) : (
-          <span className="text-sm text-muted-foreground">Not allowed</span>
+        return (
+          <span className={cn("inline-flex items-center gap-1.5 text-sm", !s && "text-muted-foreground")}>
+            <span aria-hidden className={cn("size-1.5 rounded-full", s ? "bg-emerald-500" : "bg-muted-foreground/40")} />
+            {s ? "Allowed" : "Blocked"}
+          </span>
         );
       },
     },
@@ -90,9 +128,11 @@ export function AccessManager({ people, history }: { people: AccessPerson[]; his
       header: "Last change",
       cell: ({ row }) =>
         row.original.changedAt ? (
-          <div className="flex flex-col text-xs text-muted-foreground">
-            <span className="tabular-nums">{formatDateTime(row.original.changedAt)}</span>
-            <span className="truncate">by {row.original.changedBy}</span>
+          <div className="flex flex-col text-xs text-muted-foreground" title={formatDateTime(row.original.changedAt)}>
+            <span className="tabular-nums text-foreground" suppressHydrationWarning>
+              {relativeTime(row.original.changedAt)}
+            </span>
+            <span className="truncate">by {row.original.changedBy?.split("@")[0]}</span>
           </div>
         ) : (
           <span className="text-muted-foreground">—</span>
@@ -104,19 +144,25 @@ export function AccessManager({ people, history }: { people: AccessPerson[]; his
       enableSorting: false,
       cell: ({ row }) =>
         row.original.role === "owner" ? null : (
-          <div className="flex justify-end gap-1.5">
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={isPending}
-              onClick={() => viewAs(row.original.email)}
-              aria-label={`View the console as ${row.original.email}`}
-            >
-              <EyeIcon data-icon="inline-start" />
-              View as
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => edit(row.original)}>
-              <PencilIcon data-icon="inline-start" />
+          <div className="flex justify-end gap-1">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    className="max-md:size-10"
+                    disabled={isPending}
+                    onClick={() => viewAs(row.original.email)}
+                    aria-label={`View the console as ${row.original.email}`}
+                  >
+                    <EyeIcon />
+                  </Button>
+                }
+              />
+              <TooltipContent>View as {row.original.email.split("@")[0]}</TooltipContent>
+            </Tooltip>
+            <Button size="sm" variant="outline" className="max-md:h-10" onClick={() => edit(row.original)}>
               Edit
             </Button>
           </div>
@@ -125,15 +171,79 @@ export function AccessManager({ people, history }: { people: AccessPerson[]; his
   ];
 
   return (
-    <>
-      <div className="flex justify-end">
-        <Button onClick={() => edit(null)} className="min-h-11 sm:min-h-8" data-testid="add-person">
+    <div className="flex flex-col gap-4">
+      <div
+        className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-0.5 [scrollbar-width:none] sm:mx-0 sm:grid sm:grid-cols-3 sm:px-0 lg:grid-cols-5"
+        role="tablist"
+        aria-label="Filter people"
+      >
+        {FILTERS.map((f) => {
+          const on = filter === f.id;
+          return (
+            <button
+              key={f.id}
+              type="button"
+              role="tab"
+              aria-selected={on}
+              onClick={() => setFilter(on && f.id !== "all" ? "all" : f.id)}
+              data-testid={`access-filter-${f.id}`}
+              className={cn(
+                "flex shrink-0 items-center gap-2 rounded-full border bg-card px-3.5 py-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-col sm:items-start sm:gap-0.5 sm:rounded-lg sm:px-3 sm:py-2.5",
+                on ? "border-primary/60 ring-1 ring-primary/30" : "hover:border-foreground/20",
+              )}
+            >
+              <span className="flex items-center gap-1.5 text-sm whitespace-nowrap text-muted-foreground sm:text-xs">
+                {f.tone ? <span aria-hidden className={cn("size-1.5 rounded-full", f.tone)} /> : null}
+                {f.label}
+              </span>
+              <span className="text-sm font-semibold tabular-nums sm:text-lg sm:tracking-tight">{counts[f.id]}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {counts.default > 0 && filter !== "default" ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-4 py-3">
+          <ShieldAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+          <p className="min-w-0 flex-1 text-sm">
+            <span className="font-medium">
+              {counts.default} {counts.default === 1 ? "person still sees" : "people still see"} everything
+            </span>
+            <span className="text-muted-foreground"> — they signed in before access was managed here.</span>
+          </p>
+          <Button size="sm" variant="outline" className="max-md:h-10" onClick={() => setFilter("default")}>
+            Review
+          </Button>
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-0 flex-1 sm:max-w-xs">
+          <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+          <Input
+            type="search"
+            placeholder="Search people"
+            aria-label="Search people"
+            className="h-9 pl-8 max-md:h-10"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <Button onClick={() => edit(null)} className="ml-auto min-h-10 sm:min-h-9" data-testid="add-person">
           <UserPlusIcon data-icon="inline-start" />
           Add person
         </Button>
       </div>
-      <DataTable columns={columns} data={people} getRowId={(p) => p.email} />
+
+      {rows.length ? (
+        <DataTable columns={columns} data={rows} getRowId={(p) => p.email} />
+      ) : (
+        <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-10 text-center">
+          <p className="text-sm font-medium">No one matches</p>
+          <p className="text-sm text-muted-foreground">Try another filter or search, or add someone.</p>
+        </div>
+      )}
       <PersonAccessDrawer key={opened} open={open} onOpenChange={setOpen} person={editing} history={history} />
-    </>
+    </div>
   );
 }

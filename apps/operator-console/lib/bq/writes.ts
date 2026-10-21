@@ -90,7 +90,7 @@ export async function ensureRestockHorizon(store: string): Promise<string[]> {
      removed AS (
        SELECT delivery_date, action FROM ${fq("inventory_edit_log")}
        WHERE store = @store AND entity = 'restock_schedule'
-         AND delivery_date >= (SELECT d FROM today)
+         AND delivery_date >= DATE_SUB((SELECT d FROM today), INTERVAL 7 DAY)
        QUALIFY ROW_NUMBER() OVER (PARTITION BY delivery_date ORDER BY edited_at DESC) = 1
      )
      SELECT

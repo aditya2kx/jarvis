@@ -62,6 +62,38 @@ class TestPlanHorizonAdditions(unittest.TestCase):
         got = plan(scheduled=[FRI], removed=[dt.date(2026, 10, 30)])
         self.assertEqual(got, [dt.date(2026, 11, 6)])
 
+    def test_delayed_delivery_moved_to_next_week_keeps_that_weeks_friday(self):
+        # Fri 10-23 slipped to Tue 10-27 via Move (10-23 cleared). The regular
+        # Fri 10-30 still happens, so it is the second date.
+        got = plan(
+            today=dt.date(2026, 10, 24), scheduled=[dt.date(2026, 10, 27)], removed=[FRI],
+        )
+        self.assertEqual(got, [dt.date(2026, 10, 30)])
+
+    def test_delay_registered_without_move_counts_from_nearest_friday(self):
+        # Mon 10-26 registered on its own; nearest Friday is the past 10-23.
+        got = plan(today=dt.date(2026, 10, 24), scheduled=[dt.date(2026, 10, 26)])
+        self.assertEqual(got, [dt.date(2026, 10, 30)])
+
+    def test_holiday_moved_earlier_does_not_readd_friday(self):
+        # Fri 10-30 moved to Thu 10-29: second date is the following Friday.
+        got = plan(
+            scheduled=[FRI, dt.date(2026, 10, 29)], removed=[dt.date(2026, 10, 30)], horizon=3,
+        )
+        self.assertEqual(got, [dt.date(2026, 11, 6)])
+
+    def test_both_live_dates_moved_fills_from_next_free_friday(self):
+        # 10-23 → Mon 10-26 and 10-30 → Mon 11-02 (supplier running late twice).
+        got = plan(
+            today=dt.date(2026, 10, 24),
+            scheduled=[dt.date(2026, 10, 26)],
+            removed=[FRI, dt.date(2026, 10, 30)],
+        )
+        self.assertEqual(got, [dt.date(2026, 11, 6)])
+
+    def test_off_disables(self):
+        self.assertEqual(plan(weekday="off"), [])
+
 
 class TestEnsureRestockHorizon(unittest.TestCase):
     def _cfg(self, get_cfg):

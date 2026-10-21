@@ -5,10 +5,17 @@ Tunables (``bhaga.store_config``, unset = automation off):
   - ``restock_horizon_dates`` — integer floor of live dates (default 2 when weekday set)
 
 Only **adds** register-only schedule rows. Never deletes, moves, or touches Actuals /
-tub pins. Skips an ISO week that already has any live schedule date (holiday moves),
-and never re-adds a date the operator removed (latest ``inventory_edit_log`` row for
-that date is a ``restock_schedule`` clear). Mirrored by
-apps/operator-console/lib/inventory/restockHorizon.ts — keep both in lock-step.
+tub pins. Mirrored by apps/operator-console/lib/inventory/restockHorizon.ts — keep
+both in lock-step.
+
+Every delivery weekday is a *slot*. A slot is not added when:
+  - it is already scheduled;
+  - the operator removed it (latest ``inventory_edit_log`` row for that date is a
+    ``restock_schedule`` clear — a cancellation, or the source of a Move);
+  - an off-weekday live date stands in for it. An off-weekday date next to a
+    removed slot is that slot's delayed/early delivery (Move = clear + set), so it
+    stands in for nothing else; otherwise it stands in for the nearest slot
+    (Thursday before a holiday Friday, Monday after a late Friday).
 """
 
 from __future__ import annotations
@@ -49,9 +56,8 @@ def plan_horizon_additions(
 
     Live = scheduled dates from the first open day: today, or tomorrow once
     today's base closing is in (same rule as vw_order_reco_next_dates). Empty
-    when *weekday* is unset/unknown, *horizon* < 1, or enough live dates exist.
-    Never proposes a date in an ISO week that already has a live date, nor a
-    date in *removed*.
+    when *weekday* is unset/unknown/``off``, *horizon* < 1, or enough live
+    dates exist. Slot rules in the module docstring.
     """
     if not weekday:
         return []
@@ -64,20 +70,32 @@ def plan_horizon_additions(
     if len(live) >= horizon:
         return []
 
-    skip = set(removed)
-    occupied_weeks = {d.isocalendar()[:2] for d in live}
+    removed_slots = set(removed)
+    taken = set(removed_slots) | {d for d in live if d.weekday() == target}
+    move_sources: set[dt.date] = set()
+    for d in live:
+        if d.weekday() == target:
+            continue
+        prev = d - dt.timedelta(days=(d.weekday() - target) % 7)
+        nxt = prev + dt.timedelta(days=7)
+        near, far = (prev, nxt) if d - prev <= nxt - d else (nxt, prev)
+        source = next((s for s in (near, far) if s in removed_slots and s not in move_sources), None)
+        if source is not None:
+            move_sources.add(source)
+            continue
+        free = next((s for s in (near, far) if s not in taken), None)
+        if free is not None:
+            taken.add(free)
+
     need = horizon - len(live)
     added: list[dt.date] = []
-    cursor = start
-    # Cap scan at ~1 year so a bad config cannot loop forever.
-    limit = start + dt.timedelta(days=370)
-    while len(added) < need and cursor <= limit:
-        if cursor.weekday() == target and cursor not in skip:
-            week = cursor.isocalendar()[:2]
-            if week not in occupied_weeks:
-                added.append(cursor)
-                occupied_weeks.add(week)
-        cursor += dt.timedelta(days=1)
+    slot = start + dt.timedelta(days=(target - start.weekday()) % 7)
+    for _ in range(53):
+        if len(added) >= need:
+            break
+        if slot not in taken:
+            added.append(slot)
+        slot += dt.timedelta(days=7)
     return added
 
 
@@ -103,7 +121,7 @@ WITH today AS (SELECT CURRENT_DATE('America/Chicago') AS d),
 removed AS (
   SELECT delivery_date, action FROM {edit_log}
   WHERE store = @store AND entity = 'restock_schedule'
-    AND delivery_date >= (SELECT d FROM today)
+    AND delivery_date >= DATE_SUB((SELECT d FROM today), INTERVAL 7 DAY)
   QUALIFY ROW_NUMBER() OVER (PARTITION BY delivery_date ORDER BY edited_at DESC) = 1
 )
 SELECT

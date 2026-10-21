@@ -7,7 +7,7 @@ Jam / §4 approved in chat 2026-10-20 (labels via `phase_state.py advance --oper
 
 ## Jam / §4 (approved)
 
-1. **Inventory:** always keep ≥2 live restock dates on `/inventory` first table by auto-registering Fridays (`store_config restock_delivery_weekday=friday`, `restock_horizon_dates=2`). Top-up only; skip ISO weeks that already have any live date; register-only; never delete/move/overwrite Actuals or pins.
+1. **Inventory:** always keep ≥2 live restock dates on `/inventory` first table by auto-registering Fridays (`store_config restock_delivery_weekday=friday`, `restock_horizon_dates=2`). Top-up only; moved / off-Friday deliveries replace their Friday (slot model, 4e); register-only; never delete/move/overwrite Actuals or pins.
 2. **jarvis-new-task:** when already in Agents Window (`CURSOR_LAYOUT=glass` + `CURSOR_AGENT=1`), create the worktree and **attach this chat** (no new Cursor window); skill continues jam here. `--new-window` forces legacy open. Non-glass Mac handoff opens Agents Window (`/glass`) then seeds `/prompt`.
 
 ### Per-scenario evidence (PR §4)
@@ -20,6 +20,10 @@ Jam / §4 approved in chat 2026-10-20 (labels via `phase_state.py advance --oper
 4b. **Operator removal sticks:** date whose latest `inventory_edit_log` schedule row is `clear` is never re-added; the next free Friday fills the horizon instead.
 4c. **Page paints the new date:** console insert → `ensureOrderRecoFresh(..., { pageEdited: true })` requests refresh (trigger `restock-horizon`) despite the 60 s edit grace.
 4d. **Preview / flag off:** `CONSOLE_PREVIEW=1` or `FEATURES.writeRestock=false` → no write.
+4e. **Delivery slipped (operator 2026-10-20):** Fri 10-23 moved to Tue 10-27 → second date is Fri 10-30 (not 11-06); Mon registered without Move → nearest Friday; two slips → next free Friday. Python + vitest parity cases.
+4f. **Config on the page:** header **Deliveries: Fri · 2 ahead** (`DeliveryCadenceEdit` → `setRestockCadenceAction`, weekday/Off + 1–4) writes both keys via `setConfig` (history in `inventory_edit_log`), tops up, refreshes reco. Screenshot on PR preview.
+
+Slot model replaces the ISO-week rule: a Monday delay moved from the previous Friday would otherwise block that week's regular Friday.
 5. **Glass attach:** unit tests for `prefer_attach_here` + `_run_one` skip `open_cursor_handoff` when glass; prints `CONTINUE_IN_THIS_CHAT=1`. Skill doc says continue jam in-chat.
 6. **Legacy handoff:** non-glass path still opens worktree + glass + prompt (mocked).
 7. `python3 scripts/verify.py --full` green.

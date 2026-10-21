@@ -44,6 +44,36 @@ describe("planHorizonAdditions", () => {
   it("never re-adds an operator-removed date", () => {
     expect(plan({ scheduled: ["2026-10-23"], removed: ["2026-10-30"] })).toEqual(["2026-11-06"]);
   });
+
+  it("delayed delivery moved into next week keeps that week's Friday", () => {
+    expect(
+      plan({ todayIso: "2026-10-24", scheduled: ["2026-10-27"], removed: ["2026-10-23"] }),
+    ).toEqual(["2026-10-30"]);
+  });
+
+  it("delay registered without Move counts from the nearest Friday", () => {
+    expect(plan({ todayIso: "2026-10-24", scheduled: ["2026-10-26"] })).toEqual(["2026-10-30"]);
+  });
+
+  it("holiday moved earlier does not re-add the Friday", () => {
+    expect(
+      plan({ scheduled: ["2026-10-23", "2026-10-29"], removed: ["2026-10-30"], horizon: 3 }),
+    ).toEqual(["2026-11-06"]);
+  });
+
+  it("two moved deliveries fill from the next free Friday", () => {
+    expect(
+      plan({
+        todayIso: "2026-10-24",
+        scheduled: ["2026-10-26"],
+        removed: ["2026-10-23", "2026-10-30"],
+      }),
+    ).toEqual(["2026-11-06"]);
+  });
+
+  it("'off' disables", () => {
+    expect(plan({ weekday: "off" })).toEqual([]);
+  });
 });
 
 describe("parseHorizon", () => {

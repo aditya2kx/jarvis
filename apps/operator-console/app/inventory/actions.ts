@@ -16,6 +16,7 @@ import {
   clearCurrentQtyOverride,
   applyCurrentQtyOverrides,
   clearCurrentQtyOverrides,
+  ensureRestockHorizon,
   type RestockAction,
   type UsageDayOverrideMode,
 } from "@/lib/bq/writes";
@@ -28,6 +29,7 @@ import type { OrderRecoChange, OrderRecoStatus } from "@/lib/inventory/orderReco
 import type { RestockRow } from "@/lib/restock/parse";
 import { okAck, failAck, type ActionAck } from "@/lib/actions/types";
 import { FEATURES } from "@/lib/config/features";
+import { CADENCE_WEEKDAYS, MAX_HORIZON } from "@/lib/inventory/restockHorizon";
 
 const QUEUED = ["order-reco"];
 
@@ -118,6 +120,33 @@ export async function setCapacityAction(
     const by = await operatorEmail();
     await setConfig(DEFAULT_STORE, "order_reco_max_tubs", String(maxTubs), by);
     return finishOrderRecoWrite("capacity", by, "Capacity saved");
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/** Delivery weekday (or "off") + how many upcoming dates to keep (Issue #416). */
+export async function setRestockCadenceAction(
+  weekday: string,
+  horizon: number,
+): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  if (!FEATURES.writeRestock) {
+    return failAck(new Error("Restock writes are disabled"));
+  }
+  try {
+    const day = weekday.trim().toLowerCase();
+    if (day !== "off" && !CADENCE_WEEKDAYS.includes(day)) {
+      throw new Error(`Unknown delivery weekday: ${weekday}`);
+    }
+    if (!Number.isInteger(horizon) || horizon < 1 || horizon > MAX_HORIZON) {
+      throw new Error(`Upcoming dates must be 1–${MAX_HORIZON}`);
+    }
+    const by = await operatorEmail();
+    await setConfig(DEFAULT_STORE, "restock_delivery_weekday", day, by);
+    await setConfig(DEFAULT_STORE, "restock_horizon_dates", String(horizon), by);
+    const added = await ensureRestockHorizon(DEFAULT_STORE);
+    const note = added.length ? ` · added ${added.join(", ")}` : "";
+    return finishOrderRecoWrite("restock-cadence", by, `Delivery schedule saved${note}`);
   } catch (e) {
     return failAck(e);
   }

@@ -33,6 +33,8 @@ import { ACTIVE_BASES, type RestockRow } from "@/lib/restock/parse";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
 import { CapacityEdit } from "@/components/drawers/CapacityEdit";
+import { DeliveryCadenceEdit } from "@/components/drawers/DeliveryCadenceEdit";
+import { parseHorizon } from "@/lib/inventory/restockHorizon";
 import { UsageDayAuditTable } from "@/components/inventory/UsageDayAuditTable";
 import { OrderRecoTable } from "@/components/inventory/OrderRecoTable";
 import { OrderedTubsActualsTable } from "@/components/inventory/OrderedTubsActualsTable";
@@ -87,6 +89,8 @@ export default async function InventoryPage({
   let scheduledDates: { delivery_date: string; has_actuals: boolean }[] = [];
   let estimateByDate: Record<string, RestockRow[]> = {};
   let maxTubs: number | undefined;
+  let cadenceWeekday: string | null = null;
+  let cadenceHorizon: number | null = null;
   let error: string | undefined;
   let recoStatus: OrderRecoStatus | null = null;
   /** Showing stock/burn only, because no delivery date is registered. */
@@ -145,6 +149,8 @@ export default async function InventoryPage({
     estimateByDate = buildEstimateByDate(paintRows);
     const maxTubsRow = config.find((c) => c.key === "order_reco_max_tubs");
     maxTubs = maxTubsRow ? Number(maxTubsRow.value) : undefined;
+    cadenceWeekday = config.find((c) => c.key === "restock_delivery_weekday")?.value?.trim().toLowerCase() ?? null;
+    cadenceHorizon = parseHorizon(config.find((c) => c.key === "restock_horizon_dates")?.value);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -185,6 +191,7 @@ export default async function InventoryPage({
             ) : null}
             {FEATURES.writeRestock ? (
               <>
+                <DeliveryCadenceEdit weekday={cadenceWeekday} horizon={cadenceHorizon} />
                 <CapacityEdit currentMaxTubs={maxTubs} />
                 <RestockImportDrawer
                   dates={liveDates.length ? liveDates : dates}

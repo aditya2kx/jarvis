@@ -26,19 +26,22 @@ function weekdayOfIso(iso: string): number {
   return js === 0 ? 6 : js - 1;
 }
 
-/** ISO-week identity via that week's Monday (same grouping as date.isocalendar()[:2]). */
-function weekKey(iso: string): string {
-  return addDaysIso(iso, -weekdayOfIso(iso));
+function daysBetween(a: string, b: string): number {
+  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
 }
 
 export const AUTOMATION_BY = "restock-horizon";
 export const DEFAULT_HORIZON = 2;
+export const MAX_HORIZON = 4;
+export const CADENCE_WEEKDAYS = Object.keys(WEEKDAY_PY);
 
 /**
  * Live = scheduled dates from the first open day: today, or tomorrow once
- * today's base closing is in (same rule as vw_order_reco_next_dates). Never
- * proposes a date in a week that already has a live date, nor one the
- * operator removed.
+ * today's base closing is in (same rule as vw_order_reco_next_dates).
+ * Each delivery weekday is a slot; a slot is not added when scheduled,
+ * removed by the operator (cancelled, or the source of a Move), or stood in
+ * for by an off-weekday live date — the removed slot beside it (a Move), else
+ * the nearest slot.
  */
 export function planHorizonAdditions(opts: {
   todayIso: string;
@@ -59,20 +62,29 @@ export function planHorizonAdditions(opts: {
   ].sort();
   if (live.length >= opts.horizon) return [];
 
-  const skip = new Set((opts.removed ?? []).map((d) => d.slice(0, 10)));
-  const occupied = new Set(live.map(weekKey));
+  const removedSlots = new Set((opts.removed ?? []).map((d) => d.slice(0, 10)));
+  const taken = new Set([...removedSlots, ...live.filter((d) => weekdayOfIso(d) === want)]);
+  const moveSources = new Set<string>();
+  for (const d of live) {
+    if (weekdayOfIso(d) === want) continue;
+    const prev = addDaysIso(d, -((weekdayOfIso(d) - want + 7) % 7));
+    const next = addDaysIso(prev, 7);
+    const [near, far] = daysBetween(prev, d) <= daysBetween(d, next) ? [prev, next] : [next, prev];
+    const source = [near, far].find((s) => removedSlots.has(s) && !moveSources.has(s));
+    if (source) {
+      moveSources.add(source);
+      continue;
+    }
+    const free = [near, far].find((s) => !taken.has(s));
+    if (free) taken.add(free);
+  }
+
   const need = opts.horizon - live.length;
   const added: string[] = [];
-  let cursor = start;
-  for (let i = 0; i <= 370 && added.length < need; i++) {
-    if (weekdayOfIso(cursor) === want && !skip.has(cursor)) {
-      const week = weekKey(cursor);
-      if (!occupied.has(week)) {
-        added.push(cursor);
-        occupied.add(week);
-      }
-    }
-    cursor = addDaysIso(cursor, 1);
+  let slot = addDaysIso(start, (want - weekdayOfIso(start) + 7) % 7);
+  for (let i = 0; i < 53 && added.length < need; i++) {
+    if (!taken.has(slot)) added.push(slot);
+    slot = addDaysIso(slot, 7);
   }
   return added;
 }

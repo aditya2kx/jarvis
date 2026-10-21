@@ -263,8 +263,13 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
   `core/restock_horizon.py`, wired into `refresh_order_reco`). Unset weekday =
   off; skipped in preview and when `FEATURES.writeRestock` is off. Live dates
   start tomorrow once today's base closing is in, so Friday evening already
-  adds the Friday after next. A date the operator removed (latest edit-log row
-  is a `restock_schedule` clear) is never re-added. When it inserts, the page
+  adds the Friday after next. Every Friday is a slot: a removed date (latest
+  edit-log row is a `restock_schedule` clear — cancel or Move source) is never
+  re-added, and an off-Friday date stands in for the removed Friday beside it
+  (a slipped delivery moved via **Move date**) or else the nearest Friday, so the
+  second date counts from where deliveries really are. Header control
+  **Deliveries: Fri · 2 ahead** (`DeliveryCadenceEdit`, `setRestockCadenceAction`)
+  edits weekday / Off and 1–4 upcoming dates. When it inserts, the page
   requests the refresh itself (`ensureOrderRecoFresh(..., { pageEdited })`,
   trigger `restock-horizon`) instead of waiting out the 60 s edit grace.
   Never deletes dates or touches Actuals.

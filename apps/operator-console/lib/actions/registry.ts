@@ -14,6 +14,7 @@ export const MUTATING_ACTIONS = [
   { name: "moveRestockDateAction", page: "inventory", heavy: "order-reco" },
   { name: "removeRestockDateAction", page: "inventory", heavy: "order-reco" },
   { name: "setCapacityAction", page: "inventory", heavy: "order-reco" },
+  { name: "setRestockCadenceAction", page: "inventory", heavy: "order-reco" },
   { name: "setUsageDayOverrideAction", page: "inventory", heavy: "order-reco" },
   { name: "clearUsageDayOverrideAction", page: "inventory", heavy: "order-reco" },
   { name: "applyUsageDayOverridesAction", page: "inventory", heavy: "order-reco" },

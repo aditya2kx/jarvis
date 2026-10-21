@@ -32,6 +32,14 @@ def refresh_order_reco(
 ) -> str | None:
     """Recompute inventory_order_reco for *store*. No-op when BQ is disabled."""
     from core.datastore import _param_config, fq, get_client
+    from core.restock_horizon import ensure_restock_horizon
+
+    # Top up Friday (or configured weekday) schedule dates before the water-fill
+    # reads vw_order_reco_next_dates — otherwise a missing second date blanks a column.
+    try:
+        ensure_restock_horizon(store)
+    except Exception as exc:  # noqa: BLE001 — never block reco on horizon ensure
+        logger.error("restock_horizon_ensure_failed store=%s trigger=%s exc=%s", store, trigger, exc)
 
     client = get_client()
     if client is None:

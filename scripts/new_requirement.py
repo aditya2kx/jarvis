@@ -542,6 +542,7 @@ def _run_one(
     cursor_delay: float,
     dry_run: bool,
     no_open: bool = False,
+    new_window: bool = False,
     existing_issue: int | None = None,
 ) -> int:
     """Create one worktree for a single (possibly consolidated) requirement."""
@@ -593,7 +594,10 @@ def _run_one(
             _post_worktree_comment(int(m.group(1)), wt, branch, dry_run=dry_run)
 
     if dry_run:
-        print("(dry-run — no Cursor opened)")
+        if not new_window and S.prefer_attach_here():
+            print("(dry-run — would attach worktree to this chat: CONTINUE_IN_THIS_CHAT=1, no new window)")
+        else:
+            print("(dry-run — would open a new Cursor window; no Cursor opened)")
         if issue_url:
             print(f"Tracking issue → {issue_url}")
         return 0
@@ -607,6 +611,8 @@ def _run_one(
         print("Pick up the work in this chat; commit and push from within the worktree.")
         return 0
 
+    # Agents Window (Glass) + already in an agent chat: attach this chat to the
+    # new worktree instead of opening a second window. Opt out with --new-window.
     # Ensure the always-on dev-signals daemon is running so every new worktree
     # is automatically covered for CI/comment/merge events without manual setup.
     try:
@@ -614,6 +620,10 @@ def _run_one(
         _DEL.ensure_daemon()
     except Exception as _e:
         print(f"(ensure-daemon: non-fatal: {_e})", file=sys.stderr)
+
+    if not new_window and S.prefer_attach_here():
+        S.attach_worktree_here(folder=wt, brief=brief, issue_url=issue_url)
+        return 0
 
     S.open_cursor_handoff(
         folder=wt,
@@ -702,6 +712,11 @@ def main(argv: list[str] | None = None) -> int:
     cli.add_argument("--no-open", action="store_true",
                      help="Create worktree + brief + issue without opening a Cursor window "
                           "(agent-driven / cloud / dogfood runs).")
+    cli.add_argument(
+        "--new-window", action="store_true",
+        help="Force a new Cursor window even when already in Agents Window (Glass). "
+             "Default in Glass is attach-this-chat.",
+    )
     cli.add_argument("--issue", type=int, default=None,
                      help="Link an already-filed GitHub issue instead of creating a new one.")
     cli.add_argument("--dry-run", action="store_true", help="Print plan without creating anything")
@@ -746,6 +761,7 @@ def main(argv: list[str] | None = None) -> int:
                 cursor_delay=args.cursor_delay,
                 dry_run=args.dry_run,
                 no_open=args.no_open,
+                new_window=args.new_window,
                 existing_issue=issue_ref,
             )
         return rc
@@ -796,6 +812,7 @@ def main(argv: list[str] | None = None) -> int:
         cursor_delay=args.cursor_delay,
         dry_run=args.dry_run,
         no_open=args.no_open,
+        new_window=args.new_window,
         existing_issue=issue_ref,
     )
 

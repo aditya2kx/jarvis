@@ -143,18 +143,22 @@ export function toStatus(row: StatusRow | undefined): OrderRecoStatus {
 export async function ensureOrderRecoFresh(
   store: string,
   requestedBy: string,
+  opts: { pageEdited?: boolean } = {},
 ): Promise<{ status: OrderRecoStatus; requested: boolean }> {
   const status = await orderRecoStatus(store);
   if (status.state !== "stale" || isConsolePreview()) return { status, requested: false };
   // The edit that made inputs stale started its own refresh; its `running` row
   // can lag the submit by seconds, and the drawer's router.refresh() lands here
   // inside that gap. Requesting again would only supersede the operator's run.
-  if (status.lastEditAgeS != null && status.lastEditAgeS < EDIT_REFRESH_GRACE_S) {
+  // `pageEdited` (this render wrote inputs itself, e.g. the restock horizon)
+  // means that latest edit has no refresh of its own yet.
+  if (!opts.pageEdited && status.lastEditAgeS != null && status.lastEditAgeS < EDIT_REFRESH_GRACE_S) {
     return { status, requested: false };
   }
-  const { runId } = await requestOrderRecoRefresh({ store, trigger: "page-open-stale", requestedBy });
+  const trigger = opts.pageEdited ? "restock-horizon" : "page-open-stale";
+  const { runId } = await requestOrderRecoRefresh({ store, trigger, requestedBy });
   return {
-    status: { ...status, state: "running", runId, startedAt: new Date().toISOString(), trigger: "page-open-stale" },
+    status: { ...status, state: "running", runId, startedAt: new Date().toISOString(), trigger },
     requested: true,
   };
 }

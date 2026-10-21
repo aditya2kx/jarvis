@@ -41,6 +41,15 @@ Deployment-env config variables (e.g. `BHAGA_SECRETS_BACKEND`, `BHAGA_STATE_BACK
 
 ---
 
+## Runtime store_config tunables (not env flags)
+
+| Key | Default when unset | What it does | Change via |
+|-----|-------------------|--------------|------------|
+| `restock_delivery_weekday` | *(unset = off)* | Delivery weekday name (`friday`, …). When set, nightly + `/inventory` page-open top up the restock schedule to `restock_horizon_dates` Fridays (register-only; moved/off-weekday deliveries replace their Friday; never re-add an operator-removed date). `off` = disabled. Issue #416. | `/inventory` **Deliveries** control, or `/bhaga-cloud config set restock_delivery_weekday friday` |
+| `restock_horizon_dates` | `2` (only when weekday is set) | How many live schedule dates to keep. | `/bhaga-cloud config set restock_horizon_dates 2` |
+
+---
+
 ## "Safe by construction → no flag" precedents
 
 Some changes are safe to apply directly without a flag because they are additive and idempotent:

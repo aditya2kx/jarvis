@@ -56,6 +56,8 @@ import pr_cost_store as _store
 import dev_models as _dm
 
 LEDGER_DIR = Path(__file__).resolve().parent.parent / "metrics" / "pr_cost"
+# Build sources written by scripts/cloud_agent.py::record_cost (one Cursor agent per PR line).
+AGENT_SCOPED_BUILD_SOURCES = frozenset({"cursor_cloud_agent_api", "benchmark_estimate"})
 
 # A build session is considered the "dominant" cost hotspot when it alone is at
 # least this fraction of total build cost — the single thing most worth fixing.
@@ -901,7 +903,10 @@ def validate(pr: int, *, require_build: bool = False) -> tuple[bool, list[str]]:
                 f"build window is {span / 3600_000:.1f}h with manual attribution — "
                 "likely includes parallel chat spaces; re-capture with start_pr_session + sync"
             )
-    if rec.get("session_started_at") and b.get("attribution_mode") != "conversation":
+    # A Cursor agent (Cloud or an Agents Window chat on the Mac worker) is billed
+    # per bc-id by cloud_agent.record_cost — already scoped to exactly one chat.
+    if (rec.get("session_started_at") and b.get("attribution_mode") != "conversation"
+            and b.get("source") not in AGENT_SCOPED_BUILD_SOURCES):
         problems.append(
             "session_started_at is set but build was not conversation-scoped — "
             f"run `pr_cost_ledger.py sync --pr {pr}` after binding the chat"

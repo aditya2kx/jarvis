@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for new_requirement.py."""
 
+import io
 import os
 import sys
 import tempfile
@@ -160,6 +161,80 @@ class TestNewRequirement(unittest.TestCase):
         _, kwargs = mock_session.call_args
         self.assertEqual(kwargs.get("mode"), N.S.DEFAULT_JAM_HANDOFF_MODE)
         self.assertEqual(kwargs.get("model"), N.S.DEFAULT_JAM_HANDOFF_MODEL)
+
+    @patch("new_requirement.create_worktree")
+    @patch("new_requirement.start_session_in_worktree")
+    @patch("new_requirement._repo_root", return_value=Path("/repo/jarvis"))
+    def test_dry_run_reports_attach_vs_new_window(self, _root, mock_session, _wt):
+        mock_session.return_value = (Path("/b.md"), Path("/l.html"), "cursor://test")
+        base = ["--requirement", "Test requirement", "--branch", "fix/test-req", "--dry-run"]
+        for extra, env, expected in (
+            ([], {"CURSOR_LAYOUT": "glass", "CURSOR_AGENT": "1"}, "CONTINUE_IN_THIS_CHAT=1"),
+            (["--new-window"], {"CURSOR_LAYOUT": "glass", "CURSOR_AGENT": "1"}, "new Cursor window"),
+            ([], {"CURSOR_LAYOUT": "", "CURSOR_AGENT": ""}, "new Cursor window"),
+        ):
+            with self.subTest(extra=extra, env=env), patch.dict("os.environ", env), \
+                 patch("sys.stdout", new_callable=io.StringIO) as out:
+                self.assertEqual(N.main(base + extra), 0)
+                self.assertIn(expected, out.getvalue())
+
+    @patch("dev_event_listener.ensure_daemon", create=True)
+    @patch("new_requirement.S.open_cursor_handoff")
+    @patch("new_requirement.S.attach_worktree_here")
+    @patch("new_requirement.S.prefer_attach_here", return_value=True)
+    @patch("new_requirement.init_phase_tracking", return_value="https://github.com/aditya2kx/jarvis/issues/1")
+    @patch("new_requirement._seed_cache_to_worktree")
+    @patch("new_requirement._post_worktree_comment")
+    @patch("new_requirement.create_worktree")
+    @patch("new_requirement.start_session_in_worktree")
+    @patch("new_requirement._repo_root")
+    def test_glass_attach_skips_new_window(
+        self, mock_root, mock_session, mock_wt, mock_comment, mock_seed,
+        mock_phase, mock_prefer, mock_attach, mock_open, _daemon,
+    ):
+        mock_root.return_value = Path("/repo/jarvis")
+        brief = Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-brief.md")
+        mock_session.return_value = (
+            brief,
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-launch.html"),
+            "cursor://test",
+        )
+        with patch.dict("sys.modules", {"dev_event_listener": MagicMock(ensure_daemon=MagicMock())}):
+            rc = N.main([
+                "--requirement", "glass attach demo",
+                "--branch", "fix/glass-attach-demo",
+            ])
+        self.assertEqual(rc, 0)
+        mock_attach.assert_called_once()
+        mock_open.assert_not_called()
+
+    @patch("new_requirement.S.open_cursor_handoff")
+    @patch("new_requirement.S.attach_worktree_here")
+    @patch("new_requirement.S.prefer_attach_here", return_value=True)
+    @patch("new_requirement.init_phase_tracking", return_value=None)
+    @patch("new_requirement._seed_cache_to_worktree")
+    @patch("new_requirement.create_worktree")
+    @patch("new_requirement.start_session_in_worktree")
+    @patch("new_requirement._repo_root")
+    def test_new_window_flag_forces_open(
+        self, mock_root, mock_session, mock_wt, mock_seed, mock_phase,
+        mock_prefer, mock_attach, mock_open,
+    ):
+        mock_root.return_value = Path("/repo/jarvis")
+        mock_session.return_value = (
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-brief.md"),
+            Path("/repo/jarvis-wt-x/metrics/pr_cost/session-x-launch.html"),
+            "cursor://test",
+        )
+        with patch.dict("sys.modules", {"dev_event_listener": MagicMock(ensure_daemon=MagicMock())}):
+            rc = N.main([
+                "--requirement", "force window",
+                "--branch", "fix/force-window",
+                "--new-window",
+            ])
+        self.assertEqual(rc, 0)
+        mock_open.assert_called_once()
+        mock_attach.assert_not_called()
 
 
 import shutil

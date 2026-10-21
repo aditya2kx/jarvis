@@ -1,6 +1,12 @@
 import "server-only";
 import { dateParam, fq, intParam, mutate, q } from "./client";
 import { logInventoryEdit } from "./editLog";
+import {
+  AUTOMATION_BY,
+  parseHorizon,
+  planHorizonAdditions,
+} from "@/lib/inventory/restockHorizon";
+import { isConsolePreview } from "@/lib/config/preview";
 
 // Every write here mirrors the exact statement cloud/webhook/handler.py uses
 // (see handler.py::_restock_set_schedule/_restock_clear_orders/
@@ -26,6 +32,106 @@ export async function setRestockSchedule(store: string, deliveryDate: string, by
     { store, date: dateParam(deliveryDate), by },
   );
   await logInventoryEdit({ store, entity: "restock_schedule", action: "set", deliveryDate, newValue: true, by });
+}
+
+/**
+ * INSERT-only schedule row (horizon automation). Does not rewrite updated_by
+ * when the date already exists — unlike setRestockSchedule's MERGE.
+ * Same statement as core/restock_horizon.py::_insert_schedule_if_absent.
+ */
+async function insertRestockScheduleIfAbsent(
+  store: string,
+  deliveryDate: string,
+  by: string,
+): Promise<boolean> {
+  const before = await q<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM ${fq("inventory_restock_schedule")}
+     WHERE store = @store AND delivery_date = @date`,
+    { store, date: dateParam(deliveryDate) },
+  );
+  if (Number(before[0]?.n ?? 0) > 0) return false;
+  await mutate(
+    `INSERT INTO ${fq("inventory_restock_schedule")}
+       (store, delivery_date, updated_at, updated_by)
+     SELECT @store, @date, CURRENT_TIMESTAMP(), @by
+     FROM (SELECT 1)
+     WHERE NOT EXISTS (
+       SELECT 1 FROM ${fq("inventory_restock_schedule")}
+       WHERE store = @store AND delivery_date = @date
+     )`,
+    { store, date: dateParam(deliveryDate), by },
+  );
+  await logInventoryEdit({ store, entity: "restock_schedule", action: "set", deliveryDate, newValue: true, by });
+  return true;
+}
+
+/**
+ * Top up live restock schedule dates from store_config
+ * (`restock_delivery_weekday` / `restock_horizon_dates`). No-op when weekday
+ * unset or in read-only preview. Returns the ISO dates it inserted; the caller
+ * must request an order-reco refresh when any were added.
+ */
+export async function ensureRestockHorizon(store: string): Promise<string[]> {
+  if (isConsolePreview()) return [];
+  const [row] = await q<{
+    weekday: string | null;
+    horizon: string | null;
+    today: string;
+    today_closed: boolean;
+    scheduled: string[];
+    removed: string[];
+  }>(
+    `WITH cfg AS (
+       SELECT key, value FROM ${fq("store_config")}
+       WHERE store = @store AND key IN ('restock_delivery_weekday', 'restock_horizon_dates')
+       QUALIFY ROW_NUMBER() OVER (PARTITION BY key ORDER BY updated_at DESC) = 1
+     ),
+     today AS (SELECT CURRENT_DATE('America/Chicago') AS d),
+     removed AS (
+       SELECT delivery_date, action FROM ${fq("inventory_edit_log")}
+       WHERE store = @store AND entity = 'restock_schedule'
+         AND delivery_date >= DATE_SUB((SELECT d FROM today), INTERVAL 7 DAY)
+       QUALIFY ROW_NUMBER() OVER (PARTITION BY delivery_date ORDER BY edited_at DESC) = 1
+     )
+     SELECT
+       (SELECT value FROM cfg WHERE key = 'restock_delivery_weekday') AS weekday,
+       (SELECT value FROM cfg WHERE key = 'restock_horizon_dates') AS horizon,
+       CAST((SELECT d FROM today) AS STRING) AS today,
+       EXISTS (
+         SELECT 1 FROM ${fq("inventory_closing_daily")} c
+         WHERE c.store = @store AND c.category = 'base' AND c.submitted_date = (SELECT d FROM today)
+       ) AS today_closed,
+       ARRAY(
+         SELECT DISTINCT CAST(delivery_date AS STRING) FROM ${fq("inventory_restock_schedule")}
+         WHERE store = @store AND delivery_date >= (SELECT d FROM today)
+       ) AS scheduled,
+       ARRAY(SELECT CAST(delivery_date AS STRING) FROM removed WHERE action = 'clear') AS removed`,
+    { store },
+  );
+  if (!row?.weekday?.trim()) return [];
+  const planned = planHorizonAdditions({
+    todayIso: row.today,
+    weekday: row.weekday,
+    horizon: parseHorizon(row.horizon),
+    scheduled: row.scheduled ?? [],
+    todayClosed: Boolean(row.today_closed),
+    removed: row.removed ?? [],
+  });
+  const added: string[] = [];
+  for (const d of planned) {
+    try {
+      if (await insertRestockScheduleIfAbsent(store, d, AUTOMATION_BY)) added.push(d);
+    } catch (e) {
+      console.error(`restock_horizon_insert_failed store=${store} date=${d}: ${String(e)}`);
+    }
+  }
+  if (added.length) {
+    console.info(
+      `restock_horizon_added store=${store} added=${added.join(",")} ` +
+        `scheduled=${(row.scheduled ?? []).join(",")} today_closed=${Boolean(row.today_closed)}`,
+    );
+  }
+  return added;
 }
 
 async function deleteRestockOrders(store: string, deliveryDate: string): Promise<void> {

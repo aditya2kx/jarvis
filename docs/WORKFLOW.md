@@ -107,6 +107,13 @@ existing issue has the `jarvis-work`/`stage:align` labels and the `<!-- phase-st
 checklist body injected (idempotent — safe to repeat).  This prevents the duplicate
 `[work] …` issue that would otherwise be created alongside the manually-filed one.
 
+**Agents Window attach (Issue #416):** when the front door runs inside the Agents Window
+(`CURSOR_LAYOUT=glass` + `CURSOR_AGENT=1`, `start_pr_session.prefer_attach_here`), it attaches the
+new worktree to the current chat (`attach_worktree_here` prints `CONTINUE_IN_THIS_CHAT=1`) and the
+jam continues there — no second window. `--new-window` forces the old handoff; outside the Agents
+Window the handoff opens the Agents Window (`/glass`) and then seeds the jam prompt. `--dry-run`
+prints which path it would take.
+
 After spinning up the worktree + brief + cost session it calls
 `init_phase_tracking()` → `phase_state.py init --kickoff`, which seeds
 

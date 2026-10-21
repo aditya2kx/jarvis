@@ -24,7 +24,7 @@ CONSOLE_SA=$PN-compute@developer.gserviceaccount.com
 SANDBOX_SVC=bhaga-webhook-cachepv
 REGISTRY=$REGION-docker.pkg.dev/$P/jarvis-images
 
-gcloud services enable pubsub.googleapis.com logging.googleapis.com firestore.googleapis.com --project $P
+gcloud services enable pubsub.googleapis.com logging.googleapis.com firestore.googleapis.com cloudbuild.googleapis.com --project $P
 
 # Probe table for the outside-write check (core/migrations/090_console_cache_probe.sql).
 bq --project_id=$P query --use_legacy_sql=false --quiet \
@@ -64,10 +64,11 @@ case "$MODE" in
   sandbox)
     # Same runtime SA as bhaga-webhook (Firestore access) but no Slack/Plaid config and no
     # public ingress: only the push SA may invoke it. Prod bhaga-webhook is untouched.
+    # Cloud Build, not Cloud Shell's docker: its pushes to Artifact Registry get "connection refused".
     TAG=$REGISTRY/bhaga-webhook:cachepv-$(git rev-parse --short HEAD)
-    gcloud auth configure-docker $REGION-docker.pkg.dev --quiet >/dev/null
-    docker build -q -t "$TAG" -f cloud/webhook/Dockerfile .
-    docker push -q "$TAG"
+    BUILD=$(mktemp)
+    printf 'steps:\n- name: gcr.io/cloud-builders/docker\n  args: [build, -t, "%s", -f, cloud/webhook/Dockerfile, .]\nimages: ["%s"]\n' "$TAG" "$TAG" > "$BUILD"
+    gcloud builds submit . --project $P --region $REGION --config "$BUILD" --quiet
     gcloud run deploy $SANDBOX_SVC --image "$TAG" --region $REGION --project $P \
       --service-account "$WEBHOOK_SA" --no-allow-unauthenticated --max-instances 1 --quiet
     URL=$(gcloud run services describe $SANDBOX_SVC --region $REGION --project $P --format='value(status.url)')

@@ -7,8 +7,8 @@
 #
 # BigQuery audit log (every write to the `bhaga` dataset, whoever makes it) → log sink →
 # Pub/Sub topic → push (OIDC as console-cache-push) → <consumer>/cache/bq-write → Firestore
-# console_cache_versions/{table} += 1. `prod` also deletes the sandbox consumer, then turns the
-# cache on (operator-console CONSOLE_QUERY_CACHE=on) once a probe write is seen bumping a version.
+# console_cache_versions/{table} += 1. `prod` also deletes the sandbox consumer, then sets
+# CONSOLE_QUERY_CACHE=on after a probe bump (cache is on by default in code; this undoes any =off).
 set -euo pipefail
 
 MODE=${1:?usage: provision_console_cache.sh sandbox|prod}
@@ -106,8 +106,8 @@ fi
 
 echo "console cache feed: sink=$SINK → topic=$TOPIC → sub=$SUB → $ENDPOINT (push as $PUSH_SA)"
 
-# The console cache is opt-in: switch it on only after an outside write is seen bumping a
-# version through this consumer, so a broken feed can never leave pages stale.
+# Cache is on by default in code; still set CONSOLE_QUERY_CACHE=on after a probe bump so any
+# leftover =off is cleared and the enable step is recorded in the Cloud Shell log.
 if [ "$MODE" = prod ]; then
   bash "$(dirname "$0")/console_cache_probe.sh" 180
   gcloud run services update operator-console --region $REGION --project $P --quiet \

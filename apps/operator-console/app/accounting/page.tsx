@@ -11,6 +11,7 @@ import { FEATURES } from "@/lib/config/features";
 import { isConsolePreview } from "@/lib/config/preview";
 import { storeDisplayName } from "@/lib/config/stores";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { InfoNote } from "@/components/shell/InfoNote";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
 import { DateRangePicker } from "@/components/filters/DateRangePicker";
@@ -22,7 +23,7 @@ import {
   AccountingLedger,
   type AccountingTxnRow,
 } from "@/components/accounting/AccountingLedger";
-import { dateSortKey, formatDollars } from "@/lib/format";
+import { dateSortKey, formatDateTime, formatDollars } from "@/lib/format";
 import { excludedFromAccountingRollup } from "@/lib/plaid/exclude-accounting";
 import { resolveFromTo } from "@/lib/plaid/account-parties";
 
@@ -232,10 +233,7 @@ export default async function AccountingPage({
         }
       />
 
-      <div
-        role="note"
-        className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
-      >
+      <InfoNote summary="Bank feed vs Square sales">
         <p>
           <span className="font-medium text-foreground">Bank feed</span> (checking + card) drives
           money in / out / cash flow and the transaction ledger.{" "}
@@ -250,7 +248,7 @@ export default async function AccountingPage({
             This period Square net sales: {formatDollars(squareTotal)}
           </p>
         ) : null}
-      </div>
+      </InfoNote>
 
       {error ? (
         <p className="text-sm text-muted-foreground">
@@ -261,11 +259,11 @@ export default async function AccountingPage({
 
       <Card>
         <CardHeader className="flex-row items-center justify-between">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Bank link</CardTitle>
+          <CardTitle className="text-sm font-semibold text-foreground">Bank link</CardTitle>
           {linked ? (
             <span className="text-xs text-muted-foreground">
               {institution || "Linked"}
-              {lastSynced ? ` · last sync ${lastSynced}` : ""}
+              {lastSynced ? ` · synced ${formatDateTime(lastSynced)}` : ""}
             </span>
           ) : (
             <span className="text-xs text-muted-foreground">Not linked</span>
@@ -276,10 +274,9 @@ export default async function AccountingPage({
             <p className="text-sm text-muted-foreground">Plaid Link writes disabled.</p>
           )}
           <p className="mt-2 text-xs text-muted-foreground">
-            Categories are Palmetto taxonomy (Copilot rules). Click a category for definition +
-            matched rule; Propose rule from the sheet to backfill history. Sync / Reapply keeps
-            historical + new txns categorized. Put transfers / Personal under a category with
-            Exclude from accounting so Money out is not inflated.
+            Transactions are sorted into Palmetto categories by rules; tap a category to see its
+            rule. Put transfers and personal spend under a category marked Exclude from
+            accounting so money out isn&apos;t inflated.
           </p>
         </CardContent>
       </Card>

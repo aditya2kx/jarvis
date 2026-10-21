@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   CartesianGrid,
   Line,
@@ -11,6 +12,16 @@ import {
   YAxis,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useIsPhone } from "@/components/shell/useIsPhone";
+import { LABOR_CHART_COLORS, seriesColorAt } from "@/lib/charts/palette";
+import {
+  FloatingReadout,
+  ReadoutSlot,
+  ScrubReadout,
+  SeriesToggles,
+  useHiddenSeries,
+  type Readout,
+} from "./ChartInteraction";
 
 export interface Series {
   key: string;
@@ -49,8 +60,10 @@ function formatTick(value: number, format: LineValueFormat): string {
     return `${Math.round(n)}`;
   }
   const n = Number(value);
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
-  return `$${n.toFixed(0)}`;
+  const sign = n < 0 ? "−" : "";
+  const abs = Math.abs(n);
+  if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(abs % 1000 === 0 ? 0 : 1)}k`;
+  return `${sign}$${abs.toFixed(0)}`;
 }
 
 function formatPct(value: unknown): string {
@@ -60,6 +73,34 @@ function formatPct(value: unknown): string {
   const rounded = Math.round(n * 10) / 10;
   const sign = rounded > 0 ? "+" : "";
   return `${sign}${rounded.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+}
+
+function lineColor(s: Series, i: number): string {
+  return s.color ?? seriesColorAt(i);
+}
+
+/** Visible series at one x; Compare rows also carry `prior_bucket` and a `pct_*` change. */
+function lineReadout(
+  label: unknown,
+  row: Record<string, unknown> | undefined,
+  series: Series[],
+  hidden: ReadonlySet<string>,
+  format: LineValueFormat,
+): Readout | null {
+  if (!row) return null;
+  const priorBucket = row.prior_bucket;
+  const pctEntry = Object.entries(row).find(([k, v]) => k.startsWith("pct_") && v != null);
+  return {
+    title:
+      typeof priorBucket === "string" && priorBucket
+        ? `${String(label ?? "")}  ·  vs ${priorBucket}`
+        : String(label ?? ""),
+    rows: series
+      .map((s, i) => ({ s, color: lineColor(s, i) }))
+      .filter(({ s }) => !hidden.has(s.key) && !s.key.startsWith("pct_"))
+      .map(({ s, color }) => ({ label: s.label, value: formatAbs(row[s.key], format), color })),
+    notes: pctEntry ? [`% change: ${formatPct(pctEntry[1])}`] : undefined,
+  };
 }
 
 // Dashed goal line: the only "computed" thing here is a visual comparison of
@@ -94,26 +135,41 @@ export function LineChartCard({
 }) {
   const hasRight = series.some((s) => s.yAxisId === "right");
   const tipFormat: LineValueFormat = valueFormat ?? "number";
+  const phone = useIsPhone();
+  const { hidden, toggle } = useHiddenSeries();
+  const [readoutEl, setReadoutEl] = useState<HTMLDivElement | null>(null);
+  const readoutFor = (label: unknown, row: Record<string, unknown> | undefined) =>
+    lineReadout(label, row, series, hidden, tipFormat);
 
   return (
     <Card>
       <CardHeader className="gap-1">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        <CardTitle className="text-sm font-semibold">{title}</CardTitle>
         {subtitle ? (
-          <p className="text-xs text-muted-foreground/80">{subtitle}</p>
+          <p className="text-xs text-muted-foreground">{subtitle}</p>
         ) : null}
       </CardHeader>
-      <CardContent>
-        <ResponsiveContainer width="100%" height={height}>
+      <CardContent className="flex flex-col gap-3">
+        <SeriesToggles
+          items={series
+            .map((s, i) => ({ key: s.key, label: s.label, color: lineColor(s, i) }))
+            .filter((item) => !item.key.startsWith("pct_"))}
+          hidden={hidden}
+          onToggle={toggle}
+        />
+        {phone ? <ReadoutSlot onMount={setReadoutEl} /> : null}
+        <ResponsiveContainer width="100%" height={height} className="touch-pan-y">
           <LineChart
             data={data}
             margin={{ top: 8, right: hasRight ? 8 : 12, left: -12, bottom: 0 }}
           >
-            <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-            <XAxis dataKey={xKey} tick={{ fontSize: 12 }} />
+            <CartesianGrid vertical={false} className="stroke-border/70" />
+            <XAxis dataKey={xKey} tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
             <YAxis
               yAxisId="left"
               tick={{ fontSize: 12 }}
+              tickLine={false}
+              axisLine={false}
               tickFormatter={
                 valueFormat
                   ? (v) => formatTick(Number(v), valueFormat)
@@ -125,54 +181,27 @@ export function LineChartCard({
                 yAxisId="right"
                 orientation="right"
                 tick={{ fontSize: 12 }}
+                tickLine={false}
+                axisLine={false}
                 tickFormatter={(v) => `${v}%`}
                 width={48}
               />
             ) : null}
             <Tooltip
-              // Compare keeps % change in row data (pct_*) without a third line;
-              // append it to the tooltip under the current/prior absolute values.
-              content={(props) => {
-                const { active, payload, label } = props;
-                if (!active || !payload?.length) return null;
-                const row = payload[0]?.payload as Record<string, unknown> | undefined;
-                const priorBucket = row?.prior_bucket;
-                const pctEntry = row
-                  ? Object.entries(row).find(([k, v]) => k.startsWith("pct_") && v != null)
-                  : undefined;
-                const header =
-                  typeof priorBucket === "string" && priorBucket
-                    ? `${label}  ·  vs ${priorBucket}`
-                    : String(label ?? "");
-                return (
-                  <div
-                    style={{
-                      background: "var(--popover)",
-                      border: "1px solid var(--border)",
-                      fontSize: 12,
-                      padding: "8px 10px",
-                      borderRadius: 6,
-                    }}
-                  >
-                    <div style={{ marginBottom: 4, fontWeight: 500 }}>{header}</div>
-                    {payload.map((item) => {
-                      const key = String(item.dataKey ?? "");
-                      if (key.startsWith("pct_")) return null;
-                      return (
-                        <div key={key} style={{ color: item.color }}>
-                          {String(item.name)}: {formatAbs(item.value, tipFormat)}
-                        </div>
-                      );
-                    })}
-                    {pctEntry ? (
-                      <div style={{ marginTop: 4, color: "var(--muted-foreground)" }}>
-                        % change: {formatPct(pctEntry[1])}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              }}
+              content={({ active, label, payload }) =>
+                phone || !active ? null : (
+                  <FloatingReadout
+                    readout={readoutFor(label, payload?.[0]?.payload as Record<string, unknown> | undefined)}
+                  />
+                )
+              }
             />
+            {phone ? (
+              <ScrubReadout
+                target={readoutEl}
+                build={(label) => readoutFor(label, data.find((row) => String(row[xKey] ?? "") === label))}
+              />
+            ) : null}
             {series.map((s, i) => (
               <Line
                 key={s.key}
@@ -180,7 +209,8 @@ export function LineChartCard({
                 type="monotone"
                 dataKey={s.key}
                 name={s.label}
-                stroke={s.color ?? `var(--chart-${(i % 5) + 1})`}
+                hide={hidden.has(s.key)}
+                stroke={lineColor(s, i)}
                 strokeWidth={s.yAxisId === "right" ? 1.5 : 2}
                 strokeDasharray={s.dashed ? "6 4" : undefined}
                 dot={false}
@@ -192,9 +222,10 @@ export function LineChartCard({
               <ReferenceLine
                 yAxisId="left"
                 y={goal}
-                stroke="var(--destructive)"
+                stroke={LABOR_CHART_COLORS.goalLine}
                 strokeDasharray="4 4"
-                label={{ value: goalLabel ?? "Goal", position: "insideTopRight", fontSize: 11 }}
+                strokeWidth={1.5}
+                label={{ value: goalLabel ?? "Goal", position: "insideTopRight", fontSize: 11, fill: LABOR_CHART_COLORS.goalLine }}
               />
             ) : null}
           </LineChart>

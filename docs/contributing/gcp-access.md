@@ -147,7 +147,7 @@ no project roles — only per-resource grants:
 | Grant | Use |
 |---|---|
 | `secretAccessor` on `github-bot-pat` | `cloud_git_identity.sh`: git + `gh` as `jarvis-agent-bot328` |
-| `iap.httpsResourceAccessor` on each **preview** (`operator-console-preview.yml`) | `console_preview.py`: open / screenshot a PR preview with an ID token — never prod |
+| `iap.httpsResourceAccessor` on each **preview** (`operator-console-preview.yml`) | `console_preview.py`: open / screenshot a PR or `preview/**` branch preview with an ID token — never prod |
 
 One-time, idempotent, from an owner ADC surface (an agent can drive Cloud Shell, signing in with
 `skills/vault`):

@@ -6,7 +6,14 @@ name: Operator Console preview
 #                 sticky PR comment with the URL.
 #   screenshots — the PR's build served on the runner against prod BQ (WIF ADC),
 #                 captured with capture_evidence.py → sticky PR comment (PR §4 / G5).
-#   teardown    — on close, delete the service; the daily sweep catches any miss.
+#   teardown    — on close, delete the service; the hourly sweep catches any miss.
+#
+# Pre-PR branch previews: push `preview/<name>` (no PR is opened for that prefix) to deploy
+# `operator-console-pv-<slug>-<hash>` (scripts/console_preview.py --branch … --print-service),
+# same IAP + read-only setup, URL in the run summary. Keep the name short, `preview/<issue>-<slug>`:
+# the WIF subject carries the ref and GCP caps it at 127 bytes. It lives at most 24 h (label
+# `expires`, hourly sweep), is deleted when the preview branch is deleted, and when a PR whose
+# branch is `<prefix>/<issue>-…` deploys its own preview (label `issue`). Re-push to respawn.
 #
 # Every preview runs CONSOLE_PREVIEW=1: all non-GET requests are refused in
 # middleware.ts and no secrets are mounted, so it can read prod data but not change it.
@@ -19,8 +26,11 @@ on:
     paths:
       - "apps/operator-console/**"
       - ".github/workflows/operator-console-preview.yml"
+  push:
+    branches: ['preview/**']
+  delete:
   schedule:
-    - cron: "17 9 * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 env:
@@ -30,31 +40,63 @@ env:
   REGISTRY: us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images
   PROD_SERVICE: operator-console
   PR: ${{ github.event.pull_request.number }}
-  SERVICE: operator-console-pr${{ github.event.pull_request.number }}
   AGENT_SA: cursor-cloud-agent@jarvis-bhaga-prod.iam.gserviceaccount.com
+  BRANCH_TTL_HOURS: "24"
 
 concurrency:
-  group: operator-console-preview-${{ github.event.pull_request.number || github.run_id }}
+  group: operator-console-preview-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   deploy:
     if: >-
-      github.event_name == 'pull_request' &&
-      github.event.action != 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'pull_request' &&
+       github.event.action != 'closed' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
       pull-requests: write
+    outputs:
+      service: ${{ steps.target.outputs.service }}
     env:
       GH_TOKEN: ${{ github.token }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Resolve preview target
+        id: target
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [ -n "$PR" ]; then
+            SERVICE="$(python3 scripts/console_preview.py --pr "$PR" --print-service)"
+            TAG="pr$PR"
+            LABELS="jarvis-preview=operator-console,pr=$PR"
+            # Branch previews for this PR's issue (`<prefix>/<issue>-…` ↔ `preview/<issue>-…`) are superseded.
+            STALE="$(echo "${HEAD_REF#*/}" | grep -oE '^[0-9]+' || true)"
+          else
+            # WIF maps the token subject `repo:<owner/repo>:ref:refs/heads/<branch>`; GCP caps it at 127 bytes.
+            SUBJECT="repo:$GITHUB_REPOSITORY:ref:$GITHUB_REF"
+            if [ "${#SUBJECT}" -gt 127 ]; then
+              echo "::error::preview: branch name too long for GCP auth (${#SUBJECT}/127 bytes) — use a short preview/<issue>-<slug>"; exit 1
+            fi
+            SERVICE="$(python3 scripts/console_preview.py --branch "$GITHUB_REF_NAME" --print-service)"
+            TAG="${SERVICE#operator-console-}"
+            EXPIRES_AT="$(( $(date +%s) + BRANCH_TTL_HOURS * 3600 ))"
+            LABELS="jarvis-preview=operator-console-branch,expires=$EXPIRES_AT"
+            ISSUE="$(echo "${GITHUB_REF_NAME#preview/}" | grep -oE '^[0-9]+' || true)"
+            [ -n "$ISSUE" ] && LABELS="$LABELS,issue=$ISSUE"
+            STALE=""
+          fi
+          { echo "SERVICE=$SERVICE"; echo "TAG=$TAG"; echo "LABELS=$LABELS"; echo "STALE=$STALE"; echo "EXPIRES_AT=${EXPIRES_AT:-}"; } >> "$GITHUB_ENV"
+          echo "service=$SERVICE" >> "$GITHUB_OUTPUT"
+          echo "preview: target $SERVICE labels=$LABELS"
 
       - uses: google-github-actions/auth@v2
         with:
@@ -67,9 +109,9 @@ jobs:
         working-directory: apps/operator-console
         run: |
           gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
-          IMAGE="$REGISTRY/operator-console:pr-$PR-${HEAD_SHA::12}"
+          IMAGE="$REGISTRY/operator-console:$TAG-${HEAD_SHA::12}"
           # Each push redeploys this preview while the operator may have it open.
-          docker build --build-arg "NEXT_DEPLOYMENT_ID=pr$PR-${HEAD_SHA::12}" -t "$IMAGE" .
+          docker build --build-arg "NEXT_DEPLOYMENT_ID=$TAG-${HEAD_SHA::12}" -t "$IMAGE" .
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
@@ -86,7 +128,7 @@ jobs:
             --service-account "$RUNTIME_SA" \
             --no-allow-unauthenticated --iap \
             --memory 512Mi --min-instances 0 --max-instances 1 \
-            --labels "jarvis-preview=operator-console,pr=$PR" \
+            --labels "$LABELS" \
             --set-env-vars "BQ_PROJECT=$PROJECT_ID,BQ_DATASET=bhaga,CONSOLE_PREVIEW=1,IAP_SERVICE_NAME=$SERVICE"
 
       # Same Google sign-in and allowlist as prod: IAP's service agent may invoke
@@ -124,7 +166,28 @@ jobs:
             set_iap /tmp/iap.json
           fi
 
+      - name: Delete superseded branch previews
+        if: env.STALE != ''
+        run: |
+          gcloud run services list --region "$REGION" --project "$PROJECT_ID" \
+            --filter "metadata.labels.jarvis-preview=operator-console-branch AND metadata.labels.issue=$STALE" \
+            --format "value(metadata.name)" |
+          while read -r name; do
+            gcloud run services delete "$name" --region "$REGION" --project "$PROJECT_ID" --quiet
+            echo "preview: deleted branch preview $name (issue #$STALE, PR #$PR has its own)"
+          done
+
+      - name: Branch preview URL
+        if: github.event_name == 'push'
+        run: |
+          URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app"
+          EXPIRES="$(date -u -d "@$EXPIRES_AT" '+%Y-%m-%d %H:%M UTC')"
+          printf '### Operator Console branch preview\n**[%s/home](%s/home)** — `%s` commit `%s`\n\nRead-only, prod data, prod IAP allowlist. Deleted at %s or when the branch is deleted; re-push `%s` to respawn.\n' \
+            "$URL" "$URL" "$GITHUB_REF_NAME" "${HEAD_SHA::7}" "$EXPIRES" "$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo "preview: deployed $SERVICE url=$URL sha=${HEAD_SHA::7} expires=$EXPIRES"
+
       - name: Comment preview URL
+        if: github.event_name == 'pull_request'
         run: |
           URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app"
           cat > /tmp/body.md <<EOF
@@ -216,16 +279,20 @@ jobs:
           python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
             --marker operator-console-preview-shots --body-file /tmp/body.md
 
-  # Every menu item, tapped from the mobile hamburger on the real preview (IAP + Cloud Run),
-  # in iPhone WebKit: fails if a tap does not navigate or a page throws. Logs paths and
+  # Every page, tapped from the phone tab bar's More sheet on the real preview (IAP + Cloud
+  # Run), in iPhone WebKit: fails if a tap does not navigate or a page throws. Logs paths and
   # timings only (public repo).
   smoke:
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    if: >-
+      (github.event_name == 'pull_request' && github.event.action != 'closed') ||
+      github.event_name == 'push'
     needs: deploy
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+    env:
+      SERVICE: ${{ needs.deploy.outputs.service }}
     steps:
       - uses: google-github-actions/auth@v2
         id: idt
@@ -259,13 +326,13 @@ jobs:
               errors = []
               page.on("pageerror", lambda e: errors.append(str(e)[:160]))
               page.goto(base + "/home", wait_until="networkidle", timeout=180000)
-              page.get_by_role("button", name="Open navigation").tap(); page.wait_for_timeout(700)
+              page.get_by_role("button", name="More pages").tap(); page.wait_for_timeout(700)
               hrefs = [h for h in page.get_by_role("dialog").locator("a[href^='/']").evaluate_all("els => els.map(e => e.getAttribute('href'))") if h != "/home"]
               page.keyboard.press("Escape")
               for href in hrefs:
                   page.goto(base + "/home", wait_until="networkidle", timeout=180000)
                   errors.clear()
-                  page.get_by_role("button", name="Open navigation").tap(); page.wait_for_timeout(700)
+                  page.get_by_role("button", name="More pages").tap(); page.wait_for_timeout(700)
                   t = time.time(); page.get_by_role("dialog").locator(f"a[href='{href}']").tap()
                   try:
                       page.wait_for_url(f"**{href}**", timeout=30000)
@@ -294,6 +361,7 @@ jobs:
       pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
+      SERVICE: operator-console-pr${{ github.event.pull_request.number }}
     steps:
       - uses: actions/checkout@v4
 
@@ -316,7 +384,39 @@ jobs:
           python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
             --marker operator-console-preview --body-file /tmp/body.md
 
-  # Safety net for a missed `closed` event: delete preview services whose PR is no longer open.
+  branch-teardown:
+    if: >-
+      github.event_name == 'delete' &&
+      github.event.ref_type == 'branch' &&
+      startsWith(github.event.ref, 'preview/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Delete branch preview service
+        env:
+          BRANCH: ${{ github.event.ref }}
+        run: |
+          SERVICE="$(python3 scripts/console_preview.py --branch "$BRANCH" --print-service)"
+          if gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT_ID" >/dev/null 2>&1; then
+            gcloud run services delete "$SERVICE" --region "$REGION" --project "$PROJECT_ID" --quiet
+            echo "preview: deleted $SERVICE ($BRANCH deleted)"
+          else
+            echo "preview: $SERVICE not found"
+          fi
+
+  # Safety net for a missed `closed` event: delete preview services whose PR is no longer open,
+  # and branch previews past their `expires` label.
   sweep:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -348,5 +448,20 @@ jobs:
             else
               gcloud run services delete "$name" --region "$REGION" --project "$PROJECT_ID" --quiet
               echo "sweep: deleted $name (PR #$pr $state)"
+            fi
+          done
+
+      - name: Delete expired branch previews
+        run: |
+          now="$(date +%s)"
+          gcloud run services list --region "$REGION" --project "$PROJECT_ID" \
+            --filter "metadata.labels.jarvis-preview=operator-console-branch" \
+            --format "value(metadata.name,metadata.labels.expires)" |
+          while read -r name expires; do
+            if [ -n "$expires" ] && [ "$expires" -gt "$now" ]; then
+              echo "sweep: keep $name ($(( (expires - now) / 60 )) min left)"
+            else
+              gcloud run services delete "$name" --region "$REGION" --project "$PROJECT_ID" --quiet
+              echo "sweep: deleted $name (expired)"
             fi
           done

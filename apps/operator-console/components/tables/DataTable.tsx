@@ -10,8 +10,11 @@ import {
   type ReactNode,
 } from "react";
 import {
+  type Cell,
+  type Column,
   type ColumnDef,
   type ColumnFiltersState,
+  type Table as TanTable,
   type ColumnPinningState,
   type RowData,
   type SortingState,
@@ -27,6 +30,9 @@ import {
   ChevronsUpDownIcon,
   ChevronDownIcon,
   CheckIcon,
+  ArrowUpDownIcon,
+  LayoutListIcon,
+  Table2Icon,
 } from "lucide-react";
 import { Popover } from "@base-ui/react/popover";
 import {
@@ -38,13 +44,21 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
 import { parsePerkReasons } from "@/lib/payroll/perkLabels";
 import { classifyAdpDiff } from "@/lib/payroll/adpDiff";
 import { formatBucket, type Grain } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
-import { runTone, WARN_BADGE_CLASS } from "@/lib/run-status";
+import { OK_BADGE_CLASS, runTone, WARN_BADGE_CLASS } from "@/lib/run-status";
 import {
   facetedMultiOptions,
   filterTextOrMulti,
@@ -54,6 +68,7 @@ import {
   computeMetaPinOffsets,
   pinOffsetsEqual,
 } from "@/lib/tables/pin-offsets";
+import { useIsPhone } from "@/components/shell/useIsPhone";
 
 // Threshold coloring for numeric/pct/dollars columns (Figma: red/amber/green
 // on p95, % late, Days-left, wage-diff). `warn`/`bad` are in the same unit as
@@ -107,7 +122,17 @@ declare module "@tanstack/react-table" {
     maxWidth?: number;
     /** Preferred column width in px (`table-layout: fixed`). */
     width?: number;
+    /** Override alignment; numeric formats right-align by default. */
+    align?: "left" | "right";
   }
+}
+
+const NUMERIC_FORMATS = new Set<ColumnFormat["kind"]>(["dollars", "cents", "pct", "number", "adp_diff"]);
+
+/** Figures right-align so digits line up down the column. */
+function alignRight(meta: { format?: ColumnFormat; align?: "left" | "right" } | undefined): boolean {
+  if (meta?.align) return meta.align === "right";
+  return meta?.format ? NUMERIC_FORMATS.has(meta.format.kind) : false;
 }
 
 function columnLayoutStyle(meta: { maxWidth?: number; width?: number } | undefined): CSSProperties {
@@ -211,6 +236,13 @@ function renderFormatted(
       if (runTone(value as string) === "warn") {
         return (
           <Badge variant="outline" className={WARN_BADGE_CLASS}>
+            {value as string}
+          </Badge>
+        );
+      }
+      if (statusVariant(value as string) === "default") {
+        return (
+          <Badge variant="outline" className={OK_BADGE_CLASS}>
             {value as string}
           </Badge>
         );
@@ -326,7 +358,7 @@ export function MultiSelectFilter({
         onClick={(e) => e.stopPropagation()}
         aria-label={`Filter ${label}`}
         className={cn(
-          "flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors",
+          "flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors max-md:h-9 max-md:min-w-24 max-md:text-sm",
           "focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40",
           active
             ? "border-primary/50 bg-primary/10 text-foreground"
@@ -390,7 +422,7 @@ export function MultiSelectFilter({
                         role="option"
                         aria-selected={checked}
                         className={cn(
-                          "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+                          "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted max-md:min-h-11 max-md:items-center max-md:text-sm",
                           checked && "bg-muted/70",
                         )}
                         onClick={() => toggle(opt)}
@@ -422,6 +454,227 @@ export function MultiSelectFilter({
   );
 }
 
+function cellContent<TData>(cell: Cell<TData, unknown>): ReactNode {
+  const format = cell.column.columnDef.meta?.format;
+  return format
+    ? renderFormatted(format, cell.getValue(), cell.row.original as Record<string, unknown>)
+    : flexRender(cell.column.columnDef.cell, cell.getContext());
+}
+
+/** Plain-text column label; grouped columns read "Group · Column" so a card stays unambiguous. */
+function columnLabel<TData>(column: Column<TData, unknown>): string {
+  const own = column.columnDef.header;
+  const label = typeof own === "string" ? own : column.id;
+  const parent = column.parent?.columnDef.header;
+  return typeof parent === "string" && parent ? `${parent} · ${label}` : label;
+}
+
+function isBlank(value: unknown): boolean {
+  return value == null || value === "";
+}
+
+const PHONE_PAGE = 20;
+/** Table rows rendered before "Show more" — long ledgers otherwise make 9,000px pages. */
+export const TABLE_PAGE = 50;
+const CARD_FIELDS = 6;
+
+/**
+ * Phone-only (below md) controls: a Table/Cards switch, and in card view (no headers to
+ * tap) a sort-by-column picker.
+ */
+function PhoneToolbar<TData>({
+  table,
+  sorting,
+  setSorting,
+  view,
+  setView,
+  scrollable,
+}: {
+  table: TanTable<TData>;
+  sorting: SortingState;
+  setSorting: (next: SortingState) => void;
+  view: "cards" | "table";
+  setView: (next: "cards" | "table") => void;
+  /** Columns overflow the screen — only then is "swipe sideways" true. */
+  scrollable: boolean;
+}) {
+  const sortable = table.getAllLeafColumns().filter((c) => c.getCanSort());
+  const items = [
+    { value: "", label: "Default order" },
+    ...sortable.map((c) => ({ value: c.id, label: columnLabel(c) })),
+  ];
+  const current = sorting[0];
+  return (
+    <div className="flex items-center justify-end gap-2 md:hidden" data-testid="data-table-phone-toolbar">
+      {view === "table" ? (
+        <p className="mr-auto text-xs text-muted-foreground">
+          {scrollable ? "Swipe sideways for more columns · tap a header to sort" : "Tap a header to sort"}
+        </p>
+      ) : (
+      <>
+      <Select
+        items={items}
+        value={current?.id ?? ""}
+        onValueChange={(id) =>
+          setSorting(id ? [{ id, desc: current?.id === id ? current.desc : false }] : [])
+        }
+      >
+        <SelectTrigger className="h-9 min-w-0 flex-1 text-sm" aria-label="Sort rows by">
+          <ArrowUpDownIcon className="size-3.5 text-muted-foreground" aria-hidden />
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {items.map((it) => (
+            <SelectItem key={it.value || "default"} value={it.value}>
+              {it.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <button
+        type="button"
+        disabled={!current}
+        onClick={() => current && setSorting([{ id: current.id, desc: !current.desc }])}
+        aria-label={current?.desc ? "Sorted descending — switch to ascending" : "Sorted ascending — switch to descending"}
+        className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-input text-muted-foreground transition-colors active:bg-muted disabled:opacity-40"
+      >
+        {current?.desc ? <ArrowDownIcon className="size-4" /> : <ArrowUpIcon className="size-4" />}
+      </button>
+      </>
+      )}
+      <div role="group" aria-label="Row layout" className="flex shrink-0 items-center rounded-lg bg-secondary p-0.5">
+        {(
+          [
+            ["table", Table2Icon, "Table"],
+            ["cards", LayoutListIcon, "Cards"],
+          ] as const
+        ).map(([value, Icon, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={view === value}
+            aria-label={`${label} layout`}
+            onClick={() => setView(value)}
+            className={cn(
+              "flex size-8 items-center justify-center rounded-md transition-colors",
+              view === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground",
+            )}
+          >
+            <Icon className="size-4" aria-hidden />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Phone row cards: the first column (or first pinned one) is the card title, the rest are
+ * label/value pairs in two columns. Long rows show the first few fields with a per-card
+ * expander, and the list pages in 20s so a 500-row ledger doesn't render at once.
+ */
+function PhoneCards<TData>({
+  table,
+  rowClassName,
+  filterHint,
+}: {
+  table: TanTable<TData>;
+  rowClassName: (row: TData) => string | undefined;
+  filterHint: boolean;
+}) {
+  const [limit, setLimit] = useState(PHONE_PAGE);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const rows = table.getRowModel().rows;
+  const shown = rows.slice(0, limit);
+
+  if (!rows.length) {
+    return (
+      <p className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground md:hidden">
+        No rows.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2 md:hidden" data-testid="data-table-cards">
+      {filterHint ? (
+        <p className="text-xs text-muted-foreground">Column filters stay applied here; switch to Table to change them.</p>
+      ) : null}
+      <ul className="flex flex-col gap-2">
+        {shown.map((row) => {
+          const cells = row.getVisibleCells();
+          const pinned = cells.filter((c) => c.column.getIsPinned());
+          const [titleCell, subtitleCell] = pinned.length ? pinned : cells.slice(0, 1);
+          const rest = cells.filter(
+            (c) => c !== titleCell && c !== subtitleCell && !isBlank(c.getValue()),
+          );
+          const open = expanded.has(row.id);
+          const fields = open ? rest : rest.slice(0, CARD_FIELDS);
+          return (
+            <li
+              key={row.id}
+              className={cn(
+                "rounded-xl border border-border bg-card px-3.5 py-3 text-card-foreground",
+                rowClassName(row.original),
+              )}
+            >
+              {titleCell ? (
+                <div className="mb-2 flex items-baseline justify-between gap-3">
+                  <span className="min-w-0 break-words text-sm font-semibold">{cellContent(titleCell)}</span>
+                  {subtitleCell && !isBlank(subtitleCell.getValue()) ? (
+                    <span className="min-w-0 truncate text-right text-xs text-muted-foreground">
+                      {columnLabel(subtitleCell.column)}{" "}
+                      <span className="font-medium text-foreground tabular-nums">{cellContent(subtitleCell)}</span>
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 border-t border-border/60 pt-2">
+                {fields.map((cell) => (
+                  <div
+                    key={cell.id}
+                    className={cn("flex min-w-0 flex-col", cell.column.columnDef.meta?.wrap && "col-span-2")}
+                  >
+                    <dt className="truncate text-[11px] text-muted-foreground">{columnLabel(cell.column)}</dt>
+                    <dd className="min-w-0 break-words text-sm tabular-nums">{cellContent(cell)}</dd>
+                  </div>
+                ))}
+              </dl>
+              {rest.length > CARD_FIELDS ? (
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  onClick={() =>
+                    setExpanded((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(row.id)) next.delete(row.id);
+                      else next.add(row.id);
+                      return next;
+                    })
+                  }
+                  className="mt-2 flex min-h-9 w-full items-center justify-center gap-1 rounded-lg text-xs font-medium text-muted-foreground transition-colors active:bg-muted"
+                >
+                  {open ? "Fewer fields" : `All ${rest.length} fields`}
+                  <ChevronDownIcon className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+                </button>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {rows.length > limit ? (
+        <button
+          type="button"
+          onClick={() => setLimit((n) => n + PHONE_PAGE)}
+          className="flex min-h-11 items-center justify-center rounded-xl border border-border text-sm font-medium transition-colors active:bg-muted"
+        >
+          Show {Math.min(PHONE_PAGE, rows.length - limit)} more · {rows.length - limit} left
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 // Thin TanStack wrapper. `pinLeft` mirrors Grafana panel 83's
 // `options.frozenColumns.left` — used by the M3 dual-date reco table to keep
 // Item/Current Qty/Avg per day visible while scrolling the date groups.
@@ -450,9 +703,13 @@ export function DataTable<TData>({
   /** Stable row id (Accounting: transaction_id). Omit to use TanStack index default. */
   getRowId?: (row: TData, index: number) => string;
 }) {
+  // A phone is too narrow for several frozen columns (Accounting's five are 568px on a
+  // 390px screen), so below md only the first one stays frozen and the rest scroll.
+  const phone = useIsPhone();
+  const pins = useMemo(() => (phone ? pinLeft.slice(0, 1) : pinLeft), [phone, pinLeft]);
   const columnPinning = useMemo<ColumnPinningState>(
-    () => ({ left: [...pinLeft], right: [] }),
-    [pinLeft],
+    () => ({ left: [...pins], right: [] }),
+    [pins],
   );
   // Client-side sort across every column — Grafana's table panels let an
   // operator click any header to sort; this is the console-side equivalent.
@@ -460,6 +717,7 @@ export function DataTable<TData>({
   // ledgers (Accounting) without replacing page-level FilterSelect controls.
   const [sorting, setSorting] = useState<SortingState>(initialSorting);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+  const [rowLimit, setRowLimit] = useState(TABLE_PAGE);
 
   const table = useReactTable({
     data,
@@ -577,15 +835,16 @@ export function DataTable<TData>({
   const containerRef = useRef<HTMLDivElement>(null);
   const [domPinOffsets, setDomPinOffsets] = useState<Record<string, number>>({});
   const [atEnd, setAtEnd] = useState(true);
+  const [atStart, setAtStart] = useState(true);
   const measuringRef = useRef(false);
 
   const metaPinOffsets = useMemo(
     () =>
       computeMetaPinOffsets(
         columns as { accessorKey?: string; id?: string; meta?: { width?: number } }[],
-        pinLeft,
+        pins,
       ),
-    [columns, pinLeft],
+    [columns, pins],
   );
   const pinOffsets = metaPinOffsets ?? domPinOffsets;
 
@@ -596,6 +855,8 @@ export function DataTable<TData>({
     const updateScrollEnd = () => {
       const end = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
       setAtEnd((prev) => (prev === end ? prev : end));
+      const start = el.scrollLeft <= 0;
+      setAtStart((prev) => (prev === start ? prev : start));
     };
 
     // Meta path: offsets are render-time constants — only track scroll fade.
@@ -610,7 +871,7 @@ export function DataTable<TData>({
         updateScrollEnd();
         return;
       }
-      const heads = el.querySelectorAll<HTMLElement>('thead th[data-pinned="left"]');
+      const heads = el.querySelectorAll<HTMLElement>('thead tr:last-child th[data-pinned="left"]');
       const next = accumulateDomPinOffsets(
         Array.from(heads).map((h) => ({
           colId: h.dataset.colId || "",
@@ -638,16 +899,54 @@ export function DataTable<TData>({
     };
     // pinLeft identity + column defs (not row data) — data churn must not
     // re-measure sticky left (ResizeObserver ↔ setState loop).
-  }, [columns, pinLeft, metaPinOffsets]);
+  }, [columns, pins, metaPinOffsets]);
 
-  const lastPinnedId = pinLeft[pinLeft.length - 1];
+  // Grouped headers stack several sticky rows; each row sticks below the ones above it.
+  const headerGroups = table.getHeaderGroups();
+  const theadRef = useRef<HTMLTableSectionElement>(null);
+  const [rowTops, setRowTops] = useState<number[]>([]);
+  const [frozenWidth, setFrozenWidth] = useState(0);
+  useLayoutEffect(() => {
+    const thead = theadRef.current;
+    if (!thead || headerGroups.length < 2) return;
+    const measure = () => {
+      const frozen = Array.from(thead.querySelectorAll<HTMLElement>('tr:last-child th[data-pinned="left"]'));
+      const width = frozen.reduce((w, th) => w + th.offsetWidth, 0);
+      setFrozenWidth((prev) => (prev === width ? prev : width));
+      let top = 0;
+      const next = Array.from(thead.rows).map((r) => {
+        const t = top;
+        top += r.offsetHeight;
+        return t;
+      });
+      setRowTops((prev) => (prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(thead);
+    return () => ro.disconnect();
+  }, [headerGroups.length]);
+
+  const lastPinnedId = pins[pins.length - 1];
+  const pinnedClass = (id: string) =>
+    cn(
+      "sticky bg-(--table-bg) max-md:max-w-[40vw]",
+      id === lastPinnedId && "border-r border-border",
+      id === lastPinnedId && !atStart && "shadow-[6px_0_8px_-6px_rgb(0_0_0/0.35)]",
+    );
   const useFixedLayout = columns.some((c) => {
     const meta = c.meta as { wrap?: boolean; maxWidth?: number; width?: number } | undefined;
     return Boolean(meta?.maxWidth != null || meta?.width != null);
   });
+  const [phoneView, setPhoneView] = useState<"cards" | "table">("table");
 
   return (
-    <div className="flex flex-col gap-2">
+    // Frozen cells and the sticky header need an opaque fill that matches what's behind the
+    // table — the page, or the card it usually sits in.
+    <div
+      className="flex flex-col gap-2 [--table-bg:var(--background)] in-data-[slot=card]:[--table-bg:var(--card)]"
+      data-testid="data-table"
+    >
       {enableColumnFilters ? (
         <p className="text-xs text-muted-foreground">
           Showing {filteredCount.toLocaleString()} of {data.length.toLocaleString()} transactions
@@ -666,16 +965,62 @@ export function DataTable<TData>({
           ) : null}
         </p>
       ) : null}
-      <div className="relative overflow-hidden rounded-md border border-border">
+      <PhoneToolbar
+        table={table}
+        sorting={sorting}
+        setSorting={setSorting}
+        view={phoneView}
+        setView={setPhoneView}
+        scrollable={!(atStart && atEnd)}
+      />
+      {phoneView === "cards" ? (
+        <PhoneCards
+          table={table}
+          rowClassName={rowClassName}
+          filterHint={enableColumnFilters}
+        />
+      ) : null}
+      <div
+        className={cn(
+          "relative overflow-hidden rounded-md border border-border",
+          phoneView === "cards" && "max-md:hidden",
+        )}
+      >
         <Table
           containerRef={containerRef}
-          className={cn(useFixedLayout ? "table-fixed" : "min-w-max")}
+          containerClassName="max-md:max-h-[70dvh] max-md:overscroll-x-contain"
+          className={cn(useFixedLayout ? "table-fixed" : "min-w-max", "max-md:text-[13px]")}
         >
-          <TableHeader>
-            {table.getHeaderGroups().map((hg) => (
+          <TableHeader ref={theadRef}>
+            {headerGroups.map((hg, rowIndex) => (
               <TableRow key={hg.id}>
                 {hg.headers.map((header) => {
                   const pinned = header.column.getIsPinned();
+                  const top = rowTops[rowIndex] ?? 0;
+                  const groupRow = rowIndex < headerGroups.length - 1;
+                  if (groupRow) {
+                    return (
+                      <TableHead
+                        key={header.id}
+                        colSpan={header.colSpan}
+                        data-pinned={pinned || undefined}
+                        style={{ top, ...(pinned ? { left: pinOffsets[header.column.id] ?? 0 } : {}) }}
+                        className={cn(
+                          "sticky z-20 h-8 bg-(--table-bg) text-xs max-md:px-2",
+                          !header.isPlaceholder && "border-x border-border font-semibold text-foreground",
+                          pinned && cn(pinnedClass(header.column.id), "z-30"),
+                        )}
+                      >
+                        {header.isPlaceholder ? null : (
+                          // Rides along the frozen edge so the group name stays in view while
+                          // any of its columns are on screen.
+                          <span className="sticky inline-block" style={{ left: frozenWidth + 8 }}>
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                          </span>
+                        )}
+                      </TableHead>
+                    );
+                  }
                   const sortable = header.column.getCanSort();
                   const sortDir = header.column.getIsSorted();
                   const meta = header.column.columnDef.meta;
@@ -689,14 +1034,15 @@ export function DataTable<TData>({
                       data-pinned={pinned || undefined}
                       data-col-id={header.column.id}
                       style={{
+                        top,
                         ...(pinned ? { left: pinOffsets[header.column.id] ?? 0 } : {}),
                         ...columnLayoutStyle(meta),
                       }}
                       className={cn(
-                        "align-top",
+                        "sticky z-20 bg-(--table-bg) align-top max-md:px-2",
+                        alignRight(meta) && "text-right [&>div]:items-end",
                         meta?.wrap && "whitespace-normal",
-                        pinned && "sticky z-10 bg-background",
-                        pinned && header.column.id === lastPinnedId && "border-r border-border",
+                        pinned && cn(pinnedClass(header.column.id), "z-30"),
                       )}
                     >
                       <div className="flex flex-col gap-1.5">
@@ -704,7 +1050,7 @@ export function DataTable<TData>({
                           <button
                             type="button"
                             onClick={header.column.getToggleSortingHandler()}
-                            className="flex items-center gap-1 hover:text-foreground"
+                            className="flex items-center gap-1 text-left hover:text-foreground max-md:min-h-8"
                             aria-label={`Sort by ${String(header.column.columnDef.header)}`}
                           >
                             {flexRender(header.column.columnDef.header, header.getContext())}
@@ -740,7 +1086,8 @@ export function DataTable<TData>({
                               onChange={(e) => header.column.setFilterValue(e.target.value)}
                               onClick={(e) => e.stopPropagation()}
                               placeholder="Filter…"
-                              className="h-7 w-full min-w-0 px-2 text-xs font-normal"
+                              data-compact
+                              className="h-7 w-full min-w-0 px-2 text-xs font-normal max-md:h-9"
                               aria-label={`Filter ${String(header.column.columnDef.header)}`}
                             />
                           )
@@ -754,10 +1101,9 @@ export function DataTable<TData>({
           </TableHeader>
           <TableBody>
             {table.getRowModel().rows.length ? (
-              table.getRowModel().rows.map((row) => (
+              table.getRowModel().rows.slice(0, rowLimit).map((row) => (
                 <TableRow key={row.id} className={rowClassName(row.original)}>
                   {row.getVisibleCells().map((cell) => {
-                    const format = cell.column.columnDef.meta?.format;
                     const meta = cell.column.columnDef.meta;
                     const pinned = cell.column.getIsPinned();
                     return (
@@ -768,20 +1114,15 @@ export function DataTable<TData>({
                           ...columnLayoutStyle(meta),
                         }}
                         className={cn(
+                          "max-md:px-2",
+                          alignRight(meta) && "text-right",
                           meta?.wrap
                             ? "whitespace-normal break-words align-top"
                             : undefined,
-                          pinned && "sticky z-10 bg-background",
-                          pinned && cell.column.id === lastPinnedId && "border-r border-border",
+                          pinned && cn(pinnedClass(cell.column.id), "z-10 max-md:whitespace-normal max-md:break-words"),
                         )}
                       >
-                        {format
-                          ? renderFormatted(
-                              format,
-                              cell.getValue(),
-                              cell.row.original as Record<string, unknown>,
-                            )
-                          : flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        {cellContent(cell)}
                       </TableCell>
                     );
                   })}
@@ -789,7 +1130,7 @@ export function DataTable<TData>({
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
+                <TableCell colSpan={table.getVisibleLeafColumns().length} className="text-center text-muted-foreground">
                   No rows.
                 </TableCell>
               </TableRow>
@@ -797,9 +1138,19 @@ export function DataTable<TData>({
           </TableBody>
         </Table>
         {!atEnd ? (
-          <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background" />
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-(--table-bg)" />
         ) : null}
       </div>
+      {(phoneView === "table" || !phone) && table.getRowModel().rows.length > rowLimit ? (
+        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span className="tabular-nums">
+            Showing {rowLimit.toLocaleString()} of {table.getRowModel().rows.length.toLocaleString()} rows
+          </span>
+          <Button type="button" variant="outline" size="sm" onClick={() => setRowLimit((n) => n + TABLE_PAGE)}>
+            Show {Math.min(TABLE_PAGE, table.getRowModel().rows.length - rowLimit)} more
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -7,13 +7,17 @@ import { cn } from "@/lib/utils"
 function Table({
   className,
   containerRef,
+  containerClassName,
   ...props
-}: React.ComponentProps<"table"> & { containerRef?: React.Ref<HTMLDivElement> }) {
+}: React.ComponentProps<"table"> & {
+  containerRef?: React.Ref<HTMLDivElement>
+  containerClassName?: string
+}) {
   return (
     <div
       ref={containerRef}
       data-slot="table-container"
-      className="relative w-full overflow-x-auto"
+      className={cn("relative w-full overflow-x-auto", containerClassName)}
     >
       <table
         data-slot="table"
@@ -88,7 +92,7 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
     <td
       data-slot="table-cell"
       className={cn(
-        "p-2 align-middle whitespace-nowrap [&:has([role=checkbox])]:pr-0",
+        "p-2 align-middle whitespace-nowrap tabular-nums [&:has([role=checkbox])]:pr-0",
         className
       )}
       {...props}

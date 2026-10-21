@@ -54,9 +54,10 @@ export function FilterSelect({
 
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger size="sm" className="min-w-32">
+      <span className="text-xs font-medium text-muted-foreground max-md:text-sm">{label}</span>
+      {/* `items` lets the trigger show the option label ("This month"), not the raw param. */}
+      <Select value={value} onValueChange={onChange} items={options}>
+        <SelectTrigger size="sm" className="min-w-32 max-md:h-10 max-md:min-w-40 max-md:text-sm">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

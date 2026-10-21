@@ -81,7 +81,7 @@ export function OpenShiftsCard({ todayIso }: { todayIso: string }) {
     <Card data-testid="open-shifts">
       <CardHeader className="gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Open shifts — {range}</CardTitle>
+          <CardTitle className="text-sm font-semibold text-foreground">Open shifts — {range}</CardTitle>
           <LocalMultiSelect label="Weeks" selected={selected} options={weeks.map((w) => w.label)} onChange={setSelected} />
         </div>
         <CardDescription>

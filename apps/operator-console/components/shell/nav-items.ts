@@ -15,6 +15,8 @@ export interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
+  /** Short label when this page holds a slot in the phone bottom tab bar. */
+  tab: string;
 }
 
 export interface NavGroup {
@@ -29,34 +31,48 @@ export interface NavGroup {
 export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Overview",
-    items: [{ href: "/home", label: "Home", icon: Home }],
+    items: [{ href: "/home", label: "Home", icon: Home, tab: "Home" }],
   },
   {
     label: "Performance",
     items: [
-      { href: "/sales", label: "Sales", icon: LineChart },
-      { href: "/labor", label: "Labor", icon: Clock },
-      { href: "/order-quality", label: "Order Quality", icon: ShieldCheck },
-      { href: "/accounting", label: "Accounting", icon: Landmark },
+      { href: "/sales", label: "Sales", icon: LineChart, tab: "Sales" },
+      { href: "/labor", label: "Labor", icon: Clock, tab: "Labor" },
+      { href: "/order-quality", label: "Order Quality", icon: ShieldCheck, tab: "Quality" },
+      { href: "/accounting", label: "Accounting", icon: Landmark, tab: "Accounting" },
     ],
   },
   {
     label: "People",
-    items: [{ href: "/payroll", label: "Payroll & People", icon: Wallet }],
+    items: [{ href: "/payroll", label: "Payroll & People", icon: Wallet, tab: "Payroll" }],
   },
   {
     label: "Inventory",
-    items: [{ href: "/inventory", label: "Inventory / Ordering", icon: PackageSearch }],
+    items: [{ href: "/inventory", label: "Inventory / Ordering", icon: PackageSearch, tab: "Inventory" }],
   },
   {
     label: "System",
     items: [
-      { href: "/automations", label: "Automations", icon: Bot },
-      { href: "/pipeline", label: "Pipeline Health", icon: Activity },
+      { href: "/automations", label: "Automations", icon: Bot, tab: "Automations" },
+      { href: "/pipeline", label: "Pipeline Health", icon: Activity, tab: "Pipeline" },
     ],
   },
 ];
 
 export function isNavItemActive(pathname: string | null, href: string): boolean {
   return pathname === href || (pathname?.startsWith(href + "/") ?? false);
+}
+
+export const ALL_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
+
+/** Phone tab bar before this device has any history (see recentTabs.ts). */
+export const DEFAULT_TAB_HREFS = ["/home", "/sales", "/labor", "/payroll"] as const;
+
+export const TAB_ITEMS: NavItem[] = DEFAULT_TAB_HREFS.map((href) => ALL_ITEMS.find((i) => i.href === href)!);
+
+/** The nav item that owns `pathname` (longest matching href), for the phone top-bar title. */
+export function activeNavItem(pathname: string | null): NavItem | undefined {
+  return ALL_ITEMS.filter((i) => isNavItemActive(pathname, i.href)).sort(
+    (a, b) => b.href.length - a.href.length,
+  )[0];
 }

@@ -78,7 +78,7 @@ export default async function MonthlyRecognitionPage({
         title="Monthly recognition"
         subtitle="MVP + High Five from #monthly-recognition → gift cards, email, and the team post"
         right={
-          <div className="flex flex-wrap gap-2">
+          <>
             {periodOptions.length ? (
               <FilterSelect
                 label="Payroll cycle"
@@ -98,7 +98,7 @@ export default async function MonthlyRecognitionPage({
                 extraParams={period ? { period: period.period_start } : {}}
               />
             ) : null}
-          </div>
+          </>
         }
       />
       {error || !view ? (

@@ -36,6 +36,16 @@ export function chartColorAt(index: number): string {
   return palette[index % palette.length]!;
 }
 
+/**
+ * Neutral series (sales, orders, quality, per-person hours): brand violet first, then
+ * hues that carry no good/bad meaning — red and green are reserved for money out/in.
+ */
+export const SERIES_COLORS = ["#8b5cf6", "#0ea5e9", "#14b8a6", "#f59e0b", "#ec4899", "#64748b"] as const;
+
+export function seriesColorAt(index: number): string {
+  return SERIES_COLORS[index % SERIES_COLORS.length]!;
+}
+
 /** Labor hours / concurrent — actual vs scheduled (Issue #213). */
 export const LABOR_CHART_COLORS = {
   parttimeActual: chartColorAt(0),

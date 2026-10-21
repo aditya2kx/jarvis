@@ -1,5 +1,5 @@
 import { StoreFilter } from "./StoreFilter";
-import { MobileNav } from "./MobileNav";
+import { MobilePageTitle } from "./MobilePageTitle";
 import { ThemeToggle } from "./ThemeToggle";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { pipelineRuns } from "@/lib/bq/queries";
@@ -32,28 +32,31 @@ async function PipelineDot() {
 
 export function Topbar({ operatorEmail }: { operatorEmail?: string }) {
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-4">
-      <div className="flex min-w-0 items-center gap-2">
-        <MobileNav />
-        <PipelineDot />
-        <span className="truncate text-sm font-semibold tracking-tight">
-          Palmetto · Texas — Operator Console
-        </span>
-        {isConsolePreview() ? (
-          <Badge
-            variant="outline"
-            title="Read-only preview: prod data, every save is disabled"
-            className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-          >
-            <Eye aria-hidden />
-            Preview
-          </Badge>
-        ) : null}
-      </div>
-      <div className="flex shrink-0 items-center gap-3 text-sm text-muted-foreground">
-        <ThemeToggle />
-        <StoreFilter store={DEFAULT_STORE} />
-        {operatorEmail ? <span className="hidden sm:inline">{operatorEmail}</span> : null}
+    <header className="shrink-0 border-b border-border bg-background pt-[env(safe-area-inset-top)]">
+      <div className="flex h-14 items-center justify-between gap-2 px-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <PipelineDot />
+          <MobilePageTitle />
+          <span className="hidden truncate text-sm font-semibold tracking-tight md:inline">
+            Palmetto · Texas — Operator Console
+          </span>
+          {isConsolePreview() ? (
+            <Badge
+              variant="outline"
+              title="Read-only preview: prod data, every save is disabled"
+              aria-label="Preview"
+              className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+            >
+              <Eye aria-hidden />
+              <span className="hidden sm:inline">Preview</span>
+            </Badge>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground sm:gap-3">
+          <ThemeToggle />
+          <StoreFilter store={DEFAULT_STORE} />
+          {operatorEmail ? <span className="hidden sm:inline">{operatorEmail}</span> : null}
+        </div>
       </div>
     </header>
   );

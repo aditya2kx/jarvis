@@ -77,7 +77,7 @@ export function ViewAsMenu({ current, trigger }: { current: string | null; trigg
         <Popover.Positioner side="bottom" align="end" sideOffset={6} className="z-50">
           <Popover.Popup
             className={cn(
-              "flex w-80 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-lg outline-none",
+              "flex w-96 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-lg outline-none",
               "origin-[var(--transform-origin)] transition-[transform,scale,opacity] data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
             )}
           >

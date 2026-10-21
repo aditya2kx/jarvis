@@ -56,7 +56,7 @@ export default async function RootLayout({
 }>) {
   const access = await getAccess();
   const hrefs = access.error ? [] : allowedHrefs(access.grant);
-  const navHrefs = access.realIsOwner ? [...hrefs, "/access"] : hrefs;
+  const navHrefs = access.realIsOwner && !access.viewingAs ? [...hrefs, "/access"] : hrefs;
   return (
     <html
       lang="en"

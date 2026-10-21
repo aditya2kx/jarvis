@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
 import { EyeIcon, PencilIcon, UserPlusIcon } from "lucide-react";
 import { DataTable } from "@/components/tables/DataTable";
@@ -31,7 +30,6 @@ export function RoleBadge({ role }: { role: PersonRole }) {
 }
 
 export function AccessManager({ people, history }: { people: AccessPerson[]; history: GrantVersion[] }) {
-  const router = useRouter();
   const [editing, setEditing] = useState<AccessPerson | null>(null);
   const [open, setOpen] = useState(false);
   const [opened, setOpened] = useState(0);
@@ -45,10 +43,8 @@ export function AccessManager({ people, history }: { people: AccessPerson[]; his
 
   async function viewAs(email: string) {
     const ack = await run(() => postAccess({ op: "view-as", email }), { saving: "Switching view…" });
-    if (ack.ok) {
-      router.push("/");
-      router.refresh();
-    }
+    // Full load: the root layout (nav, View as strip) only re-renders on a document request.
+    if (ack.ok) window.location.assign("/");
   }
 
   const columns: ColumnDef<AccessPerson>[] = [

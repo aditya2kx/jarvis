@@ -5,6 +5,10 @@ describe("formatDollars", () => {
   it("formats a dollars-and-cents float as USD (vw_model_labor_daily shape)", () => {
     expect(formatDollars(1234.5)).toBe("$1,234.50");
   });
+  it("uses a true minus sign for negatives", () => {
+    expect(formatDollars(-11655.75)).toBe("\u2212$11,655.75");
+    expect(formatCents(-500)).toBe("\u2212$5.00");
+  });
   it("handles null/undefined as em dash", () => {
     expect(formatDollars(null)).toBe("—");
   });

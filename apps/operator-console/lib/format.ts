@@ -5,20 +5,24 @@
 // use the formatter that matches the column's actual unit.
 export function formatDollars(dollars: number | null | undefined): string {
   if (dollars == null || Number.isNaN(dollars)) return "—";
-  return dollars.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return trueMinus(
+    dollars.toLocaleString("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }),
+  );
 }
 
 export function formatCents(cents: number | null | undefined): string {
   if (cents == null) return "—";
-  return (cents / 100).toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-  });
+  return trueMinus((cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" }));
+}
+
+/** Typographic minus (U+2212) matches the width of "+" and reads as a sign, not a dash. */
+function trueMinus(s: string): string {
+  return s.startsWith("-") ? `\u2212${s.slice(1)}` : s;
 }
 
 export function formatPct(fraction: number | null | undefined, digits = 1): string {

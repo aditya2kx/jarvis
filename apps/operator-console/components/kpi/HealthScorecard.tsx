@@ -91,12 +91,12 @@ function SummaryCard({ data, groups }: { data: HealthScorecardData; groups: Heal
             <p className="text-sm text-muted-foreground">{summary}</p>
           </div>
           {scored.length ? (
-            <ul className="flex gap-1.5" aria-label="Goals by status">
+            <ul className="flex flex-wrap gap-1.5" aria-label="Goals by status">
               {(["off-track", "at-risk", "on-track"] as const).map((s) => (
                 <li
                   key={s}
                   className={cn(
-                    "flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs tabular-nums",
+                    "flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs whitespace-nowrap tabular-nums",
                     count(s) ? "text-foreground" : "text-muted-foreground/60",
                   )}
                 >

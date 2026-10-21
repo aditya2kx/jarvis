@@ -46,6 +46,14 @@ Cloud Shell runs as the signed-in Google account, so GCP provisioning (e.g.
 username `aditya.2ky@gmail.com`; `adi@mypalmetto.co` has no IAM on `jarvis-bhaga-prod`. Two items
 share `accounts.google.com`, so address them by title.
 
-For a Google sign-in, add the account's authenticator-app code to its item (Google account →
+When a sign-in still needs the operator (2-Step "Tap Yes", an SMS code, a click), DM them and wait —
+never stop and report the blocker in chat (Hard Lesson #7):
+
+```bash
+python3 scripts/operator_ping.py "Google 2-Step for Cloud Shell: tap Yes on your phone"
+python3 scripts/operator_ping.py "Reply with the Google SMS code" --wait 600 --type --enter   # field focused first
+```
+
+Email codes: read the inbox instead. For a Google sign-in, add the account's authenticator-app code to its item (Google account →
 Security → 2-Step Verification → Authenticator → scan with 1Password) so the agent can answer
 "Try another way → Google Authenticator" without your phone.

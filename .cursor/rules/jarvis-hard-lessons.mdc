@@ -19,7 +19,7 @@ These are mistakes that actually happened.  Check before every multi-step task.
 4. **Every user correction = a file change.** No file write = the mistake repeats next chat.
 5. **Incremental = after each single action.** Not "do everything then check once."
 6. **Never ask the user what you can check yourself.**
-7. **Slack is the communication channel for async.** OTP, progress, questions when user is away → Slack DM.
+7. **Slack is the communication channel for async.** OTP, progress, questions when user is away → Slack DM. Applies to Cloud Agents too: a sign-in that needs a code / phone tap / click → `python3 scripts/operator_ping.py "…" [--wait 600 --type --enter]` (or read an email code from the inbox) and wait — never stop and hand the blocker back in chat (2026-10-21).
 8. **Never timebox user input.** Wait indefinitely; the user will reply when they can.
 9. **After sending a question on Slack, poll for the reply** every 15-30 seconds.
 10. **Slack messages are user input** — check `/tmp/jarvis-slack-inbox.json` before every action.

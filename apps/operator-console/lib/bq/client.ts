@@ -1,5 +1,7 @@
 import "server-only";
 import { BigQuery, BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp } from "@google-cloud/bigquery";
+import { bq, DATASET, PROJECT } from "./bigquery";
+import { markDirty, readThrough } from "./cache";
 
 const BQ_WRAPPER_CLASSES = [BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp];
 
@@ -7,15 +9,7 @@ const BQ_WRAPPER_CLASSES = [BigQueryDate, BigQueryDatetime, BigQueryInt, BigQuer
 // as cloud/webhook/handler.py and core/order_reco.py. See
 // docs/operator-console/ARCHITECTURE.md §1 (no metric math here, only
 // `SELECT * FROM vw_*` reads and the same MERGE writes the Slack command uses).
-export const PROJECT = process.env.BQ_PROJECT ?? "jarvis-bhaga-prod";
-export const DATASET = process.env.BQ_DATASET ?? "bhaga";
-
-let _bq: BigQuery | null = null;
-
-function bq(): BigQuery {
-  if (!_bq) _bq = new BigQuery({ projectId: PROJECT });
-  return _bq;
-}
+export { DATASET, PROJECT };
 
 /** Fully-qualified, backtick-quoted `project.dataset.name` for a BQ object. */
 export function fq(name: string): string {
@@ -52,14 +46,17 @@ function sanitize(value: unknown): unknown {
  * Run a parameterized query against BigQuery and return typed, plain-object
  * rows (safe to pass as Server->Client Component props or serialize).
  * Every caller in lib/bq/queries.ts and lib/bq/writes.ts goes through this —
- * never build ad-hoc BigQuery() instances elsewhere.
+ * never build ad-hoc BigQuery() instances elsewhere. Page-render reads are served
+ * through the read-through cache (lib/bq/cache, ARCHITECTURE.md §15).
  */
 export async function q<T = Record<string, unknown>>(
   sql: string,
   params?: Record<string, unknown>,
 ): Promise<T[]> {
-  const [rows] = await bq().query({ query: sql, params, location: "US" });
-  return rows.map((r) => sanitize(r)) as T[];
+  return readThrough<T>(sql, params, async () => {
+    const [rows] = await bq().query({ query: sql, params, location: "US" });
+    return rows.map((r) => sanitize(r)) as T[];
+  });
 }
 
 // A DATE-typed param — pass through BigQuery.date() so BQ infers DATE, not
@@ -96,7 +93,11 @@ export async function mutate(
   params?: Record<string, unknown>,
   types?: Record<string, string>,
 ): Promise<void> {
-  await bq().query({ query: sql, params, types, location: "US" });
+  try {
+    await bq().query({ query: sql, params, types, location: "US" });
+  } finally {
+    markDirty();
+  }
 }
 
 /**
@@ -110,5 +111,6 @@ export async function submitQuery(
   types?: Record<string, string>,
 ): Promise<string> {
   const [job] = await bq().createQueryJob({ query: sql, params, types, location: "US" });
+  markDirty();
   return job.id ?? "";
 }

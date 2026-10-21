@@ -266,6 +266,8 @@ BigQuery is the **source of truth**. Operator Console reads BQ views. BHAGA Graf
 
 > **Operator Console access grants (migration 090):** `console_access_grants` is append-only owner input from the console `/access` page (who can see which pages and sections) — not model_* / Grafana and has no nightly freshness; registered as a no-new-target note in `status.py` (`RUNBOOK.md` §17 Access).
 
+> **Operator Console query cache probe (migration 091):** `console_cache_probe` holds only the rows `scripts/console_cache_probe.sh` writes to prove an outside BigQuery write reaches a console page within the audit-log delay (`/api/cache-probe`, `RUNBOOK.md` §17 Query cache). Not model_* / Grafana; registered as a no-new-target note in `status.py`.
+
 > **Operator Console inventory day overrides (migration 048, Issue #194):** `inventory_usage_day_overrides` + rewrite of `vw_inventory_order_assistant` (override join) + `vw_inventory_usage_day_audit` — console `/inventory` day-grain audit only; not model_* / Grafana. Registered as a no-new-target note in `status.py` (same class as 037–047); OA freshness still via existing `vw_inventory_order_assistant` target.
 
 > **Order Assistant next-dates / N-slots (migrations 051–052, Issue #215):** `vw_order_reco_next_dates` is closing-aware (keep today until a base `inventory_closing_daily` row exists) and capped by `order_reco_max_slots` (default 4). `tvf_order_reco_slot_n` chains slots ≥2; `refresh_order_reco` / webhook / console loop all live slots. Grafana `vw_order_reco_combined` stays dual-slot (existing GRAFANA_VIEWS); console pivots N slots. Registered as no-new-target notes in `status.py` (same class as 041/048).

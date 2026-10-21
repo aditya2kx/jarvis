@@ -38,6 +38,17 @@ describe("middleware read-only preview gate (CONSOLE_PREVIEW=1)", () => {
     }
   });
 
+  it("lets /api/access through only when the preview has its own sandbox grants table", () => {
+    vi.stubEnv("CONSOLE_PREVIEW", "1");
+    const post = () => new NextRequest("http://localhost:3000/api/access", { method: "POST" });
+    expect(middleware(post()).status).toBe(403);
+    vi.stubEnv("CONSOLE_ACCESS_TABLE", "console_access_grants");
+    expect(middleware(post()).status).toBe(403);
+    vi.stubEnv("CONSOLE_ACCESS_TABLE", "console_access_grants_pv_abc");
+    expect(middleware(post()).status).toBe(200);
+    expect(middleware(actionPost()).status).toBe(403);
+  });
+
   it("does nothing when CONSOLE_PREVIEW is unset (prod)", () => {
     vi.stubEnv("CONSOLE_PREVIEW", "");
     const res = middleware(actionPost());

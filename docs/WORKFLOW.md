@@ -522,6 +522,7 @@ capture, operator setup): [`docs/contributing/dev-anywhere.md`](contributing/dev
 | `pr-cost-gate.yml` + `scripts/cloud_agent.py record-cost` | prices a `Cursor-Agent:` PR's agent usage into BQ |
 | `jarvis-dev-gateway-deploy.yml` | deploys the Siri/Grok gateway from `main`; PR self-test on the runner |
 | `cloud-agent-pr.yml` + `scripts/cloud_git_identity.sh` | Cloud Agents commit/push as `jarvis-agent-bot328` (bot PAT from Secret Manager via Cursor OIDC; `provision_cloud_agent_identity.sh` once); first push of a `cursor/*` branch opens its draft PR as the bot |
+| `scripts/pin_git_identity.sh` + `scripts/git-credential-jarvis-bot` | Repo-local pin applied by `install-git-hooks.sh` and `cloud_git_identity.sh`: bot author, `pushurl` with the bot username, and a credential helper that asks `gh` for the bot's token by name, so Cursor re-injecting its app token never flips a push to `cursor[bot]` |
 | `scripts/cloud_agent_gcp.py` + `scripts/console_preview.py` | Cloud Agent GCP identity (Cursor OIDC → `cursor-cloud-agent`): bot PAT, preview ID token |
 | `skills/vault` | per-site logins from 1Password vault `Shared with Bots` for ad-hoc dev (Cloud Shell, portals) |
 

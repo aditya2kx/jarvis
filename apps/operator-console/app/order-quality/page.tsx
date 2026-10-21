@@ -5,6 +5,8 @@ import { storeDisplayName } from "@/lib/config/stores";
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { ManageAccess } from "@/components/access/ManageAccess";
+import { pageDenied, sectionAccess } from "@/components/access/guards";
 import { FilterPills } from "@/components/filters/FilterPills";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { FilterMultiSelect } from "@/components/filters/FilterMultiSelect";
@@ -60,6 +62,9 @@ export default async function OrderQualityPage({
     breakdown?: string;
   }>;
 }) {
+  const denied = await pageDenied("order-quality");
+  if (denied) return denied;
+  const can = await sectionAccess("order-quality");
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const grainRaw = await resolvePageGrain(sp.grain);
@@ -318,6 +323,7 @@ export default async function OrderQualityPage({
             ) : null}
           </>
         }
+        actions={<ManageAccess page="order-quality" />}
       />
 
       {error ? (
@@ -328,7 +334,7 @@ export default async function OrderQualityPage({
         </p>
       ) : (
         <>
-          {chartSeries.length && chartRows.length ? (
+          {!can("prep-chart") ? null : chartSeries.length && chartRows.length ? (
             <BarChartCard
               title={chartTitle}
               data={chartRows}
@@ -345,46 +351,50 @@ export default async function OrderQualityPage({
               {sources != null ? ` · ${sources.length} source${sources.length === 1 ? "" : "s"}` : ""}.
             </p>
           )}
-          <div>
-            <h2 className="mb-2 text-sm font-semibold text-foreground">
-              {grainTitleLabel(grain)} percentile detail
-            </h2>
-            <DataTable columns={columns} data={rows} />
-          </div>
-          <div>
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold text-foreground">
-                Order KDS times (slowest first)
+          {can("percentiles") ? (
+            <div>
+              <h2 className="mb-2 text-sm font-semibold text-foreground">
+                {grainTitleLabel(grain)} percentile detail
               </h2>
-              <FilterPills
-                label="Min / Item ≥"
-                param="minPerItem"
-                value={String(minPerItem)}
-                options={MIN_PER_ITEM_OPTIONS.map((m) => ({ value: String(m), label: `${m}m` }))}
-                basePath="/order-quality"
-                extraParams={sharedExtra}
-              />
+              <DataTable columns={columns} data={rows} />
             </div>
-            <p className="mb-2 text-xs text-muted-foreground">
-              One row per order (ticket), sorted by Min/Item = Order Min ÷ Items. &quot;On Shift&quot;
-              lists everyone whose ADP punch overlapped that order&apos;s time window.
-            </p>
-            {investigationRows.length ? (
-              <DataTable
-                columns={investigationColumns}
-                data={investigationRows}
-                pinLeft={["date_local", "ticket_name"]}
-              />
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No orders at or above {minPerItem}m/item for {win.label.toLowerCase()}
-                {sources != null && sources.length
-                  ? ` · ${sources.length} source${sources.length === 1 ? "" : "s"}`
-                  : ""}
-                .
+          ) : null}
+          {can("orders") ? (
+            <div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold text-foreground">
+                  Order KDS times (slowest first)
+                </h2>
+                <FilterPills
+                  label="Min / Item ≥"
+                  param="minPerItem"
+                  value={String(minPerItem)}
+                  options={MIN_PER_ITEM_OPTIONS.map((m) => ({ value: String(m), label: `${m}m` }))}
+                  basePath="/order-quality"
+                  extraParams={sharedExtra}
+                />
+              </div>
+              <p className="mb-2 text-xs text-muted-foreground">
+                One row per order (ticket), sorted by Min/Item = Order Min ÷ Items. &quot;On Shift&quot;
+                lists everyone whose ADP punch overlapped that order&apos;s time window.
               </p>
-            )}
-          </div>
+              {investigationRows.length ? (
+                <DataTable
+                  columns={investigationColumns}
+                  data={investigationRows}
+                  pinLeft={["date_local", "ticket_name"]}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No orders at or above {minPerItem}m/item for {win.label.toLowerCase()}
+                  {sources != null && sources.length
+                    ? ` · ${sources.length} source${sources.length === 1 ? "" : "s"}`
+                    : ""}
+                  .
+                </p>
+              )}
+            </div>
+          ) : null}
         </>
       )}
     </div>

@@ -12,6 +12,9 @@
 #                review-replies failures before they hit CI.
 #                Set VERIFY=0 to bypass (only after confirming the diff is clean).
 #
+# Also pins this clone's commits and pushes to jarvis-agent-bot328
+# (scripts/pin_git_identity.sh; docs/contributing/push-gotchas.md §2).
+#
 # Also removes any legacy Jarvis beforeSubmitPrompt dispatcher from
 # ~/.cursor/hooks.json (idempotent; preserves unrelated entries).
 #
@@ -23,6 +26,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 chmod +x scripts/git-hooks/* 2>/dev/null || true
 git config core.hooksPath scripts/git-hooks
+bash scripts/pin_git_identity.sh
 
 # Seed GitHub Issue labels for phase tracking (idempotent; requires gh auth).
 if command -v gh >/dev/null 2>&1 && python3 -c "import scripts.phase_state" 2>/dev/null; then

@@ -37,12 +37,15 @@ Jobs (Option B); they must never block the click path via daemon threads.
 | Automations | Unavailability reminder save / preview / DM me now | `saveReminderConfigAction`, `previewReminderAction`, `sendReminderOnceAction` | — (DMs the operator a draft to forward; the scheduled tick is `/unavailability-reminder` on `bhaga-webhook`, once per CT day) |
 | Automations | Monthly recognition sync / Gemini draft / reshape by prompt / DM draft / mark issued by hand | `syncRecognitionSourcesAction`, `previewRecognitionAction`, `reshapeRecognitionPostAction`, `dmRecognitionDraftAction`, `markGiftCardsIssuedAction` | — (sync copies ClickUp chat into BQ `clickup_chat_messages`; the draft is DM'd to the operator to forward — nothing posts to the team channel; "mark issued" writes `recognition_gift_cards` rows with status `external`, no Square call) |
 | Automations | Monthly recognition Approve & issue / $1 test card | `approveRecognitionAction`, `sendTestGiftCardAction` | Behind `FEATURES.recognitionGiftCards` (`CONSOLE_RECOGNITION_GIFT_CARDS=1`). Square create + ACTIVATE + read-back per card (`recognition_gift_cards` ledger, idempotency key per card), one Gmail per recipient, recap ClickUp DM. Failed rows are never auto-retried — "Retry failed" resumes from the recorded state |
+| Access (owners only) | Save / remove a person's pages and sections, View as | `POST /api/access` (route, not an action) | Appends a `console_access_grants` version; adds / removes the person's IAP sign-in binding |
 
-Canonical machine-readable list: [`registry.ts`](./registry.ts).
+Canonical machine-readable list: [`registry.ts`](./registry.ts). Every action's first line is
+`actionDenied("<name>")`, which refuses anyone holding none of the entry's `access` keys
+(`"page"` or `"page:section"`).
 
 Read-only preview (`CONSOLE_PREVIEW=1`): `middleware.ts` refuses every non-GET request
 (server actions and `/api/*` POSTs) with a text/plain 403, so all rows above — including the
-read-only polls — are disabled; `ensureOrderRecoFresh` skips its page-open refresh and
+read-only polls — are disabled (except `POST /api/access` against a preview's own sandbox grants table); `ensureOrderRecoFresh` skips its page-open refresh and
 the Accounting page skips its on-load Plaid dedupe.
 Gate: `python3 scripts/check_operator_console_actions.py`.
 

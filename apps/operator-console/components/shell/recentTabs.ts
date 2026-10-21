@@ -62,8 +62,19 @@ function subscribe(onChange: () => void) {
   };
 }
 
+/**
+ * Slots for pages this person can't open give way to the first allowed pages not already
+ * in the bar, in nav order; the bar can be shorter than four when fewer pages are allowed.
+ */
+export function allowedTabs(items: NavItem[], allowedHrefs: readonly string[] | undefined): NavItem[] {
+  if (!allowedHrefs) return items;
+  const kept = items.filter((i) => allowedHrefs.includes(i.href));
+  const fill = ALL_ITEMS.filter((i) => allowedHrefs.includes(i.href) && !kept.includes(i));
+  return [...kept, ...fill].slice(0, DEFAULT_SLOTS.length);
+}
+
 /** Tab bar items for this device, updated as `pathname` changes. Server render = defaults. */
-export function useRecentTabs(pathname: string | null): NavItem[] {
+export function useRecentTabs(pathname: string | null, allowedHrefs?: readonly string[]): NavItem[] {
   const raw = useSyncExternalStore(subscribe, read, () => "");
   const slots = useMemo(() => parseSlots(raw), [raw]);
 
@@ -82,5 +93,8 @@ export function useRecentTabs(pathname: string | null): NavItem[] {
     if (current) visit(current);
   }, [current, visit]);
 
-  return slots.map((s) => ALL_ITEMS.find((i) => i.href === s.href)!);
+  return allowedTabs(
+    slots.map((s) => ALL_ITEMS.find((i) => i.href === s.href)!),
+    allowedHrefs,
+  );
 }

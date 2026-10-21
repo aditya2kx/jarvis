@@ -17,12 +17,15 @@ import {
   pollPayrollDraft,
   startPayrollDraft,
 } from "@/lib/bhaga/payroll-draft";
+import { actionDenied } from "@/lib/access/server";
 
 export async function addTrainingShiftAction(
   employeeName: string,
   date: string,
   note: string,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("addTrainingShiftAction");
+  if (denied) return denied;
   try {
     if (!FEATURES.writeTraining) throw new Error("Training quick-add is disabled");
     const by = await operatorEmail();
@@ -41,6 +44,8 @@ export async function addRecognitionBonusAction(
   amountDollars: number,
   reason: string,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("addRecognitionBonusAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     const amountCents = Math.round(amountDollars * 100);
@@ -62,6 +67,8 @@ export async function addEmployeePerkAction(
   cadence: "once" | "biweekly",
   note: string,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("addEmployeePerkAction");
+  if (denied) return denied;
   try {
     if (!FEATURES.writePerks) throw new Error("Reimbursement write path is disabled");
     if (!PERK_IDS.has(perkId)) throw new Error("Unknown reimbursement type");
@@ -93,6 +100,8 @@ export async function addEmployeePerkAction(
 export async function applyTipExemptionsAction(
   drafts: TipExemptionDraft[],
 ): Promise<ActionAck<{ recomputed: string[] }>> {
+  const denied = await actionDenied("applyTipExemptionsAction");
+  if (denied) return denied;
   try {
     if (!FEATURES.writeTipExemptions) {
       throw new Error("Tip exemptions write path is disabled (FEATURES.writeTipExemptions)");
@@ -126,6 +135,8 @@ export async function runPayrollDraftAction(
   periodStart: string,
   periodEnd: string,
 ): Promise<ActionAck<{ executionName?: string; mode: "local" | "cloud" }>> {
+  const denied = await actionDenied("runPayrollDraftAction");
+  if (denied) return denied;
   try {
     if (!FEATURES.adpPayrollDraft) {
       throw new Error("ADP Preview draft is disabled (FEATURES.adpPayrollDraft)");
@@ -169,6 +180,8 @@ export async function pollPayrollDraftAction(opts: {
     previewGross?: number | null;
   }>
 > {
+  const denied = await actionDenied("pollPayrollDraftAction");
+  if (denied) return denied;
   try {
     if (!FEATURES.adpPayrollDraft) {
       throw new Error("ADP Preview draft is disabled (FEATURES.adpPayrollDraft)");

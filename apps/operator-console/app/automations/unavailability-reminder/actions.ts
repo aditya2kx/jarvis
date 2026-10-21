@@ -14,6 +14,7 @@ import {
   REMINDER_DEFAULT_FOLLOWUP,
   REMINDER_DEFAULT_TEMPLATE,
 } from "@/lib/automations/unavailabilityReminder";
+import { actionDenied } from "@/lib/access/server";
 
 const DM_USER_ID = "198109189";
 const PATH = "/automations/unavailability-reminder";
@@ -41,6 +42,8 @@ function check(input: ReminderConfigInput): void {
 }
 
 export async function saveReminderConfigAction(input: ReminderConfigInput): Promise<ActionAck> {
+  const denied = await actionDenied("saveReminderConfigAction");
+  if (denied) return denied;
   return asAck(async () => {
     check(input);
     const prev = await getAutomation(DEFAULT_STORE, REMINDER_AUTOMATION_ID);
@@ -87,6 +90,8 @@ export async function previewReminderAction(
   dateIso: string,
   draft: ReminderConfigInput,
 ): Promise<ActionAck<{ kind: string; content: string }>> {
+  const denied = await actionDenied("previewReminderAction");
+  if (denied) return denied;
   return asAck(async () => {
     const { kind, content } = await composeFor(dateIso, draft);
     return { kind, content };
@@ -95,6 +100,8 @@ export async function previewReminderAction(
 
 /** DM the operator today's message now. Logged as today's send, so the scheduled tick then skips today. */
 export async function sendReminderOnceAction(): Promise<ActionAck<{ message_id: string }>> {
+  const denied = await actionDenied("sendReminderOnceAction");
+  if (denied) return denied;
   return asAck(async () => {
     const by = await operatorEmail();
     const cfg = await getAutomation(DEFAULT_STORE, REMINDER_AUTOMATION_ID);

@@ -8,3 +8,12 @@ export function isConsolePreview(): boolean {
 }
 
 export const PREVIEW_ACTION_REFUSAL = "Preview mode — changes are disabled. Nothing was saved.";
+
+/**
+ * A preview whose access grants live in their own sandbox table (`CONSOLE_ACCESS_TABLE`,
+ * set by operator-console-preview.yml) may save access there — the one write a preview allows.
+ */
+export function accessSandboxWritable(): boolean {
+  const table = process.env.CONSOLE_ACCESS_TABLE?.trim();
+  return Boolean(table) && table !== "console_access_grants";
+}

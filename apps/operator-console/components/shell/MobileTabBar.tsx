@@ -12,7 +12,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { NAV_GROUPS, isNavItemActive } from "./nav-items";
+import { isNavItemActive, visibleNavGroups } from "./nav-items";
 import { useRecentTabs } from "./recentTabs";
 
 const TAB =
@@ -25,10 +25,10 @@ const TAB =
  * and one tap per page, unlike the old top-left hamburger. The bar pads for the iOS home
  * indicator so it sits above it in Safari and as a home-screen app.
  */
-export function MobileTabBar() {
+export function MobileTabBar({ allowedHrefs }: { allowedHrefs?: readonly string[] }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
-  const tabs = useRecentTabs(pathname);
+  const tabs = useRecentTabs(pathname, allowedHrefs);
   const onTab = tabs.some((i) => isNavItemActive(pathname, i.href));
 
   return (
@@ -74,7 +74,7 @@ export function MobileTabBar() {
               <SheetTitle>All pages</SheetTitle>
             </SheetHeader>
             <div className="flex flex-col gap-5">
-              {NAV_GROUPS.map((group) => (
+              {visibleNavGroups(allowedHrefs).map((group) => (
                 <div key={group.label} className="flex flex-col gap-2">
                   <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     {group.label}

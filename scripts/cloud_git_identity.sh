@@ -30,12 +30,10 @@ git config --global --name-only --get-regexp '^url\..*@github\.com/\.insteadof$'
   | sed 's/\.insteadof$//' | sort -u \
   | while read -r section; do git config --global --remove-section "$section"; done || true
 repo="$(git -C "$here" rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -n "$repo" ]; then
-  git -C "$repo" remote set-url origin https://github.com/aditya2kx/jarvis
-  git -C "$repo" config --unset-all user.name || true
-  git -C "$repo" config --unset-all user.email || true
-fi
+[ -z "$repo" ] || git -C "$repo" remote set-url origin https://github.com/aditya2kx/jarvis
 env -u GH_TOKEN gh auth setup-git
 git config --global user.name "$BOT"
 git config --global user.email "$BOT_EMAIL"
+# Cursor re-injects its own token later in the session; the repo-local pin survives that.
+[ -z "$repo" ] || bash "$here/pin_git_identity.sh"
 echo "cloud-git-identity: commits, pushes and gh as $BOT"

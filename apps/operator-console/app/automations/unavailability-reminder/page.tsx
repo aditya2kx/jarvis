@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/shell/PageHeader";
+import { sectionPageDenied } from "@/components/access/guards";
 import { getAutomation, listAutomationPosts } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { chicagoTodayIso } from "@/lib/automations/teamPulse";
@@ -8,6 +9,8 @@ import { ReminderEditor } from "./ReminderEditor";
 export const dynamic = "force-dynamic";
 
 export default async function UnavailabilityReminderPage() {
+  const denied = await sectionPageDenied("automations", "unavailability-reminder");
+  if (denied) return denied;
   let error: string | undefined;
   let cfg = null;
   let posts: Awaited<ReturnType<typeof listAutomationPosts>> = [];

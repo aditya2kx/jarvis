@@ -31,6 +31,9 @@ import console_preview as P  # noqa: E402
 PAGES = ["/home", "/sales", "/labor", "/order-quality", "/payroll", "/inventory", "/accounting", "/automations", "/pipeline"]
 
 
+UNAVAILABLE = b"Data unavailable"
+
+
 def fetch(url: str, token: str, mode: str | None = None) -> tuple[int, float]:
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     if mode:
@@ -38,11 +41,18 @@ def fetch(url: str, token: str, mode: str | None = None) -> tuple[int, float]:
     t = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=180) as r:
-            r.read()
-            status = r.status
+            body = r.read()
+            # A panel that failed to load renders fast too; never count it as a fast page.
+            status = 599 if UNAVAILABLE in body else r.status
     except urllib.error.HTTPError as e:
         status = e.code
     return status, time.perf_counter() - t
+
+
+def get_stats(base: str, token: str) -> dict:
+    req = urllib.request.Request(base + "/api/cache-stats", headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)
 
 
 def wait_for_iap(base: str, token: str) -> None:
@@ -73,7 +83,11 @@ def main(argv: list[str] | None = None) -> int:
         url = base + path
         off = [fetch(url, token, "off") for _ in range(a.runs)]
         fill_status, fill = fetch(url, token)
+        before = get_stats(base, token).get("counts", {})
         on = [fetch(url, token) for _ in range(a.runs)]
+        after = get_stats(base, token).get("counts", {})
+        served = {k: after.get(k, 0) - before.get(k, 0) for k in after if after.get(k, 0) != before.get(k, 0)}
+        print(f"bench {path}: cached-run reads {served}", file=sys.stderr)
         verify_status, _ = fetch(url, token, "verify")
         statuses = {s for s, _ in off + on} | {fill_status, verify_status}
         rows.append(
@@ -81,15 +95,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"bench {path}: off={rows[-1][1]:.2f}s first={fill:.2f}s cached={rows[-1][3]:.2f}s status={sorted(statuses)}", file=sys.stderr)
 
-    req = urllib.request.Request(base + "/api/cache-stats", headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        stats = json.load(r)
+    stats = get_stats(base, token)
     counts = stats.get("counts", {})
 
     print(f"| Page | Cache off (every read → BigQuery) | First load (fills cache) | Cached | Faster |")
     print("|---|---|---|---|---|")
     for path, off, fill, on, statuses in rows:
-        flag = "" if statuses == {200} else f" (HTTP {sorted(statuses)})"
+        flag = "" if statuses == {200} else f" (status {sorted(statuses)}; 599 = a panel showed Data unavailable)"
         print(f"| `{path}`{flag} | {off:.2f} s | {fill:.2f} s | {on:.2f} s | {off / on:.1f}× |")
     print()
     print(

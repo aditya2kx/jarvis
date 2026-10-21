@@ -1,5 +1,6 @@
 import "server-only";
 import { bq, DATASET, PROJECT } from "@/lib/bq/bigquery";
+import { shared } from "./shared";
 
 /**
  * Version of every table and view in the dataset = its BigQuery `last_modified_time`.
@@ -19,10 +20,12 @@ export const FRESH_MS = 10_000;
 /** Older than FRESH_MS but younger than this: use, refreshing in the background. */
 export const MAX_STALE_MS = 45_000;
 
-let snap: CatalogSnapshot | null = null;
-let dirtyGen = 0;
-let cleanGen = 0;
-let inflight: { gen: number; p: Promise<CatalogSnapshot> } | null = null;
+const st = shared("catalog", () => ({
+  snap: null as CatalogSnapshot | null,
+  dirtyGen: 0,
+  cleanGen: 0,
+  inflight: null as { gen: number; p: Promise<CatalogSnapshot> } | null,
+}));
 
 const VIEW_TYPE = 2;
 
@@ -43,19 +46,19 @@ async function load(): Promise<CatalogSnapshot> {
 }
 
 function refresh(): Promise<CatalogSnapshot> {
-  if (inflight && inflight.gen === dirtyGen) return inflight.p;
-  const gen = dirtyGen;
+  if (st.inflight && st.inflight.gen === st.dirtyGen) return st.inflight.p;
+  const gen = st.dirtyGen;
   const p = load()
     .then((s) => {
       // A refresh that started before a write must not mark the catalog clean.
-      if (!snap || s.at >= snap.at) snap = s;
-      if (gen > cleanGen) cleanGen = gen;
+      if (!st.snap || s.at >= st.snap.at) st.snap = s;
+      if (gen > st.cleanGen) st.cleanGen = gen;
       return s;
     })
     .finally(() => {
-      if (inflight?.p === p) inflight = null;
+      if (st.inflight?.p === p) st.inflight = null;
     });
-  inflight = { gen, p };
+  st.inflight = { gen, p };
   return p;
 }
 
@@ -64,25 +67,25 @@ function refresh(): Promise<CatalogSnapshot> {
  * outside this instance). After `markDirty()` the next caller waits for a fresh one.
  */
 export async function catalogSnapshot(now = Date.now()): Promise<CatalogSnapshot> {
-  const dirty = dirtyGen > cleanGen;
-  const age = snap ? now - snap.at : Infinity;
-  if (snap && !dirty && age < FRESH_MS) return snap;
-  if (snap && !dirty && age < MAX_STALE_MS) {
+  const dirty = st.dirtyGen > st.cleanGen;
+  const age = st.snap ? now - st.snap.at : Infinity;
+  if (st.snap && !dirty && age < FRESH_MS) return st.snap;
+  if (st.snap && !dirty && age < MAX_STALE_MS) {
     refresh().catch((e) => console.error(`console_cache_catalog_refresh_failed err=${String(e)}`));
-    return snap;
+    return st.snap;
   }
   return refresh();
 }
 
 /** This instance just wrote (or an action ran): the next read must see a fresh catalog. */
 export function markDirty(): void {
-  dirtyGen += 1;
+  st.dirtyGen += 1;
 }
 
 export function catalogState(): { ageMs: number | null; objects: number; dirty: boolean } {
   return {
-    ageMs: snap ? Date.now() - snap.at : null,
-    objects: snap?.versions.size ?? 0,
-    dirty: dirtyGen > cleanGen,
+    ageMs: st.snap ? Date.now() - st.snap.at : null,
+    objects: st.snap?.versions.size ?? 0,
+    dirty: st.dirtyGen > st.cleanGen,
   };
 }

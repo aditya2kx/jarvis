@@ -1,13 +1,14 @@
 import "server-only";
 import { bq, DATASET, PROJECT } from "@/lib/bq/bigquery";
 import { namedObjects, sha } from "./policy";
+import { shared } from "./shared";
 
 /** BigQuery stops listing referenced tables past this many; treat such a query as uncacheable. */
 const REFERENCED_TABLES_CAP = 50;
 
 export type Deps = { ok: true; objects: string[] } | { ok: false; reason: string };
 
-const memo = new Map<string, { viewsEpoch: number; p: Promise<Deps> }>();
+const memo = shared("deps", () => new Map<string, { viewsEpoch: number; p: Promise<Deps> }>());
 
 type DryRunStats = {
   statementType?: string;

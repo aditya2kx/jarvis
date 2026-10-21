@@ -14,6 +14,7 @@ import {
   timeBucket,
   volatility,
 } from "./policy";
+import { shared } from "./shared";
 import { record, snapshotStats, type Outcome } from "./stats";
 
 export { markDirty };
@@ -35,8 +36,8 @@ const MAX_CHARS = Number(process.env.CONSOLE_QUERY_CACHE_MAX_CHARS ?? 48_000_000
 const L1_TTL_MS = 6 * 3600_000;
 const BUILD = process.env.K_REVISION ?? process.env.NEXT_DEPLOYMENT_ID ?? "dev";
 
-const l1 = new MemoryLru(MAX_CHARS, L1_TTL_MS);
-const pendingMisses = new Map<string, Promise<unknown[]>>();
+const l1 = shared("l1", () => new MemoryLru(MAX_CHARS, L1_TTL_MS));
+const pendingMisses = shared("pending", () => new Map<string, Promise<unknown[]>>());
 
 type Mode = "cache" | "off" | "verify" | "bypass";
 

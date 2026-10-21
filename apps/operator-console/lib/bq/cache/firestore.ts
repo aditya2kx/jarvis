@@ -2,6 +2,7 @@ import "server-only";
 import { GoogleAuth } from "google-auth-library";
 import { PROJECT } from "@/lib/bq/bigquery";
 import { isConsolePreview } from "@/lib/config/preview";
+import { shared } from "./shared";
 
 /**
  * Shared L2 in Firestore, so a fresh instance (deploy, scale-out) starts warm. Same keys
@@ -20,27 +21,29 @@ const TIMEOUT_MS = 800;
 const TTL_MS = 6 * 3600_000;
 const BACKOFF_MS = 10 * 60_000;
 
-let auth: GoogleAuth | null = null;
-let disabledUntil = 0;
-let lastError: string | null = null;
+const st = shared("l2", () => ({
+  auth: null as GoogleAuth | null,
+  disabledUntil: 0,
+  lastError: null as string | null,
+}));
 
 export function l2Enabled(now = Date.now()): boolean {
-  return process.env.CONSOLE_QUERY_CACHE_L2 === "1" && !isConsolePreview() && now >= disabledUntil;
+  return process.env.CONSOLE_QUERY_CACHE_L2 === "1" && !isConsolePreview() && now >= st.disabledUntil;
 }
 
 export function l2State(): { configured: boolean; enabled: boolean; lastError: string | null } {
-  return { configured: process.env.CONSOLE_QUERY_CACHE_L2 === "1", enabled: l2Enabled(), lastError };
+  return { configured: process.env.CONSOLE_QUERY_CACHE_L2 === "1", enabled: l2Enabled(), lastError: st.lastError };
 }
 
 function backOff(op: string, err: string): void {
-  disabledUntil = Date.now() + BACKOFF_MS;
-  lastError = `${op}: ${err.slice(0, 200)}`;
+  st.disabledUntil = Date.now() + BACKOFF_MS;
+  st.lastError = `${op}: ${err.slice(0, 200)}`;
   console.error(`console_cache_l2_disabled op=${op} for_s=${BACKOFF_MS / 1000} err=${err.slice(0, 200)}`);
 }
 
 async function token(): Promise<string> {
-  auth ??= new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/datastore"] });
-  const t = await (await auth.getClient()).getAccessToken();
+  st.auth ??= new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/datastore"] });
+  const t = await (await st.auth.getClient()).getAccessToken();
   if (!t.token) throw new Error("no ADC access token");
   return t.token;
 }

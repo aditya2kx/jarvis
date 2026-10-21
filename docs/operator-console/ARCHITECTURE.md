@@ -579,39 +579,51 @@ same contract as Sales).
 Legacy spike notes for ADP schedule / burden: `docs/operator-console/adp-forward-labor-spike.md`.
 
 
-## 15. Query cache (read-through, table-versioned)
+## 15. Query cache (one shared layer, table-versioned)
 
 Each page view used to run 10–30 BigQuery jobs, and BigQuery charges ~0.5–2 s of fixed
 overhead per job however small the data. `q()` (`lib/bq/client.ts`) now reads through
 `lib/bq/cache/`; writes (`mutate`, `submitQuery`, any non-SELECT `q()`) are unchanged.
 Routes stay `force-dynamic`, so IAP still checks every request — only query *results* are cached.
 
+There is **one** cache layer, in Firestore, shared by every console instance: no per-instance
+memory, so two people (or two Cloud Run instances) never see different numbers.
+
 ```mermaid
 flowchart LR
-  R[Page render q()] --> K{key = SQL + params\n+ last_modified of every table/view read\n+ UTC hour + build}
-  K -->|hit| L1[(L1 memory)]
-  K -->|miss| L2[(L2 Firestore, opt-in)]
-  L2 -->|miss| BQ[(BigQuery)]
-  W[Any writer: nightly · Slack · console · webhook] -->|commit moves last_modified| CAT[__TABLES__ catalog]
-  CAT --> K
+  R[Page render q()] --> K{key = SQL + params\n+ version of every table/view read\n+ __schema__ + UTC hour}
+  K -->|hit| FS[(Firestore console_query_cache)]
+  K -->|miss| BQ[(BigQuery)] --> FS
+  W[Any writer: nightly · Slack · console · bq CLI · future webhooks] --> BQ
+  BQ -->|audit log| SINK[log sink bhaga-bq-writes] --> PS[Pub/Sub] -->|OIDC push| WH[bhaga-webhook /cache/bq-write]
+  WH -->|v += 1| V[(Firestore console_cache_versions)]
+  C[console mutate()] -->|v += 1, before returning| V
+  V --> K
 ```
 
-- **Versions, not deletes.** `catalog.ts` reads `bhaga.__TABLES__` (`last_modified_time` per
-  table/view); `deps.ts` gets each query's tables from a free dry run (`referencedTables`, views
-  and table functions expanded by BigQuery). A write anywhere moves a version, the key changes,
-  the old entry is never addressed again. No writer needs a hook — a future Square / ClickUp
-  webhook that writes BigQuery is covered as is. No writer uses streaming inserts (whose buffer
-  does not move `last_modified_time` reliably); keep it that way or add an explicit bump.
-- **Freshness bound.** Catalog younger than 10 s is used as is; 10–45 s is used while refreshing;
-  older is awaited. This instance's writes and any server action mark it dirty, so the page
-  re-rendered after a save (or after a polled job finishes) waits for fresh versions.
+- **Versions, not deletes.** `console_cache_versions/{table}` `{v, updated_at, source}` holds a
+  counter per table; `__schema__` moves on any table/view/routine (re)definition. Every committed
+  write to the `bhaga` dataset — whoever makes it — lands in BigQuery's data-access audit log
+  (always on), which the sink forwards to Pub/Sub and `cloud/webhook/cache_versions.py` turns
+  into atomic increments. A bump changes every key that read the table; the old entry is never
+  addressed again and expires by Firestore TTL (`expire_at`, 6 h). A future Square / ClickUp
+  webhook that writes BigQuery is covered with no cache code. Provisioning:
+  `scripts/provision_console_cache.sh`.
+- **Freshness.** The console's own writes bump before `mutate()` returns, so the re-render after
+  a save is fresh. Outside writes are fresh once the audit log → push lands (seconds; the agreed
+  bound is ≤ 60 s). Each request reads the versions once (`React.cache`).
+- **Dependencies.** `deps.ts` gets each query's tables from a free dry run (`referencedTables`,
+  views and table functions expanded by BigQuery), plus every `bhaga.<name>` the SQL names.
 - **Server actions never use it** (`next-action` header): status polls and writes read live.
 - **Clock.** Keys carry the UTC hour, which covers `CURRENT_DATE('America/Chicago')` in views;
   SQL reading the clock (`CURRENT_TIMESTAMP` …) gets a per-minute key; `RAND` / `GENERATE_UUID`
   is never cached. `__tests__/query-cache-policy.test.ts` fails if a migration adds a view or
   table function that reads the clock beyond `CURRENT_DATE`.
 - **Exactness.** Only results that survive a JSON round trip unchanged are cached; a hit is a
-  fresh parse, so callers can mutate rows. `x-console-cache: verify` re-runs reads live and
-  records `verify-match` / `verify-diff` (`/api/cache-stats`); `x-console-cache: off` bypasses.
-- **Unknowns read live:** other datasets, ≥ 50 referenced tables, a failed dry run or catalog.
-- Operating it (stats, kill switch `CONSOLE_QUERY_CACHE=off`, L2 provisioning): `RUNBOOK.md` §17.
+  fresh parse, so callers can mutate rows. `?cache=verify` (header `x-console-cache: verify`)
+  re-runs reads live and records `verify-match` / `verify-diff` (`/api/cache-stats`);
+  `?cache=off` bypasses.
+- **Fail live, never stale.** Firestore unreachable, a failed dry run, other datasets or ≥ 50
+  referenced tables → the read goes to BigQuery. Previews read the shared versions but write
+  entries under their own namespace and never bump.
+- Operating it (stats, probe, kill switch `CONSOLE_QUERY_CACHE=off`): `RUNBOOK.md` §17.

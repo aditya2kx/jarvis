@@ -2512,23 +2512,28 @@ server would refuse anyway.
 
 ### Query cache (2026-10)
 
-Page renders read BigQuery through a read-through cache (`apps/operator-console/lib/bq/cache/`,
-design in `docs/operator-console/ARCHITECTURE.md` §15). A cached result is addressed by the BQ
-`last_modified_time` of every table and view the query reads, so **any** write — nightly, Slack,
-console, a manual `bq` fix, a future webhook — retires it: immediately for this instance's own
-writes and server actions, within ~45 s (catalog refresh) for anyone else's. Server actions
-(status polls, writes) always read live. Nothing to provision for the in-memory layer.
+Page renders read BigQuery through one shared read-through cache in Firestore
+(`apps/operator-console/lib/bq/cache/`, design in `docs/operator-console/ARCHITECTURE.md` §15).
+A cached result is addressed by a version counter for every table and view the query reads.
+**Any** write to `bhaga` — nightly, Slack, console, a manual `bq` fix, a future webhook — moves
+those counters: the console's own writes before the save returns, everyone else's via the
+BigQuery audit log → log sink `bhaga-bq-writes` → Pub/Sub subscription `console-cache-versions`
+→ `bhaga-webhook` `POST /cache/bq-write` (OIDC as `console-cache-push@`), within seconds.
+Server actions (status polls, writes) always read live.
 
 | Need | Do |
 |---|---|
-| Is it serving? | `GET /api/cache-stats` (IAP-signed-in): hit/miss counts, recent reads (query id, ms, tables — no row data), catalog age, L1 size, L2 state |
-| Prove cached == live | render any page with header `x-console-cache: verify` → `verify-match` / `verify-diff` in `/api/cache-stats`; a diff also logs `console_cache_verify-diff sql=<id> tables=<…>` |
-| Time a page without it | header `x-console-cache: off`; previews: `python3 apps/operator-console/scripts/cache_benchmark.py --branch preview/<name>` (or `--pr N`) |
+| Is it serving? | `GET /api/cache-stats` (IAP-signed-in): hit/miss counts, recent reads (query id, ms, tables — no row data), store state |
+| Is the change feed alive? | Firestore `console_cache_meta/audit_feed.last_event_at` (last push); `console_cache_versions/<table>.source` (`audit-log` / `console`); webhook logs `console_cache_bump docs=<…>` |
+| Prove an outside write lands | `bq query "INSERT bhaga.console_cache_probe (n, written_by, written_at) VALUES (1,'me',CURRENT_TIMESTAMP())"`, then poll `GET /api/cache-probe` until `probe` changes |
+| Prove cached == live | `?cache=verify` on any page → `verify-match` / `verify-diff` in `/api/cache-stats`; a diff also logs `console_cache_verify-diff sql=<id> tables=<…>` |
+| Time a page without it | `?cache=off`; previews: `python3 apps/operator-console/scripts/cache_benchmark.py --branch preview/<name>` (or `--pr N`) |
 | Turn it off | `gcloud run services update operator-console --region us-central1 --update-env-vars CONSOLE_QUERY_CACHE=off` (config change, no deploy; `=on` to restore) |
-| Shared Firestore L2 (opt-in) | one-time: `gcloud firestore fields ttls update expire_at --collection-group=console_query_cache --enable-ttl --project jarvis-bhaga-prod` + `roles/datastore.user` on the console runtime SA, then `--update-env-vars CONSOLE_QUERY_CACHE_L2=1`. Failures back off 10 min (`console_cache_l2_disabled op=<get|put>`) and fall back to L1/BigQuery. Never on previews |
+| Provision / repoint the feed | `bash scripts/provision_console_cache.sh prod` from Cloud Shell (idempotent: topic, sink + publisher grant, push SA, subscription, Firestore TTL on `console_query_cache_entries.expire_at`, `datastore.user` for the console SA, `CACHE_PUSH_*` env on bhaga-webhook). `sandbox` mode builds a private `bhaga-webhook-cachepv` from the checkout for pre-merge proof; `prod` deletes it |
 
-Breadcrumbs: `console_cache_catalog_refresh_failed`, `console_cache_error`, `console_cache_l2_disabled`.
-A catalog failure means reads go straight to BigQuery (slower, never stale).
+Breadcrumbs: `console_cache_store_unavailable op=<…>` (Firestore down → reads go to BigQuery for
+60 s, never stale), `console_cache_error`, `console_cache_push_unconfigured` (webhook returns 503 so
+Pub/Sub keeps the message), `console_cache_push_malformed`.
 
 Full design/build docs: [`docs/operator-console/`](docs/operator-console/) (`PLAN.md` — living plan
 + decisions log + milestones; `ARCHITECTURE.md`; `EXECUTION.md` — step-by-step; `COST.md`).

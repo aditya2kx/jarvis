@@ -545,6 +545,22 @@ class TestPrCostLedger(unittest.TestCase):
                         L.capture_build(200)
         self.assertIn("HARD failure", str(ctx.exception))
 
+    def test_validate_session_started_requires_conversation_scope(self):
+        L.set_meta(202, title="t", requirement="r", session_started_at="2026-10-20T20:00:00Z")
+        L.record_build_session(202, ts="2026-10-20T21:00:00Z", tokens=1, cost_usd=1.0, model="m")
+        ok, problems = L.validate(202, require_build=True)
+        self.assertFalse(ok)
+        self.assertTrue(any("not conversation-scoped" in p for p in problems))
+
+    def test_validate_accepts_agent_scoped_build_with_session_started(self):
+        # Agents Window chat on the Mac worker: started by start_pr_session, billed per bc-id.
+        for pr, source in ((203, "cursor_cloud_agent_api"), (204, "benchmark_estimate")):
+            L.set_meta(pr, title="t", requirement="r", session_started_at="2026-10-20T20:00:00Z")
+            L.record_build_session(pr, ts=f"2026-10-20T21:00:0{pr % 10}Z", tokens=1, cost_usd=1.0,
+                                   model="m", source=source)
+            ok, problems = L.validate(pr, require_build=True)
+            self.assertTrue(ok, (source, problems))
+
     def test_validate_require_build_rejects_zero_cost(self):
         """validate --require-build must fail if build cost is $0."""
         L.set_meta(201, title="t", requirement="r")

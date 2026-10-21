@@ -2629,8 +2629,8 @@ full access and are the only people who see `/access` or the **Manage access** b
 page header. From either place: add a person by Google email, give the whole page or pick
 sections, or remove them. Seeing a section means they can use its buttons (each server action
 checks `access` keys in `lib/actions/registry.ts`); hidden sections are never rendered or sent to
-the browser. **View as** shows the console exactly as that person sees it (blue strip with a
-person switcher, **Exit**). The person drawer offers starting points (`lib/access/presets.ts`:
+the browser. **View as** (top bar on every page, or the eye on an `/access` row) shows the console
+exactly as that person sees it, on the page you're on (blue strip with a person switcher, **Exit**). The person drawer offers starting points (`lib/access/presets.ts`:
 Everything, Store manager, Shift lead, Inventory only) that can then be tweaked per section, and
 each save's toast has **Undo** (restores the previous grant as a new version). **Unreviewed**
 people signed in before access was managed here and follow `CONSOLE_ACCESS_DEFAULT`.

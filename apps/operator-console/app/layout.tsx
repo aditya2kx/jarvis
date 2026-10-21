@@ -78,7 +78,7 @@ export default async function RootLayout({
             <div className="flex h-dvh overflow-hidden">
               <Sidebar allowedHrefs={navHrefs} />
               <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                <Topbar />
+                <Topbar canViewAs={access.realIsOwner && !access.viewingAs} />
                 {access.viewingAs ? <ViewAsBanner email={access.viewingAs} /> : null}
                 <HealthBanner />
                 <main className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+1.5rem)] md:p-6">

@@ -43,7 +43,13 @@ function StatusDot({ status, className }: { status: GoalStatus; className?: stri
   return <span aria-hidden className={cn("inline-block size-2 shrink-0 rounded-full", STATUS_COLOR[status], className)} />;
 }
 
-export function HealthScorecard({ data }: { data: HealthScorecardData }) {
+export function HealthScorecard({
+  data,
+  canEditGoals = true,
+}: {
+  data: HealthScorecardData;
+  canEditGoals?: boolean;
+}) {
   const groups: HealthGroup[] = data.groups?.length
     ? data.groups
     : [{ id: "finance", label: "", href: "/home", metrics: data.metrics }];
@@ -53,7 +59,7 @@ export function HealthScorecard({ data }: { data: HealthScorecardData }) {
       <SummaryCard data={data} groups={groups} />
       <div className="grid gap-4 lg:grid-cols-2">
         {groups.map((g) => (
-          <AreaCard key={g.id} group={g} preset={data.win.preset} />
+          <AreaCard key={g.id} group={g} preset={data.win.preset} canEditGoals={canEditGoals} />
         ))}
       </div>
     </div>
@@ -137,7 +143,15 @@ function SummaryCard({ data, groups }: { data: HealthScorecardData; groups: Heal
   );
 }
 
-function AreaCard({ group: g, preset }: { group: HealthGroup; preset: RangePreset }) {
+function AreaCard({
+  group: g,
+  preset,
+  canEditGoals,
+}: {
+  group: HealthGroup;
+  preset: RangePreset;
+  canEditGoals: boolean;
+}) {
   const scored = g.metrics.filter((m) => m.status !== "no-goal");
   const rollup = scored.reduce<GoalStatus>(
     (worst, m) => (SEVERITY[m.status] < SEVERITY[worst] ? m.status : worst),
@@ -163,21 +177,21 @@ function AreaCard({ group: g, preset }: { group: HealthGroup; preset: RangePrese
       ) : null}
       <CardContent className="flex flex-col divide-y divide-border">
         {g.metrics.map((m) => (
-          <MetricRow key={m.key} metric={m} />
+          <MetricRow key={m.key} metric={m} canEditGoal={canEditGoals} />
         ))}
       </CardContent>
     </Card>
   );
 }
 
-function MetricRow({ metric: m }: { metric: HealthMetric }) {
+function MetricRow({ metric: m, canEditGoal }: { metric: HealthMetric; canEditGoal: boolean }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const { isPending, error, run, setError } = useConsoleAction();
 
   const field = m.goalKey ? GOAL_FIELDS.find((f) => f.key === m.goalKey) : undefined;
-  const editable = Boolean(field && m.goalKey);
+  const editable = canEditGoal && Boolean(field && m.goalKey);
   const tracked = m.status !== "no-goal";
 
   function startEdit() {

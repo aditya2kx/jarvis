@@ -10,10 +10,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { NAV_GROUPS, isNavItemActive } from "./nav-items";
+import { isNavItemActive, visibleNavGroups } from "./nav-items";
 import { useSidebarCollapsed } from "./useSidebarCollapsed";
 
-export function Sidebar() {
+export function Sidebar({ allowedHrefs }: { allowedHrefs?: readonly string[] }) {
   const pathname = usePathname();
   const { collapsed, toggle } = useSidebarCollapsed();
 
@@ -45,7 +45,7 @@ export function Sidebar() {
         </Button>
       </div>
 
-      {NAV_GROUPS.map((group) => (
+      {visibleNavGroups(allowedHrefs).map((group) => (
         <div key={group.label} className="flex flex-col gap-1">
           {!collapsed ? (
             <span className="px-2 text-xs font-medium uppercase tracking-wide text-sidebar-foreground/50">

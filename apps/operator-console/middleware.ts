@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { HASH_CONSOLE_HOST } from "@/lib/iap/hosts";
-import { isConsolePreview, PREVIEW_ACTION_REFUSAL } from "@/lib/config/preview";
+import { accessSandboxWritable, isConsolePreview, PREVIEW_ACTION_REFUSAL } from "@/lib/config/preview";
 
 /**
  * Issue #208 — do NOT redirect hash ↔ canonical after IAP.
@@ -13,7 +13,12 @@ export function middleware(request: NextRequest) {
   // Every console write is a non-GET (server actions, /api/iap-beacon,
   // /api/parse-restock). Next's action client surfaces a text/plain 4xx body
   // as the error, which useConsoleAction shows as the toast.
-  if (isConsolePreview() && request.method !== "GET" && request.method !== "HEAD") {
+  if (
+    isConsolePreview() &&
+    request.method !== "GET" &&
+    request.method !== "HEAD" &&
+    !(request.nextUrl.pathname === "/api/access" && accessSandboxWritable())
+  ) {
     return new NextResponse(PREVIEW_ACTION_REFUSAL, {
       status: 403,
       headers: { "content-type": "text/plain" },

@@ -11,6 +11,8 @@ import {
 import { BarChartCard } from "@/components/charts/BarChartCard";
 import { LineChartCard } from "@/components/charts/LineChartCard";
 import { DataTable } from "@/components/tables/DataTable";
+import { ManageAccess } from "@/components/access/ManageAccess";
+import { pageDenied, sectionAccess } from "@/components/access/guards";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { FilterMultiSelect } from "@/components/filters/FilterMultiSelect";
@@ -64,6 +66,9 @@ export default async function SalesPage({
     stat?: string;
   }>;
 }) {
+  const denied = await pageDenied("sales");
+  if (denied) return denied;
+  const can = await sectionAccess("sales");
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const grain = await resolvePageGrain(sp.grain);
@@ -384,6 +389,7 @@ export default async function SalesPage({
             ) : null}
           </>
         }
+        actions={<ManageAccess page="sales" />}
       />
 
       {error ? (
@@ -394,7 +400,7 @@ export default async function SalesPage({
         </p>
       ) : (
         <>
-          {mode === "composition" ? (
+          {!can("charts") ? null : mode === "composition" ? (
             <>
               <BarChartCard
                 title={chartTitle("Net sales")}
@@ -455,14 +461,16 @@ export default async function SalesPage({
             </>
           )}
 
-          <div>
-            <h2 className="mb-2 text-sm font-semibold text-foreground">
-              {statPrefix}
-              {grainLabel} detail
-              {detailSuffix}
-            </h2>
-            <DataTable<SalesBySourceRow> columns={columns} data={tableRows} />
-          </div>
+          {can("detail") ? (
+            <div>
+              <h2 className="mb-2 text-sm font-semibold text-foreground">
+                {statPrefix}
+                {grainLabel} detail
+                {detailSuffix}
+              </h2>
+              <DataTable<SalesBySourceRow> columns={columns} data={tableRows} />
+            </div>
+          ) : null}
         </>
       )}
     </div>

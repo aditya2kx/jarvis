@@ -33,6 +33,8 @@ import type { DemandCell } from "@/lib/labor/staffing-need";
 import { HoursPerPersonCard } from "@/components/labor/HoursPerPersonCard";
 import { OpenShiftsCard } from "@/components/labor/OpenShiftsCard";
 import { CollapsibleSection } from "@/components/shell/CollapsibleSection";
+import { ManageAccess } from "@/components/access/ManageAccess";
+import { pageDenied, sectionAccess } from "@/components/access/guards";
 import { weekStartOf } from "@/lib/labor/week-options";
 import { upcomingPushRows } from "@/lib/labor/schedule-push-store";
 import type { PushRow } from "@/lib/labor/schedule-push";
@@ -153,6 +155,9 @@ export default async function LaborPage({
     person?: string;
   }>;
 }) {
+  const denied = await pageDenied("labor");
+  if (denied) return denied;
+  const can = await sectionAccess("labor");
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const grain = await resolvePageGrain(sp.grain);
@@ -747,7 +752,7 @@ export default async function LaborPage({
         }
         actions={
           <>
-            <LaborWeeklyHoursGoal current={goalLaborHoursWeek} />
+            {can("labor-hours") ? <LaborWeeklyHoursGoal current={goalLaborHoursWeek} /> : null}
             <SyncAdpButton
               lastScrapedAt={hoursScrapedAt}
               targetDate={clockedHoursTargetDate({
@@ -755,6 +760,7 @@ export default async function LaborPage({
                 coverageDay: sp.day,
               })}
             />
+            <ManageAccess page="labor" />
           </>
         }
       />
@@ -819,97 +825,111 @@ export default async function LaborPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <SuggestedHoursProvider>
-          <CollapsibleSection id="labor-hours" title="Labor hours">
-          <LaborHoursChart
-            data={chartData}
-            laborTypes={laborTypes}
-            grain={grain}
-            goalLaborHoursWeek={goalLaborHoursWeek}
-            unit={chartUnit}
-            titlePrefix={statPrefix}
-            subtitle={statSubtitle}
-            stat={stat === "avg" ? "avg" : "total"}
-            period={{ start: chartWin.start, end: chartWin.end }}
-          />
-          </CollapsibleSection>
+          {can("labor-hours") ? (
+            <CollapsibleSection id="labor-hours" title="Labor hours">
+            <LaborHoursChart
+              data={chartData}
+              laborTypes={laborTypes}
+              grain={grain}
+              goalLaborHoursWeek={goalLaborHoursWeek}
+              unit={chartUnit}
+              titlePrefix={statPrefix}
+              subtitle={statSubtitle}
+              stat={stat === "avg" ? "avg" : "total"}
+              period={{ start: chartWin.start, end: chartWin.end }}
+            />
+            </CollapsibleSection>
+          ) : null}
 
-          <CollapsibleSection id="labor-wages" title="Labor wages">
-          <LaborWagesChart
-            data={wagesChartData}
-            rates={wageRates}
-            laborTypes={laborTypes}
-            grain={grain}
-            titlePrefix={statPrefix}
-            subtitle={statSubtitle}
-            stat={stat === "avg" ? "avg" : "total"}
-            period={{ start: chartWin.start, end: chartWin.end }}
-          />
-          </CollapsibleSection>
+          {can("labor-wages") ? (
+            <CollapsibleSection id="labor-wages" title="Labor wages">
+            <LaborWagesChart
+              data={wagesChartData}
+              rates={wageRates}
+              laborTypes={laborTypes}
+              grain={grain}
+              titlePrefix={statPrefix}
+              subtitle={statSubtitle}
+              stat={stat === "avg" ? "avg" : "total"}
+              period={{ start: chartWin.start, end: chartWin.end }}
+            />
+            </CollapsibleSection>
+          ) : null}
 
-          <CollapsibleSection id="concurrent" title="On the floor">
-          <LaborConcurrentChart
-            data={concurrentChartData}
-            laborTypes={laborTypes}
-            grain={grain}
-            titlePrefix={statPrefix}
-            subtitle={statSubtitle}
-            stat={stat === "avg" ? "avg" : "total"}
-            period={{ start: chartWin.start, end: chartWin.end }}
-          />
-          </CollapsibleSection>
+          {can("concurrent") ? (
+            <CollapsibleSection id="concurrent" title="On the floor">
+            <LaborConcurrentChart
+              data={concurrentChartData}
+              laborTypes={laborTypes}
+              grain={grain}
+              titlePrefix={statPrefix}
+              subtitle={statSubtitle}
+              stat={stat === "avg" ? "avg" : "total"}
+              period={{ start: chartWin.start, end: chartWin.end }}
+            />
+            </CollapsibleSection>
+          ) : null}
 
-          <CollapsibleSection id="coverage" title="Coverage & shift draft">
-          <LaborCoveragePanel
-            store={DEFAULT_STORE}
-            win={chartWin}
-            actuals={coverageActuals}
-            scheduled={coverageScheduled}
-            open={coverageOpen}
-            laborTypes={laborTypes}
-            demand={coverageDemand}
-            goalHoursWeek={goalLaborHoursWeek}
-            deliveryDates={deliveryDates}
-            rulesHistory={rulesHistory}
-            unavailability={unavailability}
-            activeStaff={activeStaff}
-            savedPushRows={savedPushRows}
-            adpWriteEnabled={FEATURES.adpScheduleWrite}
-            scheduleReadAt={scheduleReadAt}
-          />
-          </CollapsibleSection>
+          {can("coverage") ? (
+            <CollapsibleSection id="coverage" title="Coverage & shift draft">
+            <LaborCoveragePanel
+              store={DEFAULT_STORE}
+              win={chartWin}
+              actuals={coverageActuals}
+              scheduled={coverageScheduled}
+              open={coverageOpen}
+              laborTypes={laborTypes}
+              demand={coverageDemand}
+              goalHoursWeek={goalLaborHoursWeek}
+              deliveryDates={deliveryDates}
+              rulesHistory={rulesHistory}
+              unavailability={unavailability}
+              activeStaff={activeStaff}
+              savedPushRows={savedPushRows}
+              adpWriteEnabled={FEATURES.adpScheduleWrite}
+              scheduleReadAt={scheduleReadAt}
+            />
+            </CollapsibleSection>
+          ) : null}
 
-          <CollapsibleSection id="availability" title="ADP availability">
-          <AdpAvailabilityCard
-            rows={[
-              ...unavailability,
-              ...ruleUnavailability(rulesHistory[0]?.rules.staffRules ?? []).map(
-                (r): UnavailabilityRow => ({ ...r, expires_at_ct: null, hours_left: null, scraped_at: null }),
-              ),
-            ]}
-            shifts={upcomingShifts}
-            roster={activeStaff ?? []}
-            approveEnabled={FEATURES.adpUnavailabilityApprove}
-            lastReadAt={scheduleReadAt}
-            todayIso={chicagoTodayIso()}
-          />
-          </CollapsibleSection>
+          {can("availability") ? (
+            <CollapsibleSection id="availability" title="ADP availability">
+            <AdpAvailabilityCard
+              rows={[
+                ...unavailability,
+                ...ruleUnavailability(rulesHistory[0]?.rules.staffRules ?? []).map(
+                  (r): UnavailabilityRow => ({ ...r, expires_at_ct: null, hours_left: null, scraped_at: null }),
+                ),
+              ]}
+              shifts={upcomingShifts}
+              roster={activeStaff ?? []}
+              approveEnabled={FEATURES.adpUnavailabilityApprove}
+              lastReadAt={scheduleReadAt}
+              todayIso={chicagoTodayIso()}
+            />
+            </CollapsibleSection>
+          ) : null}
 
-          <CollapsibleSection id="hours-per-person" title="Hours per person">
-          <HoursPerPersonCard
-            actual={weeklyActualDays}
-            scheduled={weeklyScheduledDays}
-            open={weeklyOpenDays}
-            laborTypes={laborTypes}
-            todayIso={chicagoTodayIso()}
-            range={weeklyRange}
-          />
-          </CollapsibleSection>
+          {can("hours-per-person") ? (
+            <CollapsibleSection id="hours-per-person" title="Hours per person">
+            <HoursPerPersonCard
+              actual={weeklyActualDays}
+              scheduled={weeklyScheduledDays}
+              open={weeklyOpenDays}
+              laborTypes={laborTypes}
+              todayIso={chicagoTodayIso()}
+              range={weeklyRange}
+            />
+            </CollapsibleSection>
+          ) : null}
 
-          <CollapsibleSection id="open-shifts" title="Open shifts">
-          <OpenShiftsCard todayIso={chicagoTodayIso()} />
-          </CollapsibleSection>
+          {can("open-shifts") ? (
+            <CollapsibleSection id="open-shifts" title="Open shifts">
+            <OpenShiftsCard todayIso={chicagoTodayIso()} />
+            </CollapsibleSection>
+          ) : null}
 
-          {selectedPerson ? (
+          {selectedPerson && can("one-person") ? (
             <CollapsibleSection id="one-person" title="One person">
             <div data-testid="labor-hours-one-person" className="flex flex-col gap-2">
               {personChartSupportsGrain(grain) ? (
@@ -951,65 +971,67 @@ export default async function LaborPage({
             </CollapsibleSection>
           ) : null}
 
-          {punchGaps.length ? (
+          {punchGaps.length > 0 && can("punch-gaps") ? (
             <CollapsibleSection id="punch-gaps" title="Punch gaps">
           <PunchGapsPanel gaps={punchGaps} periodLabel={`${win.start} → ${win.end}`} />
           </CollapsibleSection>
           ) : null}
 
-          <CollapsibleSection id="solo" title={`Solo vs team hours — ${win.start} → ${win.end}`}>
-          <div className="flex flex-col gap-2">
-            {soloSummary.rows.length ? (
-              <>
-                <DataTable
-                  columns={soloColumns}
-                  data={soloSummary.rows}
-                  pinLeft={["employee"]}
-                />
-                <p className="text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">Solo</span> hours are
-                  minutes an employee was the only person in the shop, in contiguous
-                  blocks of at least the configured minimum — solo + team always equals
-                  total. Solo hours accrue for everyone, but{" "}
-                  <span className="font-medium text-foreground">Premium</span> is only
-                  marked when the employee is on the eligible base rate{" "}
-                  <em>and</em> the hours fall on or after the policy&apos;s effective
-                  date — so someone on the eligible rate can still show no premium for
-                  solo hours worked before it, and anyone already above the rate never
-                  earns one. Premium owed is what moves to the higher rate in ADP for
-                  the pay period — key it from the{" "}
-                  <span className="font-medium text-foreground">Payroll</span> page,
-                  which is scoped to pay-period boundaries rather than this Period
-                  filter.
-                </p>
-                {soloSummary.remoteHours > 0 ? (
+          {can("solo") ? (
+            <CollapsibleSection id="solo" title={`Solo vs team hours — ${win.start} → ${win.end}`}>
+            <div className="flex flex-col gap-2">
+              {soloSummary.rows.length ? (
+                <>
+                  <DataTable
+                    columns={soloColumns}
+                    data={soloSummary.rows}
+                    pinLeft={["employee"]}
+                  />
                   <p className="text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">Remote</span> hours
-                    are shifts worked away from the shop. They count as team hours and
-                    are paid normally, but they are not floor coverage: a remote
-                    colleague does not stop someone from being solo, and remote time
-                    never earns the premium itself. Rows with remote hours and no solo
-                    hours are listed for that context. Remote shifts are annotated in{" "}
-                    <code className="font-mono">solo_shift_remote_days</code>; an
-                    unannotated shift counts as on the floor.
+                    <span className="font-medium text-foreground">Solo</span> hours are
+                    minutes an employee was the only person in the shop, in contiguous
+                    blocks of at least the configured minimum — solo + team always equals
+                    total. Solo hours accrue for everyone, but{" "}
+                    <span className="font-medium text-foreground">Premium</span> is only
+                    marked when the employee is on the eligible base rate{" "}
+                    <em>and</em> the hours fall on or after the policy&apos;s effective
+                    date — so someone on the eligible rate can still show no premium for
+                    solo hours worked before it, and anyone already above the rate never
+                    earns one. Premium owed is what moves to the higher rate in ADP for
+                    the pay period — key it from the{" "}
+                    <span className="font-medium text-foreground">Payroll</span> page,
+                    which is scoped to pay-period boundaries rather than this Period
+                    filter.
                   </p>
-                ) : null}
-              </>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Nobody worked alone in this Period.
-              </p>
-            )}
-            {soloSummary.people > 0 ? (
-              <p className="text-xs text-muted-foreground">
-                {soloSummary.soloHours.toFixed(2)} solo hours across{" "}
-                {soloSummary.people}{" "}
-                {soloSummary.people === 1 ? "person" : "people"} ·{" "}
-                {formatCents(soloSummary.premiumCents)} premium owed.
-              </p>
-            ) : null}
-          </div>
-          </CollapsibleSection>
+                  {soloSummary.remoteHours > 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      <span className="font-medium text-foreground">Remote</span> hours
+                      are shifts worked away from the shop. They count as team hours and
+                      are paid normally, but they are not floor coverage: a remote
+                      colleague does not stop someone from being solo, and remote time
+                      never earns the premium itself. Rows with remote hours and no solo
+                      hours are listed for that context. Remote shifts are annotated in{" "}
+                      <code className="font-mono">solo_shift_remote_days</code>; an
+                      unannotated shift counts as on the floor.
+                    </p>
+                  ) : null}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Nobody worked alone in this Period.
+                </p>
+              )}
+              {soloSummary.people > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {soloSummary.soloHours.toFixed(2)} solo hours across{" "}
+                  {soloSummary.people}{" "}
+                  {soloSummary.people === 1 ? "person" : "people"} ·{" "}
+                  {formatCents(soloSummary.premiumCents)} premium owed.
+                </p>
+              ) : null}
+            </div>
+            </CollapsibleSection>
+          ) : null}
         </SuggestedHoursProvider>
       )}
     </div>

@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/shell/PageHeader";
+import { sectionPageDenied } from "@/components/access/guards";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { listPayPeriodsWithPaidStatus, type PayPeriodOption } from "@/lib/bq/queries";
 import { formatDate } from "@/lib/format";
@@ -32,6 +33,8 @@ export default async function MonthlyRecognitionPage({
 }: {
   searchParams: Promise<{ period?: string; month?: string }>;
 }) {
+  const denied = await sectionPageDenied("automations", "monthly-recognition");
+  if (denied) return denied;
   const sp = await searchParams;
   let error: string | undefined;
   let periods: PayPeriodOption[] = [];

@@ -28,6 +28,7 @@ import {
 } from "@/lib/recognition/store";
 import { syncRecognitionSources, type SyncResult } from "@/lib/recognition/sync";
 import { loadRecognitionView, spokenName } from "@/lib/recognition/view";
+import { actionDenied } from "@/lib/access/server";
 
 const PAGE = "/automations/monthly-recognition";
 
@@ -53,6 +54,8 @@ async function dmOperator(content: string): Promise<string> {
 export async function syncRecognitionSourcesAction(
   trigger: "console" | "auto",
 ): Promise<ActionAck<SyncResult>> {
+  const denied = await actionDenied("syncRecognitionSourcesAction");
+  if (denied) return denied;
   return asAck(async () => {
     const by = await operatorEmail();
     const res = await syncRecognitionSources(DEFAULT_STORE, trigger, by);
@@ -66,6 +69,8 @@ export async function syncRecognitionSourcesAction(
 export async function previewRecognitionAction(
   awardMonth: string,
 ): Promise<ActionAck<{ blurbs: Record<string, { text: string; source: "gemini" | "template" }> }>> {
+  const denied = await actionDenied("previewRecognitionAction");
+  if (denied) return denied;
   return asAck(async () => {
     assertMonth(awardMonth);
     const view = await loadRecognitionView(DEFAULT_STORE, awardMonth);
@@ -85,6 +90,8 @@ export async function dmRecognitionDraftAction(input: {
   post: string;
   giftCardSummary: string[];
 }): Promise<ActionAck<{ message_id: string }>> {
+  const denied = await actionDenied("dmRecognitionDraftAction");
+  if (denied) return denied;
   return asAck(async () => {
     assertMonth(input.awardMonth);
     if (!input.post.trim()) throw new Error("Draft is empty.");
@@ -113,6 +120,8 @@ export async function reshapeRecognitionPostAction(input: {
   post: string;
   instruction: string;
 }): Promise<ActionAck<{ post: string }>> {
+  const denied = await actionDenied("reshapeRecognitionPostAction");
+  if (denied) return denied;
   return asAck(async () => {
     assertMonth(input.awardMonth);
     if (!input.instruction.trim()) throw new Error("Type how you want the message changed.");
@@ -133,6 +142,8 @@ export async function markGiftCardsIssuedAction(input: {
   awardMonth: string;
   recipients: ApproveRecipient[];
 }): Promise<ActionAck<{ marked: number }>> {
+  const denied = await actionDenied("markGiftCardsIssuedAction");
+  if (denied) return denied;
   return asAck(async () => {
     assertMonth(input.awardMonth);
     const by = await operatorEmail();
@@ -234,6 +245,8 @@ export async function approveRecognitionAction(input: {
   recipients: ApproveRecipient[];
   resume?: boolean;
 }): Promise<ActionAck<{ results: RecapLine[]; dmId: string | null }>> {
+  const denied = await actionDenied("approveRecognitionAction");
+  if (denied) return denied;
   return asAck(async () => {
     assertMonth(input.awardMonth);
     if (!input.recipients.length) throw new Error("No recipients.");
@@ -252,6 +265,8 @@ export async function approveRecognitionAction(input: {
 export async function sendTestGiftCardAction(
   cardCents: number,
 ): Promise<ActionAck<{ results: RecapLine[]; dmId: string | null }>> {
+  const denied = await actionDenied("sendTestGiftCardAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!Number.isInteger(cardCents) || cardCents < 100 || cardCents > 500) {
       throw new Error("Test card must be $1–$5.");

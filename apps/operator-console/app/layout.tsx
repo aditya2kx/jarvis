@@ -8,6 +8,9 @@ import { HealthBanner } from "@/components/shell/HealthBanner";
 import { IapLoginBeacon } from "@/components/shell/IapLoginBeacon";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ActionToastProvider } from "@/lib/actions/ActionToast";
+import { ViewAsBanner } from "@/components/access/ViewAsBanner";
+import { getAccess } from "@/lib/access/server";
+import { allowedHrefs } from "@/lib/access/policy";
 
 // Inter's optical-size axis gives 12–13px table and chart text the open "text" cut and
 // page titles the tighter "display" cut; figures are tabular where numbers stack.
@@ -46,11 +49,14 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const access = await getAccess();
+  const hrefs = access.error ? [] : allowedHrefs(access.grant);
+  const navHrefs = access.realIsOwner ? [...hrefs, "/access"] : hrefs;
   return (
     <html
       lang="en"
@@ -70,16 +76,17 @@ export default function RootLayout({
           <ActionToastProvider>
             <IapLoginBeacon />
             <div className="flex h-dvh overflow-hidden">
-              <Sidebar />
+              <Sidebar allowedHrefs={navHrefs} />
               <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                 <Topbar />
+                {access.viewingAs ? <ViewAsBanner email={access.viewingAs} /> : null}
                 <HealthBanner />
                 <main className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+1.5rem)] md:p-6">
                   {children}
                 </main>
               </div>
             </div>
-            <MobileTabBar />
+            <MobileTabBar allowedHrefs={navHrefs} />
           </ActionToastProvider>
         </TooltipProvider>
       </body>

@@ -11,6 +11,8 @@ import { RANGE_PRESETS } from "@/lib/filters/range";
 import { resolvePageRange } from "@/lib/filters/period";
 import { FEATURES } from "@/lib/config/features";
 import type { GoalKey } from "@/lib/bq/writes";
+import { ManageAccess } from "@/components/access/ManageAccess";
+import { pageDenied, sectionAccess } from "@/components/access/guards";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +21,9 @@ export default async function HomePage({
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
+  const denied = await pageDenied("home");
+  if (denied) return denied;
+  const can = await sectionAccess("home");
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range);
 
@@ -26,7 +31,7 @@ export default async function HomePage({
   let goals: Partial<Record<GoalKey, string>> = {};
   let error: string | undefined;
   try {
-    health = await loadHealthScorecard(win);
+    if (can("scorecard")) health = await loadHealthScorecard(win);
     const config = await storeConfig(DEFAULT_STORE);
     goals = Object.fromEntries(
       config.filter((r) => r.key.startsWith("goal_")).map((r) => [r.key as GoalKey, r.value]),
@@ -49,7 +54,12 @@ export default async function HomePage({
             basePath="/home"
           />
         }
-        actions={FEATURES.writeGoals ? <GoalsDrawer current={goals} /> : null}
+        actions={
+          <>
+            {FEATURES.writeGoals && can("goals") ? <GoalsDrawer current={goals} /> : null}
+            <ManageAccess page="home" />
+          </>
+        }
       />
 
       <InfoNote summary="Where these numbers come from">
@@ -57,13 +67,13 @@ export default async function HomePage({
         plus bank payroll (matches Cost). Categories marked exclude-from-accounting are omitted from bank
         totals. Goals cover the whole period, so early in a week or month most goals read behind.
       </InfoNote>
-      {error || !health ? (
+      {!can("scorecard") ? null : error || !health ? (
         <p className="text-sm text-muted-foreground">
           Data unavailable{error ? `: ${error}` : ""} — this is expected locally without ADC/BQ
           access; deployed behind IAP this reads live.
         </p>
       ) : (
-        <HealthScorecard data={health} />
+        <HealthScorecard data={health} canEditGoals={can("goals")} />
       )}
     </div>
   );

@@ -38,6 +38,7 @@ import {
   type PunchFixPoll,
   type PunchFixStart,
 } from "@/lib/bhaga/punch-fix";
+import { actionDenied } from "@/lib/access/server";
 
 /** Append a new scheduling-rules version (older versions stay as history). */
 export async function saveScheduleRulesAction(
@@ -45,6 +46,8 @@ export async function saveScheduleRulesAction(
   baseVersion: number,
   note?: string,
 ): Promise<ActionAck<{ version: number }>> {
+  const denied = await actionDenied("saveScheduleRulesAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     const version = await saveScheduleRules(DEFAULT_STORE, rules, baseVersion, by, note?.trim() || undefined);
@@ -66,6 +69,8 @@ export async function saveDraftsToAdpAction(
   weekStart: string,
   shifts: unknown,
 ): Promise<ActionAck<{ pushId: string; count: number }>> {
+  const denied = await actionDenied("saveDraftsToAdpAction");
+  if (denied) return denied;
   try {
     requireScheduleWrite();
     const valid = validatePushShifts(weekStart, shifts, chicagoTodayIso());
@@ -85,6 +90,8 @@ export async function saveDraftsToAdpAction(
 
 /** Publish the week's ADP drafts (employees are notified in ADP Mobile). */
 export async function publishWeekAction(weekStart: string): Promise<ActionAck<{ weekStart: string }>> {
+  const denied = await actionDenied("publishWeekAction");
+  if (denied) return denied;
   try {
     requireScheduleWrite();
     const rows = await weekPushRows(DEFAULT_STORE, weekStart);
@@ -107,6 +114,8 @@ export async function sendPublishMessageAction(
   weekStart: string,
   to: "dm" | "channel" = "dm",
 ): Promise<ActionAck<{ weekStart: string }>> {
+  const denied = await actionDenied("sendPublishMessageAction");
+  if (denied) return denied;
   try {
     requireScheduleWrite();
     if (to !== "dm" && to !== "channel") {
@@ -142,6 +151,8 @@ export type ScheduleWriteRun = {
 export async function schedulePushStatusAction(
   weekStart: string,
 ): Promise<ActionAck<{ rows: PushRow[]; running: ScheduleWriteRun | null }>> {
+  const denied = await actionDenied("schedulePushStatusAction");
+  if (denied) return denied;
   try {
     const [rows, hit] = await Promise.all([
       weekPushRows(DEFAULT_STORE, weekStart),
@@ -167,6 +178,8 @@ export async function schedulePushStatusAction(
 export async function assignOpenShiftsAction(
   items: unknown,
 ): Promise<ActionAck<{ assignId: string; count: number }>> {
+  const denied = await actionDenied("assignOpenShiftsAction");
+  if (denied) return denied;
   try {
     requireScheduleWrite();
     const valid = validateAssignItems(items, chicagoTodayIso());
@@ -189,6 +202,8 @@ export async function assignOpenShiftsAction(
 export async function openShiftAssignStatusAction(
   assignId: string | null,
 ): Promise<ActionAck<{ rows: AssignRow[]; running: string | null }>> {
+  const denied = await actionDenied("openShiftAssignStatusAction");
+  if (denied) return denied;
   try {
     const hit = await runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE", "assign");
     const running = hit?.env.BHAGA_SCHEDULE_ASSIGN_ID || null;
@@ -203,6 +218,8 @@ export async function openShiftAssignStatusAction(
 export async function approveUnavailabilityAction(
   rowKey: string,
 ): Promise<ActionAck<{ executionName: string }>> {
+  const denied = await actionDenied("approveUnavailabilityAction");
+  if (denied) return denied;
   try {
     if (!FEATURES.adpUnavailabilityApprove) {
       throw new Error("Approving in ADP is turned off (CONSOLE_ADP_UNAVAIL_APPROVE).");
@@ -223,6 +240,8 @@ export async function pollUnavailabilityApproveAction(opts: {
   rowKey: string;
   executionName?: string | null;
 }): Promise<ActionAck<UnavailabilityApprovePoll>> {
+  const denied = await actionDenied("pollUnavailabilityApproveAction");
+  if (denied) return denied;
   try {
     return okAck({ data: await pollUnavailabilityApprove(opts) });
   } catch (e) {
@@ -232,6 +251,8 @@ export async function pollUnavailabilityApproveAction(opts: {
 
 /** Start "Sync ADP" — every ADP read in one Cloud Run login. */
 export async function syncAdpAction(targetDate: string): Promise<ActionAck<AdpSyncStart>> {
+  const denied = await actionDenied("syncAdpAction");
+  if (denied) return denied;
   try {
     const data = await startAdpSync(DEFAULT_STORE, targetDate);
     return okAck({ data, queued: ["adp-sync"], message: data.message });
@@ -244,6 +265,8 @@ export async function syncAdpAction(targetDate: string): Promise<ActionAck<AdpSy
 export async function runningAdpSyncAction(): Promise<
   ActionAck<{ executionName: string; baselineScrapedAt: string } | null>
 > {
+  const denied = await actionDenied("runningAdpSyncAction");
+  if (denied) return denied;
   try {
     return okAck({ data: await runningAdpSync() });
   } catch (e) {
@@ -256,6 +279,8 @@ export async function pollAdpSyncAction(opts: {
   baselineScrapedAt: string | null;
   executionName?: string | null;
 }): Promise<ActionAck<AdpSyncPoll>> {
+  const denied = await actionDenied("pollAdpSyncAction");
+  if (denied) return denied;
   try {
     const data = await pollAdpSync(opts);
     return okAck({ data });
@@ -272,6 +297,8 @@ export async function pollAdpSyncAction(opts: {
 export async function decidePunchGapAction(
   input: DecisionInput,
 ): Promise<ActionAck<{ decisionId: string }>> {
+  const denied = await actionDenied("decidePunchGapAction");
+  if (denied) return denied;
   try {
     const row = await punchGapFor(DEFAULT_STORE, input.date, input.employee);
     if (!row) throw new Error("This gap is no longer open in ADP — refresh the page.");
@@ -317,6 +344,8 @@ export async function decidePunchGapAction(
 export async function acceptPunchGapsAction(
   items: { date: string; employee: string }[],
 ): Promise<ActionAck<{ accepted: number; skipped: string[] }>> {
+  const denied = await actionDenied("acceptPunchGapsAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     let accepted = 0;
@@ -363,6 +392,8 @@ export async function acceptPunchGapsAction(
 export async function dismissPunchGapsAction(
   items: { date: string; employee: string }[],
 ): Promise<ActionAck<{ dismissed: number; skipped: string[] }>> {
+  const denied = await actionDenied("dismissPunchGapsAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     let dismissed = 0;
@@ -407,6 +438,8 @@ export async function dismissPunchGapsAction(
 export async function writePunchGapsToAdpAction(
   decisionIds: string[],
 ): Promise<ActionAck<PunchFixStart>> {
+  const denied = await actionDenied("writePunchGapsToAdpAction");
+  if (denied) return denied;
   try {
     if (!FEATURES.punchFixWriteback) throw new Error("Writing to ADP is switched off.");
     const ids = decisionIds.filter((id) => typeof id === "string" && id.length > 0);
@@ -422,6 +455,8 @@ export async function pollPunchGapWriteAction(opts: {
   decisionIds: string[];
   executionName?: string | null;
 }): Promise<ActionAck<PunchFixPoll>> {
+  const denied = await actionDenied("pollPunchGapWriteAction");
+  if (denied) return denied;
   try {
     const data = await pollPunchFixApply({ store: DEFAULT_STORE, ...opts });
     return okAck({ data });

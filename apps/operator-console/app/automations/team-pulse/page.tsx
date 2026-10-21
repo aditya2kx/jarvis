@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/shell/PageHeader";
+import { sectionPageDenied } from "@/components/access/guards";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import {
   getAutomation,
@@ -36,6 +37,8 @@ export default async function TeamPulsePage({
 }: {
   searchParams: Promise<{ period?: string }>;
 }) {
+  const denied = await sectionPageDenied("automations", "team-pulse");
+  if (denied) return denied;
   const sp = await searchParams;
   let error: string | undefined;
   let cfg = null;

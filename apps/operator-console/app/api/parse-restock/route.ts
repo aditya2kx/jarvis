@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { operatorEmail } from "@/lib/auth/identity";
+import { ACCESS_DENIED_MESSAGE, getAccess } from "@/lib/access/server";
+import { canSection } from "@/lib/access/policy";
 import { parseRestockCsv, validateParsedRows, type RestockRow } from "@/lib/restock/parse";
 import { parseRestockImage } from "@/lib/restock/gemini";
 
@@ -11,6 +13,10 @@ export async function POST(req: NextRequest) {
     await operatorEmail(); // throws if IAP's identity headers are absent/unverifiable
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "unauthorized" }, { status: 403 });
+  }
+  const access = await getAccess();
+  if (access.error || !canSection(access.grant, "inventory", "order-reco")) {
+    return NextResponse.json({ error: access.error ?? ACCESS_DENIED_MESSAGE }, { status: 403 });
   }
 
   const form = await req.formData();

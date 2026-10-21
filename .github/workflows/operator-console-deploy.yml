@@ -123,6 +123,15 @@ jobs:
               --member="$member" --role="roles/iap.httpsResourceAccessor" \
               || echo "::warning::IAP grant failed for $member (account missing or invalid) — skipped"
           done
+          # The Access page (/access) adds and removes people's Google sign-in itself
+          # (apps/operator-console/lib/access/iap.ts), so the runtime SA administers this one IAP resource.
+          RUNTIME_SA="$(gcloud run services describe ${{ env.SERVICE }} --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} --format='value(spec.template.spec.serviceAccountName)')"
+          gcloud iap web add-iam-policy-binding \
+            --resource-type=cloud-run --service=${{ env.SERVICE }} \
+            --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} \
+            --member="serviceAccount:$RUNTIME_SA" --role="roles/iap.admin" \
+            || echo "::warning::roles/iap.admin grant failed for $RUNTIME_SA — /access saves grants but can't change Google sign-in"
 
       - name: Record deploy event (BQ)
         run: |

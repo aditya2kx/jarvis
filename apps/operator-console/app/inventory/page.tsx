@@ -35,6 +35,8 @@ import { formatDate } from "@/lib/format";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
 import { CapacityEdit } from "@/components/drawers/CapacityEdit";
+import { ManageAccess } from "@/components/access/ManageAccess";
+import { pageDenied, sectionAccess } from "@/components/access/guards";
 import { DeliveryCadenceEdit } from "@/components/drawers/DeliveryCadenceEdit";
 import { parseHorizon } from "@/lib/inventory/restockHorizon";
 import { UsageDayAuditTable } from "@/components/inventory/UsageDayAuditTable";
@@ -76,6 +78,9 @@ export default async function InventoryPage({
 }: {
   searchParams: Promise<{ range?: string; from?: string; to?: string }>;
 }) {
+  const denied = await pageDenied("inventory");
+  if (denied) return denied;
+  const can = await sectionAccess("inventory");
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
   const showCustomPicker = wantsCustom(sp.range) || win.preset === "custom";
@@ -194,17 +199,20 @@ export default async function InventoryPage({
           </>
         }
         actions={
-          FEATURES.writeRestock ? (
-            <>
-              <DeliveryCadenceEdit weekday={cadenceWeekday} horizon={cadenceHorizon} />
-              <CapacityEdit currentMaxTubs={maxTubs} />
-              <RestockImportDrawer
-                dates={liveDates.length ? liveDates : dates}
-                scheduledDates={scheduledDates}
-                estimateByDate={estimateByDate}
-              />
-            </>
-          ) : null
+          <>
+            {FEATURES.writeRestock && can("order-reco") ? (
+              <>
+                <DeliveryCadenceEdit weekday={cadenceWeekday} horizon={cadenceHorizon} />
+                <CapacityEdit currentMaxTubs={maxTubs} />
+                <RestockImportDrawer
+                  dates={liveDates.length ? liveDates : dates}
+                  scheduledDates={scheduledDates}
+                  estimateByDate={estimateByDate}
+                />
+              </>
+            ) : null}
+            <ManageAccess page="inventory" />
+          </>
         }
       />
 
@@ -212,61 +220,69 @@ export default async function InventoryPage({
         <p className="text-sm text-muted-foreground">Data unavailable: {error}</p>
       ) : (
         <>
-          <OrderRecoStatusBanner />
-          <p className="text-sm text-muted-foreground">{nextDeliveryLabel}</p>
-          {stockOnly ? (
-            <p className="text-xs text-muted-foreground">
-              Days left = Current Qty ÷ Avg/day, from the latest closing counts — how long
-              this base lasts with no restocking. Order quantities need a delivery date to
-              count back from, so those columns appear once one is registered.
-            </p>
-          ) : (
-            <InfoNote summary="How the order numbers work">
-              Days left = Current Qty ÷ Avg/day — how long this base lasts with no restocking
-              at all. Days left after is the same figure counted from a delivery, assuming
-              that order arrives. Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs;
-              other bases 20 lbs; Blade is direct-delivery / not weighed). TOTAL includes +50
-              lbs per pallet (40 tubs/pallet) — same as Grafana Order Assistant. Click an
-              Order tubs cell (or the pencil in the header) to edit that delivery: Estimated
-              dates pin Manual values; Actuals dates update uploaded Actuals. Capacity is a
-              hard cap per delivery: pinning more tubs on one base leaves fewer for the
-              Estimated bases on that date. Apply once recomputes the recommendation.
-            </InfoNote>
-          )}
-          <OrderRecoTable
-            dates={dates}
-            estimatedDates={estimatedDates}
-            rows={rows}
-            maxTubs={maxTubs}
-            writable={FEATURES.writeRestock}
-          />
+          {can("order-reco") ? (
+            <>
+              <OrderRecoStatusBanner />
+              <p className="text-sm text-muted-foreground">{nextDeliveryLabel}</p>
+              {stockOnly ? (
+                <p className="text-xs text-muted-foreground">
+                  Days left = Current Qty ÷ Avg/day, from the latest closing counts — how long
+                  this base lasts with no restocking. Order quantities need a delivery date to
+                  count back from, so those columns appear once one is registered.
+                </p>
+              ) : (
+                <InfoNote summary="How the order numbers work">
+                  Days left = Current Qty ÷ Avg/day — how long this base lasts with no restocking
+                  at all. Days left after is the same figure counted from a delivery, assuming
+                  that order arrives. Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs;
+                  other bases 20 lbs; Blade is direct-delivery / not weighed). TOTAL includes +50
+                  lbs per pallet (40 tubs/pallet) — same as Grafana Order Assistant. Click an
+                  Order tubs cell (or the pencil in the header) to edit that delivery: Estimated
+                  dates pin Manual values; Actuals dates update uploaded Actuals. Capacity is a
+                  hard cap per delivery: pinning more tubs on one base leaves fewer for the
+                  Estimated bases on that date. Apply once recomputes the recommendation.
+                </InfoNote>
+              )}
+              <OrderRecoTable
+                dates={dates}
+                estimatedDates={estimatedDates}
+                rows={rows}
+                maxTubs={maxTubs}
+                writable={FEATURES.writeRestock}
+              />
+            </>
+          ) : null}
 
-          <div data-testid="ordered-tubs-actuals">
-            <h2 className="mb-2 text-sm font-semibold text-foreground">
-              Ordered tubs (Actuals)
-            </h2>
-            <p className="mb-2 text-xs text-muted-foreground">
-              Uploaded order quantities for deliveries in {win.label} ({formatDate(win.start)} –{" "}
-              {formatDate(win.end)}); estimates are not shown. Only this table follows Period —
-              pick This month or Custom to include an upcoming delivery.
-            </p>
-            <OrderedTubsActualsTable rows={actualsRows} columns={restockActualsColumns()} />
-          </div>
+          {can("ordered-actuals") ? (
+            <div data-testid="ordered-tubs-actuals">
+              <h2 className="mb-2 text-sm font-semibold text-foreground">
+                Ordered tubs (Actuals)
+              </h2>
+              <p className="mb-2 text-xs text-muted-foreground">
+                Uploaded order quantities for deliveries in {win.label} ({formatDate(win.start)} –{" "}
+                {formatDate(win.end)}); estimates are not shown. Only this table follows Period —
+                pick This month or Custom to include an upcoming delivery.
+              </p>
+              <OrderedTubsActualsTable rows={actualsRows} columns={restockActualsColumns()} />
+            </div>
+          ) : null}
 
-          <div>
-            <h2 className="mb-2 text-sm font-semibold text-foreground">
-              Base usage by day (last 30 days)
-            </h2>
-            <p className="mb-2 text-xs text-muted-foreground">
-              One row per closing date, one column per base, tagged by whether it counts toward
-              Avg/day. Tap a row to include or exclude a base for that day; nothing saves until
-              you Apply.
-            </p>
-            <UsageDayAuditTable
-              rows={auditRows}
-              writable={FEATURES.writeInventoryDayOverrides}
-            />
-          </div>
+          {can("usage-by-day") ? (
+            <div>
+              <h2 className="mb-2 text-sm font-semibold text-foreground">
+                Base usage by day (last 30 days)
+              </h2>
+              <p className="mb-2 text-xs text-muted-foreground">
+                One row per closing date, one column per base, tagged by whether it counts toward
+                Avg/day. Tap a row to include or exclude a base for that day; nothing saves until
+                you Apply.
+              </p>
+              <UsageDayAuditTable
+                rows={auditRows}
+                writable={FEATURES.writeInventoryDayOverrides}
+              />
+            </div>
+          ) : null}
         </>
       )}
     </div>

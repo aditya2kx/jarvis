@@ -30,6 +30,7 @@ import type { RestockRow } from "@/lib/restock/parse";
 import { okAck, failAck, type ActionAck } from "@/lib/actions/types";
 import { FEATURES } from "@/lib/config/features";
 import { CADENCE_WEEKDAYS, MAX_HORIZON } from "@/lib/inventory/restockHorizon";
+import { actionDenied } from "@/lib/access/server";
 
 const QUEUED = ["order-reco"];
 
@@ -63,6 +64,8 @@ export async function submitRestockAction(
   action: RestockAction,
   rows: RestockRow[],
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("submitRestockAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     await submitRestock(DEFAULT_STORE, deliveryDate, action, rows, by);
@@ -77,6 +80,8 @@ export async function replaceEstimatedRestockDateAction(
   fromDate: string,
   toDate: string,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("replaceEstimatedRestockDateAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     await replaceEstimatedRestockDate(DEFAULT_STORE, fromDate, toDate, by);
@@ -91,6 +96,8 @@ export async function moveRestockDateAction(
   fromDate: string,
   toDate: string,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("moveRestockDateAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     await moveRestockDate(DEFAULT_STORE, fromDate, toDate, by);
@@ -104,6 +111,8 @@ export async function moveRestockDateAction(
 export async function removeRestockDateAction(
   deliveryDate: string,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("removeRestockDateAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     await removeRestockDate(DEFAULT_STORE, deliveryDate, by);
@@ -116,6 +125,8 @@ export async function removeRestockDateAction(
 export async function setCapacityAction(
   maxTubs: number,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("setCapacityAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     await setConfig(DEFAULT_STORE, "order_reco_max_tubs", String(maxTubs), by);
@@ -130,6 +141,8 @@ export async function setRestockCadenceAction(
   weekday: string,
   horizon: number,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("setRestockCadenceAction");
+  if (denied) return denied;
   if (!FEATURES.writeRestock) {
     return failAck(new Error("Restock writes are disabled"));
   }
@@ -157,6 +170,8 @@ export async function setUsageDayOverrideAction(
   submittedDate: string,
   mode: UsageDayOverrideMode,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("setUsageDayOverrideAction");
+  if (denied) return denied;
   if (!FEATURES.writeInventoryDayOverrides) {
     return failAck(new Error("Usage day overrides are disabled"));
   }
@@ -180,6 +195,8 @@ export async function clearUsageDayOverrideAction(
   item: string,
   submittedDate: string,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("clearUsageDayOverrideAction");
+  if (denied) return denied;
   if (!FEATURES.writeInventoryDayOverrides) {
     return failAck(new Error("Usage day overrides are disabled"));
   }
@@ -210,6 +227,8 @@ export async function applyUsageDayOverridesAction(
   submittedDate: string,
   changes: UsageDayOverrideDraft[],
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("applyUsageDayOverridesAction");
+  if (denied) return denied;
   if (!changes.length) {
   if (!FEATURES.writeInventoryDayOverrides) {
     return failAck(new Error("Usage day overrides are disabled"));
@@ -235,6 +254,8 @@ export async function applyOrderTubOverridesAction(
   deliveryDate: string,
   rows: { item: string; quantityTubs: number }[],
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("applyOrderTubOverridesAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     await replaceOrderTubOverrides(DEFAULT_STORE, deliveryDate, rows, by);
@@ -252,6 +273,8 @@ export async function setCurrentQtyOverrideAction(
   item: string,
   quantityUnits: number,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("setCurrentQtyOverrideAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     await setCurrentQtyOverride(DEFAULT_STORE, item, quantityUnits, by);
@@ -267,6 +290,8 @@ export async function setCurrentQtyOverrideAction(
 export async function clearCurrentQtyOverrideAction(
   item: string,
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("clearCurrentQtyOverrideAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     await clearCurrentQtyOverride(DEFAULT_STORE, item, by);
@@ -283,6 +308,8 @@ export async function clearCurrentQtyOverrideAction(
 export async function applyCurrentQtyOverridesAction(
   rows: { item: string; quantityUnits: number }[],
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("applyCurrentQtyOverridesAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     await applyCurrentQtyOverrides(DEFAULT_STORE, rows, by);
@@ -299,6 +326,8 @@ export async function applyCurrentQtyOverridesAction(
 export async function clearCurrentQtyOverridesAction(
   items: string[],
 ): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("clearCurrentQtyOverridesAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     await clearCurrentQtyOverrides(DEFAULT_STORE, items, by);
@@ -322,6 +351,8 @@ export async function orderRecoStatusAction(opts?: {
   withChanges?: boolean;
   awaitRunId?: string | null;
 }): Promise<ActionAck<OrderRecoStatusPoll>> {
+  const denied = await actionDenied("orderRecoStatusAction");
+  if (denied) return denied;
   try {
     const [status, changes] = await Promise.all([
       orderRecoStatus(DEFAULT_STORE, opts?.awaitRunId),
@@ -335,6 +366,8 @@ export async function orderRecoStatusAction(opts?: {
 
 /** Banner Retry after a failed refresh. */
 export async function retryOrderRecoAction(): Promise<ActionAck<OrderRecoQueuedMeta>> {
+  const denied = await actionDenied("retryOrderRecoAction");
+  if (denied) return denied;
   try {
     const by = await operatorEmail();
     const { runId } = await requestOrderRecoRefresh({ store: DEFAULT_STORE, trigger: "retry", requestedBy: by });

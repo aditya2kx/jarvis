@@ -17,6 +17,8 @@ name: Operator Console preview
 #
 # Every preview runs CONSOLE_PREVIEW=1: all non-GET requests are refused in
 # middleware.ts and no secrets are mounted, so it can read prod data but not change it.
+# The one exception is POST /api/access, which writes only this preview's own
+# console_access_grants_<tag> sandbox table and this preview's IAP sign-in list.
 # Never deploy onto the prod `operator-console` service for previews — a revision's
 # env becomes the template the next main deploy inherits (`--update-env-vars`).
 
@@ -122,6 +124,17 @@ jobs:
           if [ -z "$RUNTIME_SA" ]; then
             echo "::error::preview: could not read the prod console runtime service account"; exit 1
           fi
+          echo "RUNTIME_SA=$RUNTIME_SA" >> "$GITHUB_ENV"
+          # Access grants are the one thing a preview may write, into its own throwaway
+          # table (console_access_grants_<tag>, 7-day expiry renewed per deploy) so the
+          # owner can try the Access page without touching prod grants.
+          ACCESS_TABLE="console_access_grants_${TAG//-/_}"
+          sed "s/\.console_access_grants\`/.$ACCESS_TABLE\`/" core/migrations/090_console_access_grants.sql \
+            | bq query --project_id "$PROJECT_ID" --use_legacy_sql=false --quiet >/dev/null
+          bq query --project_id "$PROJECT_ID" --use_legacy_sql=false --quiet \
+            "ALTER TABLE \`$PROJECT_ID.bhaga.$ACCESS_TABLE\` SET OPTIONS (expiration_timestamp = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 7 DAY))" >/dev/null
+          echo "preview: access sandbox table $ACCESS_TABLE"
+          # Owners as prod, plus the Cursor Cloud Agent identity so agents can capture Access-page evidence.
           gcloud run deploy "$SERVICE" \
             --image "$IMAGE" \
             --region "$REGION" --project "$PROJECT_ID" \
@@ -129,7 +142,7 @@ jobs:
             --no-allow-unauthenticated --iap \
             --memory 512Mi --min-instances 0 --max-instances 1 \
             --labels "$LABELS" \
-            --set-env-vars "BQ_PROJECT=$PROJECT_ID,BQ_DATASET=bhaga,CONSOLE_PREVIEW=1,IAP_SERVICE_NAME=$SERVICE"
+            --set-env-vars "^|^BQ_PROJECT=$PROJECT_ID|BQ_DATASET=bhaga|CONSOLE_PREVIEW=1|IAP_SERVICE_NAME=$SERVICE|CONSOLE_ACCESS_TABLE=$ACCESS_TABLE|CONSOLE_OWNER_EMAILS=adi@mypalmetto.co,aditya.2ky@gmail.com,$AGENT_SA"
 
       # Same Google sign-in and allowlist as prod: IAP's service agent may invoke
       # the service, and the IAP accessor policy is copied from prod each deploy, plus
@@ -165,6 +178,12 @@ jobs:
             echo "iap: $AGENT_SA not provisioned yet (scripts/provision_cloud_agent_identity.sh)"
             set_iap /tmp/iap.json
           fi
+          # The Access page adds/removes Google sign-in on this preview (lib/access/iap.ts).
+          gcloud iap web add-iam-policy-binding --resource-type=cloud-run --service="$SERVICE" \
+            --region "$REGION" --project "$PROJECT_ID" \
+            --member "serviceAccount:$RUNTIME_SA" --role roles/iap.admin --quiet >/dev/null \
+            && echo "iap: runtime SA can manage this preview's sign-in" \
+            || echo "::warning::iap: could not grant roles/iap.admin to $RUNTIME_SA — the Access page will save grants but not sign-in"
 
       - name: Delete superseded branch previews
         if: env.STALE != ''

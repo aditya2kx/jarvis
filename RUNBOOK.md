@@ -2566,7 +2566,11 @@ identity on the preview only, for the `smoke` job: every mobile menu tap on the 
 iPhone WebKit). `IAP_SERVICE_NAME` is the preview's own name — the IAP JWT audience is per service,
 so the prod default would fail identity on the preview. A sticky
 PR comment carries the URL and `/home` + `/inventory` screenshots. Deleted on PR close; an hourly
-sweep removes any preview whose PR is no longer open.
+sweep removes any preview whose PR is no longer open. **Access sandbox:** every preview (PR or
+branch) saves access to its own `bhaga.console_access_grants_<tag>` table (created from migration
+090, 7-day expiry renewed per deploy) and edits its own IAP sign-in list, so `/access` can be tried
+end to end without touching prod grants — `POST /api/access` is the one write `CONSOLE_PREVIEW=1`
+lets through, and only when `CONSOLE_ACCESS_TABLE` is not the prod table.
 
 **Pre-PR branch preview** (Issue #415): push a short `preview/<issue>-<slug>` (that prefix opens
 no PR; the WIF token subject carries the ref and GCP caps it at 127 bytes, so long names fail auth
@@ -2607,8 +2611,9 @@ is a one-click publish; re-check it if login starts failing after idle again.
 `https://operator-console-887772634501.us-central1.run.app`
 
 Expected behavior every time: if you already have a valid IAP session, the console loads; if
-not, Google shows available accounts → tap an allowlisted account → console. Access is pure
-IAM (`roles/iap.httpsResourceAccessor`) — no app-level allowlist, no terminal, no proxy.
+not, Google shows available accounts → tap an allowlisted account → console. Two layers:
+IAP IAM (`roles/iap.httpsResourceAccessor`) decides who can sign in; the console's own
+per-person grants decide which pages and sections they see (Access page, below).
 
 Do **not** use the Cloud Run hash host (`operator-console-4yl5izovxq-uc.a.run.app`) and do
 **not** mix the two hosts across visits. IAP session cookies are host-scoped (`__Host-GCP_IAP_*`);
@@ -2643,24 +2648,51 @@ Mutating controls (restock, tip exemptions, goals, accounting writes, usage-day 
 so the click path stays responsive
 and the page-level status banner follows the run.
 
-**Granting a new admin/operator** — one command, one layer:
+**Granting, narrowing or removing access — the Access page (`/access`, owners only).**
+Owners (`CONSOLE_OWNER_EMAILS`, default `adi@mypalmetto.co,aditya.2ky@gmail.com`) always have
+full access and are the only people who see `/access` or the **Manage access** button in every
+page header. From either place: add a person by Google email, give the whole page or pick
+sections, or remove them. Seeing a section means they can use its buttons (each server action
+checks `access` keys in `lib/actions/registry.ts`); hidden sections are never rendered or sent to
+the browser. **View as** (top bar on every page, or the eye on an `/access` row) shows the console
+exactly as that person sees it, on the page you're on (blue strip with a person switcher, **Exit**). The person drawer offers starting points (`lib/access/presets.ts`:
+Everything, Store manager, Shift lead, Inventory only) that can then be tweaked per section, and
+each save's toast has **Undo** (restores the previous grant as a new version). **Unreviewed**
+people signed in before access was managed here and follow `CONSOLE_ACCESS_DEFAULT`.
+
+- **Storage:** append-only `bhaga.console_access_grants` (migration 090) — every save is a new
+  version (who, when, note); the newest is live, the rest is the history shown on `/access`.
+  Grants are cached 30 s per instance, so another instance can lag a save by up to 30 s.
+- **Google sign-in follows the grant:** saving someone with any page adds
+  `roles/iap.httpsResourceAccessor` for them on this service; saving with no pages (or **Remove
+  access**) revokes the grant and removes that binding (`lib/access/iap.ts`, breadcrumb
+  `console_access_iap`). The runtime SA holds `roles/iap.admin` on this one IAP resource (granted
+  by the deploy workflow). If that update fails the console grant still saves and the toast says
+  so (log `console_access_iap_sync_failed`); fix with the `gcloud` commands below.
+- **People with nothing saved** follow `CONSOLE_ACCESS_DEFAULT` (`full`, the default, keeps the
+  pre-#access behavior: everyone who can sign in sees everything; `none` = nothing until granted).
+  They show as **Not set** on `/access`. Both env vars are runtime config:
+  `gcloud run services update operator-console --region us-central1 --project jarvis-bhaga-prod --update-env-vars CONSOLE_ACCESS_DEFAULT=none`.
+- **Fails closed:** if the grants table can't be read, non-owners get an "Access check
+  unavailable" page and every action is refused (log `console_access_store_failed`); owners are
+  unaffected. Denied actions log `event=console_access_denied`.
+
+Fallback / bulk (sign-in only — does not change page access):
 ```
 gcloud iap web add-iam-policy-binding \
   --resource-type=cloud-run --service=operator-console --region=us-central1 --project=jarvis-bhaga-prod \
   --member=user:NEW@EMAIL --role=roles/iap.httpsResourceAccessor
 ```
-Deploy also re-asserts members from `.github/workflows/operator-console-deploy.yml`
+Deploy also re-asserts the owners from `.github/workflows/operator-console-deploy.yml`
 (`adi@mypalmetto.co`, `aditya.2ky@gmail.com`; `lindsay@mypalmetto.co` removed 2026-10-06 after the
 account was deleted). Each grant is soft: an account that no longer exists logs a `::warning::` and is
-skipped, so the rest are still granted and the deploy stays green. Grants made by hand (e.g.
-`texasgm@mypalmetto.co`, `george@getopen.com`) are untouched by deploys.
-Any Google account works — no domain restriction, since IAP's IAM is the sole gate. IAM changes
+skipped, so the rest are still granted and the deploy stays green. Grants made by hand or from
+`/access` are untouched by deploys.
+Any Google account works — no domain restriction. IAM changes
 can take up to a couple of minutes to propagate; if a just-granted account still sees "no access",
 visit `<service-url>?gcp-iap-mode=CLEAR_LOGIN_COOKIE` to force IAP to re-check the current session
 against the latest policy instead of a cached session decision. Revoke with
-`gcloud iap web remove-iam-policy-binding` (same flags). A Google Groups (`admin`/`operator`) model
-for `mypalmetto.co` is a documented follow-up so grants don't need per-user `gcloud` calls; per-user
-grants are the current mechanism.
+`gcloud iap web remove-iam-policy-binding` (same flags).
 
 ### Operating
 

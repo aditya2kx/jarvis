@@ -8,6 +8,7 @@ import { runTone } from "@/lib/run-status";
 import { isConsolePreview } from "@/lib/config/preview";
 import { Badge } from "@/components/ui/badge";
 import { Eye } from "lucide-react";
+import { ViewAsButton } from "@/components/access/ViewAsMenu";
 
 async function PipelineDot() {
   let status: string | undefined;
@@ -30,7 +31,8 @@ async function PipelineDot() {
   );
 }
 
-export function Topbar({ operatorEmail }: { operatorEmail?: string }) {
+/** `canViewAs`: an owner not already viewing as someone gets the View as… picker. */
+export function Topbar({ operatorEmail, canViewAs }: { operatorEmail?: string; canViewAs?: boolean }) {
   return (
     <header className="shrink-0 border-b border-border bg-background pt-[env(safe-area-inset-top)]">
       <div className="flex h-14 items-center justify-between gap-2 px-4">
@@ -53,6 +55,7 @@ export function Topbar({ operatorEmail }: { operatorEmail?: string }) {
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground sm:gap-3">
+          {canViewAs ? <ViewAsButton /> : null}
           <ThemeToggle />
           <StoreFilter store={DEFAULT_STORE} />
           {operatorEmail ? <span className="hidden sm:inline">{operatorEmail}</span> : null}

@@ -17,6 +17,8 @@ import { formatCents, formatDate, formatDollars, formatHours } from "@/lib/forma
 import { storeDisplayName } from "@/lib/config/stores";
 import { DataTable } from "@/components/tables/DataTable";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { ManageAccess } from "@/components/access/ManageAccess";
+import { pageDenied, sectionAccess } from "@/components/access/guards";
 import { InfoNote } from "@/components/shell/InfoNote";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { FilterMultiSelect } from "@/components/filters/FilterMultiSelect";
@@ -112,6 +114,9 @@ export default async function PayrollPage({
 }: {
   searchParams: Promise<{ period?: string; labor_type?: string }>;
 }) {
+  const denied = await pageDenied("payroll");
+  if (denied) return denied;
+  const can = await sectionAccess("payroll");
   const sp = await searchParams;
   const laborTypes = parseLaborTypes(sp.labor_type);
   const laborTypeParam = serializeLaborTypes(laborTypes);
@@ -394,7 +399,7 @@ export default async function PayrollPage({
         }
         actions={
           <>
-            {FEATURES.adpPayrollDraft && selectedPeriodStart && periodEnd ? (
+            {FEATURES.adpPayrollDraft && can("adp-draft") && selectedPeriodStart && periodEnd ? (
               <PayrollDraftButton
                 periodStart={selectedPeriodStart}
                 periodEnd={periodEnd}
@@ -429,19 +434,20 @@ export default async function PayrollPage({
                 })}
               />
             ) : null}
-            {FEATURES.writeTraining ? <TrainingQuickAdd /> : null}
-            {FEATURES.writeRecognition ? (
+            {FEATURES.writeTraining && can("tip-exemptions") ? <TrainingQuickAdd /> : null}
+            {FEATURES.writeRecognition && can("recognition") ? (
               <RecognitionDrawer
                 defaultPayPeriod={recognitionPayPeriod}
                 employees={employees}
               />
             ) : null}
-            {FEATURES.writePerks ? (
+            {FEATURES.writePerks && can("perks") ? (
               <PerkDrawer
                 defaultPayPeriod={recognitionPayPeriod}
                 employees={employees}
               />
             ) : null}
+            <ManageAccess page="payroll" />
           </>
         }
       />
@@ -451,162 +457,166 @@ export default async function PayrollPage({
       ) : (
         <>
           <PunchFixesNotInHoursNotice rows={fixesNotInHours} />
-          <div className="flex flex-col gap-2">
-            <p className="text-xs text-muted-foreground">
-              Pay period {periodLabel}
-              {selectedOpt?.is_current ? " · Current" : ""}
-              {selectedUnpaid
-                ? selectedSubmitted
-                  ? " · Submitted (ADP)"
-                  : " · Unpaid (ADP)"
-                : " · Paid (ADP)"}
-              {editable ? " · tip exemptions editable" : ""}
-            </p>
-            <div
-              className={
-                showSolo
-                  ? "grid grid-cols-2 gap-4 max-sm:gap-2.5 max-sm:[&>*:last-child:nth-child(odd)]:col-span-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-9"
-                  : "grid grid-cols-2 gap-4 max-sm:gap-2.5 max-sm:[&>*:last-child:nth-child(odd)]:col-span-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7"
-              }
-            >
-              <HeadlineStat
-                label="Total hours"
-                display={`${formatHours(totalHours)}h`}
-                hint={showPreviewHints ? hoursVsPreview?.label : undefined}
-                hintWarn={Boolean(
-                  showPreviewHints && hoursVsPreview && !hoursVsPreview.match,
-                )}
-              />
-              <HeadlineStat
-                label="Wages"
-                display={formatDollars(showSolo ? solo.totalWages : totalWages)}
-                hint={
-                  showSolo && solo.blendedRate != null
-                    ? `${formatDollars(solo.blendedRate)}/h blended`
-                    : undefined
+          {can("summary") ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-xs text-muted-foreground">
+                Pay period {periodLabel}
+                {selectedOpt?.is_current ? " · Current" : ""}
+                {selectedUnpaid
+                  ? selectedSubmitted
+                    ? " · Submitted (ADP)"
+                    : " · Unpaid (ADP)"
+                  : " · Paid (ADP)"}
+                {editable ? " · tip exemptions editable" : ""}
+              </p>
+              <div
+                className={
+                  showSolo
+                    ? "grid grid-cols-2 gap-4 max-sm:gap-2.5 max-sm:[&>*:last-child:nth-child(odd)]:col-span-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-9"
+                    : "grid grid-cols-2 gap-4 max-sm:gap-2.5 max-sm:[&>*:last-child:nth-child(odd)]:col-span-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7"
                 }
-              />
-              {showSolo ? (
-                <>
-                  <HeadlineStat
-                    label="Primary wages"
-                    display={formatDollars(solo.primaryWages)}
-                    hint="base rate + OT"
-                  />
-                  <HeadlineStat
-                    label="Solo wages"
-                    display={formatDollars(solo.soloWages)}
-                    hint={
-                      soloGap.length
-                        ? `stale — ${soloGap.length} ${
-                            soloGap.length === 1 ? "day" : "days"
-                          } of solo hours behind punches`
-                        : solo.people
-                          ? `${formatHours(solo.soloHours)}h · ${formatCents(
-                              solo.premiumCents,
-                            )} over base`
-                          : "no eligible solo hours this period"
-                    }
-                    // Stale solo hours understate this, they do not blank it, so
-                    // it has to warn rather than just read low — a low number
-                    // looks like a quiet fortnight (2026-09-20: 12.24h vs 20.16h).
-                    hintWarn={soloGap.length > 0}
-                  />
-                </>
-              ) : null}
-              <HeadlineStat label="Tips" display={formatDollars(totalTips)} />
-              <HeadlineStat
-                label="Review bonus"
-                display={formatDollars(totalBonus)}
-              />
-              <HeadlineStat
-                label="Recognition"
-                display={formatDollars(totalRecognition)}
-              />
-              <HeadlineStat label="Perks" display={formatDollars(totalPerks)} />
-              <HeadlineStat
-                label="Total pay"
-                display={formatDollars(totalPay)}
-                hint={showPreviewHints ? payVsPreview?.label : undefined}
-                hintWarn={Boolean(
-                  showPreviewHints && payVsPreview && !payVsPreview.match,
-                )}
-              />
+              >
+                <HeadlineStat
+                  label="Total hours"
+                  display={`${formatHours(totalHours)}h`}
+                  hint={showPreviewHints ? hoursVsPreview?.label : undefined}
+                  hintWarn={Boolean(
+                    showPreviewHints && hoursVsPreview && !hoursVsPreview.match,
+                  )}
+                />
+                <HeadlineStat
+                  label="Wages"
+                  display={formatDollars(showSolo ? solo.totalWages : totalWages)}
+                  hint={
+                    showSolo && solo.blendedRate != null
+                      ? `${formatDollars(solo.blendedRate)}/h blended`
+                      : undefined
+                  }
+                />
+                {showSolo ? (
+                  <>
+                    <HeadlineStat
+                      label="Primary wages"
+                      display={formatDollars(solo.primaryWages)}
+                      hint="base rate + OT"
+                    />
+                    <HeadlineStat
+                      label="Solo wages"
+                      display={formatDollars(solo.soloWages)}
+                      hint={
+                        soloGap.length
+                          ? `stale — ${soloGap.length} ${
+                              soloGap.length === 1 ? "day" : "days"
+                            } of solo hours behind punches`
+                          : solo.people
+                            ? `${formatHours(solo.soloHours)}h · ${formatCents(
+                                solo.premiumCents,
+                              )} over base`
+                            : "no eligible solo hours this period"
+                      }
+                      // Stale solo hours understate this, they do not blank it, so
+                      // it has to warn rather than just read low — a low number
+                      // looks like a quiet fortnight (2026-09-20: 12.24h vs 20.16h).
+                      hintWarn={soloGap.length > 0}
+                    />
+                  </>
+                ) : null}
+                <HeadlineStat label="Tips" display={formatDollars(totalTips)} />
+                <HeadlineStat
+                  label="Review bonus"
+                  display={formatDollars(totalBonus)}
+                />
+                <HeadlineStat
+                  label="Recognition"
+                  display={formatDollars(totalRecognition)}
+                />
+                <HeadlineStat label="Perks" display={formatDollars(totalPerks)} />
+                <HeadlineStat
+                  label="Total pay"
+                  display={formatDollars(totalPay)}
+                  hint={showPreviewHints ? payVsPreview?.label : undefined}
+                  hintWarn={Boolean(
+                    showPreviewHints && payVsPreview && !payVsPreview.match,
+                  )}
+                />
+              </div>
+              <InfoNote summary="How these totals compare to ADP">
+                {showPreviewHints
+                  ? "Against last ADP Preview: Hours → Total hours, Total pay → Gross (wages + tips + bonus + perks). Total hours includes OT and solo hours — the OT and solo columns are slices of it, not extras to add. ADP's Enter-payroll Regular Hours column excludes OT, so it reads lower than Total hours by the OT figure. Preview URLs are not shown — they are session hashes. People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."
+                  : awaitingEarnings
+                    ? "Submitted in ADP. Earnings & Hours is not in BigQuery yet, so there is nothing to compare — Hours / Wages / Total pay are our estimate only. Wage vs ADP appears once that scrape lands."
+                    : "People and hours are 1:1 with Enter payroll. Total hours includes OT and solo hours — the OT and solo columns are slices of it, not extras to add. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."}
+              </InfoNote>
             </div>
-            <InfoNote summary="How these totals compare to ADP">
-              {showPreviewHints
-                ? "Against last ADP Preview: Hours → Total hours, Total pay → Gross (wages + tips + bonus + perks). Total hours includes OT and solo hours — the OT and solo columns are slices of it, not extras to add. ADP's Enter-payroll Regular Hours column excludes OT, so it reads lower than Total hours by the OT figure. Preview URLs are not shown — they are session hashes. People and hours are 1:1 with Enter payroll. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."
-                : awaitingEarnings
-                  ? "Submitted in ADP. Earnings & Hours is not in BigQuery yet, so there is nothing to compare — Hours / Wages / Total pay are our estimate only. Wage vs ADP appears once that scrape lands."
-                  : "People and hours are 1:1 with Enter payroll. Total hours includes OT and solo hours — the OT and solo columns are slices of it, not extras to add. Open-biweek hours run through yesterday CT (not today). Zero-hour rows are people ADP still lists this run with no punches in that window. Wages is hours × rate only (blended across rate lines when solo hours exist). Taxes, Net pay, and Cash required are ADP-only."}
-            </InfoNote>
-          </div>
+          ) : null}
 
-          <div className="flex flex-col gap-2">
-            <h2 className="text-sm font-semibold text-foreground">
-              Per-employee, per-period
-            </h2>
-            <DataTable
-              columns={periodColumns}
-              data={displayRows}
-              pinLeft={["employee"]}
-            />
-            <p className="text-xs text-muted-foreground">
-              {showPreviewHints
-                ? "Wage vs ADP / Bonus vs ADP appear after Earnings & Hours lands for a paid period."
-                : awaitingEarnings
-                  ? "No Earnings & Hours rows yet — ADP paycheck diffs are hidden until that scrape, not shown as Not on ADP."
-                  : "Wage vs ADP and Bonus vs ADP compare our estimate to Earnings & Hours. $0.00 = match. “Not on ADP” means they punched here but had no paycheck line that period (not a rate bug)."}
-            </p>
-            {showSolo ? (
+          {can("per-employee") ? (
+            <div className="flex flex-col gap-2">
+              <h2 className="text-sm font-semibold text-foreground">
+                Per-employee, per-period
+              </h2>
+              <DataTable
+                columns={periodColumns}
+                data={displayRows}
+                pinLeft={["employee"]}
+              />
               <p className="text-xs text-muted-foreground">
-                Solo hrs are hours worked as the only person <em>in the shop</em> (a
-                manager on the clock counts, but a shift worked remote does not, and
-                runs under the minimum block do not), shown only for employees at
-                the eligible base rate on or after the effective date. Solo wages are those hours at the solo rate — the
-                whole rate-2 line, not the uplift — and Primary wages are everything
-                else at base rate, including overtime. The two add up to Est. wages,
-                so Est. wages is a blended-rate figure whenever solo hours exist.
-                Each is keyed into ADP as its own rate line per employee — see
-                RUNBOOK § Solo-shift premium.
+                {showPreviewHints
+                  ? "Wage vs ADP / Bonus vs ADP appear after Earnings & Hours lands for a paid period."
+                  : awaitingEarnings
+                    ? "No Earnings & Hours rows yet — ADP paycheck diffs are hidden until that scrape, not shown as Not on ADP."
+                    : "Wage vs ADP and Bonus vs ADP compare our estimate to Earnings & Hours. $0.00 = match. “Not on ADP” means they punched here but had no paycheck line that period (not a rate bug)."}
               </p>
-            ) : null}
-            {showRemote ? (
-              <p className="text-xs text-muted-foreground">
-                Remote hrs are shifts worked away from the shop
-                ({formatHours(solo.remoteHours)}h this period). They are a slice of
-                Total hours and paid normally — they simply are not floor coverage,
-                so they never earn solo and they do not stop a coworker from being
-                solo. A shift is remote only if annotated in{" "}
-                <code className="font-mono">solo_shift_remote_days</code>; anything
-                unannotated counts as on the floor.
-              </p>
-            ) : null}
-            {soloGap.length ? (
-              <p className="text-xs text-amber-600 dark:text-amber-500">
-                Solo hours are behind the punch data for{" "}
-                {soloGap.includes("unknown")
-                  ? "an unknown number of days"
-                  : `${soloGap.join(", ")}`}
-                , so the premium above is understated. Re-run{" "}
-                <code className="font-mono">materialize_model_bq</code> before
-                keying rate-2 into ADP.
-              </p>
-            ) : null}
-            {showSolo ? (
-              <p className="text-xs text-amber-600 dark:text-amber-500">
-                Opening the ADP draft re-imports timecards — <span className="font-medium">
-                even if you choose “Skip import”</span> — which restores every base
-                row to its full total while leaving the solo rate-2 lines in place,
-                overstating the draft by the solo hours above. Review the numbers
-                here, then in ADP reduce each eligible base row by that person’s
-                solo hours before Approve. Compare against the Preview gross, not
-                the grid’s Totals cell: that column excludes OT.
-              </p>
-            ) : null}
-          </div>
+              {showSolo ? (
+                <p className="text-xs text-muted-foreground">
+                  Solo hrs are hours worked as the only person <em>in the shop</em> (a
+                  manager on the clock counts, but a shift worked remote does not, and
+                  runs under the minimum block do not), shown only for employees at
+                  the eligible base rate on or after the effective date. Solo wages are those hours at the solo rate — the
+                  whole rate-2 line, not the uplift — and Primary wages are everything
+                  else at base rate, including overtime. The two add up to Est. wages,
+                  so Est. wages is a blended-rate figure whenever solo hours exist.
+                  Each is keyed into ADP as its own rate line per employee — see
+                  RUNBOOK § Solo-shift premium.
+                </p>
+              ) : null}
+              {showRemote ? (
+                <p className="text-xs text-muted-foreground">
+                  Remote hrs are shifts worked away from the shop
+                  ({formatHours(solo.remoteHours)}h this period). They are a slice of
+                  Total hours and paid normally — they simply are not floor coverage,
+                  so they never earn solo and they do not stop a coworker from being
+                  solo. A shift is remote only if annotated in{" "}
+                  <code className="font-mono">solo_shift_remote_days</code>; anything
+                  unannotated counts as on the floor.
+                </p>
+              ) : null}
+              {soloGap.length ? (
+                <p className="text-xs text-amber-600 dark:text-amber-500">
+                  Solo hours are behind the punch data for{" "}
+                  {soloGap.includes("unknown")
+                    ? "an unknown number of days"
+                    : `${soloGap.join(", ")}`}
+                  , so the premium above is understated. Re-run{" "}
+                  <code className="font-mono">materialize_model_bq</code> before
+                  keying rate-2 into ADP.
+                </p>
+              ) : null}
+              {showSolo ? (
+                <p className="text-xs text-amber-600 dark:text-amber-500">
+                  Opening the ADP draft re-imports timecards — <span className="font-medium">
+                  even if you choose “Skip import”</span> — which restores every base
+                  row to its full total while leaving the solo rate-2 lines in place,
+                  overstating the draft by the solo hours above. Review the numbers
+                  here, then in ADP reduce each eligible base row by that person’s
+                  solo hours before Approve. Compare against the Preview gross, not
+                  the grid’s Totals cell: that column excludes OT.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
 
-          {FEATURES.writeTipExemptions || shifts.length || exemptions.length ? (
+          {can("tip-exemptions") && (FEATURES.writeTipExemptions || shifts.length || exemptions.length) ? (
             <TipExemptionsEditor
               shifts={shifts}
               exemptions={exemptions}
@@ -617,19 +627,23 @@ export default async function PayrollPage({
             />
           ) : null}
 
-          <div>
-            <h2 className="mb-2 text-sm font-semibold text-foreground">
-              Google review bonuses — last 30 days
-            </h2>
-            <DataTable columns={reviewColumns} data={reviews} />
-          </div>
+          {can("review-bonuses") ? (
+            <div>
+              <h2 className="mb-2 text-sm font-semibold text-foreground">
+                Google review bonuses — last 30 days
+              </h2>
+              <DataTable columns={reviewColumns} data={reviews} />
+            </div>
+          ) : null}
 
-          <div className="flex flex-col gap-2">
-            <h2 className="text-sm font-semibold text-foreground">
-              Recognition bonuses — last 2 periods
-            </h2>
-            <DataTable columns={recognitionColumns} data={recognitions} />
-          </div>
+          {can("recognition") ? (
+            <div className="flex flex-col gap-2">
+              <h2 className="text-sm font-semibold text-foreground">
+                Recognition bonuses — last 2 periods
+              </h2>
+              <DataTable columns={recognitionColumns} data={recognitions} />
+            </div>
+          ) : null}
         </>
       )}
     </div>

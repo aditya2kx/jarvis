@@ -8,6 +8,7 @@ import {
   Activity,
   Landmark,
   Bot,
+  KeyRound,
   type LucideIcon,
 } from "lucide-react";
 
@@ -55,6 +56,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/automations", label: "Automations", icon: Bot, tab: "Automations" },
       { href: "/pipeline", label: "Pipeline Health", icon: Activity, tab: "Pipeline" },
+      { href: "/access", label: "Access", icon: KeyRound, tab: "Access" },
     ],
   },
 ];
@@ -64,6 +66,14 @@ export function isNavItemActive(pathname: string | null, href: string): boolean 
 }
 
 export const ALL_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
+
+/** Groups trimmed to the pages this person may open (`undefined` = every page); empty groups drop. */
+export function visibleNavGroups(allowedHrefs: readonly string[] | undefined): NavGroup[] {
+  if (!allowedHrefs) return NAV_GROUPS;
+  return NAV_GROUPS.map((g) => ({ ...g, items: g.items.filter((i) => allowedHrefs.includes(i.href)) })).filter(
+    (g) => g.items.length > 0,
+  );
+}
 
 /** Phone tab bar before this device has any history (see recentTabs.ts). */
 export const DEFAULT_TAB_HREFS = ["/home", "/sales", "/labor", "/payroll"] as const;

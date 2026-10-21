@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { unstable_isUnrecognizedActionError } from "next/navigation";
 import type { ActionAck } from "@/lib/actions/types";
-import { useActionToast } from "@/lib/actions/ActionToast";
+import { useActionToast, type ToastAction } from "@/lib/actions/ActionToast";
 
 /** Next throws UnrecognizedActionError before the action runs — the tab predates a deploy. */
 export const STALE_ACTION_MESSAGE =
@@ -13,6 +13,8 @@ export type ConsoleActionLabels = {
   saving?: string;
   queued?: string;
   done?: string;
+  /** Adds an action (e.g. Undo) to the success toast. */
+  toastAction?: ToastAction;
 };
 
 /**
@@ -59,7 +61,7 @@ export function useConsoleAction() {
         const doneMsg = ack.message ?? labels?.done ?? (queuedMsg ? null : "Done.");
         const display = queuedMsg ?? doneMsg ?? "Done.";
         setStage(display);
-        toast.push(display, "info");
+        toast.push(display, "info", labels?.toastAction);
         return ack;
       } catch (e) {
         const msg = unstable_isUnrecognizedActionError(e)

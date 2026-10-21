@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { ManageAccess } from "@/components/access/ManageAccess";
+import { pageDenied, sectionAccess } from "@/components/access/guards";
 import { Badge } from "@/components/ui/badge";
 import { OK_BADGE_CLASS } from "@/lib/run-status";
 import { formatDateTime } from "@/lib/format";
@@ -20,6 +22,9 @@ import {
 export const dynamic = "force-dynamic";
 
 export default async function AutomationsPage() {
+  const denied = await pageDenied("automations");
+  if (denied) return denied;
+  const can = await sectionAccess("automations");
   let error: string | undefined;
   let cfg = null;
   let lastPost: string | null = null;
@@ -59,13 +64,14 @@ export default async function AutomationsPage() {
       <PageHeader
         title="Automations"
         subtitle="Scheduled operator automations — start with Team pulse"
+        actions={<ManageAccess page="automations" />}
       />
 
       {error ? (
         <p className="text-sm text-muted-foreground">
           Data unavailable: {error}. Apply migration 054 if tables are missing.
         </p>
-      ) : (
+      ) : !can("team-pulse") ? null : (
         <Link
           href="/automations/team-pulse"
           className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -99,7 +105,7 @@ export default async function AutomationsPage() {
         </Link>
       )}
 
-      {!error && (
+      {!error && can("unavailability-reminder") && (
         <Link
           href="/automations/unavailability-reminder"
           className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -126,25 +132,27 @@ export default async function AutomationsPage() {
         </Link>
       )}
 
-      <Link
-        href="/automations/monthly-recognition"
-        className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <Card className="transition-colors hover:bg-muted/40">
-          <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
-            <div>
-              <CardTitle className="text-base">Monthly recognition</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">
-                MVP + High Five winners from #monthly-recognition → Square gift cards, email, and the team post
-              </p>
-            </div>
-            <Badge variant="secondary">On demand</Badge>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Pick a payroll cycle; review winners, context, and the draft before anything is sent.
-          </CardContent>
-        </Card>
-      </Link>
+      {can("monthly-recognition") ? (
+        <Link
+          href="/automations/monthly-recognition"
+          className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Card className="transition-colors hover:bg-muted/40">
+            <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
+              <div>
+                <CardTitle className="text-base">Monthly recognition</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  MVP + High Five winners from #monthly-recognition → Square gift cards, email, and the team post
+                </p>
+              </div>
+              <Badge variant="secondary">On demand</Badge>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              Pick a payroll cycle; review winners, context, and the draft before anything is sent.
+            </CardContent>
+          </Card>
+        </Link>
+      ) : null}
     </div>
   );
 }

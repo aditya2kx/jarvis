@@ -30,6 +30,7 @@ import { suggestInternal } from "@/lib/plaid/internal";
 import { reapplyPlaidCategories } from "@/lib/plaid/reapply-categories";
 import { mutate } from "@/lib/bq/client";
 import { asAck, okAck, failAck, type ActionAck } from "@/lib/actions/types";
+import { actionDenied } from "@/lib/access/server";
 
 /** Production Plaid rejects emails in user.client_user_id (INVALID_FIELD). */
 function plaidClientUserId(email: string): string {
@@ -170,6 +171,8 @@ async function drainSync(itemId: string, accessToken: string, startCursor: strin
 }
 
 export async function createPlaidLinkTokenAction(): Promise<ActionAck<string>> {
+  const denied = await actionDenied("createPlaidLinkTokenAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid Link is disabled (FEATURES.writePlaidLink)");
     const email = await operatorEmail();
@@ -190,6 +193,8 @@ export async function exchangePlaidPublicTokenAction(publicToken: string): Promi
     sync: { added: number; modified: number; removed: number };
   }>
 > {
+  const denied = await actionDenied("exchangePlaidPublicTokenAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid Link is disabled");
     const by = await operatorEmail();
@@ -209,6 +214,8 @@ export async function syncPlaidNowAction(): Promise<
     sync: { added: number; modified: number; removed: number };
   }>
 > {
+  const denied = await actionDenied("syncPlaidNowAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid sync is disabled");
     await operatorEmail();
@@ -226,6 +233,8 @@ export async function setPlaidInternalAction(
   transactionId: string,
   isInternal: boolean,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("setPlaidInternalAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
@@ -241,6 +250,8 @@ export async function reapplyPlaidCategoriesAction(): Promise<
     skipped_override: number;
   }>
 > {
+  const denied = await actionDenied("reapplyPlaidCategoriesAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
@@ -256,6 +267,8 @@ export async function setTxnCategoryOverrideAction(
   categoryId: string | null,
   subcategoryId: string | null,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("setTxnCategoryOverrideAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
@@ -299,6 +312,8 @@ export async function upsertTaxonomyNodeAction(node: {
   enabled?: boolean;
   exclude_from_accounting?: boolean | null;
 }): Promise<ActionAck> {
+  const denied = await actionDenied("upsertTaxonomyNodeAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
@@ -343,6 +358,8 @@ export async function setTaxonomyNodeEnabledAction(
   id: string,
   enabled: boolean,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("setTaxonomyNodeEnabledAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
@@ -361,6 +378,8 @@ export async function setCategoryRuleEnabledAction(
   id: string,
   enabled: boolean,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("setCategoryRuleEnabledAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
@@ -376,6 +395,8 @@ export async function setCategoryRuleEnabledAction(
 }
 
 export async function dryRunRuleAction(ruleId: string): Promise<ActionAck<number>> {
+  const denied = await actionDenied("dryRunRuleAction");
+  if (denied) return denied;
   return asAck(async () => {
     await operatorEmail();
     const rows = await (
@@ -444,6 +465,8 @@ function draftHasCriteria(draft: RuleDraft): boolean {
 export async function previewRuleMatchesAction(
   draft: RuleDraft,
 ): Promise<ActionAck<RuleMatchPreview[]>> {
+  const denied = await actionDenied("previewRuleMatchesAction");
+  if (denied) return denied;
   return asAck(async () => {
     await operatorEmail();
     if (!draft.category_id || !draftHasCriteria(draft)) return [];
@@ -587,6 +610,8 @@ export async function commitRuleFromTxnAction(input: {
   selectedTxnIds: string[];
   applyFuture: boolean;
 }): Promise<ActionAck<{ ruleId: string; applied: number; skipped_override: number }>> {
+  const denied = await actionDenied("commitRuleFromTxnAction");
+  if (denied) return denied;
   try {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
@@ -720,6 +745,8 @@ export async function revertRuleEvidenceAction(
     reapply: { updated: number; unchanged: number; skipped_override: number };
   }>
 > {
+  const denied = await actionDenied("revertRuleEvidenceAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
@@ -747,6 +774,8 @@ export async function setTaxonomyExcludeAction(
   id: string,
   excludeFromAccounting: boolean | null,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("setTaxonomyExcludeAction");
+  if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();

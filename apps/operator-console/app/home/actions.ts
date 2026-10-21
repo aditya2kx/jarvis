@@ -4,11 +4,14 @@ import { revalidatePath } from "next/cache";
 import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
 import { upsertGoal, GOAL_KEYS, type GoalKey } from "@/lib/bq/writes";
 import { asAck, type ActionAck } from "@/lib/actions/types";
+import { actionDenied } from "@/lib/access/server";
 
 /** Saves every edited goal field from the Goals drawer in one submission. */
 export async function saveGoalsAction(
   values: Partial<Record<GoalKey, string>>,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("saveGoalsAction");
+  if (denied) return denied;
   return asAck(async () => {
     const by = await operatorEmail();
     const entries = GOAL_KEYS.filter((k) => values[k] !== undefined && values[k] !== "");
@@ -26,6 +29,8 @@ export async function saveGoalsAction(
  * `upsertGoal` the bulk GoalsDrawer uses, not a second write path.
  */
 export async function saveGoalAction(key: GoalKey, value: string): Promise<ActionAck> {
+  const denied = await actionDenied("saveGoalAction");
+  if (denied) return denied;
   return asAck(async () => {
     const by = await operatorEmail();
     await upsertGoal(DEFAULT_STORE, key, value, by);

@@ -78,13 +78,24 @@ git ls-remote origin HEAD               # must exit 0 (push path live)
 ```
 If `gh api user` returns 401, the shell still has the old token — open a new terminal tab.
 
-**Cursor Cloud Agent: re-assert the bot before every push.** Cursor re-injects its GitHub App
-token mid-session (`insteadOf` rewrites in `~/.gitconfig`, a token in the `origin` URL, `gh`
-logged in as `cursor`), silently undoing `scripts/cloud_git_identity.sh`. A push made then lands
-as `cursor[bot]`, and the Claude review refuses non-human actors. Repo hooks don't run there
-(Cursor owns `core.hooksPath`), so chain it by hand:
+**Every surface is pinned to the bot per clone (`scripts/pin_git_identity.sh`).** Cursor re-injects
+its GitHub App token mid-session: `insteadOf` rewrites in `~/.gitconfig`, a token in the `origin`
+URL, and `gh` switched back to `cursor`. Re-running the global setup does not survive that, and a
+push made then lands as `cursor[bot]`, which the Claude review refuses as a non-human actor.
+
+The pin is repo-local config, so it outranks those global rewrites, and it holds with
+`--no-verify`:
+
+| Setting | Value | Why it holds |
+|---|---|---|
+| `user.name` / `user.email` | the bot | The commit author is always the bot. |
+| `remote.origin.pushurl` | `https://jarvis-agent-bot328@github.com/aditya2kx/jarvis` | A global `insteadOf https://github.com/` no longer matches, and a token Cursor writes into `remote.origin.url` is not used to push. |
+| credential helper | reset, then `scripts/git-credential-jarvis-bot` | Asks `gh` for the bot's token by name rather than the active account. Falls back to `GH_TOKEN` (Mac Keychain) or, on a Cloud Agent VM, Secret Manager `github-bot-pat`. |
+
+`scripts/install-git-hooks.sh` (Mac and any new clone) and `scripts/cloud_git_identity.sh` (Cloud
+Agent VM start) both apply it. To check the pin:
 ```bash
-bash scripts/cloud_git_identity.sh && [ "$(gh api user --jq .login)" = jarvis-agent-bot328 ] && git push
+git remote get-url --push origin   # https://jarvis-agent-bot328@github.com/aditya2kx/jarvis
 ```
 
 ## 3. Never push to `main` directly

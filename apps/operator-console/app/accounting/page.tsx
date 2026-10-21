@@ -11,6 +11,8 @@ import { FEATURES } from "@/lib/config/features";
 import { isConsolePreview } from "@/lib/config/preview";
 import { storeDisplayName } from "@/lib/config/stores";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { ManageAccess } from "@/components/access/ManageAccess";
+import { pageDenied, sectionAccess } from "@/components/access/guards";
 import { InfoNote } from "@/components/shell/InfoNote";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { AggregationSelect } from "@/components/filters/AggregationSelect";
@@ -34,6 +36,9 @@ export default async function AccountingPage({
 }: {
   searchParams: Promise<{ range?: string; from?: string; to?: string; grain?: string }>;
 }) {
+  const denied = await pageDenied("accounting");
+  if (denied) return denied;
+  const can = await sectionAccess("accounting");
   if (!FEATURES.accounting) {
     return (
       <div className="flex flex-col gap-4">
@@ -231,6 +236,7 @@ export default async function AccountingPage({
             ) : null}
           </>
         }
+        actions={<ManageAccess page="accounting" />}
       />
 
       <InfoNote summary="Bank feed vs Square sales">
@@ -257,40 +263,44 @@ export default async function AccountingPage({
         </p>
       ) : null}
 
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle className="text-sm font-semibold text-foreground">Bank link</CardTitle>
-          {linked ? (
-            <span className="text-xs text-muted-foreground">
-              {institution || "Linked"}
-              {lastSynced ? ` · synced ${formatDateTime(lastSynced)}` : ""}
-            </span>
-          ) : (
-            <span className="text-xs text-muted-foreground">Not linked</span>
-          )}
-        </CardHeader>
-        <CardContent>
-          {FEATURES.writePlaidLink ? <PlaidLinkButton linked={linked} /> : (
-            <p className="text-sm text-muted-foreground">Plaid Link writes disabled.</p>
-          )}
-          <p className="mt-2 text-xs text-muted-foreground">
-            Transactions are sorted into Palmetto categories by rules; tap a category to see its
-            rule. Put transfers and personal spend under a category marked Exclude from
-            accounting so money out isn&apos;t inflated.
-          </p>
-        </CardContent>
-      </Card>
+      {can("bank-link") ? (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <CardTitle className="text-sm font-semibold text-foreground">Bank link</CardTitle>
+            {linked ? (
+              <span className="text-xs text-muted-foreground">
+                {institution || "Linked"}
+                {lastSynced ? ` · synced ${formatDateTime(lastSynced)}` : ""}
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">Not linked</span>
+            )}
+          </CardHeader>
+          <CardContent>
+            {FEATURES.writePlaidLink ? <PlaidLinkButton linked={linked} /> : (
+              <p className="text-sm text-muted-foreground">Plaid Link writes disabled.</p>
+            )}
+            <p className="mt-2 text-xs text-muted-foreground">
+              Transactions are sorted into Palmetto categories by rules; tap a category to see its
+              rule. Put transfers and personal spend under a category marked Exclude from
+              accounting so money out isn&apos;t inflated.
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
 
-      <AccountingLedger
-        periodLabel={win.label}
-        grain={grain}
-        rows={txnRows}
-        canWrite={FEATURES.writePlaidLink}
-        taxonomy={taxonomyOpts}
-        rules={ruleList}
-        squareNetSalesTotal={squareTotal}
-        squareNetSalesByIso={squareByIso}
-      />
+      {can("ledger") ? (
+        <AccountingLedger
+          periodLabel={win.label}
+          grain={grain}
+          rows={txnRows}
+          canWrite={FEATURES.writePlaidLink}
+          taxonomy={taxonomyOpts}
+          rules={ruleList}
+          squareNetSalesTotal={squareTotal}
+          squareNetSalesByIso={squareByIso}
+        />
+      ) : null}
     </div>
   );
 }

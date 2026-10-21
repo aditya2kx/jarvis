@@ -24,6 +24,7 @@ import {
   type PayCycleContext,
 } from "@/lib/automations/teamPulse";
 import { varyMotivationalCopy } from "@/lib/automations/varyCopy";
+import { actionDenied } from "@/lib/access/server";
 
 async function payCycleForPeriod(
   periodStart: string,
@@ -68,6 +69,8 @@ const SEED = {
 export async function saveTeamPulseConfigAction(
   input: TeamPulseConfigInput,
 ): Promise<ActionAck> {
+  const denied = await actionDenied("saveTeamPulseConfigAction");
+  if (denied) return denied;
   return asAck(async () => {
     const by = await operatorEmail();
     const cfg: AutomationUpsert = {
@@ -97,6 +100,8 @@ function assertPeriodStart(periodStart: string): void {
 export async function previewTeamPulseAction(
   periodStart: string,
 ): Promise<ActionAck<{ content: string; varied: boolean }>> {
+  const denied = await actionDenied("previewTeamPulseAction");
+  if (denied) return denied;
   return asAck(async () => {
     assertPeriodStart(periodStart);
     const cfg = await getAutomation(DEFAULT_STORE, AUTOMATION_ID);
@@ -115,6 +120,8 @@ export async function postTeamPulseOnceAction(
 ): Promise<
   ActionAck<{ message_id: string; destination: string; channel_id: string }>
 > {
+  const denied = await actionDenied("postTeamPulseOnceAction");
+  if (denied) return denied;
   return asAck(async () => {
     assertPeriodStart(periodStart);
     const by = await operatorEmail();

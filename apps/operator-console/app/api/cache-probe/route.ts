@@ -16,8 +16,8 @@ export async function GET() {
   } catch {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
-  const rows = await q<{ rows: number; max_n: number | null; last_written_at: string | null }>(
-    `SELECT COUNT(*) AS rows, MAX(n) AS max_n, CAST(MAX(written_at) AS STRING) AS last_written_at
+  const rows = await q<{ row_count: number; max_n: number | null; last_written_at: string | null }>(
+    `SELECT COUNT(*) AS row_count, MAX(n) AS max_n, CAST(MAX(written_at) AS STRING) AS last_written_at
      FROM ${fq("console_cache_probe")}`,
   );
   const read = cacheStats().recent[0];

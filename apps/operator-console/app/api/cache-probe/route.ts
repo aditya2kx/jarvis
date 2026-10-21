@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * End-to-end check of cache invalidation from an outside writer: reads the probe table
- * (migration 090) through the cache and reports whether the read was served from it.
+ * (migration 091) through the cache and reports whether the read was served from it.
  * Write a row from anywhere but the console, then poll this — RUNBOOK.md §17.
  */
 export async function GET() {

@@ -155,6 +155,8 @@ BQ_TARGETS: list[Target] = [
     # on a console Write to ADP) — same class as labor_schedule_pushes. NOT a BQ_TARGETS entry.
     # migration 090: console_access_grants is owner input (rows only on an /access save) — same
     # class as labor_schedule_rules. NOT a BQ_TARGETS entry.
+    # migration 091: console_cache_probe is written only by console_cache_probe.sh (the
+    # outside-write check of the console query cache). NOT a BQ_TARGETS entry.
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —
     # intentionally NOT a BQ_TARGETS entry (same class as store_config /

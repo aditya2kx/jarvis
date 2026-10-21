@@ -1,4 +1,4 @@
--- 090: probe table for the Operator Console query cache (ARCHITECTURE.md §15)
+-- 091: probe table for the Operator Console query cache (ARCHITECTURE.md §15)
 -- Nothing reads it but GET /api/cache-probe, which reads it *through* the cache. Writing a
 -- row from outside the console (Cloud Shell `bq query`, any writer) must reach a page within
 -- the audit-log delay: BigQuery audit log → Pub/Sub → bhaga-webhook /cache/bq-write bumps

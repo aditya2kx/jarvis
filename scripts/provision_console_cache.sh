@@ -26,7 +26,7 @@ REGISTRY=$REGION-docker.pkg.dev/$P/jarvis-images
 
 gcloud services enable pubsub.googleapis.com logging.googleapis.com firestore.googleapis.com cloudbuild.googleapis.com --project $P
 
-# Probe table for the outside-write check (core/migrations/090_console_cache_probe.sql).
+# Probe table for the outside-write check (core/migrations/091_console_cache_probe.sql).
 bq --project_id=$P query --use_legacy_sql=false --quiet \
   "CREATE TABLE IF NOT EXISTS \`$P.$DATASET.console_cache_probe\` (n INT64 NOT NULL, written_by STRING NOT NULL, written_at TIMESTAMP NOT NULL)"
 

@@ -4,6 +4,8 @@
     python3 scripts/operator_ping.py "Google 2-Step for Cloud Shell: tap Yes on your phone"
     python3 scripts/operator_ping.py "Reply with the 6-digit Google code (expires in ~5 min)" \
         --wait 600 --type --enter          # click the browser field first; the code goes to the keyboard
+    python3 scripts/operator_ping.py --match-number 41 "Cloud Shell sign-in"
+        # Google "Match the number": send the number unasked as soon as it shows, and again after every resend
 
 The established operator-in-the-loop channel (jarvis-hard-lessons.mdc #7): a sign-in that needs a
 code, a phone tap or a click DMs the operator through the BHAGA cloud bot and waits for the reply —
@@ -47,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--wait", type=int, default=0, help="seconds to wait for a reply (0 = just notify)")
     ap.add_argument("--type", action="store_true", help="type the reply into the focused window instead of printing it")
     ap.add_argument("--enter", action="store_true")
+    ap.add_argument("--match-number", help="Google 'Match the number' value shown on the sign-in page")
     a = ap.parse_args(argv)
     try:
         ensure_token()
@@ -54,6 +57,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"operator_ping: no Slack token — {str(e)[:200]}", file=sys.stderr)
         return 1
     text = PREFIX + a.message
+    if a.match_number:
+        text = (f"{PREFIX}*Google sign-in — tap {a.match_number}* on your phone ({a.message}). "
+                "A resend shows a new number; I'll send it too.")
     if not a.wait:
         adapter.send_message(adapter.open_dm(OPERATOR, agent=AGENT), text, agent=AGENT)
         print("operator_ping: sent")

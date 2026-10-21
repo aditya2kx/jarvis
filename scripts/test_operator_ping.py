@@ -36,3 +36,11 @@ def test_no_reply_and_no_token_exit_codes(monkeypatch):
     monkeypatch.delenv("SLACK_BOT_TOKEN")
     with patch.object(OP.G, "cursor_oidc_token", side_effect=OSError("no socket")):
         assert OP.main(["hi"]) == 1
+
+
+def test_match_number_leads_the_message(monkeypatch):
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    with patch.object(OP.adapter, "open_dm", return_value="D1"), \
+         patch.object(OP.adapter, "send_message") as send:
+        assert OP.main(["--match-number", "41", "Cloud Shell sign-in"]) == 0
+    assert "tap 41" in send.call_args.args[1] and "Cloud Shell sign-in" in send.call_args.args[1]

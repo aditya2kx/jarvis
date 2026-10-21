@@ -52,6 +52,7 @@ never stop and report the blocker in chat (Hard Lesson #7):
 ```bash
 python3 scripts/operator_ping.py "Google 2-Step for Cloud Shell: tap Yes on your phone"
 python3 scripts/operator_ping.py "Reply with the Google SMS code" --wait 600 --type --enter   # field focused first
+python3 scripts/operator_ping.py --match-number 41 "Cloud Shell sign-in"   # Google "Match the number": send it unasked, again on every resend
 ```
 
 Email codes: read the inbox instead. For a Google sign-in, add the account's authenticator-app code to its item (Google account →

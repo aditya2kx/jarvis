@@ -2525,7 +2525,7 @@ Server actions (status polls, writes) always read live.
 |---|---|
 | Is it serving? | `GET /api/cache-stats` (IAP-signed-in): hit/miss counts, recent reads (query id, ms, tables — no row data), store state |
 | Is the change feed alive? | Firestore `console_cache_meta/audit_feed.last_event_at` (last push); `console_cache_versions/<table>.source` (`audit-log` / `console`); webhook logs `console_cache_bump docs=<…>` |
-| Prove an outside write lands | `bq query "INSERT bhaga.console_cache_probe (n, written_by, written_at) VALUES (1,'me',CURRENT_TIMESTAMP())"`, then poll `GET /api/cache-probe` until `probe` changes |
+| Prove an outside write lands | `bash scripts/console_cache_probe.sh` (Cloud Shell): `bq` INSERT into `bhaga.console_cache_probe`, prints how long until `console_cache_versions/console_cache_probe` moves; then `GET /api/cache-probe` on the console shows the new row |
 | Prove cached == live | `?cache=verify` on any page → `verify-match` / `verify-diff` in `/api/cache-stats`; a diff also logs `console_cache_verify-diff sql=<id> tables=<…>` |
 | Time a page without it | `?cache=off`; previews: `python3 apps/operator-console/scripts/cache_benchmark.py --branch preview/<name>` (or `--pr N`) |
 | Turn it off | `gcloud run services update operator-console --region us-central1 --update-env-vars CONSOLE_QUERY_CACHE=off` (config change, no deploy; `=on` to restore) |

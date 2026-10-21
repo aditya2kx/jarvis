@@ -12,7 +12,6 @@ import {
   timeBucket,
   volatility,
 } from "@/lib/bq/cache/policy";
-import { MemoryLru } from "@/lib/bq/cache/memory";
 
 describe("isReadOnlySql", () => {
   it("accepts SELECT / WITH, including after comments", () => {
@@ -40,14 +39,13 @@ describe("volatility + timeBucket", () => {
 });
 
 describe("cacheKey", () => {
-  const base = { sql: "SELECT 1", params: "", versions: { a: 1, b: 2 }, viewsEpoch: 9, bucket: "h", build: "r1" };
-  it("changes when any read table changes, the views epoch, the hour, or the build", () => {
+  const base = { sql: "SELECT 1", params: "", versions: { a: 1, b: 2 }, schemaVersion: 9, bucket: "h" };
+  it("changes when any read table changes, the schema version, or the hour", () => {
     const k = cacheKey(base);
     expect(cacheKey({ ...base, versions: { b: 2, a: 1 } })).toBe(k);
     expect(cacheKey({ ...base, versions: { a: 1, b: 3 } })).not.toBe(k);
-    expect(cacheKey({ ...base, viewsEpoch: 10 })).not.toBe(k);
+    expect(cacheKey({ ...base, schemaVersion: 10 })).not.toBe(k);
     expect(cacheKey({ ...base, bucket: "h2" })).not.toBe(k);
-    expect(cacheKey({ ...base, build: "r2" })).not.toBe(k);
   });
   it("distinguishes DATE vs STRING params with the same text", () => {
     expect(paramsFingerprint({ d: BigQuery.date("2026-10-01") })).not.toBe(paramsFingerprint({ d: "2026-10-01" }));
@@ -78,19 +76,6 @@ describe("namedObjects", () => {
     const sql =
       "SELECT * FROM `jarvis-bhaga-prod.bhaga.vw_a` JOIN `jarvis-bhaga-prod`.`bhaga`.`t_b` USING (x) JOIN bhaga.c";
     expect(namedObjects(sql, "jarvis-bhaga-prod", "bhaga").sort()).toEqual(["c", "t_b", "vw_a"]);
-  });
-});
-
-describe("MemoryLru", () => {
-  it("evicts least-recently used past the size cap and expires by TTL", () => {
-    const m = new MemoryLru(10, 1000);
-    m.set("a", "12345", 0);
-    m.set("b", "12345", 0);
-    m.get("a", 1);
-    m.set("c", "12345", 2);
-    expect(m.get("b", 3)).toBeNull();
-    expect(m.get("a", 3)).toBe("12345");
-    expect(m.get("a", 5000)).toBeNull();
   });
 });
 

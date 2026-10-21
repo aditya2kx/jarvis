@@ -3,7 +3,6 @@ import { shared } from "./shared";
 /** Per-read outcomes, kept in memory for `/api/cache-stats` (no row data — ids, timings, table names). */
 export type Outcome =
   | "hit"
-  | "l2-hit"
   | "miss"
   | "off"
   | "bypass"

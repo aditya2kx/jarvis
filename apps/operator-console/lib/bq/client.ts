@@ -1,7 +1,7 @@
 import "server-only";
 import { BigQuery, BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp } from "@google-cloud/bigquery";
 import { bq, DATASET, PROJECT } from "./bigquery";
-import { markDirty, readThrough } from "./cache";
+import { noteWrite, readThrough } from "./cache";
 
 const BQ_WRAPPER_CLASSES = [BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp];
 
@@ -93,11 +93,8 @@ export async function mutate(
   params?: Record<string, unknown>,
   types?: Record<string, string>,
 ): Promise<void> {
-  try {
-    await bq().query({ query: sql, params, types, location: "US" });
-  } finally {
-    markDirty();
-  }
+  await bq().query({ query: sql, params, types, location: "US" });
+  await noteWrite(sql);
 }
 
 /**
@@ -111,6 +108,5 @@ export async function submitQuery(
   types?: Record<string, string>,
 ): Promise<string> {
   const [job] = await bq().createQueryJob({ query: sql, params, types, location: "US" });
-  markDirty();
   return job.id ?? "";
 }

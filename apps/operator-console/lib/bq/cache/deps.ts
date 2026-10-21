@@ -8,7 +8,7 @@ const REFERENCED_TABLES_CAP = 50;
 
 export type Deps = { ok: true; objects: string[] } | { ok: false; reason: string };
 
-const memo = shared("deps", () => new Map<string, { viewsEpoch: number; p: Promise<Deps> }>());
+const memo = shared("deps", () => new Map<string, { schemaVersion: number; p: Promise<Deps> }>());
 
 type DryRunStats = {
   statementType?: string;
@@ -40,18 +40,18 @@ async function dryRun(sql: string, params: Record<string, unknown> | undefined):
 /**
  * Every table and view a SELECT reads, from a (free) BigQuery dry run — BigQuery expands
  * views and table functions itself, so nothing here parses view SQL. Memoised per query
- * text until any view is redefined.
+ * text until any view or routine is redefined (`__schema__` version).
  */
 export function dependencies(
   sql: string,
   params: Record<string, unknown> | undefined,
-  viewsEpoch: number,
+  schemaVersion: number,
 ): { known: boolean; deps: Promise<Deps> } {
   const id = sha(sql);
   const hit = memo.get(id);
-  if (hit && hit.viewsEpoch === viewsEpoch) return { known: true, deps: hit.p };
+  if (hit && hit.schemaVersion === schemaVersion) return { known: true, deps: hit.p };
   const p = dryRun(sql, params);
-  memo.set(id, { viewsEpoch, p });
+  memo.set(id, { schemaVersion, p });
   p.then((d) => {
     // A transient failure must not pin the query as uncacheable.
     if (!d.ok && d.reason.startsWith("dry run failed") && memo.get(id)?.p === p) memo.delete(id);

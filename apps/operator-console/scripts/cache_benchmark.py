@@ -114,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     reasons = sorted({e.get("reason") for e in stats.get("recent", []) if e.get("outcome") in ("uncacheable", "error", "verify-diff")} - {None})
     for r in reasons:
         print(f"- {r}")
-    print(f"L1: {stats.get('l1')}  catalog: {stats.get('catalog')}  L2: {stats.get('l2')}")
+    print(f"store: {stats.get('store')}")
     return 0 if counts.get("verify-diff", 0) == 0 else 1
 
 

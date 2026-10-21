@@ -62,24 +62,22 @@ export function sha(text: string): string {
 
 /**
  * The cache key: query text + params + the version of every table and view the query
- * reads + the time bucket. A write to any of those tables changes its version, so the
- * old entry simply stops being addressed — nothing has to find and delete it.
+ * reads + the schema version + the time bucket. A write to any of those tables moves its
+ * version, so the old entry simply stops being addressed — nothing has to find and delete
+ * it. Every instance reads the same versions, so every instance computes the same key.
  */
 export function cacheKey(parts: {
   sql: string;
   params: string;
   versions: Record<string, number>;
-  viewsEpoch: number;
+  schemaVersion: number;
   bucket: string;
-  build: string;
 }): string {
   const versions = Object.keys(parts.versions)
     .sort()
     .map((k) => `${k}@${parts.versions[k]}`)
     .join(",");
-  return sha(
-    [CACHE_SCHEMA, parts.build, parts.bucket, parts.viewsEpoch, versions, parts.params, parts.sql].join("\u0000"),
-  );
+  return sha([CACHE_SCHEMA, parts.bucket, parts.schemaVersion, versions, parts.params, parts.sql].join("\u0000"));
 }
 
 /**

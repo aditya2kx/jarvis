@@ -1,13 +1,14 @@
 import "server-only";
 import { headers } from "next/headers";
-import { catalogSnapshot, catalogState, markDirty } from "./catalog";
+import { cache } from "react";
+import { DATASET, PROJECT } from "@/lib/bq/bigquery";
 import { dependencies } from "./deps";
-import { l2Get, l2Put, l2State } from "./firestore";
-import { MemoryLru } from "./memory";
+import { bumpVersions, getEntry, putEntry, readVersions, SCHEMA_DOC, storeState } from "./firestore";
 import {
   cacheKey,
   isExactJson,
   isReadOnlySql,
+  namedObjects,
   paramsFingerprint,
   sameRows,
   sha,
@@ -17,27 +18,22 @@ import {
 import { shared } from "./shared";
 import { record, snapshotStats, type Outcome } from "./stats";
 
-export { markDirty };
-
 /**
- * Read-through cache for every `q()` read (docs/operator-console/ARCHITECTURE.md §15).
+ * Read-through cache for every `q()` read (docs/operator-console/ARCHITECTURE.md §15),
+ * backed by one shared Firestore layer.
  *
  * Correctness rules, in order:
- * - Only page renders use it. Server actions (status polls, writes) always read live, and
- *   any action marks the catalog dirty so the page re-rendered after it sees fresh versions.
- * - A key covers the query text, params, the BigQuery last-modified time of every table and
- *   view the query reads, and the UTC hour. Any write to any of those tables, by anyone,
- *   changes the key — within MAX_STALE_MS for writers outside this instance, immediately
- *   for this instance's own writes.
+ * - Only page renders use it. Server actions (status polls, writes) always read live.
+ * - A key covers the query text, params, the shared version of every table and view the
+ *   query reads (bumped from BigQuery's audit log for every writer, and by this app right
+ *   after its own writes), the schema version and the UTC hour.
  * - Only results that survive a JSON round trip unchanged are cached.
- * Anything it cannot prove safe reads BigQuery directly.
+ * Anything it cannot prove safe — including the store being unreachable — reads BigQuery.
  */
-const MAX_CHARS = Number(process.env.CONSOLE_QUERY_CACHE_MAX_CHARS ?? 48_000_000);
-const L1_TTL_MS = 6 * 3600_000;
-const BUILD = process.env.K_REVISION ?? process.env.NEXT_DEPLOYMENT_ID ?? "dev";
-
-const l1 = shared("l1", () => new MemoryLru(MAX_CHARS, L1_TTL_MS));
 const pendingMisses = shared("pending", () => new Map<string, Promise<unknown[]>>());
+
+/** One version read per page render, so every panel on a page uses the same snapshot. */
+const requestVersions = cache(() => readVersions());
 
 type Mode = "cache" | "off" | "verify" | "bypass";
 
@@ -52,14 +48,16 @@ async function requestMode(): Promise<{ mode: Mode; reason?: string }> {
   } catch {
     return { mode: "bypass", reason: "outside a request" };
   }
-  if (h.has("next-action")) {
-    markDirty();
-    return { mode: "bypass", reason: "server action" };
-  }
+  if (h.has("next-action")) return { mode: "bypass", reason: "server action" };
   const v = h.get("x-console-cache");
   if (v === "off") return { mode: "off" };
   if (v === "verify") return { mode: "verify" };
   return { mode: "cache" };
+}
+
+/** After a successful console write: move the written tables' versions before returning. */
+export async function noteWrite(sql: string): Promise<void> {
+  await bumpVersions(namedObjects(sql, PROJECT, DATASET));
 }
 
 export async function readThrough<T>(
@@ -77,11 +75,9 @@ export async function readThrough<T>(
   };
 
   if (!isReadOnlySql(sql)) {
-    try {
-      return await direct("write");
-    } finally {
-      markDirty();
-    }
+    const rows = await direct("write");
+    await noteWrite(sql);
+    return rows;
   }
   if (cacheDisabled()) return direct("off", "CONSOLE_QUERY_CACHE=off");
   const { mode, reason } = await requestMode();
@@ -90,13 +86,11 @@ export async function readThrough<T>(
   const vol = volatility(sql);
   if (vol === "never") return direct("uncacheable", "non-deterministic SQL");
 
-  let snap;
-  try {
-    snap = await catalogSnapshot();
-  } catch (e) {
-    return direct("error", `catalog unavailable: ${String(e).slice(0, 160)}`);
-  }
-  const { known, deps: depsP } = dependencies(sql, params, snap.viewsEpoch);
+  const versions = await requestVersions();
+  if (!versions) return direct("error", "cache store unavailable");
+  const schemaVersion = versions.get(SCHEMA_DOC) ?? 0;
+
+  const { known, deps: depsP } = dependencies(sql, params, schemaVersion);
   // First sight of this query text: run it alongside the dry run rather than after it.
   const firstRun = known ? null : live();
   firstRun?.catch(() => {});
@@ -106,36 +100,22 @@ export async function readThrough<T>(
     record({ outcome: "uncacheable", ms: elapsed(), sqlId, rows: rows.length, tables: [], reason: deps.reason });
     return rows;
   }
-  const versions: Record<string, number> = {};
-  for (const name of deps.objects) {
-    const v = snap.versions.get(name);
-    if (v === undefined) {
-      const rows = await (firstRun ?? live());
-      record({ outcome: "uncacheable", ms: elapsed(), sqlId, rows: rows.length, tables: deps.objects, reason: `unknown object ${name}` });
-      return rows;
-    }
-    versions[name] = v;
-  }
+  const tables = deps.objects;
+  const keyVersions = Object.fromEntries(tables.map((t) => [t, versions.get(t) ?? 0]));
   const key = cacheKey({
     sql,
     params: paramsFingerprint(params),
-    versions,
-    viewsEpoch: snap.viewsEpoch,
+    versions: keyVersions,
+    schemaVersion,
     bucket: timeBucket(new Date(), vol),
-    build: BUILD,
   });
-  const tables = deps.objects;
 
-  const store = (rows: T[]): void => {
-    if (!isExactJson(rows)) return;
-    const json = JSON.stringify(rows);
-    l1.set(key, json);
-    void l2Put(key, json);
+  const store = async (rows: T[]): Promise<void> => {
+    if (isExactJson(rows)) await putEntry(key, JSON.stringify(rows));
   };
 
   if (mode === "verify") {
-    const cached = l1.get(key) ?? (await l2Get(key));
-    const rows = await (firstRun ?? live());
+    const [cached, rows] = await Promise.all([getEntry(key), firstRun ?? live()]);
     if (cached === null) {
       record({ outcome: "verify-cold", ms: elapsed(), sqlId, rows: rows.length, tables });
     } else {
@@ -149,31 +129,24 @@ export async function readThrough<T>(
         reason: cmp.equal ? (cmp.sameOrder ? undefined : "same rows, different order") : "cached != live",
       });
     }
-    store(rows);
+    await store(rows);
     return rows;
   }
 
   if (!firstRun) {
-    const hit = l1.get(key);
+    const hit = await getEntry(key);
     if (hit !== null) {
       const rows = JSON.parse(hit) as T[];
       record({ outcome: "hit", ms: elapsed(), sqlId, rows: rows.length, tables });
       return rows;
     }
-    const shared = await l2Get(key);
-    if (shared !== null) {
-      l1.set(key, shared);
-      const rows = JSON.parse(shared) as T[];
-      record({ outcome: "l2-hit", ms: elapsed(), sqlId, rows: rows.length, tables });
-      return rows;
-    }
   }
 
-  // Concurrent misses on one key (e.g. two panels, or two tabs) share one BigQuery job.
+  // Concurrent misses on one key (two panels, two tabs) share one BigQuery job.
   let pending = pendingMisses.get(key) as Promise<T[]> | undefined;
   if (!pending) {
-    pending = (firstRun ?? live()).then((rows) => {
-      store(rows);
+    pending = (firstRun ?? live()).then(async (rows) => {
+      await store(rows);
       return rows;
     });
     pendingMisses.set(key, pending);
@@ -186,12 +159,5 @@ export async function readThrough<T>(
 }
 
 export function cacheStats() {
-  return {
-    build: BUILD,
-    disabled: cacheDisabled(),
-    catalog: catalogState(),
-    l1: { ...l1.size(), maxChars: MAX_CHARS },
-    l2: l2State(),
-    ...snapshotStats(),
-  };
+  return { disabled: cacheDisabled(), store: storeState(), ...snapshotStats() };
 }

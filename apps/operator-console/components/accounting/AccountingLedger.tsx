@@ -35,6 +35,7 @@ import {
 } from "@/components/accounting/AccountingRulesDrawer";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { okAck } from "@/lib/actions/types";
+import { StatGrid } from "@/components/kpi/StatGrid";
 
 export interface AccountingTxnRow {
   transaction_id: string;
@@ -816,32 +817,23 @@ export function AccountingLedger({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
-          <span>
-            <span className="text-muted-foreground">Money in (bank) · </span>
-            <span className="font-medium tabular-nums">{formatDollars(kpis.earned)}</span>
-          </span>
-          <span>
-            <span className="text-muted-foreground">Money out (bank) · </span>
-            <span className="font-medium tabular-nums">{formatDollars(kpis.spend)}</span>
-          </span>
-          <span>
-            <span className="text-muted-foreground">Cash flow (bank) · </span>
-            <span className="font-medium tabular-nums">{formatDollars(cashFlow)}</span>
-          </span>
-          <span>
-            <span className="text-muted-foreground">Square net sales · </span>
-            <span className="font-medium tabular-nums">
-              {squareNetSalesTotal == null ? "—" : formatDollars(squareNetSalesTotal)}
-            </span>
-          </span>
-          <span className="text-xs text-muted-foreground self-center">
-            Bank totals exclude excluded categories · {periodLabel}
-          </span>
-        </div>
-        {unitToggle}
-      </div>
+      <StatGrid
+        caption={`Bank figures leave out excluded categories · ${periodLabel}`}
+        stats={[
+          { label: "Money in (bank)", value: formatDollars(kpis.earned) },
+          { label: "Money out (bank)", value: formatDollars(kpis.spend) },
+          {
+            label: "Cash flow (bank)",
+            value: formatDollars(cashFlow),
+            tone: cashFlow < 0 ? "negative" : cashFlow > 0 ? "positive" : undefined,
+          },
+          {
+            label: "Square net sales",
+            value: squareNetSalesTotal == null ? "—" : formatDollars(squareNetSalesTotal),
+          },
+        ]}
+      />
+      <div className="flex justify-end">{unitToggle}</div>
 
       {cashChart.length ? (
         <BarChartCard
@@ -849,7 +841,7 @@ export function AccountingLedger({
           subtitle={
             asPct
               ? `Bank money in / out / cash flow as % of Square net sales for the same ${grainLabel} · green=in, red=out, sky/fuchsia=net`
-              : "Green = money in · red = money out · sky/fuchsia = cash flow (by sign) · excludes excluded categories"
+              : "Cash flow is sky when positive, fuchsia when negative · excluded categories left out"
           }
           data={cashChart}
           xKey="date"
@@ -885,7 +877,7 @@ export function AccountingLedger({
       {categoryChart.data.length && categoryChart.series.length ? (
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-medium text-muted-foreground">
+            <p className="text-sm font-semibold text-foreground">
               Spend by {spendChartGrain === "subcategory" ? "subcategory" : "category"} · follows
               table filters
             </p>
@@ -931,7 +923,7 @@ export function AccountingLedger({
 
       <Card>
         <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">
+          <CardTitle className="text-sm font-semibold text-foreground">
             Transactions
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2">
@@ -988,7 +980,7 @@ export function AccountingLedger({
           if (!open) setExplain(null);
         }}
       >
-        <SheetContent side="right" className="sm:max-w-md overflow-y-auto">
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
           <SheetHeader>
             <SheetTitle>
               {explain?.transaction_name || explain?.category || "Transaction"}

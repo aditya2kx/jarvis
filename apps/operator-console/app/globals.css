@@ -7,7 +7,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-inter);
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
@@ -130,5 +130,46 @@
   }
   html {
     @apply font-sans;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+  }
+}
+
+/* Height of the phone bottom tab bar (components/shell/MobileTabBar.tsx), excluding the
+   home-indicator inset. Main content pads by this so the last row is never hidden. */
+:root {
+  --tabbar-h: 3.75rem;
+}
+/* Numbers line up in every chart axis and readout, not just in tables. */
+.recharts-text {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Phone form fields. iOS zooms the page when a focused field is under 16px, and Apple's
+   minimum touch target is 44px. Unlayered on purpose: it must beat per-component text-xs
+   / h-8 utilities on every raw <input>, <textarea> and <select> without editing each one.
+   Dense table-header filters opt down with data-compact. */
+@media (max-width: 47.999rem) {
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"]),
+  textarea,
+  select {
+    font-size: max(16px, 1em);
+  }
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"], [type="hidden"], [data-compact], [aria-hidden="true"]),
+  select:not([aria-hidden="true"]) {
+    min-height: 2.75rem;
+  }
+  input[type="number"] {
+    appearance: textfield;
+  }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
+  }
+  input[type="checkbox"]:not([aria-hidden="true"]),
+  input[type="radio"]:not([aria-hidden="true"]) {
+    width: 1.25rem;
+    height: 1.25rem;
   }
 }

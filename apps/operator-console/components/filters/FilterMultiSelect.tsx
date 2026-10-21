@@ -75,7 +75,7 @@ export function FilterMultiSelect({
 
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <span className="text-xs font-medium text-muted-foreground max-md:text-sm">{label}</span>
       <Popover.Root
         open={open}
         onOpenChange={(next) => {
@@ -88,7 +88,7 @@ export function FilterMultiSelect({
           type="button"
           aria-label={`Filter ${label}`}
           className={cn(
-            "flex h-7 min-w-32 max-w-56 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors",
+            "flex h-7 min-w-32 max-w-56 items-center justify-between gap-1 rounded-md border px-2 text-left text-xs font-normal outline-none transition-colors max-md:h-10 max-md:min-w-40 max-md:text-sm",
             "focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40",
             !isAll
               ? "border-primary/50 bg-primary/10 text-foreground"
@@ -152,7 +152,7 @@ export function FilterMultiSelect({
                           role="option"
                           aria-selected={checked}
                           className={cn(
-                            "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+                            "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted max-md:py-2.5 max-md:text-sm",
                             checked && "bg-muted/70",
                           )}
                           onClick={() => {

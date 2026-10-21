@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
-const PILL = "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors";
+const PILL =
+  "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors max-md:flex max-md:min-h-9 max-md:items-center max-md:px-3.5 max-md:text-sm";
 
 export interface FilterOption {
   value: string;
@@ -33,7 +34,7 @@ export function FilterPills({
 }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <span className="text-xs font-medium text-muted-foreground max-md:text-sm">{label}</span>
       <div className="flex items-center gap-1 rounded-md bg-secondary p-0.5">
         {options.map((opt) => {
           const params = new URLSearchParams({ ...extraParams, [param]: opt.value });

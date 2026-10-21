@@ -137,7 +137,7 @@ export default async function OrderQualityPage({
       : noneSelected
         ? `KDS ${oqMetricLabel(metric)} — no sources`
         : `KDS ${oqMetricLabel(metric)} — ${sources.length} source${sources.length === 1 ? "" : "s"}`
-    : `KDS prep time (${oqMetricLabel(metric)})`;
+    : `KDS prep time · ${metric === "avg" ? "average" : "p95"}, minutes`;
 
   const chartSeries = breakdown
     ? buildOqBySourceSeries(sourceKeys)
@@ -346,14 +346,14 @@ export default async function OrderQualityPage({
             </p>
           )}
           <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+            <h2 className="mb-2 text-sm font-semibold text-foreground">
               {grainTitleLabel(grain)} percentile detail
             </h2>
             <DataTable columns={columns} data={rows} />
           </div>
           <div>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-medium text-muted-foreground">
+              <h2 className="text-sm font-semibold text-foreground">
                 Order KDS times (slowest first)
               </h2>
               <FilterPills

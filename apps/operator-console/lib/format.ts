@@ -5,20 +5,24 @@
 // use the formatter that matches the column's actual unit.
 export function formatDollars(dollars: number | null | undefined): string {
   if (dollars == null || Number.isNaN(dollars)) return "—";
-  return dollars.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return trueMinus(
+    dollars.toLocaleString("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }),
+  );
 }
 
 export function formatCents(cents: number | null | undefined): string {
   if (cents == null) return "—";
-  return (cents / 100).toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-  });
+  return trueMinus((cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" }));
+}
+
+/** Typographic minus (U+2212) matches the width of "+" and reads as a sign, not a dash. */
+function trueMinus(s: string): string {
+  return s.startsWith("-") ? `\u2212${s.slice(1)}` : s;
 }
 
 export function formatPct(fraction: number | null | undefined, digits = 1): string {
@@ -72,4 +76,24 @@ export function formatDate(value: string | Date | null | undefined): string {
     month: "short",
     day: "numeric",
   }).format(d);
+}
+
+/** BQ TIMESTAMP ("2026-10-20T02:48:52.798661000Z" / "2026-09-27 18:35:40.304467+00") → "Oct 19, 9:48 PM CT". */
+export function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const iso = value
+    .replace(" ", "T")
+    .replace(/\+00$/, "Z")
+    .replace(/(\.\d{3})\d+/, "$1");
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return value;
+  return (
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: CHICAGO,
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(d) + " CT"
+  );
 }

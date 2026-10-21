@@ -29,6 +29,8 @@ import {
 import { RANGE_PRESETS, wantsCustom } from "@/lib/filters/range";
 import { resolvePageRange } from "@/lib/filters/period";
 import { ACTIVE_BASES, type RestockRow } from "@/lib/restock/parse";
+import { InfoNote } from "@/components/shell/InfoNote";
+import { formatDate } from "@/lib/format";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { RestockImportDrawer } from "@/components/drawers/RestockImportDrawer";
 import { CapacityEdit } from "@/components/drawers/CapacityEdit";
@@ -142,7 +144,7 @@ export default async function InventoryPage({
   // current stock and burn rate were known the whole time.
   const nextDeliveryLabel =
     liveDates.length > 0
-      ? `Next delivery: ${liveDates.join(" · then ")}`
+      ? `Next delivery ${liveDates.map(formatDate).join(", then ")}`
       : stockOnly
         ? "No delivery date registered yet — showing current stock and burn rate. " +
           "Register a delivery date to get order quantities."
@@ -171,17 +173,19 @@ export default async function InventoryPage({
                 committed={win.preset === "custom"}
               />
             ) : null}
-            {FEATURES.writeRestock ? (
-              <>
-                <CapacityEdit currentMaxTubs={maxTubs} />
-                <RestockImportDrawer
-                  dates={liveDates.length ? liveDates : dates}
-                  scheduledDates={scheduledDates}
-                  estimateByDate={estimateByDate}
-                />
-              </>
-            ) : null}
           </>
+        }
+        actions={
+          FEATURES.writeRestock ? (
+            <>
+              <CapacityEdit currentMaxTubs={maxTubs} />
+              <RestockImportDrawer
+                dates={liveDates.length ? liveDates : dates}
+                scheduledDates={scheduledDates}
+                estimateByDate={estimateByDate}
+              />
+            </>
+          ) : null
         }
       />
 
@@ -198,7 +202,7 @@ export default async function InventoryPage({
               count back from, so those columns appear once one is registered.
             </p>
           ) : (
-            <p className="text-xs text-muted-foreground">
+            <InfoNote summary="How the order numbers work">
               Days left = Current Qty ÷ Avg/day — how long this base lasts with no restocking
               at all. Days left after is the same figure counted from a delivery, assuming
               that order arrives. Order weight (lbs) = Order tubs × per-tub weight (Açaí 18 lbs;
@@ -208,7 +212,7 @@ export default async function InventoryPage({
               dates pin Manual values; Actuals dates update uploaded Actuals. Capacity is a
               hard cap per delivery: pinning more tubs on one base leaves fewer for the
               Estimated bases on that date. Apply once recomputes the recommendation.
-            </p>
+            </InfoNote>
           )}
           <OrderRecoTable
             dates={dates}
@@ -219,26 +223,25 @@ export default async function InventoryPage({
           />
 
           <div data-testid="ordered-tubs-actuals">
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+            <h2 className="mb-2 text-sm font-semibold text-foreground">
               Ordered tubs (Actuals)
             </h2>
             <p className="mb-2 text-xs text-muted-foreground">
-              Uploaded order quantities for delivery dates in {win.label} ({win.start} –{" "}
-              {win.end}). Period is the header control (same as Sales / Labor). Estimates are
-              omitted. Reco and usage-by-day are not Period-filtered. Last 7 / 30 days
-              end today, so a future delivery needs This month or Custom.
+              Uploaded order quantities for deliveries in {win.label} ({formatDate(win.start)} –{" "}
+              {formatDate(win.end)}); estimates are not shown. Only this table follows Period —
+              pick This month or Custom to include an upcoming delivery.
             </p>
             <OrderedTubsActualsTable rows={actualsRows} columns={restockActualsColumns()} />
           </div>
 
           <div>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
+            <h2 className="mb-2 text-sm font-semibold text-foreground">
               Base usage by day (last 30 days)
             </h2>
             <p className="mb-2 text-xs text-muted-foreground">
-              One row per closing date; one column per base (qty + in-avg / exclude tag). Table
-              scrolls (~10 rows tall); Date stays frozen. Click a row to open the day editor —
-              set force include/exclude per base, then Apply (nothing writes until then).
+              One row per closing date, one column per base, tagged by whether it counts toward
+              Avg/day. Tap a row to include or exclude a base for that day; nothing saves until
+              you Apply.
             </p>
             <UsageDayAuditTable
               rows={auditRows}

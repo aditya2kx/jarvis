@@ -10,7 +10,7 @@ additive and reached through its own commands, so both can be used side by side.
 |---|---|---|
 | Start work | **one command, `/jarvis-new-task <text>`, everywhere.** In a Mac chat it opens a worktree + Cursor window (`jarvis_task.py` → `new_requirement.py`); as an issue comment it starts a Cloud Agent; first word `mac` / `cloud` overrides (`/jarvis-new-task mac <text>`) | in a Cloud Agent chat or as an issue/PR comment: a new Cloud Agent (`cloud_agent.py intake`, link commented on the issue); or open an agent on the repo in Cursor mobile/web; or Siri / Grok via the [gateway](../../cloud/jarvis_dev_gateway/README.md). `/jarvis-cloud-task` still works as an alias |
 | Environment | your checkout | `.cursor/environment.json` (pip + pytest + Playwright Chromium + console `npm ci`) |
-| See the console change | `npm run dev` on localhost | **per-PR preview** `operator-console-pr<N>` behind prod IAP (same Google sign-in + allowlist), screenshot comment on the PR; the agent itself opens it with a token (`scripts/console_preview.py`, no Google sign-in); deleted on PR close + nightly sweep (`operator-console-preview.yml`) — Mac PRs get one too |
+| See the console change | `npm run dev` on localhost | **per-PR preview** `operator-console-pr<N>` behind prod IAP (same Google sign-in + allowlist), screenshot comment on the PR; the agent itself opens it with a token (`scripts/console_preview.py`, no Google sign-in); deleted on PR close + hourly sweep (`operator-console-preview.yml`) — Mac PRs get one too. **Before a PR:** push `preview/<issue>-<slug>` for a 24 h branch preview (`console_preview.py --branch …`), see below |
 | Prod reads (BQ, logs, status) | ADC | `/prod-read …` PR comment → result encrypted to the agent's key (`scripts/prod_read.py`; repo is public) |
 | Prod mutations (env flags, job runs, migrations) | ADC / Cloud Shell | `/prod-ops …` PR comment → operator approves in GitHub Environment `prod` (`scripts/prod_ops.py`) |
 | Git identity | `GH_TOKEN` (bot PAT, Keychain) → commits + pushes as `jarvis-agent-bot328` | same PAT, no copy: `scripts/cloud_git_identity.sh` (environment `start`) reads Secret Manager `github-bot-pat` via Cursor OIDC ([gcp-access.md](gcp-access.md) recipe F), logs `gh` in, drops Cursor's app-token rewrite, sets bot name/email (a `GH_TOKEN` Cursor secret also works) |
@@ -56,6 +56,15 @@ isolation. Previews are separate services — never a revision of `operator-cons
 cannot reach prod; `/prod-ops` refuses to set it. Unset (localhost, prod) the console behaves as
 before. Screenshots cover `/home` and `/inventory` only — Payroll and Accounting carry names, wages
 and bank lines, and this repo is public.
+
+**Pre-PR branch previews** replace "show me on localhost first": push the work to a short
+`preview/<issue>-<slug>` (Cloud Agents: `git push origin HEAD:preview/415-mobile`; `cursor/**`
+pushes open a PR, `preview/**` pushes do not; keep it short — the WIF subject carries the ref and
+GCP caps it at 127 bytes). The workflow deploys `operator-console-pv-<slug>-<hash>` with the same
+read-only + IAP setup and writes the URL to the run summary; the operator opens it with their usual
+Google sign-in, the agent with `console_preview.py --branch preview/<issue>-<slug>`. It is deleted
+after 24 h (hourly sweep on label `expires`), when the branch is deleted, or when a PR whose branch
+starts `<prefix>/<issue>-` deploys its own preview. Re-push the branch to respawn.
 
 Previews verify IAP's JWT against their own service (`IAP_SERVICE_NAME=operator-console-pr<N>`),
 and each build carries `NEXT_DEPLOYMENT_ID`, so a tab left open across a redeploy hard-reloads

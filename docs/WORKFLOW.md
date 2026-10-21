@@ -509,7 +509,7 @@ capture, operator setup): [`docs/contributing/dev-anywhere.md`](contributing/dev
 | Workflow / script | Role |
 |---|---|
 | `operator-console-ci.yml` | PR-time vitest + `next build` for `apps/operator-console` |
-| `operator-console-preview.yml` | per-PR IAP preview service + screenshot comment; teardown on close, nightly sweep |
+| `operator-console-preview.yml` | per-PR IAP preview service + screenshot comment; pre-PR `preview/**` branch previews (24 h TTL); teardown on close / branch delete, hourly sweep |
 | `prod-read.yml` / `scripts/prod_read.py` | `/prod-read` comment → read-only prod query, result encrypted to the requester |
 | `prod-ops.yml` / `scripts/prod_ops.py` | `/prod-ops` comment → planned prod mutation gated on Environment `prod` approval |
 | `pr-cost-gate.yml` + `scripts/cloud_agent.py record-cost` | prices a `Cursor-Agent:` PR's agent usage into BQ |

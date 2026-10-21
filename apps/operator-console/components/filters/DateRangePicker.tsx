@@ -90,7 +90,7 @@ export function DateRangePicker({
   if (!showEditor && committed) {
     return (
       <div className="flex items-center gap-1.5">
-        <span className="text-xs font-medium text-muted-foreground">Custom</span>
+        <span className="text-xs font-medium text-muted-foreground max-md:text-sm">Custom</span>
         <span className="rounded-md border border-border bg-muted/40 px-2 py-1 text-xs tabular-nums">
           {from} → {to}
         </span>
@@ -103,7 +103,7 @@ export function DateRangePicker({
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="text-xs font-medium text-muted-foreground">Custom</span>
+      <span className="text-xs font-medium text-muted-foreground max-md:text-sm">Custom</span>
       <DateField
         inputRef={fromRef}
         value={draftFrom}
@@ -162,8 +162,8 @@ function DateField({
       onChange={(e) => onChange(e.target.value)}
       onClick={onOpenPicker}
       className={cn(
-        "h-8 w-[11rem] cursor-pointer rounded-lg border border-input bg-transparent px-2.5 py-1",
-        "text-sm tabular-nums outline-none transition-colors",
+        "h-8 w-[11rem] cursor-pointer rounded-lg border border-input bg-transparent px-2.5 py-1 max-md:h-10",
+        "text-sm tabular-nums outline-none transition-colors max-md:text-base",
         "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50",
         "scheme-light dark:scheme-dark",
         "[&::-webkit-calendar-picker-indicator]:cursor-pointer",

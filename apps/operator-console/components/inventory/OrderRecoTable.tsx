@@ -18,7 +18,7 @@ import {
   type OrderRecoPivotedRow,
 } from "@/lib/inventory/orderRecoPivot";
 import { DAYS_LEFT_THRESHOLDS } from "@/lib/inventory/daysLeft";
-import { formatNumber } from "@/lib/format";
+import { formatDate, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /**
@@ -78,6 +78,7 @@ export function OrderRecoTable({
       {
         accessorKey: "Current Qty",
         enableSorting: false,
+        meta: { align: "right" },
         header: () => (
           <span className="inline-flex items-center gap-1">
             Current Qty
@@ -151,97 +152,105 @@ export function OrderRecoTable({
       // Issue #238: Actuals dates are editable too (replace-per-date Actuals).
       const canEdit = writable;
 
-      cols.push(
-        {
-          accessorKey: `On Hand ${slot}`,
-          header: `On hand (${date})`,
-          meta: { format: { kind: "number", digits: 1 } },
-        },
-        {
-          accessorKey: `Order Tubs ${slot}`,
-          enableSorting: false,
-          header: () => (
-            <span className="inline-flex items-center gap-1">
-              Order tubs
-              {canEdit ? (
+      const dateLabel = /^\d{4}-\d{2}-\d{2}$/.test(date) ? formatDate(date) : date;
+      // Every per-delivery column sits under one dated group header, so "After restock"
+      // still says which delivery it means once "On hand" has scrolled out of view.
+      cols.push({
+        id: `delivery-${slot}`,
+        header: `Delivery ${dateLabel}${isEstimated ? " (estimated)" : ""}`,
+        columns: [
+          {
+            accessorKey: `On Hand ${slot}`,
+            header: "On hand",
+            meta: { format: { kind: "number", digits: 1 } },
+          },
+          {
+            accessorKey: `Order Tubs ${slot}`,
+            enableSorting: false,
+            meta: { align: "right" },
+            header: () => (
+              <span className="inline-flex items-center gap-1">
+                Order tubs
+                {canEdit ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label={
+                      isEstimated ? `Edit estimates for ${date}` : `Edit actuals for ${date}`
+                    }
+                    title={
+                      isEstimated ? `Edit estimates · ${date}` : `Edit actuals · ${date}`
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpenDate(date);
+                    }}
+                  >
+                    <PencilIcon className="h-3.5 w-3.5" />
+                  </button>
+                ) : null}
+              </span>
+            ),
+            cell: ({ getValue, row }) => {
+              const rawVal = getValue();
+              const n = rawVal == null || rawVal === "" ? null : Number(rawVal);
+              const display = n == null || Number.isNaN(n) ? "—" : formatNumber(n, 0);
+              const source = row.original[`Source ${slot}`] as string | null | undefined;
+              if (!canEdit) {
+                return <span className="tabular-nums">{display}</span>;
+              }
+              return (
                 <button
                   type="button"
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label={
-                    isEstimated ? `Edit estimates for ${date}` : `Edit actuals for ${date}`
-                  }
+                  className={cn(
+                    "group inline-flex min-h-10 min-w-[3.5rem] items-center gap-1 rounded-md px-1.5 -mx-1.5",
+                    "text-left tabular-nums hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  )}
+                  onClick={() => setOpenDate(date)}
+                  aria-label={`Edit Order tubs for ${date}`}
                   title={
-                    isEstimated ? `Edit estimates · ${date}` : `Edit actuals · ${date}`
+                    source === "Actuals"
+                      ? `Edit actuals · ${date}`
+                      : `Edit estimates · ${date}`
                   }
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setOpenDate(date);
-                  }}
                 >
-                  <PencilIcon className="h-3.5 w-3.5" />
+                  <span>{display}</span>
+                  {source === "Manual" ? (
+                    <Badge variant="outline" className="text-[10px] font-normal leading-tight">
+                      Manual
+                    </Badge>
+                  ) : (
+                    <PencilIcon className="h-3 w-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+                  )}
                 </button>
-              ) : null}
-            </span>
-          ),
-          cell: ({ getValue, row }) => {
-            const rawVal = getValue();
-            const n = rawVal == null || rawVal === "" ? null : Number(rawVal);
-            const display = n == null || Number.isNaN(n) ? "—" : formatNumber(n, 0);
-            const source = row.original[`Source ${slot}`] as string | null | undefined;
-            if (!canEdit) {
-              return <span className="tabular-nums">{display}</span>;
-            }
-            return (
-              <button
-                type="button"
-                className={cn(
-                  "group inline-flex min-h-10 min-w-[3.5rem] items-center gap-1 rounded-md px-1.5 -mx-1.5",
-                  "text-left tabular-nums hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                )}
-                onClick={() => setOpenDate(date)}
-                aria-label={`Edit Order tubs for ${date}`}
-                title={
-                  source === "Actuals"
-                    ? `Edit actuals · ${date}`
-                    : `Edit estimates · ${date}`
-                }
-              >
-                <span>{display}</span>
-                {source === "Manual" ? (
-                  <Badge variant="outline" className="text-[10px] font-normal leading-tight">
-                    Manual
-                  </Badge>
-                ) : (
-                  <PencilIcon className="h-3 w-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
-                )}
-              </button>
-            );
+              );
+            },
           },
-        },
-        {
-          accessorKey: `Order Weight ${slot}`,
-          header: "Order weight (lbs)",
-          meta: { format: { kind: "number", digits: 0 } },
-        },
-        {
-          accessorKey: `After Restock ${slot}`,
-          header: "After restock",
-          meta: { format: { kind: "number", digits: 1 } },
-        },
-        {
-          accessorKey: `Days Left ${slot}`,
-          // Not "Days left": the burn-down column of that name is now always
-          // present, and two identical headers in one table is unreadable.
-          // Sits beside "After restock", so "after" reads as after this delivery.
-          header: "Days left after",
-          meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
-        },
-        {
-          accessorKey: `Source ${slot}`,
-          header: "Source",
-          meta: { format: { kind: "source" } },
-        },
-      );
+          {
+            accessorKey: `Order Weight ${slot}`,
+            header: "Order weight (lbs)",
+            meta: { format: { kind: "number", digits: 0 } },
+          },
+          {
+            accessorKey: `After Restock ${slot}`,
+            header: "After restock",
+            meta: { format: { kind: "number", digits: 1 } },
+          },
+          {
+            accessorKey: `Days Left ${slot}`,
+            // Not "Days left": the burn-down column of that name is now always
+            // present, and two identical headers in one table is unreadable.
+            // Sits beside "After restock", so "after" reads as after this delivery.
+            header: "Days left after",
+            meta: { format: { kind: "number", digits: 1, thresholds: DAYS_LEFT_THRESHOLDS } },
+          },
+          {
+            accessorKey: `Source ${slot}`,
+            header: "Source",
+            meta: { format: { kind: "source" } },
+          },
+        ],
+      });
     });
 
     return cols;

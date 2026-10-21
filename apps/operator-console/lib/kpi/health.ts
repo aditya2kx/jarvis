@@ -48,8 +48,12 @@ export interface HealthMetric {
   nested?: boolean;
   /** lower-is-better for GoalBar marker math. */
   lowerIsBetter?: boolean;
-  /** Human “how far off” string, e.g. "$1.2k under (8%)". */
+  /** Plain-language distance from the goal, e.g. "$44.7K below goal · 40% of goal". */
   deltaFormatted?: string;
+  /** Secondary fact shown beside the label, e.g. "31.2% of sales". */
+  detail?: string;
+  /** GoalBar scale when the goal is a ratio (labor % of sales) rather than the displayed $. */
+  bar?: { actual: number | null; goal: number | null };
 }
 
 export interface HealthGroup {
@@ -60,6 +64,23 @@ export interface HealthGroup {
   metrics: HealthMetric[];
 }
 
+function compactMagnitude(abs: number, kind: "dollars" | "number" | "minutes" | "hours"): string {
+  if (kind === "dollars") {
+    return abs.toLocaleString("en-US", {
+      style: "currency",
+      currency: "USD",
+      notation: abs >= 10_000 ? "compact" : "standard",
+      maximumFractionDigits: abs >= 10_000 ? 1 : 0,
+    });
+  }
+  if (kind === "minutes") return `${abs.toFixed(1)} min`;
+  if (kind === "hours") return `${abs.toFixed(1)} hrs`;
+  return Number.isInteger(abs) ? String(abs) : abs.toFixed(1);
+}
+
+/** "$44.7K below goal · 40% of goal" / "$10.5K under limit · 53% of limit". Goals with
+ *  lowerIsBetter are limits (cost, hours, prep time); the share is only shown when both
+ *  sides are positive, so a negative cash flow doesn't read "-596% of goal". */
 function deltaLabel(
   actual: number | null,
   goal: number | null,
@@ -68,23 +89,12 @@ function deltaLabel(
 ): string | undefined {
   if (actual == null || goal == null) return undefined;
   const diff = actual - goal;
-  if (diff === 0) return "on goal";
-  const good = lowerIsBetter ? diff <= 0 : diff >= 0;
-  const abs = Math.abs(diff);
-  const pct = goal !== 0 ? Math.abs(diff / goal) * 100 : null;
-  let mag: string;
-  if (kind === "dollars") {
-    mag = abs.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-  } else if (kind === "minutes") {
-    mag = `${abs.toFixed(1)} min`;
-  } else if (kind === "hours") {
-    mag = `${abs.toFixed(1)} hrs`;
-  } else {
-    mag = abs.toFixed(1);
-  }
-  const pctPart = pct != null && Number.isFinite(pct) ? ` (${pct.toFixed(0)}%)` : "";
-  if (good) return lowerIsBetter ? `${mag} under${pctPart}` : `${mag} over${pctPart}`;
-  return lowerIsBetter ? `${mag} over${pctPart}` : `${mag} under${pctPart}`;
+  const noun = lowerIsBetter ? "limit" : "goal";
+  if (diff === 0) return `on ${noun}`;
+  const mag = compactMagnitude(Math.abs(diff), kind);
+  const side = lowerIsBetter ? (diff < 0 ? "under" : "over") : diff > 0 ? "above" : "below";
+  const share = actual >= 0 && goal > 0 ? ` · ${Math.round((actual / goal) * 100)}% of ${noun}` : "";
+  return `${mag} ${side} ${noun}${share}`;
 }
 
 function goalValue(config: StoreConfigRow[], key: string): number | null {
@@ -292,7 +302,8 @@ export async function loadHealthScorecard(
         const slug = c.category_slug || c.category_id || label;
         return metric({
           key: `cost_cat_${slug}`,
-          label: `${label} · ${fmtPct(pct)} of sales`,
+          label,
+          detail: ofSales(pct),
           actual: spend,
           goal: null,
           status: "no-goal",
@@ -333,13 +344,15 @@ export async function loadHealthScorecard(
     }),
     metric({
       key: "labor_pt_rates",
-      label: `Part-time (rates) · ${fmtPct(ptPct)}`,
+      label: "Part-time labor (ADP rates)",
+      detail: ofSales(ptPct),
       actual: ptLabor$,
       goal: null,
       status: ptPct != null ? statusFor(ptPace) : "no-goal",
       pace: ptPct != null ? ptPace : null,
       formatted: fmtDollars(ptLabor$),
-      goalFormatted: "—",
+      goalFormatted: fmtPct(goalPtLaborPct),
+      bar: { actual: ptPct, goal: goalPtLaborPct },
       goalKey: "goal_hourly_labor_pct_max",
       rawGoal: goalRaw(config, "goal_hourly_labor_pct_max"),
       lowerIsBetter: true,
@@ -348,7 +361,8 @@ export async function loadHealthScorecard(
     }),
     metric({
       key: "labor_ft_rates",
-      label: `Full-time (rates) · ${fmtPct(ftPct)}`,
+      label: "Full-time labor (ADP rates)",
+      detail: ofSales(ftPct),
       actual: ftLabor$,
       goal: null,
       status: "no-goal",
@@ -362,32 +376,36 @@ export async function loadHealthScorecard(
     }),
     metric({
       key: "labor_total_rates",
-      label: `Total rates (PT+FT) · ${fmtPct(totalRatesPct)}`,
+      label: "Total labor (ADP rates)",
+      detail: ofSales(totalRatesPct),
       actual: totalRatesLabor$,
-      goal: gLabor$.value,
+      goal: null,
       status: totalRatesPct != null ? statusFor(totalRatesPace) : "no-goal",
       pace: totalRatesPct != null ? totalRatesPace : null,
       formatted: fmtDollars(totalRatesLabor$),
+      goalFormatted: fmtPct(goalTotalLaborPct),
+      bar: { actual: totalRatesPct, goal: goalTotalLaborPct },
+      goalKey: "goal_labor_pct_max",
+      rawGoal: goalRaw(config, "goal_labor_pct_max"),
+      lowerIsBetter: true,
+      deltaFormatted: totalRatesPct != null ? deltaLabelPct(totalRatesPct, goalTotalLaborPct) : undefined,
+      info: "PT + FT wage cost from ADP rates, tracked against the total labor % of net sales max. Not the same as bank payroll cash.",
+    }),
+    metric({
+      key: "labor_bank",
+      label: "Labor paid (bank)",
+      detail: ofSales(bankLaborPct),
+      actual: bankLabor$,
+      goal: gLabor$.value,
+      status: statusFor(bankLaborPace),
+      pace: bankLaborPace,
+      formatted: fmtDollars(bankLabor$),
       goalFormatted: fmtDollars(gLabor$.value),
       goalKey: gLabor$.key,
       rawGoal: gLabor$.raw,
       lowerIsBetter: true,
-      deltaFormatted: deltaLabel(totalRatesLabor$, gLabor$.value, true, "dollars"),
-      info: "PT + FT wage cost from ADP rates. Not the same as bank payroll cash.",
-    }),
-    metric({
-      key: "labor_bank",
-      label: `Labor (bank) · ${fmtPct(bankLaborPct)}`,
-      actual: bankLabor$,
-      goal: null,
-      status: statusFor(bankLaborPace),
-      pace: bankLaborPace,
-      formatted: fmtDollars(bankLabor$),
-      goalFormatted: "—",
-      goalKey: null,
-      rawGoal: undefined,
-      lowerIsBetter: true,
-      info: "Bank payroll category spend — matches Cost / Accounting payroll parent for this period.",
+      deltaFormatted: deltaLabel(bankLabor$, gLabor$.value, true, "dollars"),
+      info: "Bank payroll category spend — matches Cost / Accounting payroll parent for this period. Tracked against the labor cost max for the period.",
     }),
   ];
 
@@ -453,11 +471,18 @@ function sum(rows: LaborDailyRow[], pick: (r: LaborDailyRow) => number | null | 
   return rows.reduce((s, r) => s + (pick(r) ?? 0), 0);
 }
 
+/** Whole dollars with a true minus sign: Home is a glance view; cents live on Accounting. */
 function fmtDollars(n: number | null): string {
-  return n == null ? "—" : n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  if (n == null) return "—";
+  const s = Math.abs(n).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+  return Math.round(n) < 0 ? `−${s}` : s;
 }
 
-/** Fraction 0–1 → whole-percent display (matches GoalsDrawer percent fields). */
+function ofSales(pct: number | null): string | undefined {
+  return pct == null || !Number.isFinite(pct) ? undefined : `${fmtPct(pct)} of sales`;
+}
+
+/** Fraction 0–1 → one-decimal percent. */
 function fmtPct(n: number | null): string {
   return n == null || !Number.isFinite(n) ? "—" : `${(n * 100).toFixed(1)}%`;
 }
@@ -465,9 +490,9 @@ function fmtPct(n: number | null): string {
 function deltaLabelPct(actual: number | null, goal: number | null): string | undefined {
   if (actual == null || goal == null) return undefined;
   const diffPp = (actual - goal) * 100;
-  if (diffPp === 0) return "on goal";
-  const mag = `${Math.abs(diffPp).toFixed(1)} pp`;
-  return diffPp <= 0 ? `${mag} under` : `${mag} over`;
+  if (diffPp === 0) return "on limit";
+  const mag = `${Math.abs(diffPp).toFixed(1)} pts`;
+  return `${mag} ${diffPp <= 0 ? "under" : "over"} the ${fmtPct(goal)} limit`;
 }
 
 function fmtMinutes(n: number | null): string {

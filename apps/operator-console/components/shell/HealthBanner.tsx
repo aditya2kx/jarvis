@@ -72,16 +72,23 @@ export async function HealthBanner() {
   const msg = healthMessage(health);
   if (!msg) return null;
 
+  // Phones get the headline only (tap to expand) so a long breaker reason can't push the
+  // page below the fold; md+ keeps the one-line headline + detail.
   return (
-    <div
-      role="status"
-      className={cn(
-        "shrink-0 border-b px-4 py-2 text-sm md:px-6",
-        TONE[msg.tone],
-      )}
-    >
-      <span className="font-semibold">{msg.headline}</span>
-      <span className="ml-2 opacity-90">{msg.detail}</span>
+    <div role="status" className={cn("shrink-0 border-b text-sm", TONE[msg.tone])}>
+      <details className="group px-4 py-2 md:hidden">
+        <summary className="flex min-h-7 cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
+          <span className="size-2 shrink-0 rounded-full bg-current opacity-70" aria-hidden />
+          <span className="min-w-0 flex-1 truncate font-semibold">{msg.headline}</span>
+          <span className="shrink-0 text-xs opacity-75 group-open:hidden">Details</span>
+          <span className="hidden shrink-0 text-xs opacity-75 group-open:inline">Hide</span>
+        </summary>
+        <p className="mt-1 break-words pb-1 opacity-90">{msg.detail}</p>
+      </details>
+      <div className="hidden px-6 py-2 md:block">
+        <span className="font-semibold">{msg.headline}</span>
+        <span className="ml-2 opacity-90">{msg.detail}</span>
+      </div>
     </div>
   );
 }

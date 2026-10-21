@@ -56,7 +56,7 @@ export function CollapsibleSection({
         onClick={toggle}
         aria-expanded={!collapsed}
         aria-controls={bodyId}
-        className="group flex w-full items-center gap-2 rounded-md border-b border-border py-1.5 text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        className="group flex w-full items-center gap-2 rounded-md border-b border-border py-1.5 text-left max-md:min-h-11 max-md:py-2.5 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
       >
         <ChevronDownIcon
           className={cn(
@@ -67,7 +67,7 @@ export function CollapsibleSection({
         />
         <span className="text-sm font-semibold text-foreground">{title}</span>
         {collapsed && meta ? <span className="truncate text-xs text-muted-foreground">{meta}</span> : null}
-        <span className="ml-auto text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+        <span className="ml-auto text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 max-md:opacity-100">
           {collapsed ? "Show" : "Hide"}
         </span>
       </button>

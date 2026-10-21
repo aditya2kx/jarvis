@@ -51,8 +51,8 @@ export function LaborWeeklyHoursGoal({
   }
 
   return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-xs font-medium text-muted-foreground">Hours goal</span>
+    <div className="flex shrink-0 items-center gap-1.5">
+      <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">Hours goal</span>
       {editing ? (
         <div className="flex items-center gap-0.5">
           <div className="relative w-[4.75rem]">
@@ -71,7 +71,7 @@ export function LaborWeeklyHoursGoal({
                 if (e.key === "Enter") save();
                 if (e.key === "Escape") setEditing(false);
               }}
-              className="h-7 pr-7 text-xs"
+              className="h-7 pr-7 text-xs max-md:h-10 max-md:text-base"
             />
             <span className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center text-[11px] text-muted-foreground">
               hrs
@@ -103,7 +103,7 @@ export function LaborWeeklyHoursGoal({
           type="button"
           aria-label="Edit weekly hours goal"
           onClick={startEdit}
-          className="inline-flex h-7 items-center gap-1 rounded-md border border-input bg-transparent px-2 text-xs font-medium tabular-nums text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-input bg-transparent px-2 text-xs font-medium tabular-nums max-md:h-10 max-md:rounded-full max-md:px-3.5 max-md:text-sm text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {display} hrs
           <PencilIcon className="size-3 text-muted-foreground/70" />

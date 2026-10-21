@@ -145,6 +145,9 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
+          # Cloud Agent PRs are opened/pushed as cursor / jarvis-agent-bot328; without this
+          # the action exits before writing an execution file and "Verify Claude review ran" fails.
+          allowed_bots: "cursor,jarvis-agent-bot328"
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
             REPO: ${{ github.repository }}

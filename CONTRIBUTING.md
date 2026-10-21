@@ -43,6 +43,8 @@ The agent **self-advances** through agent phases and **pauses** at the 3 operato
 ### A PR that edits `claude-review.yml` is not reviewed
 Touching `.github/workflows/claude-review.yml` puts the PR in **bootstrap mode**: the review and both verdict gates are skipped, and `Claude review` reports green having reviewed nothing. Never bundle a workflow change with substantive code — land it alone, merge, then rebase the code PR. See [docs/contributing/review-bot.md](docs/contributing/review-bot.md) § Bootstrap mode.
 
+Cloud Agent / bot-opened PRs need `allowed_bots: "cursor,jarvis-agent-bot328"` on the Anthropic action (same file); without it the action exits before writing an execution file and the check fails. Details: [docs/contributing/review-bot.md](docs/contributing/review-bot.md) § Cloud Agent / bot-opened PRs.
+
 ### Post-merge lifecycle
 After every merge, `pr-merged-lifecycle.yml` advances the phase tracker, runs read-only §4 post-merge verification commands, and posts a retrospective prompt on the tracking issue. The agent completes the retrospective (speed / cost / accuracy grade + preference harvest) in a follow-up chat and closes the issue. See `docs/WORKFLOW.md` § Post-merge lifecycle.
 

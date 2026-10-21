@@ -1,5 +1,13 @@
 # Claude Opus review bot
 
+## Cloud Agent / bot-opened PRs
+
+`anthropics/claude-code-action` refuses to run when `github.actor` is a bot unless
+`allowed_bots` is set on the action. This repo allows `cursor` and `jarvis-agent-bot328`
+(see `.github/workflows/claude-review.yml`) so Cloud Agent PRs get a real review. Without
+that list the action exits before writing an execution file and **Claude review** fails
+as "unexpected failure".
+
 ## What it does
 `.github/workflows/claude-review.yml` runs on every PR push.  It reads the diff +
 PR description + `CONTRIBUTING.md` + `.github/claude-review-guidelines.md` and posts

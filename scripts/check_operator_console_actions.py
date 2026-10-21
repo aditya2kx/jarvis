@@ -6,6 +6,10 @@
    ``apps/operator-console/lib/actions/registry.ts``.
 2. Every client file under ``app/`` or ``components/`` that calls ``*Action(``
    must import ``useConsoleAction`` (Issue #175 shared feedback shell).
+3. Every registry entry declares ``access: [...]`` and every exported action calls
+   ``actionDenied("<Name>")`` (per-person page/section access, lib/access/).
+4. Every server ``app/**/page.tsx`` checks access (``pageDenied`` /
+   ``sectionPageDenied`` / ``realIsOwner``) unless it is a redirect or client page.
 
 Allowlist: tests, the hook itself, ActionToast, registry, types, server-only
 actions modules (they define actions, they don't call the client hook).
@@ -34,6 +38,12 @@ _IMPORT_HOOK_RE = re.compile(
     r"""from\s+["']@/lib/actions/useConsoleAction["']"""
 )
 
+_REGISTRY_ENTRY_RE = re.compile(r"\{[^{}]*name:\s*\"(\w+Action)\"[^{}]*\}")
+_PAGE_GUARD_RE = re.compile(r"\b(pageDenied|sectionPageDenied)\(|\.realIsOwner\b")
+# Root redirect, the removed Forecast stub, and the client-only Plaid OAuth return
+# page (its actions are guarded) render no data of their own.
+_UNGUARDED_PAGES = {"app/page.tsx", "app/forecast/page.tsx", "app/accounting/oauth/page.tsx"}
+
 _CLIENT_ALLOWLIST = {
     "lib/actions/useConsoleAction.ts",
     "lib/actions/ActionToast.tsx",
@@ -58,6 +68,27 @@ def exported_actions() -> dict[str, pathlib.Path]:
 def registry_names() -> set[str]:
     text = _REGISTRY.read_text(encoding="utf-8")
     return set(_REGISTRY_NAME_RE.findall(text))
+
+
+def access_errors(exported: dict[str, pathlib.Path]) -> list[str]:
+    errors: list[str] = []
+    for m in _REGISTRY_ENTRY_RE.finditer(_REGISTRY.read_text(encoding="utf-8")):
+        if not re.search(r"access:\s*\[\s*\"", m.group(0)):
+            errors.append(f"registry entry {m.group(1)} has no access: [...] keys")
+    for name, path in sorted(exported.items()):
+        text = path.read_text(encoding="utf-8")
+        start = re.search(rf"^export\s+async\s+function\s+{name}\s*\(", text, re.MULTILINE)
+        nxt = _EXPORT_RE.search(text, start.end()) if start else None
+        body = text[start.end() : nxt.start() if nxt else len(text)] if start else ""
+        if f'actionDenied("{name}")' not in body:
+            errors.append(f'{_rel(path)}: {name} does not call actionDenied("{name}")')
+    for path in sorted((_APP / "app").rglob("page.tsx")):
+        rel = _rel(path).replace("\\", "/")
+        if rel in _UNGUARDED_PAGES:
+            continue
+        if not _PAGE_GUARD_RE.search(path.read_text(encoding="utf-8")):
+            errors.append(f"{rel} renders without an access check (pageDenied / sectionPageDenied)")
+    return errors
 
 
 def client_files() -> list[pathlib.Path]:
@@ -92,6 +123,8 @@ def check() -> list[str]:
         errors.append(
             "registry names with no export in app/**/actions.ts: " + ", ".join(extra)
         )
+
+    errors.extend(access_errors(exported))
 
     for path in client_files():
         text = path.read_text(encoding="utf-8")

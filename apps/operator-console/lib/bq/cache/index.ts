@@ -37,11 +37,11 @@ const requestVersions = cache(() => readVersions());
 
 type Mode = "cache" | "off" | "verify" | "bypass";
 
-// Opt-in: without the audit-log feed, outside writes never bump a version and a cached page
-// would stay stale until the entry TTL. `provision_console_cache.sh` sets `on` once the feed
-// reaches this service's versions.
+// On by default once the audit-log feed is live (provisioned 2026-10-21). Kill switch:
+// CONSOLE_QUERY_CACHE=off. Previews still set the env explicitly from whether the feed
+// subscription exists (operator-console-preview.yml).
 function cacheDisabled(): boolean {
-  return process.env.CONSOLE_QUERY_CACHE !== "on";
+  return process.env.CONSOLE_QUERY_CACHE === "off";
 }
 
 async function requestMode(): Promise<{ mode: Mode; reason?: string }> {
@@ -82,7 +82,7 @@ export async function readThrough<T>(
     await noteWrite(sql);
     return rows;
   }
-  if (cacheDisabled()) return direct("off", "CONSOLE_QUERY_CACHE is not on");
+  if (cacheDisabled()) return direct("off", "CONSOLE_QUERY_CACHE=off");
   const { mode, reason } = await requestMode();
   if (mode === "bypass") return direct("bypass", reason);
   if (mode === "off") return direct("off", "x-console-cache: off");

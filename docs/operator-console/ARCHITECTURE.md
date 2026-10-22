@@ -626,6 +626,6 @@ flowchart LR
 - **Fail live, never stale.** Firestore unreachable, a failed dry run, other datasets or ≥ 50
   referenced tables → the read goes to BigQuery. Previews read the shared versions but write
   entries under their own namespace and never bump.
-- **Opt-in.** Reads go to BigQuery unless `CONSOLE_QUERY_CACHE=on`; `provision_console_cache.sh prod`
-  sets it only after a probe write bumps a version, so the cache is never active without the feed.
+- **On by default**; kill switch `CONSOLE_QUERY_CACHE=off`. Previews set the env from whether the
+  feed subscription exists.
 - Operating it (stats, probe, switch `CONSOLE_QUERY_CACHE`): `RUNBOOK.md` §17.

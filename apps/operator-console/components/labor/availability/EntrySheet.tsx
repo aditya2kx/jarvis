@@ -9,7 +9,6 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
-import { useIsPhone } from "@/components/shell/useIsPhone";
 import type { UnavailabilityRow } from "@/lib/bq/queries";
 import { entryError, type ChangeScope, type EntryFields, type StagedChange } from "@/lib/labor/availability-changes";
 import { addDays } from "@/lib/labor/availability-week";
@@ -173,10 +172,9 @@ export function EntrySheet({
   onClose: () => void;
   onStage: (c: StagedChange) => void;
 }) {
-  const phone = useIsPhone();
   return (
     <Sheet open={target != null} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side={phone ? "bottom" : "right"} className="max-md:max-h-[90dvh] max-md:overflow-y-auto sm:max-w-md">
+      <SheetContent className="w-full overflow-y-auto sm:max-w-md">
         {target ? (
           <SheetBody key={target.mode === "add" ? `add-${target.employee}-${target.date}` : `${target.row.row_key}-${target.date}`} target={target} roster={roster} onClose={onClose} onStage={onStage} />
         ) : null}

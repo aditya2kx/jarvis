@@ -48,10 +48,10 @@ import { PunchGapsPanel } from "@/components/labor/PunchGapsPanel";
 import { PunchFixesNotInHoursNotice } from "@/components/labor/PunchFixesNotInHoursNotice";
 import { buildPunchGaps, mergePunchDays, type PunchGap } from "@/lib/labor/punch-gaps";
 import { scheduleRulesHistory } from "@/lib/labor/schedule-rules-store";
-import { ruleUnavailability, type RulesVersion } from "@/lib/labor/schedule-inputs";
+import type { RulesVersion } from "@/lib/labor/schedule-inputs";
 import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
-import { AdpAvailabilityCard } from "@/components/labor/AdpAvailabilityCard";
-import type { ScheduledShift } from "@/lib/labor/unavailability";
+import { LaborTabs } from "@/components/labor/LaborTabs";
+import { collapseWeekly, type ScheduledShift } from "@/lib/labor/unavailability";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { InfoNote } from "@/components/shell/InfoNote";
 import { FilterSelect } from "@/components/filters/FilterSelect";
@@ -765,6 +765,13 @@ export default async function LaborPage({
         }
       />
 
+      {can("availability") ? (
+        <LaborTabs
+          active="/labor"
+          pendingRequests={collapseWeekly(unavailability.filter((r) => r.status === "pending")).length}
+        />
+      ) : null}
+
       <PunchFixesNotInHoursNotice rows={fixesNotInHours} />
 
       <InfoNote summary="How to read these charts">
@@ -888,24 +895,6 @@ export default async function LaborPage({
               savedPushRows={savedPushRows}
               adpWriteEnabled={FEATURES.adpScheduleWrite}
               scheduleReadAt={scheduleReadAt}
-            />
-            </CollapsibleSection>
-          ) : null}
-
-          {can("availability") ? (
-            <CollapsibleSection id="availability" title="ADP availability">
-            <AdpAvailabilityCard
-              rows={[
-                ...unavailability,
-                ...ruleUnavailability(rulesHistory[0]?.rules.staffRules ?? []).map(
-                  (r): UnavailabilityRow => ({ ...r, expires_at_ct: null, hours_left: null, scraped_at: null }),
-                ),
-              ]}
-              shifts={upcomingShifts}
-              roster={activeStaff ?? []}
-              approveEnabled={FEATURES.adpUnavailabilityApprove}
-              lastReadAt={scheduleReadAt}
-              todayIso={chicagoTodayIso()}
             />
             </CollapsibleSection>
           ) : null}

@@ -35,7 +35,8 @@ export function coversDate(row: UnavailabilityInput, iso: string): boolean {
   );
 }
 
-function window(row: UnavailabilityInput): [number, number] {
+/** [fromMin, toMin) the row blocks on any day it covers; all-day or unparseable = whole day. */
+export function blockWindow(row: UnavailabilityInput): [number, number] {
   if (row.all_day) return DAY;
   const s = timeToMin(row.from_time ?? "");
   const e = timeToMin(row.to_time ?? "");
@@ -48,7 +49,7 @@ export function blocksOn(rows: UnavailabilityInput[], iso: string): Map<string, 
   const out = new Map<string, Block[]>();
   for (const r of rows) {
     if (!coversDate(r, iso)) continue;
-    const [fromMin, toMin] = window(r);
+    const [fromMin, toMin] = blockWindow(r);
     out.set(r.employee, [...(out.get(r.employee) ?? []), { fromMin, toMin, status: r.status }]);
   }
   return out;

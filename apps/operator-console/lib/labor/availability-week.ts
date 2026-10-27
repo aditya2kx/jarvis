@@ -27,6 +27,17 @@ export function weekDates(monday: string): string[] {
   return Array.from({ length: 7 }, (_, i) => addDays(monday, i));
 }
 
+/** Sorted, de-duplicated dates → contiguous [from, to] runs. */
+export function dateSpans(dates: string[]): { from: string; to: string }[] {
+  const out: { from: string; to: string }[] = [];
+  for (const d of [...new Set(dates)].sort()) {
+    const last = out[out.length - 1];
+    if (last && addDays(last.to, 1) === d) last.to = d;
+    else out.push({ from: d, to: d });
+  }
+  return out;
+}
+
 const overlaps = (a0: number, a1: number, b0: number, b1: number) => a0 < b1 && b0 < a1;
 
 /**

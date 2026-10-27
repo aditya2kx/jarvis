@@ -62,6 +62,7 @@ function DayContent({
 }: {
   employee: string;
   cell: WeekCell<UnavailabilityRow>;
+  /** Past days never show a clash: the shift was worked or not, nothing is left to decide. */
   past: boolean;
   stagedByRow: Map<string, StagedChange>;
   adds: AddChange[];
@@ -69,9 +70,12 @@ function DayContent({
   onAdd: (employee: string, date: string) => void;
 }) {
   const added = adds.filter((a) => a.employee === employee && a.date === cell.date);
+  const shown = past
+    ? { ...cell, entries: cell.entries.map((e) => ({ ...e, clash: false })), shifts: cell.shifts.map((s) => ({ ...s, clash: false })) }
+    : cell;
   return (
     <div className="flex flex-col gap-1">
-      {cell.shifts.map((s) => (
+      {shown.shifts.map((s) => (
         <span
           key={`${s.startMin}-${s.endMin}`}
           className={cn("flex items-center gap-1 text-[10px] tabular-nums max-md:text-xs", s.clash ? "text-destructive" : "text-muted-foreground")}
@@ -81,7 +85,7 @@ function DayContent({
           Shift {range(s.startMin, s.endMin)}
         </span>
       ))}
-      {cell.entries.map((e) => (
+      {shown.entries.map((e) => (
         <EntryChip
           key={`${e.row.row_key}-${e.row.repeat_until ?? ""}`}
           e={e}
@@ -182,7 +186,7 @@ export function TeamWeekGrid({
           <div className="grid grid-cols-7 gap-1" role="tablist" aria-label="Day">
             {dates.map((d, i) => {
               const busy = grid.some((r) => r.days[i]!.entries.length);
-              const clash = grid.some((r) => r.days[i]!.entries.some((e) => e.clash));
+              const clash = d >= todayIso && grid.some((r) => r.days[i]!.entries.some((e) => e.clash));
               return (
                 <button
                   key={d}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mondayOf, weekDates, weekGrid } from "@/lib/labor/availability-week";
+import { dateSpans, mondayOf, weekDates, weekGrid } from "@/lib/labor/availability-week";
 import { changeKey, entryError, stage, stagedFor, unstage, type StagedChange } from "@/lib/labor/availability-changes";
 import type { UnavailabilityInput } from "@/lib/labor/unavailability";
 
@@ -19,6 +19,15 @@ describe("week helpers", () => {
     expect(mondayOf("2026-11-01")).toBe("2026-10-26");
     expect(weekDates("2026-10-26")).toEqual([
       "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31", "2026-11-01",
+    ]);
+  });
+});
+
+describe("dateSpans", () => {
+  it("folds consecutive days, across a month end, into runs", () => {
+    expect(dateSpans(["2026-11-02", "2026-10-31", "2026-11-01", "2026-11-05", "2026-11-01"])).toEqual([
+      { from: "2026-10-31", to: "2026-11-02" },
+      { from: "2026-11-05", to: "2026-11-05" },
     ]);
   });
 });

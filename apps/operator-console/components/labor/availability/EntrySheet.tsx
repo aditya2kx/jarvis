@@ -12,6 +12,8 @@ import { Switch } from "@/components/ui/switch";
 import { useIsPhone } from "@/components/shell/useIsPhone";
 import type { UnavailabilityRow } from "@/lib/bq/queries";
 import { entryError, type ChangeScope, type EntryFields, type StagedChange } from "@/lib/labor/availability-changes";
+import { addDays } from "@/lib/labor/availability-week";
+import { coversDate } from "@/lib/labor/unavailability";
 import { dayLabel, hoursText, shortDate, WEEKDAYS, whenText } from "@/lib/labor/unavailability-format";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +36,17 @@ function fieldsFor(target: SheetTarget): EntryFields {
     weekly: r.repeat_weekday != null,
     until: r.repeat_until,
   };
+}
+
+/** Up to four dates the entry still covers, starting from `from`. */
+function nextDates(r: UnavailabilityRow, from: string): string[] {
+  const out: string[] = [];
+  const start = from < r.first_date ? r.first_date : from;
+  for (let i = 0; i < 28 && out.length < 4; i++) {
+    const d = addDays(start, i);
+    if (coversDate(r, d)) out.push(d);
+  }
+  return out;
 }
 
 function entrySummary(employee: string, f: EntryFields): string {
@@ -273,6 +286,20 @@ function SheetBody({
     <>
       {header}
       <div className="flex flex-col gap-4 px-4">
+        {!editing ? (
+          <div className="flex flex-col gap-3 text-sm">
+            <p className="text-muted-foreground">
+              Approved in ADP. <span className="text-foreground">Edit</span> changes the hours or dates;{" "}
+              <span className="text-foreground">Delete</span> removes it from ADP. Either waits with your other changes until you apply.
+            </p>
+            {weekly ? (
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-muted-foreground">Next dates</span>
+                <span className="tabular-nums">{nextDates(r, target.date).map(shortDate).join(" · ") || "None left"}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {weekly ? (
           <div className="flex flex-col gap-1.5">
             <Label>Apply to</Label>

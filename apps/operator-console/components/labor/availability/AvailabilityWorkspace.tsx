@@ -9,7 +9,7 @@ import { EntrySheet, type SheetTarget } from "@/components/labor/availability/En
 import { TeamWeekGrid } from "@/components/labor/availability/TeamWeekGrid";
 import type { UnavailabilityEventRow, UnavailabilityRow } from "@/lib/bq/queries";
 import type { LocalMultiSelection } from "@/lib/tables/localMultiFilter";
-import { addDays, mondayOf } from "@/lib/labor/availability-week";
+import { addDays, dateSpans, mondayOf } from "@/lib/labor/availability-week";
 import { changeKey, KIND_LABEL, stage, stagedFor, unstage, type StagedChange } from "@/lib/labor/availability-changes";
 import { approvedByPerson, collapseWeekly, scheduleConflicts, type ScheduledShift } from "@/lib/labor/unavailability";
 import { centralTime, dayLabel, expiryText, initials, lineText, shortDate, whenText } from "@/lib/labor/unavailability-format";
@@ -84,7 +84,21 @@ export function AvailabilityWorkspace({
       ),
     [rows],
   );
-  const people = useMemo(() => approvedByPerson(rows, todayIso), [rows, todayIso]);
+  const people = useMemo(() => {
+    const adp = new Map(approvedByPerson(rows.filter((r) => !fromRule(r)), todayIso).map((p) => [p.employee, p.lines]));
+    const ruleDates = new Map<string, string[]>();
+    for (const r of rows) {
+      if (fromRule(r) && r.first_date >= todayIso) ruleDates.set(r.employee, [...(ruleDates.get(r.employee) ?? []), r.first_date]);
+    }
+    return [...new Set([...adp.keys(), ...ruleDates.keys()])]
+      .sort((a, b) => a.localeCompare(b))
+      .map((employee) => ({
+        employee,
+        lines: adp.get(employee) ?? [],
+        ruleSpans: dateSpans(ruleDates.get(employee) ?? []),
+        ruleRows: rows.filter((r) => fromRule(r) && r.employee === employee),
+      }));
+  }, [rows, todayIso]);
   const marked = new Set([...pending.map((r) => r.employee), ...people.map((p) => p.employee)]);
   const everyone = [...new Set([...roster, ...marked])].sort((a, b) => a.localeCompare(b));
   const unmarked = everyone.filter((n) => !marked.has(n));
@@ -99,7 +113,7 @@ export function AvailabilityWorkspace({
   const [target, setTarget] = useState<SheetTarget | null>(null);
   const picked = (name: string) => selected == null || selected.includes(name);
 
-  const readThrough = rows.reduce((m, r) => (r.status === "approved" && r.first_date > m ? r.first_date : m), "");
+  const readThrough = rows.reduce((m, r) => (r.status === "approved" && !fromRule(r) && r.first_date > m ? r.first_date : m), "");
   const lastWeekFrom = readThrough ? addDays(readThrough, -6) : "";
   const nextWeek = addDays(todayIso, 7);
   const onStage = (c: StagedChange) => setQueue((q) => stage(q, c));
@@ -230,11 +244,20 @@ export function AvailabilityWorkspace({
                       className="w-fit text-left text-muted-foreground tabular-nums hover:text-foreground hover:underline"
                     >
                       {lineText(l, lastWeekFrom, nextWeek)}
-                      {l.rows.every(fromRule) ? " · scheduling rule" : ""}
                     </button>
                   ))}
+                  {p.ruleSpans.length ? (
+                    <button
+                      type="button"
+                      onClick={() => setTarget({ mode: "entry", row: p.ruleRows[0]!, date: p.ruleSpans[0]!.from })}
+                      className="w-fit text-left text-muted-foreground italic tabular-nums hover:text-foreground hover:underline"
+                    >
+                      Scheduling rule · All day ·{" "}
+                      {p.ruleSpans.map((s) => (s.from === s.to ? shortDate(s.from) : `${shortDate(s.from)} – ${shortDate(s.to)}`)).join(", ")}
+                    </button>
+                  ) : null}
                 </span>
-                {p.lines.every((l) => l.rows.every(fromRule)) ? <Badge variant="outline">Scheduling rule</Badge> : <Badge variant="secondary">Approved</Badge>}
+                {p.lines.length ? <Badge variant="secondary">Approved</Badge> : <Badge variant="outline">Scheduling rule</Badge>}
               </li>
             ))}
           {unmarked.filter(picked).map((name) => (

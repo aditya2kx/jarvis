@@ -37,8 +37,8 @@ function Empty({ children }: { children: React.ReactNode }) {
 
 function Stat({ value, label, tone }: { value: string | number; label: string; tone?: "warn" | "danger" }) {
   return (
-    <div className="flex min-w-28 flex-col gap-0.5 rounded-lg border border-border px-3 py-2">
-      <span className={cn("text-lg font-semibold tabular-nums", tone === "danger" && Number(value) > 0 && "text-destructive", tone === "warn" && Number(value) > 0 && "text-amber-600 dark:text-amber-400")}>
+    <div className="flex min-w-28 flex-col gap-0.5 rounded-lg border border-border px-3 py-2 max-md:min-w-0 max-md:px-2.5 max-md:py-1.5">
+      <span className={cn("text-lg font-semibold tabular-nums max-md:text-base", tone === "danger" && Number(value) > 0 && "text-destructive", tone === "warn" && Number(value) > 0 && "text-amber-600 dark:text-amber-400")}>
         {value}
       </span>
       <span className="text-xs text-muted-foreground">{label}</span>
@@ -113,13 +113,13 @@ export function AvailabilityWorkspace({
 
   return (
     <div className="flex flex-col gap-4" data-testid="availability-workspace">
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-stretch gap-2 max-md:grid max-md:grid-cols-3">
         <Stat value={pending.length} label="Need a decision" tone="warn" />
         <Stat value={urgent} label="Expire within 48h" tone="danger" />
         <Stat value={clashes.length} label="Clash with a shift" tone="danger" />
-        <div className="flex min-w-28 flex-col justify-center gap-0.5 px-1 py-2">
+        <div className="flex min-w-28 flex-col justify-center gap-0.5 px-1 py-2 max-md:col-span-3 max-md:flex-row max-md:gap-1.5 max-md:py-0">
           <span className="text-xs text-muted-foreground">Last ADP read</span>
-          <span className="text-sm font-medium tabular-nums">{centralTime(lastReadAt)}</span>
+          <span className="text-sm font-medium tabular-nums max-md:text-xs">{centralTime(lastReadAt)}</span>
         </div>
       </div>
 

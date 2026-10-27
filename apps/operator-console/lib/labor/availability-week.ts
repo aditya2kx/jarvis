@@ -38,6 +38,8 @@ export function weekGrid<T extends UnavailabilityInput>(
   shifts: ScheduledShift[],
   people: string[],
   monday: string,
+  /** Entries hidden on a day another (non-secondary) entry already covers their whole window. */
+  isSecondary: (row: T) => boolean = () => false,
 ): WeekRow<T>[] {
   const dates = weekDates(monday);
   const shiftsBy = new Map<string, { startMin: number; endMin: number }[]>();
@@ -50,12 +52,18 @@ export function weekGrid<T extends UnavailabilityInput>(
     employee,
     days: dates.map((date) => {
       const day = shiftsBy.get(`${employee}|${date}`) ?? [];
-      const entries = rows
+      const all = rows
         .filter((r) => r.employee === employee && coversDate(r, date))
         .map((row) => {
           const [fromMin, toMin] = blockWindow(row);
           return { row, fromMin, toMin, clash: day.some((s) => overlaps(s.startMin, s.endMin, fromMin, toMin)) };
-        })
+        });
+      const entries = all
+        .filter(
+          (e) =>
+            !isSecondary(e.row) ||
+            !all.some((o) => !isSecondary(o.row) && o.fromMin <= e.fromMin && o.toMin >= e.toMin),
+        )
         .sort((a, b) => a.fromMin - b.fromMin);
       return {
         date,

@@ -44,6 +44,20 @@ describe("weekGrid", () => {
     expect(grid[0]!.days[6]!.entries).toHaveLength(0);
   });
 
+  it("hides a secondary entry an ADP entry already covers, keeps one it does not", () => {
+    const rule = { ...allDayMon, status: "approved" as const, first_date: "2026-10-26", tag: "rule" };
+    const partial = { ...rule, all_day: false, from_time: "06:00", to_time: "10:00", employee: "A" };
+    const g = weekGrid<UnavailabilityInput & { tag?: string }>(
+      [{ ...allDayMon, tag: "adp" }, rule, partial],
+      [],
+      ["A", "B"],
+      "2026-10-26",
+      (r) => r.tag === "rule",
+    );
+    expect(g[1]!.days[0]!.entries.map((e) => e.row.tag)).toEqual(["adp"]);
+    expect(g[0]!.days[0]!.entries.map((e) => e.row.tag)).toEqual(["rule"]);
+  });
+
   it("does not flag a shift on a different day than the entry", () => {
     const b = grid[1]!;
     expect(b.days[0]!.entries[0]).toMatchObject({ fromMin: 0, toMin: 1440, clash: false });

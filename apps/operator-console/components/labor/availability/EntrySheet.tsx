@@ -279,9 +279,11 @@ function SheetBody({
   const [employee, setEmployee] = useState<string | null>(target.mode === "add" ? target.employee : target.row.employee);
   const [editing, setEditing] = useState(false);
   const [scope, setScope] = useState<ChangeScope>("series");
-  const [days, setDays] = useState<string[]>(() => [target.date]);
+  // A lane tap names the person and day; the panel's Add button starts blank.
+  const fromLane = target.mode === "add" && target.employee != null;
+  const [days, setDays] = useState<string[]>(() => (fromLane ? [target.date] : []));
   const [repeat, setRepeat] = useState<"days" | "weekly">("days");
-  const [weekdays, setWeekdays] = useState<number[]>(() => [weekdayOf(target.date)]);
+  const [weekdays, setWeekdays] = useState<number[]>(() => (fromLane ? [weekdayOf(target.date)] : []));
   const stageAndClose = (c: StagedChange) => {
     onStage(c);
     onClose();
@@ -379,7 +381,7 @@ function SheetBody({
               </div>
               {weekdays.length ? (
                 <p className="text-xs text-muted-foreground">
-                  First dates: {[...weekdays].sort().map((w) => shortDate(onOrAfter(fields.date, w))).join(" · ")}
+                  First dates: {weekdays.map((w) => onOrAfter(fields.date, w)).sort().map(shortDate).join(" · ")}
                 </p>
               ) : null}
             </div>

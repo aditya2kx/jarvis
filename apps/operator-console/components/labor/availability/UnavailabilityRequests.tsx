@@ -245,7 +245,7 @@ export function UnavailabilityApplyTray({
               <Badge variant={g.kind === "deny" || g.kind === "delete" ? "destructive" : "outline"} className="w-16 justify-center">
                 {KIND_LABEL[g.kind]}
               </Badge>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground" title={groupText(g)}>
+              <span className="line-clamp-2 min-w-0 flex-1 text-muted-foreground" title={groupText(g)}>
                 {groupText(g)}
               </span>
               <Button

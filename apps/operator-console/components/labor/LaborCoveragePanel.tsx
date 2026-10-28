@@ -1937,6 +1937,9 @@ export function LaborCoveragePanel({
             <EntrySheet
               target={target}
               roster={baseRoster.map((a) => a.employee).sort()}
+              todayIso={todayIso}
+              offRows={offRows}
+              shifts={availability.upcoming}
               onClose={() => setTarget(null)}
               onStage={onStage}
             />

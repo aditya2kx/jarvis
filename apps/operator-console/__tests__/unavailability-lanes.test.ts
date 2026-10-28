@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changeKey, entryError, stage, stagedFor, unstage, type StagedChange } from "@/lib/labor/availability-changes";
+import { bulkAdds, changeKey, entryError, onOrAfter, stage, stagedFor, trayGroups, unstage, type StagedChange } from "@/lib/labor/availability-changes";
 import { dayRequestCount, hitsBlock, laneBlocks, type UnavailabilityInput } from "@/lib/labor/unavailability";
 
 const weeklySat: UnavailabilityInput = {
@@ -84,5 +84,40 @@ describe("entryError", () => {
   });
   it("rejects a repeat that ends before it starts", () => {
     expect(entryError({ ...base, weekly: true, until: "2026-10-01" })).toMatch(/before/);
+  });
+});
+
+describe("bulk adds", () => {
+  const f = { date: "2026-10-28", allDay: true, from: null, to: null, weekly: false, until: null };
+  const sum = (x: { date: string }) => x.date;
+
+  it("stages one dated add per picked day, sorted and deduped", () => {
+    const adds = bulkAdds("A", f, { days: ["2026-11-03", "2026-10-29", "2026-11-03"] }, sum);
+    expect(adds.map((c) => c.kind === "add" && c.date)).toEqual(["2026-10-29", "2026-11-03"]);
+    expect(new Set(adds.map(changeKey)).size).toBe(2);
+  });
+
+  it("starts each weekly repeat on its first weekday on or after the start date", () => {
+    expect(onOrAfter("2026-10-28", 2)).toBe("2026-10-28");
+    expect(onOrAfter("2026-10-28", 0)).toBe("2026-11-02");
+    const adds = bulkAdds("A", { ...f, until: "2026-12-31" }, { weekdays: [4, 0] }, sum);
+    expect(adds.map((c) => c.kind === "add" && [c.date, c.weekly, c.until])).toEqual([
+      ["2026-11-02", true, "2026-12-31"],
+      ["2026-10-30", true, "2026-12-31"],
+    ]);
+  });
+
+  it("folds one person's same-hours adds into one tray line, people in name order", () => {
+    const q = [
+      ...bulkAdds("B", f, { days: ["2026-10-29", "2026-10-30"] }, sum),
+      ...bulkAdds("A", { ...f, allDay: false, from: "06:00", to: "10:00" }, { days: ["2026-10-29"] }, sum),
+      { kind: "approve", rowKey: "pending|B", employee: "B", summary: "x" } as StagedChange,
+    ];
+    const g = trayGroups(q);
+    expect(g.map((x) => [x.employee, x.kind, x.changes.length])).toEqual([
+      ["A", "add", 1],
+      ["B", "add", 2],
+      ["B", "approve", 1],
+    ]);
   });
 });

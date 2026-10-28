@@ -6,9 +6,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { UnavailabilityEventRow, UnavailabilityRow } from "@/lib/bq/queries";
-import { changeKey, KIND_LABEL, stagedFor, unstage, type ApplyBlock, type StagedChange } from "@/lib/labor/availability-changes";
+import { changeKey, KIND_LABEL, stagedFor, trayGroups, unstage, type ApplyBlock, type StagedChange, type TrayGroup } from "@/lib/labor/availability-changes";
 import { scheduleConflicts, type ScheduledShift } from "@/lib/labor/unavailability";
-import { centralTime, dayLabel, expiryText, whenText } from "@/lib/labor/unavailability-format";
+import { centralTime, dayLabel, expiryText, hoursText, shortDate, weekdaysText, whenText } from "@/lib/labor/unavailability-format";
 import { cn } from "@/lib/utils";
 
 /** Amber = waiting on the operator; shared with the pending blocks on the coverage lanes. */
@@ -185,6 +185,17 @@ export function UnavailabilityHistorySheet({
   );
 }
 
+/** One tray line: a single change's own summary, or a person's same-hours adds folded together. */
+function groupText(g: TrayGroup): string {
+  const adds = g.changes.flatMap((c) => (c.kind === "add" ? [c] : []));
+  if (adds.length < 2) return g.changes[0]!.summary;
+  const a = adds[0]!;
+  const hours = hoursText({ all_day: a.allDay, from_time: a.from, to_time: a.to });
+  if (!a.weekly) return `${g.employee} · ${adds.length} days · ${adds.map((c) => shortDate(c.date)).join(", ")} · ${hours}`;
+  const wds = adds.map((c) => (new Date(`${c.date}T12:00:00Z`).getUTCDay() + 6) % 7).sort((x, y) => x - y);
+  return `${g.employee} · Every ${weekdaysText(wds)} · ${hours}${a.until ? ` · until ${shortDate(a.until)}` : ""}`;
+}
+
 /** Staged changes, applied to ADP in one run; nothing shows as done until ADP is read back. */
 export function UnavailabilityApplyTray({
   queue,
@@ -197,6 +208,8 @@ export function UnavailabilityApplyTray({
 }) {
   const [open, setOpen] = useState(false);
   if (!queue.length) return null;
+  const groups = trayGroups(queue);
+  const people = new Set(queue.map((c) => c.employee)).size;
   const blocked =
     applyBlock === "preview"
       ? "Read-only preview: in prod this runs one ADP job for every change below."
@@ -210,7 +223,7 @@ export function UnavailabilityApplyTray({
     >
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="text-sm font-medium hover:underline">
-          {queue.length} unavailability change{queue.length === 1 ? "" : "s"} for ADP
+          {queue.length} unavailability change{queue.length === 1 ? "" : "s"} · {people} {people === 1 ? "person" : "people"}
         </button>
         <span className="text-xs text-muted-foreground">{open ? "Hide" : "Review"}</span>
         <div className="ml-auto flex items-center gap-2">
@@ -222,16 +235,25 @@ export function UnavailabilityApplyTray({
           </Button>
         </div>
       </div>
-      {blocked ? <p className="text-xs text-muted-foreground">{blocked}</p> : null}
+      <p className="text-xs text-muted-foreground">
+        {blocked ?? "Apply runs one ADP session for all of them, person by person, then re-reads ADP to confirm each."}
+      </p>
       {open ? (
         <ul className="flex flex-col divide-y divide-border border-t border-border">
-          {queue.map((c) => (
-            <li key={changeKey(c)} className="flex items-center gap-2 py-1.5 text-sm">
-              <Badge variant={c.kind === "deny" || c.kind === "delete" ? "destructive" : "outline"} className="w-16 justify-center">
-                {KIND_LABEL[c.kind]}
+          {groups.map((g) => (
+            <li key={g.key} className="flex items-center gap-2 py-1.5 text-sm">
+              <Badge variant={g.kind === "deny" || g.kind === "delete" ? "destructive" : "outline"} className="w-16 justify-center">
+                {KIND_LABEL[g.kind]}
               </Badge>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">{c.summary}</span>
-              <Button size="icon-xs" variant="ghost" aria-label="Undo" onClick={() => onQueue((q) => unstage(q, changeKey(c)))}>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground" title={groupText(g)}>
+                {groupText(g)}
+              </span>
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Undo"
+                onClick={() => onQueue((q) => g.changes.reduce((acc, c) => unstage(acc, changeKey(c)), q))}
+              >
                 <Undo2Icon />
               </Button>
             </li>

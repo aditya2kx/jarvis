@@ -78,3 +78,48 @@ export function entryError(f: EntryFields): string | null {
   if (f.weekly && f.until && f.until < f.date) return "Repeat end date is before the first date.";
   return null;
 }
+
+/** First date on or after `iso` that falls on Mon=0 `weekday`. */
+export function onOrAfter(iso: string, weekday: number): string {
+  const d = new Date(`${iso}T12:00:00Z`);
+  const wd = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() + ((weekday - wd + 7) % 7));
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * One "add" per date (or per weekday for a weekly repeat), so ADP gets one entry each and
+ * any one of them can be undone. `days` = picked dates; `weekdays` (Mon=0) = weekly repeat.
+ */
+export function bulkAdds(
+  employee: string,
+  f: EntryFields,
+  pick: { days: string[] } | { weekdays: number[] },
+  summarize: (f: EntryFields) => string,
+): StagedChange[] {
+  const fields =
+    "days" in pick
+      ? [...new Set(pick.days)].sort().map((date) => ({ ...f, date, weekly: false, until: null }))
+      : [...new Set(pick.weekdays)].sort().map((wd) => ({ ...f, date: onOrAfter(f.date, wd), weekly: true }));
+  return fields.map((x) => ({ kind: "add", employee, summary: summarize(x), ...x }));
+}
+
+export type TrayGroup = { key: string; kind: StagedChange["kind"]; employee: string; changes: StagedChange[] };
+
+/**
+ * The tray, one line per person and kind, people in name order: adds with the same hours fold
+ * into one line ("3 days"). This is also the order the ADP run works through.
+ */
+export function trayGroups(queue: StagedChange[]): TrayGroup[] {
+  const groups = new Map<string, TrayGroup>();
+  for (const c of queue) {
+    const key =
+      c.kind === "add"
+        ? `add|${c.employee}|${c.allDay ? "all" : `${c.from}-${c.to}`}|${c.weekly ? `w${c.until ?? ""}` : "d"}`
+        : changeKey(c);
+    const g = groups.get(key) ?? { key, kind: c.kind, employee: c.employee, changes: [] };
+    g.changes.push(c);
+    groups.set(key, g);
+  }
+  return [...groups.values()].sort((a, b) => a.employee.localeCompare(b.employee) || a.key.localeCompare(b.key));
+}

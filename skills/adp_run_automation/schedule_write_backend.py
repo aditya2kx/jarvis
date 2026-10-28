@@ -7,7 +7,10 @@ into separate confirmed clicks.
 
 Every call site is an operator click behind ``FEATURES.adpScheduleWrite``. The
 only commit buttons pressed are ``Save as draft`` / ``Save draft``, the
-publish dialog's ``Publish`` and Assign Open Shift's ``Assign`` (Issue #412).
+publish dialog's ``Publish``, Assign Open Shift's ``Assign`` (Issue #412) and,
+for console shift changes (Issue #434), one shift's own wizard ``Publish``, its
+details pane ``Edit`` › ``Publish`` (else ``Save``) and per-shift ``Delete`` ›
+confirm. Never "Delete all schedules"; manual changes never press "Publish drafts".
 ``dry_run=True`` walks each wizard to its final step and backs out without
 saving (selector check against live ADP).
 
@@ -146,19 +149,34 @@ def read_open_shifts(page, frame, week_start: dt.date) -> Counter:
     return open_shift_counts(info.get("open_shift_cells") or [], week_start)
 
 
-def has_draft_shift(frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int) -> bool:
-    """Read-only: whether the grid shows ``employee``'s draft at exactly this time on this day."""
+def _mark_shift(frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int,
+                state: str = "draft") -> dict:
+    """Mark ``employee``'s shift at exactly this time on this day with data-jarvis-del (FIND_SHIFT_JS)."""
     _back_out(frame, page)
     d = dt.date.fromisoformat(date_iso)
     rng = f"{fmt_time(start_min)} - {fmt_time(end_min)}"
     info: dict = {}
     for _ in range(20):
-        info = frame.evaluate(FIND_SHIFT_JS, [employee, d.day, rng])
+        info = frame.evaluate(FIND_SHIFT_JS, [employee, d.day, rng, state])
         if info.get("found") or not info.get("scroll"):
             break
         page.wait_for_timeout(400)
+    return info
+
+
+def shift_in_grid(frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int,
+                  state: str = "any") -> bool:
+    """Read-only: whether the grid shows ``employee``'s shift (in ``state``) at exactly this time."""
+    info = _mark_shift(frame, page, date_iso=date_iso, employee=employee,
+                       start_min=start_min, end_min=end_min, state=state)
     frame.evaluate("() => document.querySelectorAll('[data-jarvis-del]').forEach(e => e.removeAttribute('data-jarvis-del'))")
     return bool(info.get("found"))
+
+
+def has_draft_shift(frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int) -> bool:
+    """Read-only: whether the grid shows ``employee``'s draft at exactly this time on this day."""
+    return shift_in_grid(frame, page, date_iso=date_iso, employee=employee,
+                         start_min=start_min, end_min=end_min, state="draft")
 
 
 def publish_count(text: str) -> int | None:
@@ -349,14 +367,17 @@ def _settled_picker(frame, page, timeout_s: float = 8.0) -> list[dict]:
 
 def create_shift(
     frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int,
-    before: int | None = None, dry_run: bool = False,
+    before: int | None = None, dry_run: bool = False, publish: bool = False,
 ) -> str:
     """Create one assigned draft shift. Returns the ADP display name used.
 
     ``before`` is the draft count the caller expects ADP to show now; a lagging
     toolbar count must not let the previous save "confirm" this one.
+    ``publish=True`` presses step 2's Publish (that one shift, never the week's
+    drafts) and is confirmed when the grid shows the shift live.
     """
-    if before is None:
+    commit = r"^\s*Publish\s*$" if publish else r"^\s*Save as draft\s*$"
+    if before is None and not publish:
         before = drafts_pending(frame)
     _open_action(frame, page, "Create shift")
     try:
@@ -376,14 +397,22 @@ def create_shift(
         frame.locator(f"sdf-focus-pane {TIME_INPUT}").first.wait_for(state="visible", timeout=8000)
         _fill_times(frame, page, start_min, end_min)
         if dry_run:
-            if _visible_button(frame, r"^\s*Save as draft\s*$") is None:
-                raise ScheduleWriteError("Save as draft not found on step 2")
+            if _visible_button(frame, commit) is None:
+                raise ScheduleWriteError(f"{'Publish' if publish else 'Save as draft'} not found on step 2")
             _back_out(frame, page)
             return name
-        _click(frame, r"^\s*Save as draft\s*$", what="Save as draft")
+        _click(frame, commit, what="Publish" if publish else "Save as draft")
     except Exception:
         _back_out(frame, page)
         raise
+    if publish:
+        page.wait_for_timeout(1500)
+        _back_out(frame, page)
+        if not _wait_for(page, lambda: shift_in_grid(frame, page, date_iso=date_iso, employee=employee,
+                                                     start_min=start_min, end_min=end_min,
+                                                     state="published"), 15.0, 1000):
+            raise UnconfirmedSave(f"ADP does not show {employee}'s {date_iso} shift live — check ADP before re-adding")
+        return name
     if not _wait_drafts(frame, page, before + 1):
         raise UnconfirmedSave(
             f"ADP did not confirm the draft for {employee} on {date_iso} — check ADP before re-saving"
@@ -393,9 +422,34 @@ def create_shift(
 
 def create_open_shift(
     frame, page, *, date_iso: str, start_min: int, end_min: int,
-    before: int | None = None, dry_run: bool = False,
+    before: int | None = None, dry_run: bool = False, publish: bool = False,
 ) -> None:
-    """Create one unassigned draft open shift (default eligibility). ``before`` as in create_shift."""
+    """Create one unassigned draft open shift (default eligibility). ``before`` as in create_shift.
+
+    ``publish=True`` presses the eligibility step's Publish instead; the caller
+    confirms from the week's open-shift counts.
+    """
+    if publish:
+        _open_action(frame, page, "Create open shift")
+        try:
+            date_box = frame.locator("sdf-focus-pane sdf-date-picker input").first
+            date_box.fill(fmt_date(date_iso), timeout=5000)
+            date_box.press("Tab")
+            _fill_times(frame, page, start_min, end_min)
+            _click(frame, r"^\s*Next\b", what="Next")
+            _wait_for(page, lambda: _visible_button(frame, r"^\s*Publish\s*$") is not None, 8.0)
+            if _visible_button(frame, r"^\s*Publish\s*$") is None:
+                raise ScheduleWriteError("Publish not found on the eligibility step")
+            if dry_run:
+                _back_out(frame, page)
+                return
+            _click(frame, r"^\s*Publish\s*$", what="Publish")
+        except Exception:
+            _back_out(frame, page)
+            raise
+        page.wait_for_timeout(2000)
+        _back_out(frame, page)
+        return
     if before is None:
         before = drafts_pending(frame)
     _open_action(frame, page, "Create open shift")
@@ -429,10 +483,12 @@ def create_open_shift(
     )
 
 
-# Marks the one draft shift of ``name`` on ``day`` (day-of-month) spanning ``rng``
-# ("2:00 PM - 8:30 PM") with data-jarvis-del. Day columns are matched to cells by x.
+# Marks the one shift of ``name`` on ``day`` (day-of-month) spanning ``rng``
+# ("2:00 PM - 8:30 PM") with data-jarvis-del. ``state``: 'draft' (default) |
+# 'published' | 'any' — drafts carry a "Draft" tag. Day columns are matched to cells by x.
 FIND_SHIFT_JS = r"""
-([name, day, rng]) => {
+([name, day, rng, state]) => {
+  state = state || 'draft';
   const norm = e => (e.innerText || '').replace(/\s+/g, ' ').trim();
   document.querySelectorAll('[data-jarvis-del]').forEach(e => e.removeAttribute('data-jarvis-del'));
   const want = name.toLowerCase();
@@ -458,8 +514,9 @@ FIND_SHIFT_JS = r"""
   // Rows only render days that have something, so the nearest cell can be a neighbour's.
   if (!cell || bd > hb.width / 2) return { found: false, why: 'no day cell' };
   const shifts = [...cell.querySelectorAll('schedule-calendar-shifts')]
-    .filter(s => norm(s).includes(rng) && /draft/i.test(norm(s)));
-  if (shifts.length !== 1) return { found: false, why: 'matching draft shifts ' + shifts.length, cell: norm(cell) };
+    .filter(s => norm(s).includes(rng))
+    .filter(s => state === 'any' || (state === 'draft') === /draft/i.test(norm(s)));
+  if (shifts.length !== 1) return { found: false, why: 'matching ' + state + ' shifts ' + shifts.length, cell: norm(cell) };
   (shifts[0].querySelector('schedule-shift-range') || shifts[0]).setAttribute('data-jarvis-del', '1');
   return { found: true, cell: norm(cell) };
 }
@@ -471,7 +528,7 @@ PANE_TEXT_JS = r"""
   .map(p => (p.innerText || '').replace(/\s+/g, ' ').trim()).join(' | ')
 """
 
-DELETE_CONFIRM_TEXT = re.compile(r"Are you sure you want to delete this shift", re.I)
+DELETE_CONFIRM_RE = re.compile(r"Are you sure you want to delete this (open )?shift", re.I)
 CONFIRM_RE = re.compile(r"^(Yes\b.*|Delete|Confirm|OK)$", re.I)
 CANCEL_RE = re.compile(r"^(No\b.*|Cancel|Keep\b.*)$", re.I)
 
@@ -485,35 +542,58 @@ def delete_shift(
     ``before`` is the draft count the caller tracks (the toolbar count is hidden
     while the pane is open). Confirmed only when ADP shows ``before - 1``.
     """
-    _back_out(frame, page)
+    _open_assigned_shift(frame, page, date_iso=date_iso, employee=employee,
+                         start_min=start_min, end_min=end_min, state="draft")
+    if not _press_delete(frame, page, dry_run=dry_run):
+        if not _wait_drafts(frame, page, before, timeout_s=8.0):
+            raise UnconfirmedSave(f"dry-run delete changed the draft count (expected {before})")
+        return
+    if not _wait_drafts(frame, page, before - 1):
+        raise UnconfirmedSave(
+            f"ADP did not confirm deleting {employee} on {date_iso} {fmt_time(start_min)} - {fmt_time(end_min)}"
+        )
+
+
+def _open_assigned_shift(frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int,
+                         state: str) -> None:
+    """From the grid (on the right week), open the Shift details pane of one assigned shift."""
     d = dt.date.fromisoformat(date_iso)
     rng = f"{fmt_time(start_min)} - {fmt_time(end_min)}"
-    info: dict = {}
-    for _ in range(20):
-        info = frame.evaluate(FIND_SHIFT_JS, [employee, d.day, rng])
-        if info.get("found") or not info.get("scroll"):
-            break
-        page.wait_for_timeout(400)
+    info = _mark_shift(frame, page, date_iso=date_iso, employee=employee,
+                       start_min=start_min, end_min=end_min, state=state)
     if not info.get("found"):
-        raise ScheduleWriteError(f"draft {employee} {date_iso} {rng} not found in grid: {info.get('why')}")
+        raise ScheduleWriteError(f"{state} shift {employee} {date_iso} {rng} not found in grid: {info.get('why')}")
     frame.locator("[data-jarvis-del='1']").first.click(timeout=8000)
     if not _wait_for(page, lambda: _pane_open(frame), 8.0):
         raise ScheduleWriteError("shift details pane did not open")
     page.wait_for_timeout(500)
     pane = frame.evaluate(PANE_TEXT_JS)
-    expect = (f"{d:%b} {d.day}, {d.year}", rng, "Draft")
+    expect = (f"{d:%b} {d.day}, {d.year}", rng) + (("Draft",) if state == "draft" else ())
     if not all(s in pane for s in expect) or employee.split(",")[0] not in pane:
         _back_out(frame, page)
         raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r}")
+
+
+def _press_delete(frame, page, *, dry_run: bool) -> bool:
+    """In an open Shift details pane: per-shift Delete, then the confirmation's Yes.
+
+    Returns True when Yes was clicked; a dry run cancels at the confirmation and
+    returns False. Leaves the grid with every pane closed.
+    """
     dels = frame.locator("sdf-focus-pane sdf-button[aria-label=' Delete ']")
     if dels.count() != 1:
-        _back_out(frame, page)
-        raise ScheduleWriteError(f"expected one per-shift Delete in the pane, found {dels.count()}")
-    dels.first.click(timeout=5000)
+        alt = frame.locator("sdf-focus-pane").get_by_role("button", name=re.compile(r"^\s*Delete\s*$", re.I))
+        visible = [alt.nth(i) for i in range(alt.count()) if alt.nth(i).is_visible()]
+        if len(visible) != 1:
+            _back_out(frame, page)
+            raise ScheduleWriteError(f"expected one per-shift Delete in the pane, found {dels.count()} / {len(visible)}")
+        visible[0].click(timeout=5000)
+    else:
+        dels.first.click(timeout=5000)
     # The confirmation is a nested focus pane; its buttons live in shadow DOM,
     # which role locators pierce. Scope to the innermost pane so nothing in the
     # details pane (notably "Delete all schedules") can be matched.
-    confirm_pane = frame.locator("sdf-focus-pane").filter(has_text=DELETE_CONFIRM_TEXT).last
+    confirm_pane = frame.locator("sdf-focus-pane").filter(has_text=DELETE_CONFIRM_RE).last
     try:
         confirm_pane.wait_for(state="visible", timeout=8000)
     except Exception:
@@ -534,14 +614,86 @@ def delete_shift(
         _back_out(frame, page)
         if not dry_run:
             raise ScheduleWriteError(f"delete confirmation buttons not recognised: {names}")
-        if not _wait_drafts(frame, page, before, timeout_s=8.0):
-            raise UnconfirmedSave(f"dry-run delete changed the draft count (expected {before})")
-        return
+        return False
     buttons.nth(yes[0]).click(timeout=5000)
     page.wait_for_timeout(1000)
     _back_out(frame, page)
-    if not _wait_drafts(frame, page, before - 1):
-        raise UnconfirmedSave(f"ADP did not confirm deleting {employee} on {date_iso} {rng}")
+    return True
+
+
+EDIT_COMMIT_RE = r"^\s*(Publish|Save|Save changes|Update)\s*$"
+
+
+def _edit_times(frame, page, *, start_min: int, end_min: int, dry_run: bool) -> bool:
+    """In an open Shift details pane: Edit › new Start / End › Publish (else Save).
+
+    Returns True when the commit button was clicked; a dry run backs out at it.
+    """
+    _wait_for(page, lambda: _visible_button(frame, r"^\s*Edit\s*$") is not None, 8.0)
+    _click(frame, r"^\s*Edit\s*$", what="Edit")
+    try:
+        frame.locator(f"sdf-focus-pane {TIME_INPUT}").first.wait_for(state="visible", timeout=8000)
+        _fill_times(frame, page, start_min, end_min)
+        _wait_for(page, lambda: _visible_button(frame, EDIT_COMMIT_RE) is not None, 8.0)
+        commit = _visible_button(frame, r"^\s*Publish\s*$") or _visible_button(frame, EDIT_COMMIT_RE)
+        if commit is None:
+            raise ScheduleWriteError("no Publish / Save button after editing the times")
+        if dry_run:
+            _back_out(frame, page)
+            return False
+        commit.click(timeout=8000)
+    except Exception:
+        _back_out(frame, page)
+        raise
+    page.wait_for_timeout(1500)
+    _back_out(frame, page)
+    return True
+
+
+def delete_any_shift(
+    frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int, dry_run: bool = False,
+) -> None:
+    """Delete one assigned shift, draft or published. Confirmed when the grid no longer shows it."""
+    _open_assigned_shift(frame, page, date_iso=date_iso, employee=employee,
+                         start_min=start_min, end_min=end_min, state="any")
+    if not _press_delete(frame, page, dry_run=dry_run):
+        return
+    gone = _wait_for(page, lambda: not shift_in_grid(frame, page, date_iso=date_iso, employee=employee,
+                                                     start_min=start_min, end_min=end_min), 15.0, 1000)
+    if not gone:
+        raise UnconfirmedSave(f"ADP still shows {employee}'s {date_iso} shift after Delete — check ADP")
+
+
+def edit_shift(
+    frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int,
+    to_start_min: int, to_end_min: int, dry_run: bool = False,
+) -> None:
+    """Change one assigned shift's times and publish it. Confirmed when the grid shows the new times live."""
+    _open_assigned_shift(frame, page, date_iso=date_iso, employee=employee,
+                         start_min=start_min, end_min=end_min, state="any")
+    if not _edit_times(frame, page, start_min=to_start_min, end_min=to_end_min, dry_run=dry_run):
+        return
+    moved = _wait_for(page, lambda: shift_in_grid(frame, page, date_iso=date_iso, employee=employee,
+                                                  start_min=to_start_min, end_min=to_end_min,
+                                                  state="published"), 15.0, 1000)
+    if not moved:
+        raise UnconfirmedSave(f"ADP does not show {employee}'s {date_iso} shift at the new times — check ADP")
+
+
+def edit_open_shift(
+    frame, page, *, date_iso: str, start_min: int, end_min: int,
+    to_start_min: int, to_end_min: int, dry_run: bool = False,
+) -> None:
+    """Change one open shift's times. The caller confirms from the week's open-shift counts."""
+    _open_shift_details(frame, page, date_iso=date_iso, start_min=start_min, end_min=end_min)
+    _edit_times(frame, page, start_min=to_start_min, end_min=to_end_min, dry_run=dry_run)
+
+
+def delete_open_shift(frame, page, *, date_iso: str, start_min: int, end_min: int, dry_run: bool = False) -> None:
+    """Delete one open shift. The caller confirms from the week's open-shift counts."""
+    _open_shift_details(frame, page, date_iso=date_iso, start_min=start_min, end_min=end_min)
+    _wait_for(page, lambda: _visible_button(frame, r"^\s*(Edit|Assign)\s*$") is not None, 8.0)
+    _press_delete(frame, page, dry_run=dry_run)
 
 
 # The Assign Open Shift pane is nested in the Shift details pane, so the last visible

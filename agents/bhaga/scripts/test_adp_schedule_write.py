@@ -350,6 +350,242 @@ class RunAssign(unittest.TestCase):
         self.assertEqual(fq.updates, [("a", "failed", "not attempted: job stopped (RuntimeError: session lost)", None)])
 
 
+N3 = datetime.date(2026, 11, 3)
+
+
+def _change(cid, kind, *, employee=None, start=540, end=900, date=N3, **extra):
+    return {"change_id": cid, "kind": kind, "employee": employee, "start_min": start, "end_min": end,
+            "date": date, "to_start_min": None, "to_end_min": None, "to_employee": None, "count": None,
+            "summary": f"{kind} {cid}", "requested_by": "adi@example.com", "row_key": None, **extra}
+
+
+class FakeApplyQuery:
+    def __init__(self, shifts=(), unavail=()):
+        self.rows = {w.SHIFT_TABLE: list(shifts), w.UNAVAIL_TABLE: list(unavail)}
+        self.updates, self.events = [], []
+
+    def __call__(self, sql, params, *, table="labor_schedule_pushes"):
+        p = {n: v for n, _t, v in params}
+        if sql.startswith("UPDATE"):
+            self.updates.append((table, p["cid"], p["status"], p["error"]))
+            return []
+        if sql.startswith("INSERT"):
+            self.events.append((table, p["cid"]))
+            return []
+        return self.rows[table]
+
+
+class FakeApplyAdp:
+    """Published assigned shifts + open-shift counts. ``fail`` maps a backend method to the exception it raises once."""
+
+    def __init__(self, assigned=(), open_shifts=None, fail=None, lose_open_adds=0):
+        self.assigned = set(assigned)
+        self.open = Counter(open_shifts or {})
+        self.fail = dict(fail or {})
+        self.lose_open_adds = lose_open_adds
+        self.calls: list[tuple] = []
+
+    def _step(self, method, *what):
+        self.calls.append((method, *what))
+        exc = self.fail.pop(method, None)
+        if exc:
+            raise exc
+
+    def shift_in_grid(self, _f, _p, *, date_iso, employee, start_min, end_min, state="any"):
+        return (employee, date_iso, start_min, end_min) in self.assigned
+
+    def create_shift(self, _f, _p, *, date_iso, employee, start_min, end_min, publish=False, dry_run=False):
+        self._step("create_shift", employee, date_iso)
+        if not dry_run:
+            self.assigned.add((employee, date_iso, start_min, end_min))
+        return employee
+
+    def delete_any_shift(self, _f, _p, *, date_iso, employee, start_min, end_min, dry_run=False):
+        self._step("delete_any_shift", employee, date_iso)
+        if not dry_run:
+            self.assigned.discard((employee, date_iso, start_min, end_min))
+
+    def edit_shift(self, _f, _p, *, date_iso, employee, start_min, end_min, to_start_min, to_end_min, dry_run=False):
+        self._step("edit_shift", employee, date_iso)
+        if not dry_run:
+            self.assigned.discard((employee, date_iso, start_min, end_min))
+            self.assigned.add((employee, date_iso, to_start_min, to_end_min))
+
+    def read_open_shifts(self, _p, _f, _week):
+        return Counter(self.open)
+
+    def create_open_shift(self, _f, _p, *, date_iso, start_min, end_min, publish=False, dry_run=False):
+        self._step("create_open_shift", date_iso)
+        if dry_run:
+            return
+        if self.lose_open_adds:
+            self.lose_open_adds -= 1
+            return
+        self.open[(date_iso, start_min, end_min)] += 1
+
+    def assign_open_shift(self, _f, _p, *, date_iso, employee, start_min, end_min, dry_run=False):
+        self._step("assign_open_shift", employee, date_iso)
+        if not dry_run:
+            self.open[(date_iso, start_min, end_min)] -= 1
+        return employee
+
+    def edit_open_shift(self, _f, _p, *, date_iso, start_min, end_min, to_start_min, to_end_min, dry_run=False):
+        self._step("edit_open_shift", date_iso)
+        if not dry_run:
+            self.open[(date_iso, start_min, end_min)] -= 1
+            self.open[(date_iso, to_start_min, to_end_min)] += 1
+
+    def delete_open_shift(self, _f, _p, *, date_iso, start_min, end_min, dry_run=False):
+        self._step("delete_open_shift", date_iso)
+        if not dry_run:
+            self.open[(date_iso, start_min, end_min)] -= 1
+
+
+class RunApply(unittest.TestCase):
+    SLOT = ("2026-11-03", 540, 900)
+
+    def _run(self, fq, adp, dry_run=False, goto=None, approve=None):
+        self.adp = adp
+        patches = [mock.patch.object(wb, m, getattr(adp, m)) for m in (
+            "shift_in_grid", "create_shift", "delete_any_shift", "edit_shift", "read_open_shifts",
+            "create_open_shift", "assign_open_shift", "edit_open_shift", "delete_open_shift")]
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            stack.enter_context(mock.patch.object(w, "_query", fq))
+            stack.enter_context(mock.patch("skills.adp_run_automation.runner.adp_session", fake_session))
+            stack.enter_context(mock.patch("skills.adp_run_automation.runner._open_team_schedule"))
+            self.goto = stack.enter_context(mock.patch.object(wb, "goto_week", goto or mock.MagicMock()))
+            self.approve = stack.enter_context(mock.patch.object(
+                w, "_approve_unavailability", approve or mock.MagicMock(return_value=True)))
+            self.refresh = stack.enter_context(mock.patch.object(w, "refresh_schedule"))
+            stack.enter_context(mock.patch.object(w, "_today_ct", return_value=datetime.date(2026, 10, 28)))
+            return w.run_apply("palmetto", "b1", headless=True, dry_run=dry_run)
+
+    def test_plan_frees_slots_before_adding_and_assigns_last(self):
+        rows = [_change("a", "open-assign", employee="Roe, Sam"), _change("b", "shift-add", employee="Doe, Alex"),
+                _change("c", "shift-delete", employee="Lee, Kim"), _change("d", "open-edit"),
+                _change("e", "shift-reassign", employee="Lee, Kim"),
+                _change("f", "shift-delete", employee="Lee, Kim", date=datetime.date(2026, 10, 30))]
+        plan = w.apply_plan(rows)
+        self.assertEqual([wk for wk, _ in plan], [datetime.date(2026, 10, 26), datetime.date(2026, 11, 2)])
+        self.assertEqual([r["change_id"] for r in plan[1][1]], ["c", "d", "e", "b", "a"])
+
+    def test_every_kind_is_applied_confirmed_and_logged(self):
+        fq = FakeApplyQuery([
+            _change("add", "shift-add", employee="Doe, Alex"),
+            _change("del", "shift-delete", employee="Lee, Kim", start=600),
+            _change("edit", "shift-edit", employee="Roe, Sam", to_start_min=600, to_end_min=960),
+            _change("re", "shift-reassign", employee="Huynh, Hillary", start=420, to_employee="Denton, Cimino"),
+            _change("oadd", "open-add", count=2, start=780, end=1080),
+            _change("oedit", "open-edit", to_start_min=600, to_end_min=900),
+            _change("odel", "open-delete", start=300, end=600),
+            _change("oasg", "open-assign", employee="Berding, Kenya", start=420, end=660),
+        ])
+        adp = FakeApplyAdp(
+            assigned={("Lee, Kim", "2026-11-03", 600, 900), ("Roe, Sam", "2026-11-03", 540, 900),
+                      ("Huynh, Hillary", "2026-11-03", 420, 900)},
+            open_shifts={self.SLOT: 1, ("2026-11-03", 300, 600): 1, ("2026-11-03", 420, 660): 1},
+        )
+        self.assertEqual(self._run(fq, adp), 0)
+        self.assertEqual({u[1]: u[2] for u in fq.updates}, dict.fromkeys(
+            ["add", "del", "edit", "re", "oadd", "oedit", "odel", "oasg"], "applied"))
+        self.assertEqual(len(fq.events), 8)
+        self.assertEqual({e[0] for e in fq.events}, {"adp_shift_events"})
+        self.assertEqual({c[0] for c in adp.calls[:2]}, {"delete_any_shift", "delete_open_shift"})
+        self.assertEqual(adp.calls[2][0], "edit_shift")
+        self.assertEqual(adp.calls[-1][0], "assign_open_shift")
+        self.assertIn(("Denton, Cimino", "2026-11-03", 420, 900), adp.assigned)
+        self.assertEqual(adp.open[("2026-11-03", 780, 1080)], 2)
+        self.refresh.assert_called_once_with(mock.ANY, "palmetto", datetime.date(2026, 11, 2), weeks=1)
+
+    def test_changes_adp_already_shows_are_skipped_without_a_click(self):
+        fq = FakeApplyQuery([
+            _change("add", "shift-add", employee="Doe, Alex"),
+            _change("del", "shift-delete", employee="Lee, Kim"),
+            _change("odel", "open-delete"),
+            _change("edit", "shift-edit", employee="Roe, Sam", to_start_min=600, to_end_min=960),
+        ])
+        adp = FakeApplyAdp(assigned={("Doe, Alex", "2026-11-03", 540, 900), ("Roe, Sam", "2026-11-03", 600, 960)})
+        self.assertEqual(self._run(fq, adp), 0)
+        self.assertEqual([u[2] for u in fq.updates], ["skipped"] * 4)
+        self.assertEqual((adp.calls, fq.events), ([], []))
+        self.refresh.assert_not_called()
+
+    def test_a_shift_gone_from_adp_fails_and_the_rest_continue(self):
+        fq = FakeApplyQuery([
+            _change("edit", "shift-edit", employee="Roe, Sam", to_start_min=600, to_end_min=960),
+            _change("oasg", "open-assign", employee="Berding, Kenya"),
+            _change("add", "shift-add", employee="Doe, Alex"),
+        ])
+        with mock.patch("builtins.print") as out:
+            self.assertEqual(self._run(fq, FakeApplyAdp()), 1)
+        self.assertEqual([(u[1], u[2]) for u in fq.updates],
+                         [("edit", "failed"), ("add", "applied"), ("oasg", "failed")])
+        self.assertIn("no longer in ADP", fq.updates[0][3])
+        self.assertIn("no longer an open shift", fq.updates[2][3])
+        printed = " ".join(str(c.args[0]) for c in out.call_args_list)
+        self.assertIn("BREADCRUMB adp_apply batch_id=b1 change_id=edit kind=shift-edit", printed)
+
+    def test_reassign_whose_add_fails_says_the_shift_was_removed(self):
+        fq = FakeApplyQuery([_change("re", "shift-reassign", employee="Huynh, Hillary", to_employee="Denton, Cimino")])
+        adp = FakeApplyAdp(assigned={("Huynh, Hillary", "2026-11-03", 540, 900)},
+                           fail={"create_shift": wb.ScheduleWriteError("Denton, Cimino is not in ADP's unscheduled list")})
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertEqual(fq.updates[0][2], "failed")
+        self.assertIn("removed Huynh, Hillary's shift but could not add it for Denton, Cimino", fq.updates[0][3])
+        self.refresh.assert_called_once()
+
+    def test_open_add_adp_only_partly_shows_is_failed_with_the_count(self):
+        fq = FakeApplyQuery([_change("oadd", "open-add", count=2)])
+        self.assertEqual(self._run(fq, FakeApplyAdp(lose_open_adds=1)), 1)
+        self.assertEqual(fq.updates[0][2:], ("failed", "UnconfirmedSave: ADP shows 1 of 2 new open shifts"))
+        self.assertEqual(fq.events, [])
+
+    def test_unavailability_approve_is_applied_and_other_kinds_fail_without_a_click(self):
+        fq = FakeApplyQuery(unavail=[
+            {**_change("ok", "approve", employee="Doe, Alex"), "row_key": "k1"},
+            {**_change("gone", "approve", employee="Lee, Kim"), "row_key": "k2"},
+            {**_change("deny", "deny", employee="Roe, Sam"), "row_key": "k3"},
+        ])
+        approve = mock.MagicMock(side_effect=[True, False])
+        self.assertEqual(self._run(fq, FakeApplyAdp(), approve=approve), 1)
+        self.assertEqual([(u[0], u[1], u[2]) for u in fq.updates], [
+            (w.UNAVAIL_TABLE, "ok", "applied"), (w.UNAVAIL_TABLE, "gone", "skipped"), (w.UNAVAIL_TABLE, "deny", "failed"),
+        ])
+        self.assertEqual(fq.events, [("adp_unavailability_events", "ok")])
+        self.assertEqual(approve.call_count, 2)
+        self.refresh.assert_called_once_with(mock.ANY, "palmetto", datetime.date(2026, 10, 26), weeks=1)
+
+    def test_dry_run_walks_each_change_and_writes_nothing(self):
+        fq = FakeApplyQuery([
+            _change("add", "shift-add", employee="Doe, Alex"),
+            _change("re", "shift-reassign", employee="Huynh, Hillary", to_employee="Denton, Cimino"),
+            _change("oadd", "open-add", count=3),
+        ])
+        adp = FakeApplyAdp(assigned={("Huynh, Hillary", "2026-11-03", 540, 900)})
+        self.assertEqual(self._run(fq, adp, dry_run=True), 0)
+        self.assertEqual((fq.updates, fq.events), ([], []))
+        self.assertEqual([c[0] for c in adp.calls], ["delete_any_shift", "create_shift", "create_open_shift"])
+        self.assertIn(("Huynh, Hillary", "2026-11-03", 540, 900), adp.assigned)
+        self.refresh.assert_not_called()
+
+    def test_crash_marks_every_unsettled_change_failed_and_reraises(self):
+        fq = FakeApplyQuery([_change("add", "shift-add", employee="Doe, Alex")],
+                            unavail=[{**_change("ok", "approve", employee="Lee, Kim"), "row_key": "k1"}])
+        with self.assertRaises(RuntimeError):
+            self._run(fq, FakeApplyAdp(), goto=mock.MagicMock(side_effect=RuntimeError("session lost")))
+        self.assertEqual([(u[1], u[2], u[3]) for u in fq.updates], [
+            ("add", "failed", "not attempted: job stopped (RuntimeError: session lost)"),
+            ("ok", "failed", "not attempted: job stopped (RuntimeError: session lost)"),
+        ])
+
+    def test_cli_and_cloud_run_dispatch_reach_run_apply(self):
+        with mock.patch.object(w, "run_apply", return_value=0) as ra:
+            self.assertEqual(w.main(["--store", "palmetto", "--apply-batch", "b9", "--headless"]), 0)
+        ra.assert_called_once_with("palmetto", "b9", headless=True, dry_run=False)
+
+
 class RunDelete(unittest.TestCase):
     W = datetime.date(2026, 9, 28)
 
@@ -789,6 +1025,7 @@ class QueueAssign(unittest.TestCase):
 
     def test_cli_queues_without_starting_the_job(self):
         with mock.patch.object(w, "fetch_job_executions", return_value=[]), \
+             mock.patch.object(w, "_today_ct", return_value=datetime.date(2026, 10, 20)), \
              mock.patch.object(w, "_insert_queued_assign", return_value="abc") as insert, \
              mock.patch.object(w, "start_assign_job") as start:
             rc = w.main(["--queue-assign", self._file()])

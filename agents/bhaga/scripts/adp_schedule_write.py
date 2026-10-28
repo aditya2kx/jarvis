@@ -16,6 +16,12 @@ Two operator-confirmed modes, each started by one console click:
   assign   ... --assign-id <id>
            Assigns each queued ``labor_open_shift_assignments`` row's existing ADP open
            shift to its person (Issue #412), then re-reads the changed weeks.
+  apply    ... --apply-batch <batch_id>
+           Applies one console "Apply to ADP" (Issue #434): every queued
+           ``adp_shift_changes`` row (add / edit / delete / reassign a shift, add /
+           edit / delete / assign an open shift — each published on its own, never
+           the week's drafts) and ``adp_unavailability_changes`` approve row. Each is
+           confirmed by re-reading ADP, never retried, then the changed weeks are re-read.
   queue    ... --queue-assign shifts.json [--execute]
            Inserts those open shifts as ``queued`` rows (same checks as the console)
            and refuses while any ``BHAGA_ADP_SCHEDULE_WRITE`` execution is still
@@ -44,7 +50,9 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
+from agents.bhaga.scripts.adp_unavailability_approve import load_pending
 from skills.adp_run_automation import schedule_write_backend as wb
+from skills.adp_run_automation import unavailability_approve_backend as ab
 
 
 ASSIGN_TABLE = "labor_open_shift_assignments"
@@ -514,6 +522,268 @@ def run_assign(store: str, assign_id: str, *, headless: bool, dry_run: bool) -> 
                 fail(row["row_key"], f"not attempted: job stopped ({type(exc).__name__}: {exc})")
         raise
     return 1 if failed else 0
+
+
+SHIFT_TABLE = "adp_shift_changes"
+UNAVAIL_TABLE = "adp_unavailability_changes"
+# Within a week: free slots first so adds and reassigns don't collide with what they replace.
+APPLY_ORDER = {
+    "shift-delete": 0, "open-delete": 0, "shift-edit": 1, "open-edit": 1,
+    "shift-reassign": 2, "shift-add": 3, "open-add": 3, "open-assign": 4,
+}
+
+
+def apply_plan(rows: list[dict]) -> list[tuple[dt.date, list[dict]]]:
+    """Queued shift changes → [(week_start, rows in APPLY_ORDER)], weeks ascending."""
+    by_week: dict[dt.date, list[dict]] = defaultdict(list)
+    for row in rows:
+        by_week[week_start_of(row["date"])].append(row)
+    return [
+        (week, sorted(by_week[week], key=lambda r: (APPLY_ORDER[r["kind"]], r["date"], r["start_min"])))
+        for week in sorted(by_week)
+    ]
+
+
+class ApplySkip(Exception):
+    """ADP already shows the change — nothing was clicked."""
+
+
+def _apply_open(frame, page, row: dict, open_now: Counter, *, dry_run: bool) -> tuple[str | None, Counter]:
+    """One open-shift change. Returns (ADP name, open shifts re-read after it). Raises on failure."""
+    week = week_start_of(row["date"])
+    kind, d = row["kind"], row["date"].isoformat()
+    slot = (d, row["start_min"], row["end_min"])
+    times = {"date_iso": d, "start_min": row["start_min"], "end_min": row["end_min"]}
+    name = None
+    if kind == "open-add":
+        made = 0
+        try:
+            for _ in range(1 if dry_run else row["count"] or 1):
+                wb.create_open_shift(frame, page, **times, publish=True, dry_run=dry_run)
+                made += 1
+        finally:
+            if made and not dry_run:
+                print(f"[schedule_write] open-add clicked {made}/{row['count']} {slot}")
+    else:
+        if open_now[slot] <= 0:
+            if kind == "open-delete":
+                raise ApplySkip("already gone from ADP's open shifts")
+            raise wb.ScheduleWriteError("no longer an open shift in ADP (claimed, assigned or removed)")
+        if kind == "open-assign":
+            name = wb.assign_open_shift(frame, page, **times, employee=row["employee"], dry_run=dry_run)
+        elif kind == "open-edit":
+            wb.edit_open_shift(frame, page, **times, to_start_min=row["to_start_min"],
+                               to_end_min=row["to_end_min"], dry_run=dry_run)
+        elif kind == "open-delete":
+            wb.delete_open_shift(frame, page, **times, dry_run=dry_run)
+        else:
+            raise ValueError(f"unknown open-shift change {kind!r}")
+    if dry_run:
+        return name, open_now
+    try:
+        after = wb.read_open_shifts(page, frame, week)
+    except Exception as exc:  # noqa: BLE001 — unknown outcome; never retried
+        raise wb.UnconfirmedSave(f"could not re-read ADP's open shifts ({type(exc).__name__}: {exc})") from exc
+    if kind == "open-add":
+        added = after[slot] - open_now[slot]
+        if added < (row["count"] or 1):
+            raise wb.UnconfirmedSave(f"ADP shows {max(added, 0)} of {row['count']} new open shifts")
+    elif kind == "open-edit":
+        new = (d, row["to_start_min"], row["to_end_min"])
+        if not (after[slot] < open_now[slot] and after[new] > open_now[new]):
+            raise wb.UnconfirmedSave("ADP does not show the open shift at the new times")
+    elif after[slot] >= open_now[slot]:
+        raise wb.UnconfirmedSave("ADP still lists the open shift")
+    return name, after
+
+
+def _apply_assigned(frame, page, row: dict, *, dry_run: bool) -> str | None:
+    """One assigned-shift change; each backend call confirms itself on the grid. Raises on failure."""
+    kind, d, emp = row["kind"], row["date"].isoformat(), row["employee"]
+    times = {"date_iso": d, "start_min": row["start_min"], "end_min": row["end_min"]}
+    present = wb.shift_in_grid(frame, page, employee=emp, **times)
+    if kind == "shift-add":
+        if present:
+            raise ApplySkip("already in ADP")
+        return wb.create_shift(frame, page, employee=emp, **times, publish=True, dry_run=dry_run)
+    if kind == "shift-delete":
+        if not present:
+            raise ApplySkip("already gone from ADP")
+        wb.delete_any_shift(frame, page, employee=emp, **times, dry_run=dry_run)
+        return None
+    if kind == "shift-edit":
+        if not present:
+            moved = wb.shift_in_grid(frame, page, employee=emp, date_iso=d,
+                                     start_min=row["to_start_min"], end_min=row["to_end_min"])
+            if moved:
+                raise ApplySkip("ADP already shows the new times")
+            raise wb.ScheduleWriteError("the shift is no longer in ADP")
+        wb.edit_shift(frame, page, employee=emp, **times, to_start_min=row["to_start_min"],
+                      to_end_min=row["to_end_min"], dry_run=dry_run)
+        return None
+    if kind == "shift-reassign":
+        to = row["to_employee"]
+        if not present:
+            if wb.shift_in_grid(frame, page, employee=to, **times):
+                raise ApplySkip(f"{to} already has this shift in ADP")
+            raise wb.ScheduleWriteError("the shift is no longer in ADP")
+        if dry_run:
+            # The add can't be walked while the shift still holds the slot; check the delete only.
+            wb.delete_any_shift(frame, page, employee=emp, **times, dry_run=True)
+            return None
+        wb.delete_any_shift(frame, page, employee=emp, **times)
+        try:
+            return wb.create_shift(frame, page, employee=to, **times, publish=True)
+        except Exception as exc:
+            raise wb.ScheduleWriteError(
+                f"removed {emp}'s shift but could not add it for {to} ({type(exc).__name__}: {exc}) — add it again"
+            ) from exc
+    raise ValueError(f"unknown shift change {kind!r}")
+
+
+def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool) -> int:
+    """Apply one console "Apply to ADP" batch: queued adp_shift_changes + adp_unavailability_changes.
+
+    Every row ends 'applied' (ADP re-read shows it), 'skipped' (ADP already showed it,
+    nothing clicked) or 'failed' (breadcrumb + reason). Nothing is retried: a crash
+    marks every unsettled row failed. Then the changed weeks are re-read into BQ.
+    Unavailability: only approve is wired; other kinds fail without a click.
+    """
+    params = [("store", "STRING", store), ("id", "STRING", batch_id)]
+    shifts = _query(
+        "SELECT * FROM {T} WHERE store = @store AND batch_id = @id AND status = 'queued'", params, table=SHIFT_TABLE,
+    )
+    unavail = _query(
+        "SELECT * FROM {T} WHERE store = @store AND batch_id = @id AND status = 'queued'", params, table=UNAVAIL_TABLE,
+    )
+    print(f"[schedule_write] apply batch_id={batch_id} shifts={len(shifts)} unavailability={len(unavail)} dry_run={dry_run}")
+    if not shifts and not unavail:
+        return 0
+    settled: set[str] = set()
+    failed = 0
+
+    def set_status(row: dict, table: str, status: str, error: str | None = None, adp_name: str | None = None) -> None:
+        settled.add(row["change_id"])
+        if dry_run:
+            return
+        name_sql = ", adp_name = @name" if table == SHIFT_TABLE else ""
+        _query(
+            f"UPDATE {{T}} SET status = @status, error = @error{name_sql}, updated_at = CURRENT_TIMESTAMP()"
+            " WHERE batch_id = @batch AND change_id = @cid",
+            [("status", "STRING", status), ("error", "STRING", error), ("batch", "STRING", batch_id),
+             ("cid", "STRING", row["change_id"])] + ([("name", "STRING", adp_name)] if name_sql else []),
+            table=table,
+        )
+        if status != "applied":
+            return
+        if table == SHIFT_TABLE:
+            _query(
+                "INSERT INTO {T} (store, event_at_utc, date, kind, summary, actor, batch_id, change_id)"
+                " VALUES (@store, CURRENT_TIMESTAMP(), @date, @kind, @summary, @actor, @batch, @cid)",
+                [("store", "STRING", store), ("date", "DATE", row["date"]), ("kind", "STRING", row["kind"]),
+                 ("summary", "STRING", row.get("summary") or row["kind"]), ("actor", "STRING", row.get("requested_by")),
+                 ("batch", "STRING", batch_id), ("cid", "STRING", row["change_id"])],
+                table="adp_shift_events",
+            )
+        else:
+            _query(
+                "INSERT INTO {T} (store, event_at_utc, employee, event, summary, source, actor, change_id, row_key)"
+                " VALUES (@store, CURRENT_TIMESTAMP(), @emp, @event, @summary, 'console', @actor, @cid, @key)",
+                [("store", "STRING", store), ("emp", "STRING", row["employee"]), ("event", "STRING", row["kind"]),
+                 ("summary", "STRING", row.get("summary") or row["kind"]), ("actor", "STRING", row.get("requested_by")),
+                 ("cid", "STRING", row["change_id"]), ("key", "STRING", row.get("row_key"))],
+                table="adp_unavailability_events",
+            )
+
+    def fail(row: dict, table: str, msg: str) -> None:
+        nonlocal failed
+        failed += 1
+        print(f"BREADCRUMB adp_apply batch_id={batch_id} change_id={row['change_id']} kind={row['kind']} error={msg}"[:500])
+        set_status(row, table, "failed", msg[:400])
+
+    from skills.adp_run_automation import runner as r
+
+    changed: set[dt.date] = set()
+    try:
+        with r.adp_session(store=store, headed=not headless) as (_ctx, page):
+            frame = r._open_team_schedule(page)
+            try:
+                for week, rows in apply_plan(shifts):
+                    wb.goto_week(frame, page, week)
+                    page.wait_for_timeout(1500)
+                    open_now = wb.read_open_shifts(page, frame, week)
+                    for row in rows:
+                        try:
+                            if row["kind"].startswith("open-"):
+                                name, open_now = _apply_open(frame, page, row, open_now, dry_run=dry_run)
+                            else:
+                                name = _apply_assigned(frame, page, row, dry_run=dry_run)
+                        except ApplySkip as why:
+                            print(f"[schedule_write] skip {row['change_id']} {row['kind']}: {why}")
+                            set_status(row, SHIFT_TABLE, "skipped", str(why))
+                            continue
+                        except Exception as exc:  # noqa: BLE001 — one change must not stop the rest
+                            if not dry_run:
+                                changed.add(week)
+                            fail(row, SHIFT_TABLE, f"{type(exc).__name__}: {exc}")
+                            if row["kind"].startswith("open-") and not dry_run:
+                                try:
+                                    open_now = wb.read_open_shifts(page, frame, week)
+                                except Exception:  # noqa: BLE001 — the next open change fails on its own read
+                                    pass
+                            continue
+                        print(f"[schedule_write] {'checked' if dry_run else 'applied'} {row['change_id']} {row.get('summary')!r}")
+                        if dry_run:
+                            settled.add(row["change_id"])
+                            continue
+                        changed.add(week)
+                        set_status(row, SHIFT_TABLE, "applied", adp_name=name)
+                for row in unavail:
+                    if row["kind"] != "approve":
+                        fail(row, UNAVAIL_TABLE, f"the ADP job cannot {row['kind']} unavailability yet — do it in ADP")
+                        continue
+                    try:
+                        ok = _approve_unavailability(page, frame, row, dry_run=dry_run)
+                    except Exception as exc:  # noqa: BLE001
+                        fail(row, UNAVAIL_TABLE, f"{type(exc).__name__}: {exc}")
+                        continue
+                    if not ok:
+                        set_status(row, UNAVAIL_TABLE, "skipped", "no longer pending in ADP")
+                    elif dry_run:
+                        settled.add(row["change_id"])
+                    else:
+                        set_status(row, UNAVAIL_TABLE, "applied")
+                        changed.add(week_start_of(_today_ct()))
+            finally:
+                if changed and not dry_run:
+                    lo, hi = min(changed), max(changed)
+                    try:
+                        wb.goto_week(r._open_team_schedule(page), page, lo)
+                        refresh_schedule(page, store, lo, weeks=(hi - lo).days // 7 + 1)
+                    except Exception as exc:  # noqa: BLE001 — the ADP changes already happened
+                        print(f"BREADCRUMB adp_schedule_refresh store={store} week_start={lo} error={type(exc).__name__}: {exc}"[:500])
+    except Exception as exc:
+        for row in shifts:
+            if row["change_id"] not in settled:
+                fail(row, SHIFT_TABLE, f"not attempted: job stopped ({type(exc).__name__}: {exc})")
+        for row in unavail:
+            if row["change_id"] not in settled:
+                fail(row, UNAVAIL_TABLE, f"not attempted: job stopped ({type(exc).__name__}: {exc})")
+        raise
+    print(f"[schedule_write] apply batch_id={batch_id} done failed={failed}")
+    return 1 if failed else 0
+
+
+def _approve_unavailability(page, frame, row: dict, *, dry_run: bool) -> bool:
+    """Approve one pending request (False when it is no longer pending). Raises when ADP won't confirm."""
+    target = load_pending(row["row_key"] or "")
+    if target is None:
+        return False
+    try:
+        ab.approve(page, frame, target, dry_run=dry_run)
+    finally:
+        wb._back_out(frame, page)
+    return True
 
 
 def _clock(m: int) -> str:
@@ -996,6 +1266,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--refresh-schedule", action="store_true", help="read-only: reload --week-start's ADP schedule into BQ")
     p.add_argument("--delete", help="';'-separated row_keys of drafted shifts to remove from ADP (--week-start)")
     p.add_argument("--assign-id", help="assign the queued open shifts of this labor_open_shift_assignments run")
+    p.add_argument("--apply-batch", help="apply every queued change of this console Apply to ADP batch")
     p.add_argument("--queue-assign", metavar="FILE",
                    help="queue open shifts from this JSON file ('-' = stdin); refuses while a schedule write is running")
     p.add_argument("--execute", action="store_true",
@@ -1024,6 +1295,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"started {start_assign_job(a.store, assign_id)}")
         return 0
+    if a.apply_batch:
+        return run_apply(a.store, a.apply_batch, headless=a.headless, dry_run=a.dry_run)
     if a.assign_id:
         return run_assign(a.store, a.assign_id, headless=a.headless, dry_run=a.dry_run)
     if a.refresh_schedule:

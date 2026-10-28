@@ -633,8 +633,9 @@ function CoverageTimeline({
   const [hover, setHover] = useState<{ minute: number; pct: number } | null>(null);
   const span = axisEnd - axisStart;
 
+  const rootRef = useRef<HTMLDivElement>(null);
   const onMove = useCallback(
-    (e: React.MouseEvent) => {
+    (e: React.PointerEvent) => {
       const el = trackRef.current;
       if (!el || !(span > 0)) return;
       const rect = el.getBoundingClientRect();
@@ -646,6 +647,15 @@ function CoverageTimeline({
     },
     [axisStart, span],
   );
+
+  useEffect(() => {
+    if (!hover) return;
+    const away = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setHover(null);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [hover]);
 
   const active = hover ? peopleActiveAt(people, hover.minute) : [];
   const offAt = hover
@@ -798,8 +808,12 @@ function CoverageTimeline({
   return (
     <div
       className="flex flex-col gap-3"
-      onMouseMove={onMove}
-      onMouseLeave={() => setHover(null)}
+      ref={rootRef}
+      // Pointer events, not mouse events: iOS Safari only sends emulated mouse events to elements it
+      // deems clickable, so a tap on a lane never opened the tooltip. A tap pins it until a tap elsewhere.
+      onPointerMove={(e) => e.pointerType === "mouse" && onMove(e)}
+      onPointerDown={onMove}
+      onPointerLeave={(e) => e.pointerType === "mouse" && setHover(null)}
     >
       {/* Headcount ribbon — label | track */}
       <div className="flex items-end gap-2">
@@ -1098,6 +1112,8 @@ export function LaborCoveragePanel({
     }
     return adpRoster(hours);
   }, [actuals, scheduled, activeStaff]);
+  // Directory-active people only; null when the roster reads failed (then nobody is dropped).
+  const active = useMemo(() => (activeStaff ? new Set(activeStaff) : null), [activeStaff]);
 
   const saved = rulesHistory[0];
   const savedVersion = saved?.version ?? 0;
@@ -1114,18 +1130,22 @@ export function LaborCoveragePanel({
     () => ({ staffing: rules.staffing, dayRules: rules.dayRules, deliveries: new Set(deliveryDates ?? []) }),
     [rules.staffing, rules.dayRules, deliveryDates],
   );
+  const staffUnavailability = useMemo(
+    () => (active ? unavailability.filter((r) => active.has(r.employee)) : unavailability),
+    [unavailability, active],
+  );
   const offRows = useMemo(
     () => [
-      ...unavailability,
+      ...staffUnavailability,
       ...ruleUnavailability(rules.staffRules).map(
         (r): UnavailabilityRow => ({ ...r, expires_at_ct: null, hours_left: null, scraped_at: null }),
       ),
     ],
-    [unavailability, rules.staffRules],
+    [staffUnavailability, rules.staffRules],
   );
   const requestCounts = useMemo(
-    () => new Map(strip.map((iso) => [iso, dayRequestCount(unavailability, iso)])),
-    [strip, unavailability],
+    () => new Map(strip.map((iso) => [iso, dayRequestCount(staffUnavailability, iso)])),
+    [strip, staffUnavailability],
   );
   const clashCounts = useMemo(() => {
     const people = new Map<string, Set<string>>();
@@ -1136,10 +1156,10 @@ export function LaborCoveragePanel({
   }, [offRows, availability?.upcoming, todayIso]);
   const pending = useMemo(
     () =>
-      collapseWeekly(unavailability.filter((r) => r.status === "pending")).sort(
+      collapseWeekly(staffUnavailability.filter((r) => r.status === "pending")).sort(
         (a, b) => (a.hours_left ?? 1e9) - (b.hours_left ?? 1e9) || a.first_date.localeCompare(b.first_date),
       ),
-    [unavailability],
+    [staffUnavailability],
   );
   const [queue, setQueue] = useState<StagedChange[]>([]);
   const [target, setTarget] = useState<SheetTarget | null>(null);
@@ -1478,7 +1498,11 @@ export function LaborCoveragePanel({
       const byDay = new Map<string, DraftShift[]>();
       for (const d of state) {
         const shifts = plan
-          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan.filter((s) => s.date === d.iso).map((s, _i, day) => planShift(s, lanesFor(d.iso), meal, day))]
+          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan
+              .filter((s) => s.date === d.iso)
+              .map((s, _i, day) => planShift(s, lanesFor(d.iso), meal, day))
+              // Saved before the person left: their slot still needs covering, so it reads as open.
+              .map((x) => (x.employee && active && !active.has(x.employee) && !x.inAdp ? { ...x, employee: null } : x))]
           : d.shifts;
         if (shifts.length) byDay.set(d.iso, [...shifts].sort((a, b) => a.startMin - b.startMin));
       }
@@ -1517,6 +1541,7 @@ export function LaborCoveragePanel({
     unavailability,
     plans,
     picks,
+    active,
   ]);
   const drafts = useMemo(() => buildDrafts(rules), [buildDrafts, rules]);
   const savedDrafts = useMemo(

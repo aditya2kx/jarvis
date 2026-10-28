@@ -157,6 +157,8 @@ export function ShiftDraftSummary({
   const total = existingHours + draftHours;
   const over = goalHoursWeek != null && total > goalHoursWeek;
   const byName = new Map(roster.map((a) => [a.employee, a]));
+  // The coverage chart already draws every shift ADP has; list only what needs a pick or ADP fix.
+  const rows = shifts.filter((s) => !s.inAdp || s.adpOpen);
 
   return (
     <div
@@ -174,11 +176,6 @@ export function ShiftDraftSummary({
               {locked ? "Locked — saved to ADP" : "Works around ADP unavailability"}
             </Badge>
           </div>
-          {locked ? (
-            <p className="text-xs text-muted-foreground">
-              This week shows exactly what was saved to ADP. Reloads and rule edits don&apos;t change it.
-            </p>
-          ) : null}
           <p className="text-xs text-muted-foreground">
             Week of {weekLabel(weekStart)}: {existingHours.toFixed(0)}h scheduled +{" "}
             {draftHours.toFixed(1)}h draft ({draftCount} shifts) ={" "}
@@ -229,7 +226,7 @@ export function ShiftDraftSummary({
         <HoursBreakdownList breakdown={breakdown} dayRules={dayRules ?? []} goalHoursWeek={goalHoursWeek} />
       ) : null}
 
-      {shifts.length ? (
+      {rows.length ? (
         <Table>
           <TableHeader>
             <TableRow>
@@ -240,7 +237,7 @@ export function ShiftDraftSummary({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {shifts.map((s, i) => {
+            {rows.map((s, i) => {
               const a = s.employee ? byName.get(s.employee) : undefined;
               const choosable =
                 !locked && onPick && s.slot && !s.inAdp && !s.adpOpen && (s.options?.length ?? 0) > 1;
@@ -259,14 +256,6 @@ export function ShiftDraftSummary({
                           title="Saved for this person, but ADP now shows it unassigned (for example, their unavailability was approved). Assign someone in ADP."
                         >
                           now an open shift in ADP
-                        </Badge>
-                      ) : s.inAdp ? (
-                        <Badge
-                          variant="outline"
-                          className="h-4 px-1.5 text-[11px] font-normal text-muted-foreground"
-                          title="ADP's schedule already shows this shift, so it counts as scheduled, not suggested."
-                        >
-                          in ADP schedule
                         </Badge>
                       ) : null}
                     </span>
@@ -307,11 +296,6 @@ export function ShiftDraftSummary({
                           </Badge>
                         ) : null}
                       </span>
-                    ) : s.takenBy ? (
-                      <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="font-medium">{s.takenBy}</span>
-                        <span className="text-xs text-muted-foreground">took this open shift in ADP</span>
-                      </span>
                     ) : (
                       <span className="text-muted-foreground">
                         Unassigned — posts as an open shift
@@ -323,11 +307,7 @@ export function ShiftDraftSummary({
             })}
           </TableBody>
         </Table>
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          Nothing to draft — the schedule already meets the needed headcount.
-        </p>
-      )}
+      ) : null}
     </div>
   );
 }

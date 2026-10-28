@@ -111,11 +111,13 @@ const PT = LABOR_CHART_COLORS.parttimeActual;
 const FT = LABOR_CHART_COLORS.fulltimeActual;
 const SCHED = LABOR_CHART_COLORS.parttimeScheduled;
 const OPEN = LABOR_CHART_COLORS.openShift;
-const OPEN_HATCH = `repeating-linear-gradient(-45deg, ${OPEN}40, ${OPEN}40 2px, transparent 2px, transparent 4px)`;
+const OPEN_FILL = `${OPEN}2e`;
 const NEED = LABOR_CHART_COLORS.goalLine;
 const SHORT_TINT = "rgb(244 63 94 / 0.16)";
-const OFF_BORDER = "rgb(100 116 139 / 0.55)";
-const OFF_HATCH = "repeating-linear-gradient(45deg, rgb(100 116 139 / 0.22), rgb(100 116 139 / 0.22) 2px, transparent 2px, transparent 5px)";
+// Hatching means unavailable and nothing else; shifts are outlines with a flat tint.
+const hatch = (rgb: string) => `repeating-linear-gradient(45deg, ${rgb}, ${rgb} 2px, transparent 2px, transparent 6px)`;
+const OFF_HATCH = hatch("rgb(100 116 139 / 0.35)");
+const REQUEST_HATCH = hatch(`${REQUEST_COLOR}73`);
 
 type LaneOff = LaneBlock<UnavailabilityRow>;
 const isRuleRow = (r: UnavailabilityRow) => r.row_key.startsWith("rule|");
@@ -407,7 +409,7 @@ function CoverageRibbonBars({
             {p.open > 0 ? (
               <div
                 className="mx-auto w-full max-w-[2.5px] rounded-[1px] border border-dashed"
-                style={{ height: `${oH}%`, borderColor: OPEN, background: OPEN_HATCH }}
+                style={{ height: `${oH}%`, borderColor: OPEN, background: OPEN_FILL }}
               />
             ) : null}
             {p.scheduled > 0 ? (
@@ -495,22 +497,16 @@ function PersonLaneTrack({
               onBlock?.(b.row);
             }}
             className={cn(
-              "absolute inset-y-0.5 flex items-center overflow-hidden rounded-sm border px-1.5 text-left text-[11px] font-medium whitespace-nowrap",
+              "absolute inset-y-0 rounded-sm",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               onBlock && "cursor-pointer hover:brightness-95",
-              isRuleRow(b.row) && "italic",
             )}
             style={{
               left: `${((s - axisStart) / axisSpan) * 100}%`,
               width: `${Math.max(width, 0.8)}%`,
-              borderStyle: pending ? "dashed" : "solid",
-              borderColor: pending ? REQUEST_COLOR : OFF_BORDER,
-              background: pending ? `${REQUEST_COLOR}1f` : OFF_HATCH,
-              color: pending ? REQUEST_COLOR : "var(--muted-foreground)",
+              background: pending ? REQUEST_HATCH : OFF_HATCH,
             }}
-          >
-            {!person.segments.length && width > 14 ? label : null}
-          </button>
+          />
         );
       })}
       {person.segments.map((seg, i) => {
@@ -528,7 +524,7 @@ function PersonLaneTrack({
                 width: `${Math.max(width, 0.8)}%`,
                 borderColor: OPEN,
                 color: OPEN,
-                background: OPEN_HATCH,
+                background: OPEN_FILL,
               }}
             >
               {width > 8 ? `${seg.hours}h` : null}
@@ -548,11 +544,8 @@ function PersonLaneTrack({
             style={{
               left: `${left}%`,
               width: `${Math.max(width, 0.8)}%`,
-              backgroundColor: isSched ? "transparent" : color,
+              backgroundColor: isSched ? `${color}33` : color,
               borderColor: isSched ? color : undefined,
-              backgroundImage: isSched
-                ? `repeating-linear-gradient(-45deg, ${color}33, ${color}33 2px, transparent 2px, transparent 4px)`
-                : undefined,
             }}
           >
             {width > 8 ? `${seg.hours}h` : null}
@@ -772,7 +765,7 @@ function CoverageTimeline({
                     )}
                     style={
                       p.kind === "open"
-                        ? { borderColor: OPEN, background: OPEN_HATCH }
+                        ? { borderColor: OPEN, background: OPEN_FILL }
                         : {
                             backgroundColor: barColor(p.labor_bucket, p.kind),
                             opacity: p.kind === "scheduled" ? 0.7 : 1,
@@ -957,14 +950,10 @@ function CoverageTimeline({
         ) : null}
         {(showOff ? offOnly : []).map((employee) => {
           const blocks = off.get(employee)!;
-          const pending = blocks.some((b) => b.row.status === "pending");
           return (
             <div key={`off-${employee}`} className="flex items-center gap-2">
               <div className={cn(GUTTER, "shrink-0 truncate")}>
                 <PersonName name={employee} muted onPerson={onPerson} />
-                <span className="text-xs" style={pending ? { color: REQUEST_COLOR } : undefined}>
-                  {pending ? "requested" : <span className="text-muted-foreground">unavailable</span>}
-                </span>
               </div>
               <div className="relative min-w-0 flex-1 cursor-crosshair">
                 <PersonLaneTrack
@@ -1914,14 +1903,14 @@ export function LaborCoveragePanel({
           <span className="inline-flex items-center gap-1.5">
             <span
               className="inline-block size-2.5 rounded-sm border border-dashed"
-              style={{ borderColor: SCHED }}
+              style={{ borderColor: SCHED, backgroundColor: `${SCHED}33` }}
             />
             Scheduled
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span
               className="inline-block size-2.5 rounded-sm border border-dashed"
-              style={{ borderColor: OPEN, background: OPEN_HATCH }}
+              style={{ borderColor: OPEN, background: OPEN_FILL }}
             />
             Open (unassigned)
           </span>
@@ -1959,13 +1948,13 @@ export function LaborCoveragePanel({
             </span>
           ) : null}
           <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block size-2.5 rounded-sm border" style={{ borderColor: OFF_BORDER, background: OFF_HATCH }} />
+            <span className="inline-block size-2.5 rounded-sm" style={{ background: OFF_HATCH }} />
             Unavailable
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span
-              className="inline-block size-2.5 rounded-sm border border-dashed"
-              style={{ borderColor: REQUEST_COLOR, backgroundColor: `${REQUEST_COLOR}1f` }}
+              className="inline-block size-2.5 rounded-sm"
+              style={{ background: REQUEST_HATCH }}
             />
             Requested
           </span>

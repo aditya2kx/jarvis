@@ -607,6 +607,7 @@ function CoverageTimeline({
   need,
   draftShifts,
   off,
+  activeStaff,
   onBlock,
   onPerson,
 }: {
@@ -621,6 +622,8 @@ function CoverageTimeline({
   draftShifts: DraftShift[];
   /** Unavailability per person on this day. */
   off: Map<string, LaneOff[]>;
+  /** Directory-active people; null when unknown. */
+  activeStaff?: ReadonlySet<string> | null;
   onBlock?: (row: UnavailabilityRow) => void;
   /** Tap a name → that person's unavailability drawer. */
   onPerson?: (employee: string) => void;
@@ -850,6 +853,7 @@ function CoverageTimeline({
             const blocks = open ? NO_BLOCKS : (off.get(p.employee) ?? NO_BLOCKS);
             const clash =
               flagClash && p.segments.some((g) => g.kind !== "open" && hitsBlock(g.startMin, g.endMin, blocks));
+            const departed = flagClash && !open && activeStaff != null && !activeStaff.has(p.employee);
             const takers = open
               ? draftShifts
                   .filter((s) => s.fillsOpen && p.segments.some((g) => g.startMin === s.startMin && g.endMin === s.endMin))
@@ -864,6 +868,11 @@ function CoverageTimeline({
                     {open ? (activeDay < todayIso ? " · unfilled" : " · unassigned") : ""}
                     {clash ? <span className="font-medium text-destructive"> · clash</span> : null}
                   </span>
+                  {departed ? (
+                    <span className="block truncate text-xs font-medium text-destructive" title="Still on the ADP schedule, but not Active in the ADP Directory">
+                      not active in ADP
+                    </span>
+                  ) : null}
                   {takers.length ? (
                     <span
                       className="block truncate text-xs"
@@ -1888,6 +1897,7 @@ export function LaborCoveragePanel({
           need={need}
           draftShifts={draftShifts}
           off={dayOff}
+          activeStaff={active}
           onBlock={canManage && activeDay >= todayIso ? (row) => setTarget({ mode: "entry", row, date: activeDay }) : undefined}
           onPerson={canManage ? (employee) => setTarget({ mode: "person", employee }) : undefined}
         />

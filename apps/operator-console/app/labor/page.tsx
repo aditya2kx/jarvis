@@ -634,7 +634,7 @@ export default async function LaborPage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Labor"
-        subtitle={`Historical ADP hours · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`ADP hours & schedule · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
           <>
             <FilterPills

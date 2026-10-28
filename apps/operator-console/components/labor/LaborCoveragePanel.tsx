@@ -649,9 +649,18 @@ function CoverageTimeline({
     : [];
   const flagClash = activeDay >= todayIso;
   const [showOff, setShowOff] = useState(false);
-  const offOnly = [...off.keys()]
-    .filter((employee) => !people.some((p) => !isOpenLane(p) && p.employee === employee))
-    .sort((a, b) => a.localeCompare(b));
+  const onLane = new Set([
+    ...people.filter((p) => !isOpenLane(p)).map((p) => p.employee),
+    ...newShifts(draftShifts).flatMap((s) => (s.employee ? [s.employee] : [])),
+  ]);
+  const byName = (a: string, b: string) => a.localeCompare(b);
+  const offOnly = [...off.keys()].filter((employee) => !onLane.has(employee)).sort(byName);
+  // Free = Directory-active, no shift and no unavailability; only worth showing from today on.
+  const free =
+    flagClash && activeStaff
+      ? [...activeStaff].filter((employee) => !onLane.has(employee) && !off.has(employee)).sort(byName)
+      : [];
+  const notOn = [...free, ...offOnly];
   const occ = hover
     ? (points.find((p) => p.min === hover.minute) ?? {
         actual: 0,
@@ -932,7 +941,7 @@ function CoverageTimeline({
             </div>
           );
         })}
-        {offOnly.length ? (
+        {notOn.length ? (
           <button
             type="button"
             aria-expanded={showOff}
@@ -940,15 +949,15 @@ function CoverageTimeline({
             className="flex w-fit items-center gap-1 rounded-sm pt-1 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ChevronRightIcon className={cn("size-3.5 transition-transform", showOff && "rotate-90")} />
-            {offOnly.length} unavailable, not scheduled
+            {notOn.length} not scheduled{free.length ? ` · ${free.length} free` : ""}
           </button>
         ) : null}
-        {(showOff ? offOnly : []).map((employee) => {
-          const blocks = off.get(employee)!;
+        {(showOff ? notOn : []).map((employee) => {
+          const blocks = off.get(employee) ?? NO_BLOCKS;
           return (
             <div key={`off-${employee}`} className="flex items-center gap-2">
               <div className={cn(GUTTER, "shrink-0 truncate")}>
-                <PersonName name={employee} muted onPerson={onPerson} />
+                <PersonName name={employee} muted={blocks.length > 0} onPerson={onPerson} />
               </div>
               <div className="relative min-w-0 flex-1 cursor-crosshair">
                 <PersonLaneTrack

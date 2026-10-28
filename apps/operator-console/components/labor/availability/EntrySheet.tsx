@@ -11,20 +11,24 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Switch } from "@/components/ui/switch";
 import type { UnavailabilityRow } from "@/lib/bq/queries";
 import { entryError, type ChangeScope, type EntryFields, type StagedChange } from "@/lib/labor/availability-changes";
-import { addDays } from "@/lib/labor/availability-week";
+import { minToTime } from "@/lib/labor/schedule-inputs";
 import { coversDate } from "@/lib/labor/unavailability";
-import { dayLabel, hoursText, shortDate, WEEKDAYS, whenText } from "@/lib/labor/unavailability-format";
+import { addDays, dayLabel, hoursText, shortDate, WEEKDAYS, whenText } from "@/lib/labor/unavailability-format";
 import { cn } from "@/lib/utils";
 
 export type SheetTarget =
-  | { mode: "add"; employee: string | null; date: string }
+  /** fromMin: where the operator tapped a lane; starts a two-hour block there instead of all day. */
+  | { mode: "add"; employee: string | null; date: string; fromMin?: number }
   | { mode: "entry"; row: UnavailabilityRow; date: string };
 
 const fromRule = (r: UnavailabilityRow) => r.row_key.startsWith("rule|");
 
 function fieldsFor(target: SheetTarget): EntryFields {
   if (target.mode === "add") {
-    return { date: target.date, allDay: true, from: "09:00", to: "17:00", weekly: false, until: null };
+    const at = target.fromMin;
+    return at == null
+      ? { date: target.date, allDay: true, from: "09:00", to: "17:00", weekly: false, until: null }
+      : { date: target.date, allDay: false, from: minToTime(at), to: minToTime(Math.min(at + 120, 23 * 60 + 45)), weekly: false, until: null };
   }
   const r = target.row;
   return {
@@ -176,7 +180,7 @@ export function EntrySheet({
     <Sheet open={target != null} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-md">
         {target ? (
-          <SheetBody key={target.mode === "add" ? `add-${target.employee}-${target.date}` : `${target.row.row_key}-${target.date}`} target={target} roster={roster} onClose={onClose} onStage={onStage} />
+          <SheetBody key={target.mode === "add" ? `add-${target.employee}-${target.date}-${target.fromMin ?? ""}` : `${target.row.row_key}-${target.date}`} target={target} roster={roster} onClose={onClose} onStage={onStage} />
         ) : null}
       </SheetContent>
     </Sheet>
@@ -254,8 +258,8 @@ function SheetBody({
       <>
         {header}
         <p className="px-4 text-sm text-muted-foreground">
-          Entered as an &ldquo;Unavailable on dates&rdquo; scheduling rule, not in ADP. Change it under Coverage &amp; shift draft
-          › Scheduling rules.
+          Entered as an &ldquo;Unavailable on dates&rdquo; scheduling rule, not in ADP. Change it under Scheduling rules at the top
+          of this panel.
         </p>
       </>
     );

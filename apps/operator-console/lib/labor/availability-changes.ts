@@ -4,6 +4,9 @@
  * intent until a read-back of ADP shows it.
  */
 
+/** Why Apply is unavailable, or null when it can run. */
+export type ApplyBlock = "preview" | "off" | null;
+
 /** "date" = only the selected day of a weekly entry; "series" = every date it repeats. */
 export type ChangeScope = "date" | "series";
 

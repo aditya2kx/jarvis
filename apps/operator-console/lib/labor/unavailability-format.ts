@@ -13,6 +13,10 @@ function localDate(iso: string): Date {
   return new Date(y!, m! - 1, d!);
 }
 
+export function addDays(iso: string, n: number): string {
+  return new Date(Date.parse(`${iso}T12:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+}
+
 /** "Sat, Oct 31" */
 export function dayLabel(iso: string): string {
   return localDate(iso).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });

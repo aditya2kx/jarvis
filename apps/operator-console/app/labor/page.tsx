@@ -1,6 +1,7 @@
 import {
   adpHoursScrapedAt,
   adpUnavailability,
+  adpUnavailabilityEvents,
   adpDirectoryRoster,
   adpScheduleScrapedAt,
   adpScheduleHorizonEnd,
@@ -21,6 +22,7 @@ import {
   storeConfig,
   type LaborWageRates,
   upcomingRestockDates,
+  type UnavailabilityEventRow,
   type UnavailabilityRow,
   punchFixesNotInHours,
   type PunchFixNotInHoursRow,
@@ -50,8 +52,8 @@ import { buildPunchGaps, mergePunchDays, type PunchGap } from "@/lib/labor/punch
 import { scheduleRulesHistory } from "@/lib/labor/schedule-rules-store";
 import type { RulesVersion } from "@/lib/labor/schedule-inputs";
 import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
-import { LaborTabs } from "@/components/labor/LaborTabs";
-import { collapseWeekly, type ScheduledShift } from "@/lib/labor/unavailability";
+import { isConsolePreview } from "@/lib/config/preview";
+import type { ScheduledShift } from "@/lib/labor/unavailability";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { InfoNote } from "@/components/shell/InfoNote";
 import { FilterSelect } from "@/components/filters/FilterSelect";
@@ -214,6 +216,7 @@ export default async function LaborPage({
   let deliveryDates: string[] = [];
   let rulesHistory: RulesVersion[] = [];
   let unavailability: UnavailabilityRow[] = [];
+  let unavailabilityEvents: UnavailabilityEventRow[] = [];
   let scheduleReadAt: string | null = null;
   let upcomingShifts: ScheduledShift[] = [];
   let adpRosterRows: AdpRosterRow[] = [];
@@ -299,6 +302,7 @@ export default async function LaborPage({
       rates,
       pushRows,
       notInHours,
+      unavailEvents,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -357,7 +361,10 @@ export default async function LaborPage({
       laborWageRates().catch(() => ({ byName: {}, avgPartTime: null })),
       upcomingPushRows(DEFAULT_STORE, weekStartOf(todayIso)).catch(() => []),
       punchFixesNotInHours(DEFAULT_STORE, win.start, win.end).catch(() => []),
+      // Table lands with migration 092; until then history is simply empty.
+      can("availability") ? adpUnavailabilityEvents(DEFAULT_STORE).catch(() => []) : Promise.resolve([]),
     ]);
+    unavailabilityEvents = unavailEvents;
     savedPushRows = pushRows;
     adpRosterRows = directoryRoster;
     wageRates = rates;
@@ -765,13 +772,6 @@ export default async function LaborPage({
         }
       />
 
-      {can("availability") ? (
-        <LaborTabs
-          active="/labor"
-          pendingRequests={collapseWeekly(unavailability.filter((r) => r.status === "pending")).length}
-        />
-      ) : null}
-
       <PunchFixesNotInHoursNotice rows={fixesNotInHours} />
 
       <InfoNote summary="How to read these charts">
@@ -895,6 +895,12 @@ export default async function LaborPage({
               savedPushRows={savedPushRows}
               adpWriteEnabled={FEATURES.adpScheduleWrite}
               scheduleReadAt={scheduleReadAt}
+              availability={{
+                canManage: can("availability"),
+                applyBlock: isConsolePreview() ? "preview" : FEATURES.adpUnavailabilityWrite ? null : "off",
+                events: unavailabilityEvents,
+                upcoming: upcomingShifts,
+              }}
             />
             </CollapsibleSection>
           ) : null}

@@ -59,7 +59,26 @@ import {
 } from "@/lib/labor/shift-draft";
 import { savedPlan, type PushRow } from "@/lib/labor/schedule-push";
 import { planShift } from "@/lib/labor/saved-plan-shift";
-import { blocksOn, type UnavailabilityInput } from "@/lib/labor/unavailability";
+import {
+  blocksOn,
+  collapseWeekly,
+  coversDate,
+  dayUnavailabilityCounts,
+  hitsBlock,
+  laneBlocks,
+  type LaneBlock,
+  type ScheduledShift,
+} from "@/lib/labor/unavailability";
+import { hoursText } from "@/lib/labor/unavailability-format";
+import { stage, type ApplyBlock, type StagedChange } from "@/lib/labor/availability-changes";
+import type { UnavailabilityEventRow, UnavailabilityRow } from "@/lib/bq/queries";
+import { EntrySheet, type SheetTarget } from "@/components/labor/availability/EntrySheet";
+import {
+  REQUEST_COLOR,
+  UnavailabilityApplyTray,
+  UnavailabilityHistorySheet,
+  UnavailabilityRequests,
+} from "@/components/labor/availability/UnavailabilityRequests";
 import {
   applyDayRules,
   DEFAULT_RULES,
@@ -93,6 +112,11 @@ const OPEN = LABOR_CHART_COLORS.openShift;
 const OPEN_HATCH = `repeating-linear-gradient(-45deg, ${OPEN}40, ${OPEN}40 2px, transparent 2px, transparent 4px)`;
 const NEED = LABOR_CHART_COLORS.goalLine;
 const SHORT_TINT = "rgb(244 63 94 / 0.16)";
+const OFF_BORDER = "rgb(100 116 139 / 0.55)";
+const OFF_HATCH = "repeating-linear-gradient(45deg, rgb(100 116 139 / 0.22), rgb(100 116 139 / 0.22) 2px, transparent 2px, transparent 5px)";
+
+type LaneOff = LaneBlock<UnavailabilityRow>;
+const isRuleRow = (r: UnavailabilityRow) => r.row_key.startsWith("rule|");
 
 /** Axis must span open hours so the need line isn't clipped on sparse days. */
 function withOpenHours(b: { startMin: number; endMin: number }, s: StaffingBasics) {
@@ -146,7 +170,8 @@ function draftCountSeries(points: OccupancyPoint[], shifts: DraftShift[]): numbe
 const GUTTER = "w-[7rem] sm:w-32";
 const NO_OPEN: OpenShiftInput[] = [];
 const NO_RULES_HISTORY: RulesVersion[] = [];
-const NO_UNAVAILABILITY: UnavailabilityInput[] = [];
+const NO_UNAVAILABILITY: UnavailabilityRow[] = [];
+const NO_BLOCKS: LaneOff[] = [];
 const NO_PUSH_ROWS: PushRow[] = [];
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {
@@ -178,6 +203,7 @@ function DayStrip({
   todayIso,
   shortHours,
   draftShifts,
+  offCounts,
 }: {
   chips: CoverageDayChip[];
   selected: string;
@@ -185,6 +211,7 @@ function DayStrip({
   todayIso: string;
   shortHours?: Map<string, number>;
   draftShifts?: Map<string, DraftShift[]>;
+  offCounts?: Map<string, { off: number; requests: number }>;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLButtonElement>(null);
@@ -283,6 +310,15 @@ function DayStrip({
               ) : (shortHours?.get(chip.date) ?? 0) > 0 ? (
                 <span className="mt-0.5 text-[11px] font-medium tabular-nums text-rose-600 dark:text-rose-400">
                   {shortHours!.get(chip.date)!.toFixed(1)}h short
+                </span>
+              ) : null}
+              {offCounts?.get(chip.date)?.requests ? (
+                <span className="mt-0.5 text-[11px] font-medium tabular-nums" style={{ color: REQUEST_COLOR }}>
+                  {offCounts.get(chip.date)!.requests} req off
+                </span>
+              ) : offCounts?.get(chip.date)?.off ? (
+                <span className="mt-0.5 text-[11px] tabular-nums text-muted-foreground">
+                  {offCounts.get(chip.date)!.off} off
                 </span>
               ) : null}
             </button>
@@ -418,16 +454,79 @@ function PersonLaneTrack({
   person,
   axisStart,
   axisSpan,
+  blocks = NO_BLOCKS,
+  flagClash = false,
+  onBlock,
+  onAdd,
 }: {
   person: CoveragePersonDay;
   axisStart: number;
   axisSpan: number;
+  /** This person's unavailability on the day (ADP + scheduling rules). */
+  blocks?: LaneOff[];
+  /** Ring scheduled shifts that overlap a block (today and ahead). */
+  flagClash?: boolean;
+  onBlock?: (row: UnavailabilityRow) => void;
+  /** Tap on free lane space → new unavailability starting at that minute. */
+  onAdd?: (minute: number) => void;
 }) {
+  const end = axisStart + axisSpan;
   return (
     <div
-      className="relative h-9 w-full shrink-0 overflow-hidden rounded-md bg-muted/40"
+      className={cn(
+        "relative h-9 w-full shrink-0 overflow-hidden rounded-md bg-muted/40",
+        onAdd && "transition-colors hover:bg-muted/70",
+      )}
       data-lane={person.employee}
+      onClick={
+        onAdd
+          ? (e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              if (rect.width <= 0) return;
+              const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+              onAdd(snapMinute(axisStart + pct * axisSpan, axisStart, 15));
+            }
+          : undefined
+      }
     >
+      {blocks.map((b, i) => {
+        const s = Math.max(b.fromMin, axisStart);
+        const e = Math.min(b.toMin, end);
+        if (e <= s) return null;
+        const pending = b.row.status === "pending";
+        const label = `${pending ? "Requested off" : isRuleRow(b.row) ? "Off (scheduling rule)" : "Off"} · ${hoursText(b.row)}`;
+        const width = ((e - s) / axisSpan) * 100;
+        return (
+          <button
+            key={`off-${b.row.row_key}-${i}`}
+            type="button"
+            data-off={pending ? "pending" : "approved"}
+            disabled={!onBlock}
+            aria-label={`${person.employee} · ${label}`}
+            title={label}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onBlock?.(b.row);
+            }}
+            className={cn(
+              "absolute inset-y-0.5 flex items-center overflow-hidden rounded-sm border px-1.5 text-left text-[11px] font-medium whitespace-nowrap",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              onBlock && "cursor-pointer hover:brightness-95",
+              isRuleRow(b.row) && "italic",
+            )}
+            style={{
+              left: `${((s - axisStart) / axisSpan) * 100}%`,
+              width: `${Math.max(width, 0.8)}%`,
+              borderStyle: pending ? "dashed" : "solid",
+              borderColor: pending ? REQUEST_COLOR : OFF_BORDER,
+              background: pending ? `${REQUEST_COLOR}1f` : OFF_HATCH,
+              color: pending ? REQUEST_COLOR : "var(--muted-foreground)",
+            }}
+          >
+            {!person.segments.length && width > 14 ? label : null}
+          </button>
+        );
+      })}
       {person.segments.map((seg, i) => {
         const left = segmentLeftPct(seg, axisStart, axisSpan);
         const width = segmentWidthPct(seg, axisStart, axisSpan);
@@ -437,7 +536,7 @@ function PersonLaneTrack({
           return (
             <div
               key={`open-${seg.startMin}-${i}`}
-              className="absolute inset-y-1.5 flex items-center justify-center overflow-hidden rounded-sm border border-dashed text-[11px] font-semibold"
+              className="pointer-events-none absolute inset-y-1.5 flex items-center justify-center overflow-hidden rounded-sm border border-dashed text-[11px] font-semibold"
               style={{
                 left: `${left}%`,
                 width: `${Math.max(width, 0.8)}%`,
@@ -450,12 +549,15 @@ function PersonLaneTrack({
             </div>
           );
         }
+        const clash = flagClash && hitsBlock(seg.startMin, seg.endMin, blocks);
         return (
           <div
             key={`${seg.kind}-${seg.startMin}-${i}`}
+            data-clash={clash || undefined}
             className={cn(
-              "absolute flex items-center justify-center overflow-hidden rounded-sm text-[11px] font-medium text-white",
+              "pointer-events-none absolute flex items-center justify-center overflow-hidden rounded-sm text-[11px] font-medium text-white",
               isSched ? "top-[18px] h-3 border border-dashed opacity-90" : "top-1.5 h-3.5",
+              clash && "ring-2 ring-destructive",
             )}
             style={{
               left: `${left}%`,
@@ -485,6 +587,9 @@ function CoverageTimeline({
   todayIso,
   need,
   draftShifts,
+  off,
+  onBlock,
+  onAdd,
 }: {
   people: CoveragePersonDay[];
   points: OccupancyPoint[];
@@ -495,6 +600,10 @@ function CoverageTimeline({
   todayIso: string;
   need: number[] | null;
   draftShifts: DraftShift[];
+  /** Unavailability per person on this day. */
+  off: Map<string, LaneOff[]>;
+  onBlock?: (row: UnavailabilityRow) => void;
+  onAdd?: (employee: string, minute: number) => void;
 }) {
   const draft = useMemo(
     () => (draftShifts.length ? draftCountSeries(points, draftShifts) : null),
@@ -519,6 +628,16 @@ function CoverageTimeline({
   );
 
   const active = hover ? peopleActiveAt(people, hover.minute) : [];
+  const offAt = hover
+    ? [...off.entries()].flatMap(([employee, blocks]) => {
+        const b = blocks.find((x) => hover.minute >= x.fromMin && hover.minute < x.toMin);
+        return b ? [{ employee, pending: b.row.status === "pending" }] : [];
+      })
+    : [];
+  const flagClash = activeDay >= todayIso;
+  const offOnly = [...off.keys()]
+    .filter((employee) => !people.some((p) => !isOpenLane(p) && p.employee === employee))
+    .sort((a, b) => a.localeCompare(b));
   const occ = hover
     ? (points.find((p) => p.min === hover.minute) ?? {
         actual: 0,
@@ -639,6 +758,18 @@ function CoverageTimeline({
         ) : activeDraft.length ? null : (
           <p className="text-muted-foreground">Nobody on at this time.</p>
         )}
+        {offAt.length ? (
+          <p className="mt-1.5 border-t border-border pt-1.5 text-muted-foreground">
+            Unavailable:{" "}
+            {offAt.map((o, i) => (
+              <span key={o.employee} style={o.pending ? { color: REQUEST_COLOR } : undefined}>
+                {i ? ", " : ""}
+                {o.employee}
+                {o.pending ? " (requested)" : ""}
+              </span>
+            ))}
+          </p>
+        ) : null}
       </div>
     </div>
   ) : null;
@@ -681,6 +812,9 @@ function CoverageTimeline({
           people.map((p) => {
             const totalHrs = p.segments.reduce((sum, s) => sum + s.hours, 0);
             const open = isOpenLane(p);
+            const blocks = open ? NO_BLOCKS : (off.get(p.employee) ?? NO_BLOCKS);
+            const clash =
+              flagClash && p.segments.some((g) => g.kind !== "open" && hitsBlock(g.startMin, g.endMin, blocks));
             const takers = open
               ? draftShifts
                   .filter((s) => s.fillsOpen && p.segments.some((g) => g.startMin === s.startMin && g.endMin === s.endMin))
@@ -699,6 +833,7 @@ function CoverageTimeline({
                   <span className="text-xs text-muted-foreground">
                     {totalHrs.toFixed(1)}h
                     {open ? (activeDay < todayIso ? " · unfilled" : " · unassigned") : ""}
+                    {clash ? <span className="font-medium text-destructive"> · clash</span> : null}
                   </span>
                   {takers.length ? (
                     <span
@@ -715,6 +850,10 @@ function CoverageTimeline({
                     person={p}
                     axisStart={axisStart}
                     axisSpan={span}
+                    blocks={blocks}
+                    flagClash={flagClash}
+                    onBlock={onBlock}
+                    onAdd={!open && onAdd ? (m) => onAdd(p.employee, m) : undefined}
                   />
                 </div>
               </div>
@@ -764,6 +903,35 @@ function CoverageTimeline({
                       : `${s.hours}h`}
                   </div>
                 </div>
+              </div>
+            </div>
+          );
+        })}
+        {offOnly.length ? (
+          <p className="pt-1 text-xs font-medium text-muted-foreground">Unavailable, not scheduled</p>
+        ) : null}
+        {offOnly.map((employee) => {
+          const blocks = off.get(employee)!;
+          const pending = blocks.some((b) => b.row.status === "pending");
+          return (
+            <div key={`off-${employee}`} className="flex items-center gap-2">
+              <div className={cn(GUTTER, "shrink-0 truncate")}>
+                <span className="block truncate text-sm font-medium text-muted-foreground" title={employee}>
+                  {employee}
+                </span>
+                <span className="text-xs" style={pending ? { color: REQUEST_COLOR } : undefined}>
+                  {pending ? "requested off" : <span className="text-muted-foreground">off</span>}
+                </span>
+              </div>
+              <div className="relative min-w-0 flex-1 cursor-crosshair">
+                <PersonLaneTrack
+                  person={{ employee, labor_bucket: "", segments: [] }}
+                  axisStart={axisStart}
+                  axisSpan={span}
+                  blocks={blocks}
+                  onBlock={onBlock}
+                  onAdd={onAdd ? (m) => onAdd(employee, m) : undefined}
+                />
               </div>
             </div>
           );
@@ -830,6 +998,7 @@ export function LaborCoveragePanel({
   savedPushRows = NO_PUSH_ROWS,
   adpWriteEnabled = false,
   scheduleReadAt = null,
+  availability,
 }: {
   /** Scopes the operator's draft picks in local storage. */
   store: string;
@@ -847,8 +1016,8 @@ export function LaborCoveragePanel({
   deliveryDates?: string[];
   /** Saved scheduling-rules versions, newest (live) first. */
   rulesHistory?: RulesVersion[];
-  /** ADP unavailability (pending + approved); the draft works around it. */
-  unavailability?: UnavailabilityInput[];
+  /** ADP unavailability (pending + approved); drawn on the lanes, and the draft works around it. */
+  unavailability?: UnavailabilityRow[];
   /** People on the ADP schedule ahead — the only ones the draft suggests (drops departed staff). */
   activeStaff?: string[];
   /** labor_schedule_pushes rows for upcoming weeks; a week with any is locked to that saved plan. */
@@ -857,6 +1026,14 @@ export function LaborCoveragePanel({
   adpWriteEnabled?: boolean;
   /** Last ADP schedule read (adp_scheduled_shifts.scraped_at_utc) — resolves unconfirmed saves. */
   scheduleReadAt?: string | null;
+  /** Managing ADP unavailability from the chart (Issue #427); omitted = view only. */
+  availability?: {
+    canManage: boolean;
+    applyBlock: ApplyBlock;
+    events: UnavailabilityEventRow[];
+    /** Scheduled ADP shifts from today on — the requests' clash lines. */
+    upcoming: ScheduledShift[];
+  };
 }) {
   const strip = useMemo(
     () => coverageStripDates(win),
@@ -918,6 +1095,31 @@ export function LaborCoveragePanel({
     () => ({ staffing: rules.staffing, dayRules: rules.dayRules, deliveries: new Set(deliveryDates ?? []) }),
     [rules.staffing, rules.dayRules, deliveryDates],
   );
+  const offRows = useMemo(
+    () => [
+      ...unavailability,
+      ...ruleUnavailability(rules.staffRules).map(
+        (r): UnavailabilityRow => ({ ...r, expires_at_ct: null, hours_left: null, scraped_at: null }),
+      ),
+    ],
+    [unavailability, rules.staffRules],
+  );
+  const offCounts = useMemo(
+    () => new Map(strip.map((iso) => [iso, dayUnavailabilityCounts(offRows, iso)])),
+    [strip, offRows],
+  );
+  const pending = useMemo(
+    () =>
+      collapseWeekly(unavailability.filter((r) => r.status === "pending")).sort(
+        (a, b) => (a.hours_left ?? 1e9) - (b.hours_left ?? 1e9) || a.first_date.localeCompare(b.first_date),
+      ),
+    [unavailability],
+  );
+  const [queue, setQueue] = useState<StagedChange[]>([]);
+  const [target, setTarget] = useState<SheetTarget | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const canManage = availability?.canManage ?? false;
+  const onStage = useCallback((c: StagedChange) => setQueue((q) => stage(q, c)), []);
   const roster = useMemo(() => {
     const limits = staffLimits(rules.staffRules);
     return baseRoster.map((a) => ({
@@ -959,6 +1161,7 @@ export function LaborCoveragePanel({
     [activeDay, people, demand, inputs, todayIso],
   );
   const narrative = useMemo(() => coverageNarrative(points), [points]);
+  const dayOff = useMemo(() => (activeDay ? laneBlocks(offRows, activeDay) : new Map<string, LaneOff[]>()), [offRows, activeDay]);
   const openSummary = useMemo(() => {
     const segs = people.filter(isOpenLane).flatMap((p) => p.segments);
     if (!segs.length || !activeDay) return null;
@@ -1516,11 +1719,33 @@ export function LaborCoveragePanel({
           todayIso={todayIso}
           shortHours={demand?.length ? shortHours : undefined}
           draftShifts={showDraft ? drafts?.byDay : undefined}
+          offCounts={offCounts}
           onSelect={(next) => {
             setDay(next);
             syncDayInUrl(next);
           }}
         />
+
+        {availability ? (
+          <UnavailabilityRequests
+            pending={pending}
+            upcoming={availability.upcoming}
+            queue={queue}
+            canManage={canManage}
+            lastReadAt={pending[0]?.scraped_at ?? unavailability[0]?.scraped_at ?? null}
+            onStage={onStage}
+            onQueue={setQueue}
+            onOpen={(r) => {
+              const first = strip.find((iso) => iso >= todayIso && coversDate(r, iso));
+              if (first) {
+                setDay(first);
+                syncDayInUrl(first);
+              } else setTarget({ mode: "entry", row: r, date: r.first_date });
+            }}
+            onAdd={() => setTarget({ mode: "add", employee: null, date: activeDay > todayIso ? activeDay : todayIso })}
+            onHistory={() => setHistoryOpen(true)}
+          />
+        ) : null}
 
         {weekDraft ? (
           <AdpScheduleFinalize
@@ -1610,6 +1835,9 @@ export function LaborCoveragePanel({
           todayIso={todayIso}
           need={need}
           draftShifts={draftShifts}
+          off={dayOff}
+          onBlock={canManage ? (row) => setTarget({ mode: "entry", row, date: activeDay }) : undefined}
+          onAdd={canManage && activeDay >= todayIso ? (employee, minute) => setTarget({ mode: "add", employee, date: activeDay, fromMin: minute }) : undefined}
         />
 
         <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
@@ -1668,6 +1896,22 @@ export function LaborCoveragePanel({
               Draft
             </span>
           ) : null}
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block size-2.5 rounded-sm border" style={{ borderColor: OFF_BORDER, background: OFF_HATCH }} />
+            Unavailable
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-block size-2.5 rounded-sm border border-dashed"
+              style={{ borderColor: REQUEST_COLOR, backgroundColor: `${REQUEST_COLOR}1f` }}
+            />
+            Requested off
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block size-2.5 rounded-sm ring-2 ring-destructive ring-inset" />
+            Clash
+          </span>
+          {canManage && activeDay >= todayIso ? <span>· Tap a lane to mark someone unavailable</span> : null}
         </div>
 
         <OpenShiftAssignBar
@@ -1680,6 +1924,19 @@ export function LaborCoveragePanel({
           }}
           onAssigned={onAssigned}
         />
+
+        {availability ? (
+          <>
+            <UnavailabilityApplyTray queue={queue} applyBlock={availability.applyBlock} onQueue={setQueue} />
+            <EntrySheet
+              target={target}
+              roster={baseRoster.map((a) => a.employee).sort()}
+              onClose={() => setTarget(null)}
+              onStage={onStage}
+            />
+            <UnavailabilityHistorySheet open={historyOpen} events={availability.events} onClose={() => setHistoryOpen(false)} />
+          </>
+        ) : null}
       </CardContent>
     </Card>
   );

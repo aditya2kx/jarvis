@@ -55,6 +55,51 @@ export function blocksOn(rows: UnavailabilityInput[], iso: string): Map<string, 
   return out;
 }
 
+export type LaneBlock<T> = { row: T; fromMin: number; toMin: number };
+
+const isRule = (r: { row_key: string }) => r.row_key.startsWith("rule|");
+
+/**
+ * Entries per person on `iso`, earliest first, for the coverage lanes. A scheduling-rule
+ * day an ADP entry already covers is dropped: it is the same time off, entered twice.
+ */
+export function laneBlocks<T extends UnavailabilityInput & { row_key: string }>(
+  rows: T[],
+  iso: string,
+): Map<string, LaneBlock<T>[]> {
+  const all = new Map<string, LaneBlock<T>[]>();
+  for (const row of rows) {
+    if (!coversDate(row, iso)) continue;
+    const [fromMin, toMin] = blockWindow(row);
+    all.set(row.employee, [...(all.get(row.employee) ?? []), { row, fromMin, toMin }]);
+  }
+  const out = new Map<string, LaneBlock<T>[]>();
+  for (const [employee, blocks] of all) {
+    out.set(
+      employee,
+      blocks
+        .filter((b) => !isRule(b.row) || !blocks.some((o) => !isRule(o.row) && o.fromMin <= b.fromMin && o.toMin >= b.toMin))
+        .sort((a, b) => a.fromMin - b.fromMin),
+    );
+  }
+  return out;
+}
+
+/** People with time off (approved or scheduling rule) and people with a request waiting, on `iso`. */
+export function dayUnavailabilityCounts(rows: UnavailabilityInput[], iso: string): { off: number; requests: number } {
+  const off = new Set<string>();
+  const requests = new Set<string>();
+  for (const r of rows) {
+    if (coversDate(r, iso)) (r.status === "pending" ? requests : off).add(r.employee);
+  }
+  return { off: off.size, requests: requests.size };
+}
+
+/** Does [s, e) overlap any block? */
+export function hitsBlock(s: number, e: number, blocks: readonly { fromMin: number; toMin: number }[]): boolean {
+  return blocks.some((b) => s < b.toMin && b.fromMin < e);
+}
+
 /** Longest part of [s, e) that avoids every block. */
 export function freeSegment(s: number, e: number, blocks: readonly Block[] = []): [number, number] {
   let segs: [number, number][] = [[s, e]];

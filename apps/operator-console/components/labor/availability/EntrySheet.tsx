@@ -29,13 +29,18 @@ function fieldsFor(target: SheetTarget, todayIso: string): EntryFields {
   }
   const r = target.row;
   return {
-    date: r.repeat_weekday != null ? target.date : r.first_date,
+    date: r.first_date,
     allDay: r.all_day || !r.from_time || !r.to_time,
     from: r.from_time?.slice(0, 5) ?? "09:00",
     to: r.to_time?.slice(0, 5) ?? "17:00",
     weekly: r.repeat_weekday != null,
     until: r.repeat_until,
   };
+}
+
+/** The entry's next date on or after `from` (its first date if none is left). */
+function nextDate(r: UnavailabilityRow, from: string): string {
+  return nextDates(r, from)[0] ?? r.first_date;
 }
 
 /** Up to four dates the entry still covers, starting from `from`. */
@@ -263,6 +268,8 @@ function PersonBody({
   const readThrough = offRows.reduce((m, r) => (r.status === "approved" && !fromRule(r) && r.first_date > m ? r.first_date : m), "");
   const lastWeekFrom = readThrough ? addDays(readThrough, -6) : "";
   const nextWeek = addDays(todayIso, 7);
+  const [open, setOpen] = useState<string | null>(null);
+  const entry = (r: UnavailabilityRow) => onTarget({ mode: "entry", row: r, date: nextDate(r, todayIso) });
   const ROW = "w-full rounded-md px-2 py-1.5 text-left text-sm tabular-nums transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return (
     <>
@@ -275,7 +282,7 @@ function PersonBody({
           <section className="flex flex-col gap-1">
             <h4 className="text-xs font-medium text-muted-foreground">Requests waiting on you</h4>
             {pending.map((r) => (
-              <button key={`${r.row_key}-${r.repeat_until ?? ""}`} type="button" className={ROW} onClick={() => onTarget({ mode: "entry", row: r, date: r.first_date })}>
+              <button key={`${r.row_key}-${r.repeat_until ?? ""}`} type="button" className={ROW} onClick={() => entry(r)}>
                 <span className="text-amber-600 dark:text-amber-400">{whenText(r)}</span>
               </button>
             ))}
@@ -284,14 +291,33 @@ function PersonBody({
         <section className="flex flex-col gap-1">
           <h4 className="text-xs font-medium text-muted-foreground">Standing unavailability</h4>
           {lines.length ? (
-            lines.map((l) => (
-              <button key={`${l.weekdays.join("")}-${l.date}-${l.from_time}`} type="button" className={ROW} onClick={() => onTarget({ mode: "entry", row: l.rows[0]!, date: l.date })}>
-                <span className={cn(l.rows.every(fromRule) && "italic")}>
-                  {lineText(l, lastWeekFrom, nextWeek)}
-                  {l.rows.every(fromRule) ? " · scheduling rule" : ""}
-                </span>
-              </button>
-            ))
+            lines.map((l) => {
+              const key = `${l.weekdays.join("")}-${l.date}-${l.from_time}`;
+              const many = l.rows.length > 1;
+              return (
+                <div key={key} className="flex flex-col">
+                  <button
+                    type="button"
+                    className={ROW}
+                    aria-expanded={many ? open === key : undefined}
+                    onClick={() => (many ? setOpen(open === key ? null : key) : entry(l.rows[0]!))}
+                  >
+                    <span className={cn(l.rows.every(fromRule) && "italic")}>
+                      {lineText(l, lastWeekFrom, nextWeek)}
+                      {l.rows.every(fromRule) ? " · scheduling rule" : ""}
+                    </span>
+                    {many ? <span className="ml-1.5 text-xs text-muted-foreground">· {l.rows.length} ADP entries</span> : null}
+                  </button>
+                  {many && open === key
+                    ? l.rows.map((r) => (
+                        <button key={r.row_key} type="button" className={cn(ROW, "pl-5 text-muted-foreground")} onClick={() => entry(r)}>
+                          {whenText(r)}
+                        </button>
+                      ))
+                    : null}
+                </div>
+              );
+            })
           ) : (
             <p className="px-2 text-sm text-muted-foreground">Nothing marked — available any time.</p>
           )}

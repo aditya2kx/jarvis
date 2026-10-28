@@ -10,6 +10,18 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Switch } from "@/components/ui/switch";
 import type { UnavailabilityRow } from "@/lib/bq/queries";
 import { bulkAdds, entryError, onOrAfter, type ChangeScope, type EntryFields, type StagedChange } from "@/lib/labor/availability-changes";
+import {
+  personShifts,
+  shiftError,
+  shiftKey,
+  SHIFT_LABEL,
+  timeText,
+  toHhmm,
+  toMin,
+  type PersonShift,
+  type ShiftChange,
+  type Times,
+} from "@/lib/labor/adp-changes";
 import { approvedByPerson, collapseWeekly, coversDate, scheduleConflicts, type ScheduledShift } from "@/lib/labor/unavailability";
 import { addDays, clock, dayLabel, hoursText, lineText, shortDate, WEEKDAYS, whenText } from "@/lib/labor/unavailability-format";
 import { cn } from "@/lib/utils";
@@ -17,12 +29,20 @@ import { cn } from "@/lib/utils";
 export type SheetTarget =
   | { mode: "add"; employee: string | null; date: string }
   | { mode: "entry"; row: UnavailabilityRow; date: string }
-  /** One person's whole picture: requests, standing entries, clashes. */
-  | { mode: "person"; employee: string };
+  /** One person's whole picture: shifts, requests, standing entries, clashes. */
+  | { mode: "person"; employee: string }
+  | { mode: "shift-add"; employee: string | null; date: string }
+  /** One of a person's ADP shifts (draft or published): edit times, reassign or delete. */
+  | { mode: "shift"; employee: string; shift: PersonShift }
+  | { mode: "open-add"; date: string }
+  | { mode: "open-edit"; slot: string; date: string; startMin: number; endMin: number };
+
+type UnavailTarget = Extract<SheetTarget, { mode: "add" | "entry" }>;
+type ShiftTarget = Extract<SheetTarget, { mode: "shift-add" | "shift" | "open-add" | "open-edit" }>;
 
 const fromRule = (r: UnavailabilityRow) => r.row_key.startsWith("rule|");
 
-function fieldsFor(target: SheetTarget, todayIso: string): EntryFields {
+function fieldsFor(target: UnavailTarget, todayIso: string): EntryFields {
   if (target.mode !== "entry") {
     const date = target.mode === "add" && target.date > todayIso ? target.date : todayIso;
     return { date, allDay: true, from: "09:00", to: "17:00", weekly: false, until: null };
@@ -211,9 +231,12 @@ export function EntrySheet({
   todayIso,
   offRows = [],
   shifts = [],
+  canAvailability = true,
+  stagedShift = () => undefined,
   onTarget,
   onClose,
   onStage,
+  onStageShift = () => {},
 }: {
   target: SheetTarget | null;
   roster: string[];
@@ -221,26 +244,36 @@ export function EntrySheet({
   /** Existing unavailability + scheduled shifts, marked on the add drawer's day picker. */
   offRows?: UnavailabilityRow[];
   shifts?: ScheduledShift[];
+  /** Labor › Availability access: unavailability can be changed, not only seen. */
+  canAvailability?: boolean;
+  /** The staged change for a shift, by `shiftKey`. */
+  stagedShift?: (key: string) => ShiftChange | undefined;
   /** Move the drawer to another target (person → entry / add). */
   onTarget: (t: SheetTarget) => void;
   onClose: () => void;
   onStage: (c: StagedChange) => void;
+  onStageShift?: (c: ShiftChange) => void;
 }) {
-  const key = !target
-    ? ""
-    : target.mode === "add"
-      ? `add-${target.employee}-${target.date}`
-      : target.mode === "person"
-        ? `person-${target.employee}`
-        : `${target.row.row_key}-${target.date}`;
+  const key = !target ? "" : targetKey(target);
   return (
     <Sheet open={target != null} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-md">
         {target ? (
           target.mode === "person" ? (
-            <PersonBody key={key} employee={target.employee} todayIso={todayIso} offRows={offRows} shifts={shifts} onTarget={onTarget} />
-          ) : (
+            <PersonBody
+              key={key}
+              employee={target.employee}
+              todayIso={todayIso}
+              offRows={offRows}
+              shifts={shifts}
+              canAvailability={canAvailability}
+              stagedShift={stagedShift}
+              onTarget={onTarget}
+            />
+          ) : target.mode === "add" || target.mode === "entry" ? (
             <SheetBody key={key} target={target} roster={roster} todayIso={todayIso} offRows={offRows} shifts={shifts} onClose={onClose} onStage={onStage} />
+          ) : (
+            <ShiftBody key={key} target={target} roster={roster} todayIso={todayIso} offRows={offRows} shifts={shifts} onClose={onClose} onStage={onStageShift} />
           )
         ) : null}
       </SheetContent>
@@ -248,19 +281,60 @@ export function EntrySheet({
   );
 }
 
+function targetKey(t: SheetTarget): string {
+  switch (t.mode) {
+    case "add":
+      return `add-${t.employee}-${t.date}`;
+    case "entry":
+      return `${t.row.row_key}-${t.date}`;
+    case "person":
+      return `person-${t.employee}`;
+    case "shift-add":
+      return `shift-add-${t.employee}-${t.date}`;
+    case "shift":
+      return `shift-${t.employee}-${t.shift.date}-${t.shift.startMin}`;
+    case "open-add":
+      return `open-add-${t.date}`;
+    case "open-edit":
+      return `open-edit-${t.slot}`;
+    default: {
+      const never: never = t;
+      return never;
+    }
+  }
+}
+
+const SHIFT_DAYS = 14;
+
+/** "Will delete" / "Will change to …" / "Will go to …" for a shift with a staged change. */
+function stagedShiftText(c: ShiftChange): string {
+  if (c.kind === "shift-edit") return `Will change to ${timeText(c.to)}`;
+  if (c.kind === "shift-reassign") return `Will go to ${c.toEmployee}`;
+  return c.kind === "shift-delete" ? "Will delete" : SHIFT_LABEL[c.kind];
+}
+
 function PersonBody({
   employee,
   todayIso,
   offRows,
   shifts,
+  canAvailability,
+  stagedShift,
   onTarget,
 }: {
   employee: string;
   todayIso: string;
   offRows: UnavailabilityRow[];
   shifts: ScheduledShift[];
+  canAvailability: boolean;
+  stagedShift: (key: string) => ShiftChange | undefined;
   onTarget: (t: SheetTarget) => void;
 }) {
+  const tomorrow = addDays(todayIso, 1);
+  const upcoming = personShifts(shifts, employee, tomorrow);
+  const [allShifts, setAllShifts] = useState(false);
+  const horizon = addDays(tomorrow, SHIFT_DAYS);
+  const shown = allShifts ? upcoming : upcoming.filter((x) => x.date < horizon);
   const mine = offRows.filter((r) => r.employee === employee);
   const pending = collapseWeekly(mine.filter((r) => r.status === "pending" && !fromRule(r)));
   const lines = approvedByPerson(mine, todayIso)[0]?.lines ?? [];
@@ -269,20 +343,53 @@ function PersonBody({
   const lastWeekFrom = readThrough ? addDays(readThrough, -6) : "";
   const nextWeek = addDays(todayIso, 7);
   const [open, setOpen] = useState<string | null>(null);
-  const entry = (r: UnavailabilityRow) => onTarget({ mode: "entry", row: r, date: nextDate(r, todayIso) });
-  const ROW = "w-full rounded-md px-2 py-1.5 text-left text-sm tabular-nums transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  const entry = canAvailability ? (r: UnavailabilityRow) => onTarget({ mode: "entry", row: r, date: nextDate(r, todayIso) }) : undefined;
+  const ROW =
+    "w-full rounded-md px-2 py-1.5 text-left text-sm tabular-nums transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-transparent";
   return (
     <>
       <SheetHeader>
         <SheetTitle className="truncate pr-8">{employee}</SheetTitle>
-        <SheetDescription>Unavailability from ADP, plus your scheduling rules. Tap an entry to change it.</SheetDescription>
+        <SheetDescription>Shifts and unavailability from ADP, plus your scheduling rules. Tap one to change it.</SheetDescription>
       </SheetHeader>
       <div className="flex flex-col gap-5 px-4">
+        <section className="flex flex-col gap-1" data-testid="person-shifts">
+          <h4 className="text-xs font-medium text-muted-foreground">Upcoming shifts</h4>
+          {shown.length ? (
+            shown.map((x) => {
+              const change = stagedShift(shiftKey({ kind: "shift-delete", employee, ...x }));
+              return (
+                <button
+                  key={`${x.date}-${x.startMin}`}
+                  type="button"
+                  className={cn(ROW, "flex items-center justify-between gap-2", change && "bg-primary/5")}
+                  onClick={() => onTarget({ mode: "shift", employee, shift: x })}
+                >
+                  <span className={cn(change?.kind === "shift-delete" && "line-through opacity-60")}>
+                    {dayLabel(x.date)} · {timeText(x)}
+                  </span>
+                  {change ? (
+                    <Badge variant={change.kind === "shift-delete" ? "destructive" : "default"}>{stagedShiftText(change)}</Badge>
+                  ) : x.draft ? (
+                    <Badge variant="outline">Draft</Badge>
+                  ) : null}
+                </button>
+              );
+            })
+          ) : (
+            <p className="px-2 text-sm text-muted-foreground">No shifts in ADP from tomorrow on.</p>
+          )}
+          {upcoming.length > shown.length ? (
+            <Button size="xs" variant="ghost" className="w-fit" onClick={() => setAllShifts(true)}>
+              Show all {upcoming.length}
+            </Button>
+          ) : null}
+        </section>
         {pending.length ? (
           <section className="flex flex-col gap-1">
             <h4 className="text-xs font-medium text-muted-foreground">Requests waiting on you</h4>
             {pending.map((r) => (
-              <button key={`${r.row_key}-${r.repeat_until ?? ""}`} type="button" className={ROW} onClick={() => entry(r)}>
+              <button key={`${r.row_key}-${r.repeat_until ?? ""}`} type="button" className={ROW} disabled={!entry} onClick={() => entry?.(r)}>
                 <span className="text-amber-600 dark:text-amber-400">{whenText(r)}</span>
               </button>
             ))}
@@ -300,7 +407,8 @@ function PersonBody({
                     type="button"
                     className={ROW}
                     aria-expanded={many ? open === key : undefined}
-                    onClick={() => (many ? setOpen(open === key ? null : key) : entry(l.rows[0]!))}
+                    disabled={!many && !entry}
+                    onClick={() => (many ? setOpen(open === key ? null : key) : entry?.(l.rows[0]!))}
                   >
                     <span className={cn(l.rows.every(fromRule) && "italic")}>
                       {lineText(l, lastWeekFrom, nextWeek)}
@@ -310,7 +418,7 @@ function PersonBody({
                   </button>
                   {many && open === key
                     ? l.rows.map((r) => (
-                        <button key={r.row_key} type="button" className={cn(ROW, "pl-5 text-muted-foreground")} onClick={() => entry(r)}>
+                        <button key={r.row_key} type="button" className={cn(ROW, "pl-5 text-muted-foreground")} disabled={!entry} onClick={() => entry?.(r)}>
                           {whenText(r)}
                         </button>
                       ))
@@ -334,7 +442,12 @@ function PersonBody({
         ) : null}
       </div>
       <SheetFooter className="flex-row justify-end">
-        <Button onClick={() => onTarget({ mode: "add", employee, date: todayIso })}>Add unavailability</Button>
+        {canAvailability ? (
+          <Button variant="outline" onClick={() => onTarget({ mode: "add", employee, date: todayIso })}>
+            Add unavailability
+          </Button>
+        ) : null}
+        <Button onClick={() => onTarget({ mode: "shift-add", employee, date: tomorrow })}>Add shift</Button>
       </SheetFooter>
     </>
   );
@@ -439,7 +552,7 @@ function SheetBody({
   onClose,
   onStage,
 }: {
-  target: Exclude<SheetTarget, { mode: "person" }>;
+  target: UnavailTarget;
   roster: string[];
   todayIso: string;
   offRows: UnavailabilityRow[];
@@ -654,6 +767,248 @@ function SheetBody({
           </Button>
         )}
       </SheetFooter>
+    </>
+  );
+}
+
+function ShiftTimes({ value, onChange }: { value: Times; onChange: (t: Times) => void }) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <Label htmlFor="shift-start">Starts</Label>
+        <Input
+          id="shift-start"
+          className={PICKER_INPUT}
+          type="time"
+          step={900}
+          value={Number.isFinite(value.startMin) ? toHhmm(value.startMin) : ""}
+          onChange={(e) => onChange({ ...value, startMin: toMin(e.target.value) })}
+        />
+      </div>
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <Label htmlFor="shift-end">Ends</Label>
+        <Input
+          id="shift-end"
+          className={PICKER_INPUT}
+          type="time"
+          step={900}
+          value={Number.isFinite(value.endMin) ? toHhmm(value.endMin) : ""}
+          onChange={(e) => onChange({ ...value, endMin: toMin(e.target.value) })}
+        />
+      </div>
+    </div>
+  );
+}
+
+function PersonSelect({
+  value,
+  roster,
+  label = "Person",
+  onChange,
+}: {
+  value: string | null;
+  roster: string[];
+  label?: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label>{label}</Label>
+      <Select value={value} onValueChange={(v) => v && onChange(String(v))}>
+        <SelectTrigger className="w-full" aria-label={label}>
+          <SelectValue placeholder="Pick a person" />
+        </SelectTrigger>
+        <SelectContent>
+          {roster.map((n) => (
+            <SelectItem key={n} value={n}>
+              {n}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+const DEFAULT_TIMES: Times = { startMin: 9 * 60, endMin: 15 * 60 };
+
+/** Add / change / delete ADP shifts and open shifts; every button stages into the Changes to ADP tray. */
+function ShiftBody({
+  target,
+  roster,
+  todayIso,
+  offRows,
+  shifts,
+  onClose,
+  onStage,
+}: {
+  target: ShiftTarget;
+  roster: string[];
+  todayIso: string;
+  offRows: UnavailabilityRow[];
+  shifts: ScheduledShift[];
+  onClose: () => void;
+  onStage: (c: ShiftChange) => void;
+}) {
+  const existing = target.mode === "shift" ? target.shift : target.mode === "open-edit" ? target : null;
+  const [times, setTimes] = useState<Times>(existing ? { startMin: existing.startMin, endMin: existing.endMin } : DEFAULT_TIMES);
+  const [employee, setEmployee] = useState<string | null>(target.mode === "shift-add" ? target.employee : null);
+  const [days, setDays] = useState<string[]>(() => (target.mode === "shift-add" || target.mode === "open-add" ? [target.date > todayIso ? target.date : addDays(todayIso, 1)] : []));
+  const [count, setCount] = useState(1);
+  const [editing, setEditing] = useState<"times" | "reassign" | null>(target.mode === "open-edit" ? "times" : null);
+  const tomorrow = addDays(todayIso, 1);
+  const stageAll = (changes: ShiftChange[]) => {
+    for (const c of changes) onStage(c);
+    onClose();
+  };
+  const firstError = (changes: ShiftChange[], empty: string) =>
+    changes.length ? (changes.map((c) => shiftError(c, todayIso)).find((e) => e != null) ?? null) : empty;
+  const marks = (who: string | null) => (iso: string): DayMark | null => {
+    if (!who) return null;
+    const off = offRows.filter((r) => r.employee === who && coversDate(r, iso));
+    if (off.some((r) => r.status === "approved")) return "off";
+    if (off.length) return "requested";
+    return shifts.some((x) => x.employee === who && x.date === iso) ? "shift" : null;
+  };
+  const footer = (err: string | null, label: string, changes: ShiftChange[]) => (
+    <SheetFooter className="flex-row justify-end">
+      <Button variant="ghost" onClick={onClose}>
+        Cancel
+      </Button>
+      <Button disabled={err != null} title={err ?? undefined} onClick={() => stageAll(changes)}>
+        {label}
+      </Button>
+    </SheetFooter>
+  );
+
+  if (target.mode === "shift-add" || target.mode === "open-add") {
+    const open = target.mode === "open-add";
+    const changes: ShiftChange[] = [...days].sort().map((date) =>
+      open ? { kind: "open-add", date, count, ...times } : { kind: "shift-add", date, employee: employee ?? "", ...times },
+    );
+    const err = !open && !employee ? "Pick a person." : firstError(changes, "Pick at least one day.");
+    const n = changes.length;
+    return (
+      <>
+        <SheetHeader>
+          <SheetTitle>{open ? "Add open shift" : "Add shift"}</SheetTitle>
+          <SheetDescription>
+            {open
+              ? "Anyone eligible can pick an open shift up in ADP. Pick every day at once; they go to ADP with your other changes."
+              : "Pick every day at once. The shifts are published in ADP when you apply, so the person sees them."}
+          </SheetDescription>
+        </SheetHeader>
+        <div className="flex flex-col gap-4 px-4">
+          {open ? null : <PersonSelect value={employee} roster={roster} onChange={setEmployee} />}
+          <DayPicker start={[...days].sort()[0] ?? tomorrow} todayIso={tomorrow} days={days} marks={marks(open ? null : employee)} onChange={setDays} />
+          <ShiftTimes value={times} onChange={setTimes} />
+          {open ? (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="open-count">How many each day</Label>
+              <Input
+                id="open-count"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={10}
+                className="w-24"
+                value={count}
+                onChange={(e) => setCount(Math.round(Number(e.target.value)))}
+              />
+            </div>
+          ) : null}
+        </div>
+        {footer(err, n > 1 ? `Add ${n} days to changes` : "Add to changes", changes)}
+      </>
+    );
+  }
+
+  if (target.mode === "open-edit") {
+    const change: ShiftChange = { kind: "open-edit", slot: target.slot, date: target.date, startMin: target.startMin, endMin: target.endMin, to: times };
+    return (
+      <>
+        <SheetHeader>
+          <SheetTitle>Change open shift</SheetTitle>
+          <SheetDescription>
+            {dayLabel(target.date)} · {timeText(target)} · open in ADP
+          </SheetDescription>
+        </SheetHeader>
+        <div className="flex flex-col gap-4 px-4">
+          <ShiftTimes value={times} onChange={setTimes} />
+        </div>
+        {footer(shiftError(change, todayIso), "Save to changes", [change])}
+      </>
+    );
+  }
+
+  const x = target.shift;
+  const base = { date: x.date, employee: target.employee, startMin: x.startMin, endMin: x.endMin };
+  const past = x.date <= todayIso;
+  const header = (
+    <SheetHeader>
+      <div className="flex items-center gap-2 pr-8">
+        <SheetTitle className="truncate">{target.employee}</SheetTitle>
+        <Badge variant={x.draft ? "outline" : "secondary"}>{x.draft ? "Draft" : "Published"}</Badge>
+      </div>
+      <SheetDescription>
+        {dayLabel(x.date)} · {timeText(x)}
+      </SheetDescription>
+    </SheetHeader>
+  );
+  if (editing === "times") {
+    const change: ShiftChange = { kind: "shift-edit", ...base, to: times };
+    return (
+      <>
+        {header}
+        <div className="flex flex-col gap-4 px-4">
+          <ShiftTimes value={times} onChange={setTimes} />
+        </div>
+        {footer(shiftError(change, todayIso), "Save to changes", [change])}
+      </>
+    );
+  }
+  if (editing === "reassign") {
+    const change: ShiftChange = { kind: "shift-reassign", ...base, toEmployee: employee ?? "" };
+    return (
+      <>
+        {header}
+        <div className="flex flex-col gap-4 px-4">
+          <p className="text-sm text-muted-foreground">
+            ADP can&apos;t hand an assigned shift to someone else, so this deletes it and adds the same hours for the person
+            you pick.
+          </p>
+          <PersonSelect value={employee} roster={roster.filter((n) => n !== target.employee)} label="Give it to" onChange={setEmployee} />
+        </div>
+        {footer(employee ? shiftError(change, todayIso) : "Pick a person.", "Reassign in changes", [change])}
+      </>
+    );
+  }
+  return (
+    <>
+      {header}
+      <p className="px-4 text-sm text-muted-foreground">
+        {past ? (
+          "Today's and earlier shifts can't be changed from here."
+        ) : (
+          <>
+            <span className="text-foreground">Edit times</span>, <span className="text-foreground">Reassign</span> or{" "}
+            <span className="text-foreground">Delete</span> — each waits with your other changes until you apply.
+          </>
+        )}
+      </p>
+      {past ? null : (
+        <SheetFooter className="flex-row flex-wrap justify-end">
+          <Button variant="destructive" onClick={() => stageAll([{ kind: "shift-delete", ...base }])}>
+            Delete
+          </Button>
+          <Button variant="outline" onClick={() => setEditing("reassign")}>
+            Reassign
+          </Button>
+          <Button variant="outline" onClick={() => setEditing("times")}>
+            Edit times
+          </Button>
+        </SheetFooter>
+      )}
     </>
   );
 }

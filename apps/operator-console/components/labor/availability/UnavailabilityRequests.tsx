@@ -1,14 +1,13 @@
 "use client";
 
-import { useState } from "react";
 import { HistoryIcon, PlusIcon, Undo2Icon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { UnavailabilityEventRow, UnavailabilityRow } from "@/lib/bq/queries";
-import { changeKey, KIND_LABEL, stagedFor, trayGroups, unstage, type ApplyBlock, type StagedChange, type TrayGroup } from "@/lib/labor/availability-changes";
+import { changeKey, stagedFor, unstage, type StagedChange } from "@/lib/labor/availability-changes";
 import { scheduleConflicts, type ScheduledShift } from "@/lib/labor/unavailability";
-import { centralTime, dayLabel, expiryText, hoursText, shortDate, weekdaysText, whenText } from "@/lib/labor/unavailability-format";
+import { centralTime, dayLabel, expiryText, whenText } from "@/lib/labor/unavailability-format";
 import { cn } from "@/lib/utils";
 
 /** Amber = waiting on the operator; shared with the pending blocks on the coverage lanes. */
@@ -182,84 +181,5 @@ export function UnavailabilityHistorySheet({
         )}
       </SheetContent>
     </Sheet>
-  );
-}
-
-/** One tray line: a single change's own summary, or a person's same-hours adds folded together. */
-function groupText(g: TrayGroup): string {
-  const adds = g.changes.flatMap((c) => (c.kind === "add" ? [c] : []));
-  if (adds.length < 2) return g.changes[0]!.summary;
-  const a = adds[0]!;
-  const hours = hoursText({ all_day: a.allDay, from_time: a.from, to_time: a.to });
-  if (!a.weekly) return `${g.employee} · ${adds.length} days · ${adds.map((c) => shortDate(c.date)).join(", ")} · ${hours}`;
-  const wds = adds.map((c) => (new Date(`${c.date}T12:00:00Z`).getUTCDay() + 6) % 7).sort((x, y) => x - y);
-  return `${g.employee} · Every ${weekdaysText(wds)} · ${hours}${a.until ? ` · until ${shortDate(a.until)}` : ""}`;
-}
-
-/** Staged changes, applied to ADP in one run; nothing shows as done until ADP is read back. */
-export function UnavailabilityApplyTray({
-  queue,
-  applyBlock,
-  onQueue,
-}: {
-  queue: StagedChange[];
-  applyBlock: ApplyBlock;
-  onQueue: (fn: (q: StagedChange[]) => StagedChange[]) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  if (!queue.length) return null;
-  const groups = trayGroups(queue);
-  const people = new Set(queue.map((c) => c.employee)).size;
-  const blocked =
-    applyBlock === "preview"
-      ? "Read-only preview: in prod this runs one ADP job for every change below."
-      : applyBlock === "off"
-        ? "ADP unavailability writes are switched off (CONSOLE_ADP_UNAVAIL_WRITE)."
-        : null;
-  return (
-    <div
-      data-testid="availability-apply-tray"
-      className="sticky bottom-3 z-20 flex flex-col gap-2 rounded-xl border border-border bg-popover/95 p-3 shadow-lg backdrop-blur max-md:bottom-[calc(4.5rem+env(safe-area-inset-bottom))]"
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="text-sm font-medium hover:underline">
-          {queue.length} unavailability change{queue.length === 1 ? "" : "s"} · {people} {people === 1 ? "person" : "people"}
-        </button>
-        <span className="text-xs text-muted-foreground">{open ? "Hide" : "Review"}</span>
-        <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="ghost" onClick={() => onQueue(() => [])}>
-            Discard
-          </Button>
-          <Button size="sm" disabled={blocked != null} title={blocked ?? undefined}>
-            Apply to ADP
-          </Button>
-        </div>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        {blocked ?? "Apply runs one ADP session for all of them, person by person, then re-reads ADP to confirm each."}
-      </p>
-      {open ? (
-        <ul className="flex flex-col divide-y divide-border border-t border-border">
-          {groups.map((g) => (
-            <li key={g.key} className="flex items-center gap-2 py-1.5 text-sm">
-              <Badge variant={g.kind === "deny" || g.kind === "delete" ? "destructive" : "outline"} className="w-16 justify-center">
-                {KIND_LABEL[g.kind]}
-              </Badge>
-              <span className="line-clamp-2 min-w-0 flex-1 text-muted-foreground" title={groupText(g)}>
-                {groupText(g)}
-              </span>
-              <Button
-                size="icon-xs"
-                variant="ghost"
-                aria-label="Undo"
-                onClick={() => onQueue((q) => g.changes.reduce((acc, c) => unstage(acc, changeKey(c)), q))}
-              >
-                <Undo2Icon />
-              </Button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
   );
 }

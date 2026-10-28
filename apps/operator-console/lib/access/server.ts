@@ -99,3 +99,9 @@ export async function actionDenied(name: MutatingActionName): Promise<{ ok: fals
   console.info(JSON.stringify({ event: "console_access_denied", action: name, email: a.email }));
   return { ok: false, error: ACCESS_DENIED_MESSAGE };
 }
+
+/** For an action whose `access` keys cover several areas: does the person hold this one? */
+export async function holdsAccess(key: string): Promise<boolean> {
+  const a = await getAccess();
+  return !a.error && canKey(a.grant, key);
+}

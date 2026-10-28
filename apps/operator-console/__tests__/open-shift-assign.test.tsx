@@ -1,32 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { DraftShift } from "@/lib/labor/shift-draft";
-
-const assign = vi.fn();
-const status = vi.fn();
-const refresh = vi.fn();
-vi.mock("@/app/labor/actions", () => ({
-  assignOpenShiftsAction: (items: unknown) => assign(items),
-  openShiftAssignStatusAction: (id: string | null) => status(id),
-}));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh }) }));
-vi.mock("@/lib/actions/ActionToast", () => ({ useActionToast: () => ({ push: vi.fn() }) }));
-
-import {
-  OpenShiftAssignBar,
-  OpenShiftDayList,
-  type AssignSelection,
-  type DayOpenShift,
-} from "@/components/labor/OpenShiftAssign";
+import type { ShiftChange } from "@/lib/labor/adp-changes";
+import { OpenShiftDayList, type DayOpenShift } from "@/components/labor/OpenShiftAssign";
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
-  vi.useRealTimers();
 });
 
-const fill = (slot: string, employee: string): DraftShift => ({
+const fill = (slot: string, employee: string, picked = false): DraftShift => ({
   date: "2026-10-27",
   kind: "close",
   startMin: 990,
@@ -36,6 +20,7 @@ const fill = (slot: string, employee: string): DraftShift => ({
   trimmed: false,
   fillsOpen: true,
   slot,
+  picked,
   options: [
     { employee, startMin: 990, endMin: 1230, hours: 4, trimmed: false, weekHours: 8, cap: 30 },
     { employee: "Huynh, Hillary", startMin: 990, endMin: 1230, hours: 4, trimmed: false, weekHours: 2, cap: 20 },
@@ -51,27 +36,38 @@ const SHIFTS: DayOpenShift[] = [
   { slot: C, date: "2026-10-27", startMin: 420, endMin: 720, hours: 5, fill: null },
 ];
 
-function list(selected: string[] = [], enabled = true) {
-  const onToggle = vi.fn();
-  const onPick = vi.fn();
+function list({
+  selected = [],
+  shifts = SHIFTS,
+  staged = {},
+  showSuggestions = true,
+}: { selected?: string[]; shifts?: DayOpenShift[]; staged?: Record<string, ShiftChange>; showSuggestions?: boolean } = {}) {
+  const props = {
+    onToggle: vi.fn(),
+    onPick: vi.fn(),
+    onAdd: vi.fn(),
+    onEdit: vi.fn(),
+    onDelete: vi.fn(),
+    onUndo: vi.fn(),
+  };
   render(
     <OpenShiftDayList
       dayLabel="Tue Oct 27"
-      shifts={SHIFTS}
+      shifts={shifts}
       selected={new Set(selected)}
-      enabled={enabled}
-      onToggle={onToggle}
-      onPick={onPick}
+      staged={(k) => staged[k]}
+      showSuggestions={showSuggestions}
+      {...props}
     />,
   );
-  return { onToggle, onPick };
+  return props;
 }
 
 describe("OpenShiftDayList", () => {
   it("lists every open shift with who takes it, and ticks one", () => {
     const { onToggle } = list();
     expect(screen.getAllByRole("combobox")).toHaveLength(2);
-    expect(screen.getByText(/Nobody fits your rules/)).toBeTruthy();
+    expect(screen.getByText("Nobody fits your rules")).toBeTruthy();
     const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
     expect(boxes.map((b) => b.disabled)).toEqual([false, false, true]);
     fireEvent.click(boxes[0]!);
@@ -83,13 +79,13 @@ describe("OpenShiftDayList", () => {
     fireEvent.click(screen.getByRole("button", { name: "Select all" }));
     expect(onToggle).toHaveBeenCalledWith([A, B], true);
     cleanup();
-    const again = list([A, B]);
+    const again = list({ selected: [A, B] });
     fireEvent.click(screen.getByRole("button", { name: "Clear this day" }));
     expect(again.onToggle).toHaveBeenCalledWith([A, B], false);
   });
 
   it("changing the person goes to the week's picks", async () => {
-    const { onPick } = list([A]);
+    const { onPick } = list({ selected: [A] });
     fireEvent.click(screen.getAllByRole("combobox")[0]!);
     const opt = (await screen.findAllByRole("option")).find((o) => o.textContent?.includes("Huynh"))!;
     opt.focus();
@@ -97,80 +93,38 @@ describe("OpenShiftDayList", () => {
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(A, "Huynh, Hillary"));
   });
 
-  it("can't select when ADP writes are off", () => {
-    list([], false);
-    expect((screen.getAllByRole("checkbox") as HTMLInputElement[]).every((b) => b.disabled)).toBe(true);
-    expect(screen.queryByRole("button", { name: "Select all" })).toBeNull();
-    expect(screen.getByText(/ADP schedule writes are off/)).toBeTruthy();
-  });
-});
-
-const ITEMS: AssignSelection[] = [
-  { slot: A, date: "2026-10-27", startMin: 990, endMin: 1230, employee: "Denton, Cimino R" },
-  { slot: "2026-10-31|adp|420|720", date: "2026-10-31", startMin: 420, endMin: 720, employee: "Huynh, Hillary" },
-];
-
-function bar(props: Partial<Parameters<typeof OpenShiftAssignBar>[0]> = {}) {
-  status.mockResolvedValue({ ok: true, data: { rows: [], running: null } });
-  const onClear = vi.fn();
-  const onAssigned = vi.fn();
-  render(<OpenShiftAssignBar items={ITEMS} dropped={0} enabled onClear={onClear} onAssigned={onAssigned} {...props} />);
-  return { onClear, onAssigned };
-}
-
-describe("OpenShiftAssignBar", () => {
-  it("counts the selection across days and clears it", () => {
-    const { onClear } = bar();
-    expect(screen.getByTestId("open-shift-assign-bar").textContent).toMatch(/2 open shifts selected · Tue, Oct 27, Sat, Oct 31/);
-    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
-    expect(onClear).toHaveBeenCalled();
+  it("edits, deletes and adds open shifts", () => {
+    const p = list();
+    fireEvent.click(screen.getAllByRole("button", { name: "Change the 4:30 PM–8:30 PM open shift" })[0]!);
+    expect(p.onEdit).toHaveBeenCalledWith(SHIFTS[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /Delete the/ })[2]!);
+    expect(p.onDelete).toHaveBeenCalledWith(SHIFTS[2]);
+    fireEvent.click(screen.getByRole("button", { name: /Add open shift/ }));
+    expect(p.onAdd).toHaveBeenCalled();
   });
 
-  it("says when selected shifts were dropped because ADP no longer lists them", () => {
-    bar({ items: [], dropped: 1 });
-    expect(screen.getByText(/1 selected shift is no longer open in ADP/)).toBeTruthy();
+  it("shows a staged delete in the row with undo, and can't tick it", () => {
+    const del: ShiftChange = { kind: "open-delete", slot: A, date: "2026-10-27", startMin: 990, endMin: 1230 };
+    const p = list({ selected: [A], staged: { [`open|${A}`]: del } });
+    expect(screen.getByText("Will delete")).toBeTruthy();
+    expect((screen.getAllByRole("checkbox")[0] as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(p.onUndo).toHaveBeenCalledWith(`open|${A}`);
   });
 
-  it("is hidden with nothing selected", () => {
-    bar({ items: [] });
-    expect(screen.queryByTestId("open-shift-assign-bar")).toBeNull();
+  it("with suggestions off, asks who instead of naming the suggestion (a ticked shift keeps its person)", () => {
+    list({ selected: [B], showSuggestions: false });
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes.map((b) => b.disabled)).toEqual([true, false, true]);
+    expect(screen.getByText("Choose who")).toBeTruthy();
+    expect(screen.getByText("Orourke, Elizabeth")).toBeTruthy();
+    expect(screen.queryByText("Denton, Cimino R")).toBeNull();
   });
 
-  it("Write to ADP is off when ADP writes are disabled", () => {
-    bar({ enabled: false });
-    expect((screen.getByRole("button", { name: "Write to ADP" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("reviews in a drawer, assigns, then hands back the assigned slots and reloads", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { onAssigned } = bar();
-    assign.mockResolvedValue({ ok: true, data: { assignId: "a1" }, queued: ["assign"] });
-    fireEvent.click(screen.getByRole("button", { name: "Write to ADP" }));
-    expect(await screen.findByText("Assign 2 open shifts in ADP")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Assign 2 in ADP" }));
-    await waitFor(() => expect(assign).toHaveBeenCalled());
-    expect(assign.mock.calls[0]![0]).toEqual(ITEMS.map(({ date, startMin, endMin, employee }) => ({ date, startMin, endMin, employee })));
-
-    const row = (s: AssignSelection, st: string, error: string | null = null) => ({
-      assign_id: "a1",
-      row_key: "k",
-      date: s.date,
-      employee: s.employee,
-      start_min: s.startMin,
-      end_min: s.endMin,
-      status: st,
-      error,
-      adp_name: null,
-      updated_at: null,
-    });
-    status.mockResolvedValue({
-      ok: true,
-      data: { rows: [row(ITEMS[0]!, "assigned"), row(ITEMS[1]!, "failed", "not eligible")], running: null },
-    });
-    await act(() => vi.advanceTimersByTimeAsync(5000));
-    await waitFor(() => expect(onAssigned).toHaveBeenCalledWith([A]));
-    expect(refresh).toHaveBeenCalled();
-    expect(screen.getByText("1 assigned in ADP")).toBeTruthy();
-    expect(screen.getByText("Huynh, Hillary 2026-10-31: not eligible")).toBeTruthy();
+  it("an empty future day still offers Add open shift", () => {
+    const p = list({ shifts: [] });
+    expect(screen.getByText(/No open shifts in ADP — Tue Oct 27/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Add open shift/ }));
+    expect(p.onAdd).toHaveBeenCalled();
   });
 });

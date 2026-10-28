@@ -254,7 +254,8 @@ export async function triggerAdpScheduleWrite(
     | { mode: "drafts"; pushId: string }
     | { mode: "publish"; weekStart: string }
     | { mode: "dm"; weekStart: string; to?: "dm" | "channel" }
-    | { mode: "assign"; assignId: string },
+    | { mode: "assign"; assignId: string }
+    | { mode: "apply"; batchId: string },
 ): Promise<{ executionName: string }> {
   if (!store) throw new Error("triggerAdpScheduleWrite: store is required");
   const env = [
@@ -265,7 +266,9 @@ export async function triggerAdpScheduleWrite(
       ? { name: "BHAGA_SCHEDULE_PUSH_ID", value: job.pushId }
       : job.mode === "assign"
         ? { name: "BHAGA_SCHEDULE_ASSIGN_ID", value: job.assignId }
-        : { name: "BHAGA_SCHEDULE_WEEK_START", value: job.weekStart },
+        : job.mode === "apply"
+          ? { name: "BHAGA_SCHEDULE_BATCH_ID", value: job.batchId }
+          : { name: "BHAGA_SCHEDULE_WEEK_START", value: job.weekStart },
   ];
   if (job.mode === "dm" && job.to === "channel") {
     env.push({ name: "BHAGA_SCHEDULE_MESSAGE_TO", value: "channel" });

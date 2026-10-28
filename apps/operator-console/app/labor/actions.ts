@@ -16,8 +16,9 @@ import { saveScheduleRules } from "@/lib/labor/schedule-rules-store";
 import { queueDraftPush, weekPushRows } from "@/lib/labor/schedule-push-store";
 import { validatePushShifts, type PushRow } from "@/lib/labor/schedule-push";
 import { startScheduleWrite } from "@/lib/bhaga/schedule-write";
-import { validateAssignItems, type AssignRow } from "@/lib/labor/open-shift-assign";
-import { assignRows, queueAssign } from "@/lib/labor/open-shift-assign-store";
+import { validateAdpChanges, type ApplyRow } from "@/lib/labor/adp-changes";
+import { applyRows, queueAdpChanges } from "@/lib/labor/adp-change-store";
+import { isConsolePreview } from "@/lib/config/preview";
 import { runningAdpExecution } from "@/lib/bhaga/recompute";
 import { chicagoTodayIso } from "@/lib/filters/range";
 import {
@@ -38,7 +39,7 @@ import {
   type PunchFixPoll,
   type PunchFixStart,
 } from "@/lib/bhaga/punch-fix";
-import { actionDenied } from "@/lib/access/server";
+import { ACCESS_DENIED_MESSAGE, actionDenied, holdsAccess } from "@/lib/access/server";
 
 /** Append a new scheduling-rules version (older versions stay as history). */
 export async function saveScheduleRulesAction(
@@ -174,41 +175,57 @@ export async function schedulePushStatusAction(
   }
 }
 
-/** Assign the selected ADP open shifts to the chosen people (Issue #412). */
-export async function assignOpenShiftsAction(
-  items: unknown,
-): Promise<ActionAck<{ assignId: string; count: number }>> {
-  const denied = await actionDenied("assignOpenShiftsAction");
+/**
+ * "Changes to ADP" Apply (Issue #434): every staged shift and unavailability change in one
+ * ADP run. Shift changes need Coverage access + CONSOLE_ADP_SCHEDULE_WRITE; unavailability
+ * changes need Availability access + CONSOLE_ADP_UNAVAIL_WRITE.
+ */
+export async function applyAdpChangesAction(
+  changes: unknown,
+): Promise<ActionAck<{ batchId: string; ids: string[] }>> {
+  const denied = await actionDenied("applyAdpChangesAction");
   if (denied) return denied;
   try {
-    requireScheduleWrite();
-    const valid = validateAssignItems(items, chicagoTodayIso());
+    if (isConsolePreview()) throw new Error("Read-only preview: nothing is sent to ADP from here.");
+    const valid = validateAdpChanges(changes, chicagoTodayIso());
+    const hasShifts = valid.some((a) => a.area === "shift");
+    const hasUnavail = valid.some((a) => a.area === "unavailability");
+    if (hasShifts) {
+      requireScheduleWrite();
+      if (!(await holdsAccess("labor:coverage"))) throw new Error(ACCESS_DENIED_MESSAGE);
+    }
+    if (hasUnavail) {
+      if (!FEATURES.adpUnavailabilityWrite) {
+        throw new Error("Unavailability changes to ADP are turned off (CONSOLE_ADP_UNAVAIL_WRITE).");
+      }
+      if (!(await holdsAccess("labor:availability"))) throw new Error(ACCESS_DENIED_MESSAGE);
+    }
     if (await runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE")) {
       throw new Error("ADP is busy with another schedule write — try again when it finishes.");
     }
-    const assignId = await queueAssign(DEFAULT_STORE, valid, await operatorEmail());
-    await startScheduleWrite(DEFAULT_STORE, { mode: "assign", assignId });
+    const { batchId, ids } = await queueAdpChanges(DEFAULT_STORE, valid, await operatorEmail());
+    await startScheduleWrite(DEFAULT_STORE, { mode: "apply", batchId });
     return okAck({
-      data: { assignId, count: valid.length },
+      data: { batchId, ids },
       queued: ["adp-schedule-write"],
-      message: `Assigning ${valid.length} open shift${valid.length === 1 ? "" : "s"} in ADP — about 2 min to sign in, then ~20 s each.`,
+      message: `Applying ${valid.length} change${valid.length === 1 ? "" : "s"} in ADP — about 2 min to sign in, then ~20 s each.`,
     });
   } catch (e) {
     return failAck(e);
   }
 }
 
-/** A Write to ADP run's rows, plus the assign job still running (so a reload resumes it). */
-export async function openShiftAssignStatusAction(
-  assignId: string | null,
-): Promise<ActionAck<{ rows: AssignRow[]; running: string | null }>> {
-  const denied = await actionDenied("openShiftAssignStatusAction");
+/** An Apply's rows, plus the Apply still running on Cloud Run (so a reload resumes it). */
+export async function adpChangesStatusAction(
+  batchId: string | null,
+): Promise<ActionAck<{ rows: ApplyRow[]; running: string | null }>> {
+  const denied = await actionDenied("adpChangesStatusAction");
   if (denied) return denied;
   try {
-    const hit = await runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE", "assign");
-    const running = hit?.env.BHAGA_SCHEDULE_ASSIGN_ID || null;
-    const id = assignId ?? running;
-    return okAck({ data: { rows: id ? await assignRows(id) : [], running } });
+    const hit = await runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE", "apply");
+    const running = hit?.env.BHAGA_SCHEDULE_BATCH_ID || null;
+    const id = batchId ?? running;
+    return okAck({ data: { rows: id ? await applyRows(id) : [], running } });
   } catch (e) {
     return failAck(e);
   }

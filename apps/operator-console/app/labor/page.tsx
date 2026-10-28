@@ -865,6 +865,7 @@ export default async function LaborPage({
               savedPushRows={savedPushRows}
               adpWriteEnabled={FEATURES.adpScheduleWrite}
               scheduleReadAt={scheduleReadAt}
+              shiftApplyBlock={isConsolePreview() ? "preview" : FEATURES.adpScheduleWrite ? null : "off"}
               availability={{
                 canManage: can("availability"),
                 applyBlock: isConsolePreview() ? "preview" : FEATURES.adpUnavailabilityWrite ? null : "off",

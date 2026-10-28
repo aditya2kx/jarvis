@@ -192,6 +192,25 @@ Pass: all green; operator OK on the demo before marking ready.
 `docs/operator-console/ARCHITECTURE.md` scheduling bullet; `skills/adp_run_automation/README.md`.
 `PROGRESS.md` via the retro follow-up only. Run `check_doc_freshness.py`.
 
+## As built (amendments)
+- **Model:** `ShiftChange` carries `startMin/endMin` = the shift as ADP has it now plus `to: Times` for edits,
+  and a separate `shift-reassign { toEmployee }` kind (one tray line, one row; the job deletes then adds).
+  Open-shift kinds carry the ADP `slot`. No `summary` in the client type (`shiftText` builds it server-side).
+- **Migration 093 columns:** `to_start_min`, `to_end_min`, `to_employee` (no `from_*`); `adp_shift_events`
+  has no `employee` column (the summary names the people).
+- **D5:** no lane ring/dim — a staged change shows where it was made (open-shift row badge "Will delete" /
+  "Will change to …" / "Will add N", drawer shift badge) and in the tray; lanes stay ADP-only.
+- **Old assign UI removed** (`OpenShiftAssignBar`, `assignOpenShiftsAction`, `open-shift-assign*.ts`);
+  the CLI `--queue-assign` / job mode `assign` path stays.
+- **Backend:** open-add creates one open shift per count (the verified single-shift wizard) and presses its
+  own wizard **Publish**; `FIND_SHIFT_JS` takes `state` = draft | published | any. Unavailability in the job:
+  approve only (existing backend); deny/add/edit/delete fail without a click until proven live.
+- **S0 sandbox demo** (operator ask before prod ADP): PR preview `operator-console-pr436` on prod data,
+  desktop + iPhone 14 WebKit — Suggestions off/on, Add open shift (2 days × 2), staged add in the day's list,
+  person drawer → shift → Reassign, tray Review with Apply blocked "Read-only preview".
+- **Out of scope:** unavailability deny/add/edit/delete ADP backends (follow-up once a live ADP session is
+  available); editing past shifts; reassigning an open shift that someone already took.
+
 ## PR mechanics
 One branch / one PR; pushes as `jarvis-agent-bot328` (`cloud-agent-pr.yml` opens the draft), title/body via
 `ManagePullRequest update_pr`, `Closes #434`, `Cursor-Agent:` line; batch-fix babysit loop with

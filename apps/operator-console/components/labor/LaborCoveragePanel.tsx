@@ -463,7 +463,6 @@ function PersonLaneTrack({
   axisSpan,
   blocks = NO_BLOCKS,
   flagClash = false,
-  onBlock,
 }: {
   person: CoveragePersonDay;
   axisStart: number;
@@ -472,7 +471,6 @@ function PersonLaneTrack({
   blocks?: LaneOff[];
   /** Ring scheduled shifts that overlap a block (today and ahead). */
   flagClash?: boolean;
-  onBlock?: (row: UnavailabilityRow) => void;
 }) {
   const end = axisStart + axisSpan;
   return (
@@ -485,22 +483,13 @@ function PersonLaneTrack({
         const label = `${pending ? "Requested unavailable" : isRuleRow(b.row) ? "Unavailable (scheduling rule)" : "Unavailable"} · ${hoursText(b.row)}`;
         const width = ((e - s) / axisSpan) * 100;
         return (
-          <button
+          // Shading only: a tap falls through to the timeline tooltip like a shift; edits go via the name.
+          <div
             key={`off-${b.row.row_key}-${i}`}
-            type="button"
+            role="img"
             data-off={pending ? "pending" : "approved"}
-            disabled={!onBlock}
             aria-label={`${person.employee} · ${label}`}
-            title={label}
-            onClick={(ev) => {
-              ev.stopPropagation();
-              onBlock?.(b.row);
-            }}
-            className={cn(
-              "absolute inset-y-0 rounded-sm",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              onBlock && "cursor-pointer hover:brightness-95",
-            )}
+            className="absolute inset-y-0 rounded-sm"
             style={{
               left: `${((s - axisStart) / axisSpan) * 100}%`,
               width: `${Math.max(width, 0.8)}%`,
@@ -601,7 +590,6 @@ function CoverageTimeline({
   draftShifts,
   off,
   activeStaff,
-  onBlock,
   onPerson,
 }: {
   people: CoveragePersonDay[];
@@ -617,7 +605,6 @@ function CoverageTimeline({
   off: Map<string, LaneOff[]>;
   /** Directory-active people; null when unknown. */
   activeStaff?: ReadonlySet<string> | null;
-  onBlock?: (row: UnavailabilityRow) => void;
   /** Tap a name → that person's unavailability drawer. */
   onPerson?: (employee: string) => void;
 }) {
@@ -883,7 +870,6 @@ function CoverageTimeline({
                     axisSpan={span}
                     blocks={blocks}
                     flagClash={flagClash}
-                    onBlock={onBlock}
                   />
                 </div>
               </div>
@@ -961,7 +947,6 @@ function CoverageTimeline({
                   axisStart={axisStart}
                   axisSpan={span}
                   blocks={blocks}
-                  onBlock={onBlock}
                 />
               </div>
             </div>
@@ -1887,7 +1872,6 @@ export function LaborCoveragePanel({
           draftShifts={draftShifts}
           off={dayOff}
           activeStaff={active}
-          onBlock={canManage && activeDay >= todayIso ? (row) => setTarget({ mode: "entry", row, date: activeDay }) : undefined}
           onPerson={canManage ? (employee) => setTarget({ mode: "person", employee }) : undefined}
         />
 

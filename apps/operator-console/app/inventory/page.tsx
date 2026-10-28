@@ -1,4 +1,5 @@
 import {
+  currentQtyOverrideItems,
   estimatedScheduleDates,
   inventoryStockLevels,
   nextDates,
@@ -96,6 +97,7 @@ export default async function InventoryPage({
   let scheduledDates: { delivery_date: string; has_actuals: boolean }[] = [];
   let estimateByDate: Record<string, RestockRow[]> = {};
   let maxTubs: number | undefined;
+  let manualQtyItems: string[] = [];
   let cadenceWeekday: string | null = null;
   let cadenceHorizon: number | null = null;
   let error: string | undefined;
@@ -123,7 +125,7 @@ export default async function InventoryPage({
     } catch (e) {
       console.error(`order_reco_status_unavailable store=${DEFAULT_STORE}: ${String(e)}`);
     }
-    const [slotRows, nd, config, estimated, scheduled, audit, actuals] =
+    const [slotRows, nd, config, estimated, scheduled, audit, actuals, manualQty] =
       await Promise.all([
         orderRecoSlots(),
         nextDates(),
@@ -132,7 +134,13 @@ export default async function InventoryPage({
         scheduledRestockDates(DEFAULT_STORE),
         usageDayAudit(DEFAULT_STORE),
         restockActuals(DEFAULT_STORE, win),
+        // The badge is a hint; a failed read must not blank the order table.
+        currentQtyOverrideItems(DEFAULT_STORE).catch((e) => {
+          console.error(`current_qty_override_items_failed store=${DEFAULT_STORE}: ${String(e)}`);
+          return [] as string[];
+        }),
       ]);
+    manualQtyItems = manualQty;
     actualsRows = pivotRestockActuals(actuals);
     liveDates = nd.map((d) => normalizeDeliveryDate(d.delivery_date)).filter(Boolean);
     const paint = selectPaintGeneration(liveDates, slotRows);
@@ -247,6 +255,7 @@ export default async function InventoryPage({
                 dates={dates}
                 estimatedDates={estimatedDates}
                 rows={rows}
+                manualQtyItems={manualQtyItems}
                 maxTubs={maxTubs}
                 writable={FEATURES.writeRestock}
               />

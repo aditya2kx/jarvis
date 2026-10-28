@@ -23,19 +23,23 @@ import { cn } from "@/lib/utils";
 
 /**
  * Dual-date reco table with Order Tubs click → batch estimate drawer (Issue #225)
- * and Current Qty click → batch sticky override Sheet (Issue #240).
+ * and Current Qty click → batch override Sheet (Issue #240; an override lasts
+ * until the next ClickUp closing, Issue #438).
  * Client-owned so cell renderers / click handlers stay on this side of the RSC boundary.
  */
 export function OrderRecoTable({
   dates,
   estimatedDates,
   rows,
+  manualQtyItems = [],
   maxTubs,
   writable,
 }: {
   dates: string[];
   estimatedDates: string[];
   rows: OrderRecoPivotedRow[];
+  /** Bases whose Current Qty is an override not yet replaced by a ClickUp closing. */
+  manualQtyItems?: string[];
   maxTubs?: number;
   writable: boolean;
 }) {
@@ -43,6 +47,7 @@ export function OrderRecoTable({
     () => new Set(estimatedDates.map((d) => normalizeDeliveryDate(d))),
     [estimatedDates],
   );
+  const manualQtySet = useMemo(() => new Set(manualQtyItems), [manualQtyItems]);
   const [openDate, setOpenDate] = useState<string | null>(null);
   const [qtyOpen, setQtyOpen] = useState(false);
 
@@ -105,8 +110,23 @@ export function OrderRecoTable({
           const display = n == null || Number.isNaN(n) ? "—" : formatNumber(n, 1);
           const canEditQty =
             writable && item !== "TOTAL" && item !== "Blade";
+          const isManual = manualQtySet.has(item);
+          const manualBadge = (
+            <Badge
+              variant="outline"
+              className="text-[10px] font-normal leading-tight"
+              title="Manual count — replaced by the next ClickUp closing"
+            >
+              Manual
+            </Badge>
+          );
           if (!canEditQty) {
-            return <span className="tabular-nums">{display}</span>;
+            return (
+              <span className="inline-flex items-center gap-1 tabular-nums">
+                {display}
+                {isManual ? manualBadge : null}
+              </span>
+            );
           }
           return (
             <button
@@ -117,10 +137,18 @@ export function OrderRecoTable({
               )}
               onClick={() => setQtyOpen(true)}
               aria-label={`Edit Current Qty (all bases)`}
-              title="Edit Current Qty"
+              title={
+                isManual
+                  ? "Manual count — replaced by the next ClickUp closing"
+                  : "Edit Current Qty"
+              }
             >
               <span>{display}</span>
-              <PencilIcon className="h-3 w-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+              {isManual ? (
+                manualBadge
+              ) : (
+                <PencilIcon className="h-3 w-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+              )}
             </button>
           );
         },
@@ -254,7 +282,7 @@ export function OrderRecoTable({
     });
 
     return cols;
-  }, [dates, estimatedSet, writable]);
+  }, [dates, estimatedSet, manualQtySet, writable]);
 
   return (
     <>

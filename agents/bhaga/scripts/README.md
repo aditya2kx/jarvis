@@ -283,6 +283,7 @@ BigQuery is the **source of truth**. Operator Console reads BQ views. BHAGA Graf
 > **Order reco write-then-swap (migration 067, Issue #261):** `refresh_order_reco` INSERTs a shared `refreshed_at` generation then DELETEs older rows (no empty table). `tvf_order_reco_slot_n` QUALIFYs `s_prev` to latest generation per item. Console `/inventory` omits date columns until item Order tubs sum to TOTAL.
 
 > **Current Qty overrides (migration 058, Issue #240):** `inventory_current_qty_overrides` + COALESCE into `vw_inventory_order_assistant.latest_reading`. Console `/inventory` Current Qty Sheet → MERGE/clear → `refresh_order_reco`. Not model_* / Grafana — no new `BQ_TARGETS`/`GRAFANA_VIEWS` (same class as 055); freshness via reco refresh. Deploy workflow also forces `update-traffic --to-latest` so sticky tags cannot leave new revisions at 0%.
+> Migration 093 (Issue #438) replaces the COALESCE: an override applies only while `updated_at >= ` that base's latest closing `submitted_ts`, so the next ClickUp closing always wins. `current_qty_source` (`override` | `clickup`) drives the console "Manual" badge.
 >
 > **Solo-shift hours (migration 071, Issue #309):** `model_solo_hours_daily` (employee × date) +
 > `vw_solo_hours_daily` / `vw_solo_hours_period`. The interval math is a pure module,

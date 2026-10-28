@@ -475,3 +475,21 @@ def test_adp_shift_states_reads_draft_tag_and_open_day_draft_count():
         ("2026-10-17", "", 870, 1200, True),
         ("2026-10-18", "Huang, Wing", 540, 870, True),
     ]
+
+
+def test_purge_dates_include_days_the_footer_shows_empty():
+    """Removing the last person from a day (a terminated employee's Sat) must still clear it."""
+    footer = ["2 Employees\n14:00 Hrs"] + ["0 Employees\n00:00 Hrs"] * 5 + ["1 Employee\n8:00 Hrs"]
+    weeks = [{
+        "week_label": "Week of Oct 26, 2026 - Nov 1, 2026",
+        "days": footer,
+        "employee_rows": [{"name": "Huynh, Hillary", "days": [{"header_index": 0, "ranges": ["6:30 AM - 1:30 PM"]}]}],
+    }]
+    assert sb.scheduled_shift_purge_dates(weeks) == [
+        "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31",
+    ]
+
+
+def test_purge_dates_skip_unpainted_footer():
+    weeks = [{"week_label": "Week of Oct 26, 2026 - Nov 1, 2026", "days": [""] * 7, "employee_rows": []}]
+    assert sb.scheduled_shift_purge_dates(weeks) == []

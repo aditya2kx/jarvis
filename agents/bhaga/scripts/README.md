@@ -42,7 +42,9 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    `adp_earnings`, `adp_scheduled_daily` (per-day scheduled hours, parsed from `Schedule-*.json`
    Team Schedule footer), `adp_scheduled_shifts` (per-employee day shifts from the same JSON
    `employee_rows`; paid ADP **Approved Time Off / PERSONAL** cells count toward hours with
-   `hour_kind` = `shift` | `pto` | `mixed` — Issue #218; console may Exclude PTO),
+   `hour_kind` = `shift` | `pto` | `mixed` — Issue #218; console may Exclude PTO; each load purges
+   every scraped date with a row plus every day the footer shows `0 Employees`, so removing the last
+   person from a day clears it — Issue #427),
    `adp_open_shifts` (open / unassigned slots from the same JSON's `open_shift_cells`, one row per
    `(date, slot_index)`, purged per scraped `week_start` — Issue #342; `RUNBOOK.md` § ADP open shifts),
    `adp_timecard_gaps` (open punches / scheduled-no-punch days from the Timecards month view

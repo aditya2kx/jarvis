@@ -450,12 +450,12 @@ def main() -> int:
             print(f"  parsed: {len(emp_bq)} scheduled employee-days")
             if args.dry_run:
                 print(f"  DRY: would load {len(emp_bq)} scheduled-shift rows into BQ")
-            elif emp_bq:
+            else:
                 # MERGE alone leaves stale (date, employee) rows when someone is
                 # removed from a day (Lindsay Aug 6 → Aug 7). Purge every date
                 # covered by this scrape, then upsert the authoritative set.
                 from core.datastore import fq, get_client  # noqa: PLC0415
-                dates = sorted({r["date"] for r in emp_bq})
+                dates = schedule_backend.scheduled_shift_purge_dates(payload.get("weeks", []))
                 client = get_client()
                 if client is not None and dates:
                     date_list = ", ".join(f"DATE '{d}'" for d in dates)
@@ -468,15 +468,17 @@ def main() -> int:
                         f"  purged adp_scheduled_shifts for {len(dates)} dates "
                         f"({dates[0]}→{dates[-1]}) before upsert"
                     )
-                n = load_rows(
-                    "adp_scheduled_shifts", emp_bq,
-                    merge_keys=["date", "employee_id"],
-                    column_bq_types={
-                        "date": "DATE", "week_start": "DATE",
-                        "scraped_at_utc": "TIMESTAMP",
-                        "materialized_at_utc": "TIMESTAMP",
-                    },
-                )
+                n = 0
+                if emp_bq:
+                    n = load_rows(
+                        "adp_scheduled_shifts", emp_bq,
+                        merge_keys=["date", "employee_id"],
+                        column_bq_types={
+                            "date": "DATE", "week_start": "DATE",
+                            "scraped_at_utc": "TIMESTAMP",
+                            "materialized_at_utc": "TIMESTAMP",
+                        },
+                    )
                 print(f"  adp_scheduled_shifts (BQ): {n} rows upserted")
                 summaries.append({"table": "adp_scheduled_shifts", "rows": n})
 

@@ -36,6 +36,8 @@ describe("keys and staging", () => {
     expect(q.map(adpChangeKey)).toEqual(["s:shift|Lee, Ana|2026-10-31|420-780", "u:req|r1"]);
     expect(unstageAdp(q, ["u:req|r1"])).toEqual([shift(del)]);
     expect(changePeople(q)).toBe(1);
+    const re = shift({ kind: "shift-reassign", date: "2026-10-31", employee: "Lee, Ana", toEmployee: "Roe, Sam", ...T });
+    expect(changePeople([re])).toBe(2);
   });
 
   it("open shifts are keyed by slot, so two identical ones stay two", () => {

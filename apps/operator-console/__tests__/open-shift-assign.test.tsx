@@ -41,7 +41,14 @@ function list({
   shifts = SHIFTS,
   staged = {},
   showSuggestions = true,
-}: { selected?: string[]; shifts?: DayOpenShift[]; staged?: Record<string, ShiftChange>; showSuggestions?: boolean } = {}) {
+  adds = [],
+}: {
+  selected?: string[];
+  shifts?: DayOpenShift[];
+  staged?: Record<string, ShiftChange>;
+  showSuggestions?: boolean;
+  adds?: Extract<ShiftChange, { kind: "open-add" }>[];
+} = {}) {
   const props = {
     onToggle: vi.fn(),
     onPick: vi.fn(),
@@ -54,6 +61,7 @@ function list({
     <OpenShiftDayList
       dayLabel="Tue Oct 27"
       shifts={shifts}
+      adds={adds}
       selected={new Set(selected)}
       staged={(k) => staged[k]}
       showSuggestions={showSuggestions}
@@ -126,5 +134,15 @@ describe("OpenShiftDayList", () => {
     expect(screen.getByText(/No open shifts in ADP — Tue Oct 27/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Add open shift/ }));
     expect(p.onAdd).toHaveBeenCalled();
+  });
+
+  it("shows open shifts staged to be added on the day, with undo", () => {
+    const add = { kind: "open-add" as const, date: "2026-10-27", startMin: 420, endMin: 780, count: 2 };
+    const p = list({ shifts: [], adds: [add] });
+    expect(screen.queryByText(/No open shifts in ADP/)).toBeNull();
+    expect(screen.getByText("Open shifts — Tue Oct 27")).toBeTruthy();
+    expect(screen.getByText("Will add 2")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Undo adding the 7 AM–1 PM open shift" }));
+    expect(p.onUndo).toHaveBeenCalledWith("open-add|2026-10-27|420-780");
   });
 });

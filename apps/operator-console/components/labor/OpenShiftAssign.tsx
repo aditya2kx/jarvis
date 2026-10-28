@@ -65,6 +65,7 @@ function stagedText(c: ShiftChange): string {
 export function OpenShiftDayList({
   dayLabel,
   shifts,
+  adds,
   selected,
   staged,
   showSuggestions,
@@ -77,6 +78,8 @@ export function OpenShiftDayList({
 }: {
   dayLabel: string;
   shifts: DayOpenShift[];
+  /** Open shifts staged to be added on this day. */
+  adds: Extract<ShiftChange, { kind: "open-add" }>[];
   selected: ReadonlySet<string>;
   /** Staged edit / delete for an open shift, by `shiftKey`. */
   staged: (key: string) => ShiftChange | undefined;
@@ -95,7 +98,7 @@ export function OpenShiftDayList({
       <PlusIcon /> Add open shift
     </Button>
   );
-  if (!shifts.length) {
+  if (!shifts.length && !adds.length) {
     return (
       <div
         data-testid="open-shift-assign"
@@ -118,9 +121,13 @@ export function OpenShiftDayList({
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex flex-col gap-0.5">
-          <h4 className="text-sm font-medium text-foreground">Open shifts in ADP — {dayLabel}</h4>
+          <h4 className="text-sm font-medium text-foreground">
+            {shifts.length ? "Open shifts in ADP" : "Open shifts"} — {dayLabel}
+          </h4>
           <p className="text-xs text-muted-foreground">
-            Tick the ones to fill and choose who takes each. Your changes carry across days and go to ADP together.
+            {shifts.length
+              ? "Tick the ones to fill and choose who takes each. Your changes carry across days and go to ADP together."
+              : "None in ADP yet. These go to ADP with your other changes."}
           </p>
         </div>
         <span className="flex items-center gap-2">
@@ -194,6 +201,24 @@ export function OpenShiftDayList({
             </li>
           );
         })}
+        {adds.map((c) => (
+          <li key={shiftKey(c)} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 bg-primary/5 px-3 py-2">
+            <span className="size-4 shrink-0" aria-hidden />
+            <span className="flex min-w-36 items-center gap-2">
+              <Badge variant="secondary" className="h-5 px-1.5 text-[11px] font-normal">
+                {KIND_LABEL[kindOf(c)]}
+              </Badge>
+              <span className="text-sm tabular-nums">{time(c)}</span>
+              <span className="text-xs tabular-nums text-muted-foreground">{((c.endMin - c.startMin) / 60).toFixed(1)}h</span>
+            </span>
+            <span className="flex min-w-0 flex-1 basis-48 items-center gap-1.5">
+              <Badge>{c.count > 1 ? `Will add ${c.count}` : "Will add"}</Badge>
+              <Button size="icon-xs" variant="ghost" aria-label={`Undo adding the ${time(c)} open shift`} onClick={() => onUndo(shiftKey(c))}>
+                <Undo2Icon />
+              </Button>
+            </span>
+          </li>
+        ))}
       </ul>
     </div>
   );

@@ -324,7 +324,10 @@ export function changePeople(queue: AdpChange[]): number {
   const people = new Set<string>();
   for (const a of queue) {
     if (a.area === "unavailability") people.add(a.c.employee);
-    else if ("employee" in a.c) people.add(a.c.employee);
+    else {
+      if ("employee" in a.c) people.add(a.c.employee);
+      if (a.c.kind === "shift-reassign") people.add(a.c.toEmployee);
+    }
   }
   return people.size;
 }

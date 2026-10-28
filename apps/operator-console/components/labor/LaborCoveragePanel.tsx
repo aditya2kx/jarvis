@@ -1723,6 +1723,13 @@ export function LaborCoveragePanel({
     () => [...openSlots.values()].filter((s) => s.date === activeDay),
     [openSlots, activeDay],
   );
+  const dayAdds = useMemo(
+    () =>
+      queue.flatMap((a) =>
+        a.area === "shift" && a.c.kind === "open-add" && a.c.date === activeDay ? [a.c] : [],
+      ),
+    [queue, activeDay],
+  );
   const selectedItems = useMemo<AssignSelection[]>(
     () =>
       [...selected].flatMap((slot) => {
@@ -1947,6 +1954,7 @@ export function LaborCoveragePanel({
           <OpenShiftDayList
             dayLabel={`${label.weekday} ${label.monthDay}`}
             shifts={dayOpen}
+            adds={dayAdds}
             selected={selected}
             staged={stagedShift}
             showSuggestions={showDraft}

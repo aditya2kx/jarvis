@@ -160,6 +160,29 @@ export function ShiftDraftSummary({
   // The coverage chart already draws every shift ADP has; list only what needs a pick or ADP fix.
   const rows = shifts.filter((s) => !s.inAdp || s.adpOpen);
 
+  const weekLine = (
+    <>
+      Week of {weekLabel(weekStart)}: {existingHours.toFixed(0)}h scheduled
+      {draftCount ? ` + ${draftHours.toFixed(1)}h draft (${draftCount} shifts)` : ""} ={" "}
+      <span className={cn("font-medium tabular-nums", over ? "text-rose-600 dark:text-rose-400" : "text-foreground")}>
+        {total.toFixed(0)}h
+      </span>
+      {goalHoursWeek != null ? ` of ${goalHoursWeek}h goal` : ""}
+    </>
+  );
+  if (!rows.length && !breakdown && !over && !(peakLeftHours > 0) && !pickCount && !droppedPicks) {
+    return (
+      <p data-testid="shift-draft" className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        {locked ? (
+          <Badge variant="outline" className="h-4 px-1.5 text-[11px] font-normal">
+            Locked — saved to ADP
+          </Badge>
+        ) : null}
+        <span>{weekLine}</span>
+      </p>
+    );
+  }
+
   return (
     <div
       data-testid="shift-draft"
@@ -176,14 +199,7 @@ export function ShiftDraftSummary({
               {locked ? "Locked — saved to ADP" : "Works around ADP unavailability"}
             </Badge>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Week of {weekLabel(weekStart)}: {existingHours.toFixed(0)}h scheduled +{" "}
-            {draftHours.toFixed(1)}h draft ({draftCount} shifts) ={" "}
-            <span className={cn("font-medium tabular-nums", over ? "text-rose-600 dark:text-rose-400" : "text-foreground")}>
-              {total.toFixed(0)}h
-            </span>
-            {goalHoursWeek != null ? ` of ${goalHoursWeek}h goal` : ""}
-          </p>
+          <p className="text-xs text-muted-foreground">{weekLine}</p>
           {over ? (
             <p className="text-xs text-rose-600 dark:text-rose-400">
               Over the goal: the labor floor and your day rules need these shifts, so no

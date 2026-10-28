@@ -36,3 +36,7 @@ Any plan that introduces or changes operator-facing UI must:
 - Debug dumps, unlabeled icon-only controls, monospace walls of raw SQL in the main UI
 - Desktop-only controls that break at 390px width
 - “Temporary” prototype UI left in a merged PR
+- Showing the same fact two ways (a table restating a chart, a text label repeating what a bar
+  already shows). Convey each piece of information once; keep only rows/labels that add an
+  action or a fact the visual can't. A visual encoding means one thing — e.g. on Labor coverage,
+  hatching is unavailability only, shifts are tinted outlines (Issue #427)

@@ -1948,12 +1948,12 @@ export function LaborCoveragePanel({
             </span>
           ) : null}
           <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block size-2.5 rounded-sm" style={{ background: OFF_HATCH }} />
+            <span className="inline-block h-2.5 w-5 rounded-sm" style={{ background: OFF_HATCH }} />
             Unavailable
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span
-              className="inline-block size-2.5 rounded-sm"
+              className="inline-block h-2.5 w-5 rounded-sm"
               style={{ background: REQUEST_HATCH }}
             />
             Requested

@@ -1502,7 +1502,7 @@ export function LaborCoveragePanel({
               .filter((s) => s.date === d.iso)
               .map((s, _i, day) => planShift(s, lanesFor(d.iso), meal, day))
               // Saved before the person left: their slot still needs covering, so it reads as open.
-              .map((x) => (x.employee && active && !active.has(x.employee) && !x.inAdp ? { ...x, employee: null } : x))]
+              .map((x) => (x.employee && active && !active.has(x.employee) && (!x.inAdp || x.adpOpen) ? { ...x, employee: null } : x))]
           : d.shifts;
         if (shifts.length) byDay.set(d.iso, [...shifts].sort((a, b) => a.startMin - b.startMin));
       }

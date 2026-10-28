@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,24 +10,22 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Switch } from "@/components/ui/switch";
 import type { UnavailabilityRow } from "@/lib/bq/queries";
 import { bulkAdds, entryError, onOrAfter, type ChangeScope, type EntryFields, type StagedChange } from "@/lib/labor/availability-changes";
-import { minToTime } from "@/lib/labor/schedule-inputs";
-import { coversDate, type ScheduledShift } from "@/lib/labor/unavailability";
-import { addDays, dayLabel, hoursText, shortDate, WEEKDAYS, whenText } from "@/lib/labor/unavailability-format";
+import { approvedByPerson, collapseWeekly, coversDate, scheduleConflicts, type ScheduledShift } from "@/lib/labor/unavailability";
+import { addDays, clock, dayLabel, hoursText, lineText, shortDate, WEEKDAYS, whenText } from "@/lib/labor/unavailability-format";
 import { cn } from "@/lib/utils";
 
 export type SheetTarget =
-  /** fromMin: where the operator tapped a lane; starts a two-hour block there instead of all day. */
-  | { mode: "add"; employee: string | null; date: string; fromMin?: number }
-  | { mode: "entry"; row: UnavailabilityRow; date: string };
+  | { mode: "add"; employee: string | null; date: string }
+  | { mode: "entry"; row: UnavailabilityRow; date: string }
+  /** One person's whole picture: requests, standing entries, clashes. */
+  | { mode: "person"; employee: string };
 
 const fromRule = (r: UnavailabilityRow) => r.row_key.startsWith("rule|");
 
-function fieldsFor(target: SheetTarget): EntryFields {
-  if (target.mode === "add") {
-    const at = target.fromMin;
-    return at == null
-      ? { date: target.date, allDay: true, from: "09:00", to: "17:00", weekly: false, until: null }
-      : { date: target.date, allDay: false, from: minToTime(at), to: minToTime(Math.min(at + 120, 23 * 60 + 45)), weekly: false, until: null };
+function fieldsFor(target: SheetTarget, todayIso: string): EntryFields {
+  if (target.mode !== "entry") {
+    const date = target.mode === "add" && target.date > todayIso ? target.date : todayIso;
+    return { date, allDay: true, from: "09:00", to: "17:00", weekly: false, until: null };
   }
   const r = target.row;
   return {
@@ -101,19 +98,22 @@ function TimeFields({ fields, onChange }: { fields: EntryFields; onChange: (f: E
       </label>
       {!fields.allDay ? (
         <div className="grid grid-cols-2 gap-3">
-          <div className="flex flex-col gap-1.5">
+          <div className="flex min-w-0 flex-col gap-1.5">
             <Label htmlFor="unavail-from">From</Label>
-            <Input id="unavail-from" type="time" step={900} value={fields.from ?? ""} onChange={(e) => set({ from: e.target.value })} />
+            <Input id="unavail-from" className={PICKER_INPUT} type="time" step={900} value={fields.from ?? ""} onChange={(e) => set({ from: e.target.value })} />
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="flex min-w-0 flex-col gap-1.5">
             <Label htmlFor="unavail-to">To</Label>
-            <Input id="unavail-to" type="time" step={900} value={fields.to ?? ""} onChange={(e) => set({ to: e.target.value })} />
+            <Input id="unavail-to" className={PICKER_INPUT} type="time" step={900} value={fields.to ?? ""} onChange={(e) => set({ to: e.target.value })} />
           </div>
         </div>
       ) : null}
     </>
   );
 }
+
+/** iOS Safari gives date/time inputs an intrinsic width wider than a phone drawer column. */
+const PICKER_INPUT = "appearance-none [&::-webkit-date-and-time-value]:text-left";
 
 const weekdayOf = (iso: string) => (new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7;
 
@@ -199,35 +199,6 @@ function DayPicker({
   );
 }
 
-function EntryForm({ fields, onChange }: { fields: EntryFields; onChange: (f: EntryFields) => void }) {
-  const set = (patch: Partial<EntryFields>) => onChange({ ...fields, ...patch });
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="unavail-date">{fields.weekly ? "Starts" : "Date"}</Label>
-        <Input id="unavail-date" type="date" value={fields.date} onChange={(e) => set({ date: e.target.value })} />
-      </div>
-      <TimeFields fields={fields} onChange={onChange} />
-      <label className="flex items-center gap-2 text-sm">
-        <Checkbox checked={fields.weekly} onCheckedChange={(v) => set({ weekly: Boolean(v) })} />
-        Repeats weekly
-      </label>
-      {fields.weekly ? (
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="unavail-until">Until (optional)</Label>
-          <Input
-            id="unavail-until"
-            type="date"
-            value={fields.until ?? ""}
-            min={fields.date}
-            onChange={(e) => set({ until: e.target.value || null })}
-          />
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 /** Drawer for one entry (or a new one). Every button stages a change; nothing reaches ADP until Apply. */
 export function EntrySheet({
   target,
@@ -235,6 +206,7 @@ export function EntrySheet({
   todayIso,
   offRows = [],
   shifts = [],
+  onTarget,
   onClose,
   onStage,
 }: {
@@ -244,17 +216,191 @@ export function EntrySheet({
   /** Existing unavailability + scheduled shifts, marked on the add drawer's day picker. */
   offRows?: UnavailabilityRow[];
   shifts?: ScheduledShift[];
+  /** Move the drawer to another target (person → entry / add). */
+  onTarget: (t: SheetTarget) => void;
   onClose: () => void;
   onStage: (c: StagedChange) => void;
 }) {
+  const key = !target
+    ? ""
+    : target.mode === "add"
+      ? `add-${target.employee}-${target.date}`
+      : target.mode === "person"
+        ? `person-${target.employee}`
+        : `${target.row.row_key}-${target.date}`;
   return (
     <Sheet open={target != null} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-md">
         {target ? (
-          <SheetBody key={target.mode === "add" ? `add-${target.employee}-${target.date}-${target.fromMin ?? ""}` : `${target.row.row_key}-${target.date}`} target={target} roster={roster} todayIso={todayIso} offRows={offRows} shifts={shifts} onClose={onClose} onStage={onStage} />
+          target.mode === "person" ? (
+            <PersonBody key={key} employee={target.employee} todayIso={todayIso} offRows={offRows} shifts={shifts} onTarget={onTarget} />
+          ) : (
+            <SheetBody key={key} target={target} roster={roster} todayIso={todayIso} offRows={offRows} shifts={shifts} onClose={onClose} onStage={onStage} />
+          )
         ) : null}
       </SheetContent>
     </Sheet>
+  );
+}
+
+function PersonBody({
+  employee,
+  todayIso,
+  offRows,
+  shifts,
+  onTarget,
+}: {
+  employee: string;
+  todayIso: string;
+  offRows: UnavailabilityRow[];
+  shifts: ScheduledShift[];
+  onTarget: (t: SheetTarget) => void;
+}) {
+  const mine = offRows.filter((r) => r.employee === employee);
+  const pending = collapseWeekly(mine.filter((r) => r.status === "pending" && !fromRule(r)));
+  const lines = approvedByPerson(mine, todayIso)[0]?.lines ?? [];
+  const clashes = scheduleConflicts(mine, shifts.filter((x) => x.employee === employee && x.date >= todayIso));
+  const readThrough = offRows.reduce((m, r) => (r.status === "approved" && !fromRule(r) && r.first_date > m ? r.first_date : m), "");
+  const lastWeekFrom = readThrough ? addDays(readThrough, -6) : "";
+  const nextWeek = addDays(todayIso, 7);
+  const ROW = "w-full rounded-md px-2 py-1.5 text-left text-sm tabular-nums transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  return (
+    <>
+      <SheetHeader>
+        <SheetTitle className="truncate pr-8">{employee}</SheetTitle>
+        <SheetDescription>Unavailability from ADP, plus your scheduling rules. Tap an entry to change it.</SheetDescription>
+      </SheetHeader>
+      <div className="flex flex-col gap-5 px-4">
+        {pending.length ? (
+          <section className="flex flex-col gap-1">
+            <h4 className="text-xs font-medium text-muted-foreground">Requests waiting on you</h4>
+            {pending.map((r) => (
+              <button key={`${r.row_key}-${r.repeat_until ?? ""}`} type="button" className={ROW} onClick={() => onTarget({ mode: "entry", row: r, date: r.first_date })}>
+                <span className="text-amber-600 dark:text-amber-400">{whenText(r)}</span>
+              </button>
+            ))}
+          </section>
+        ) : null}
+        <section className="flex flex-col gap-1">
+          <h4 className="text-xs font-medium text-muted-foreground">Standing unavailability</h4>
+          {lines.length ? (
+            lines.map((l) => (
+              <button key={`${l.weekdays.join("")}-${l.date}-${l.from_time}`} type="button" className={ROW} onClick={() => onTarget({ mode: "entry", row: l.rows[0]!, date: l.date })}>
+                <span className={cn(l.rows.every(fromRule) && "italic")}>
+                  {lineText(l, lastWeekFrom, nextWeek)}
+                  {l.rows.every(fromRule) ? " · scheduling rule" : ""}
+                </span>
+              </button>
+            ))
+          ) : (
+            <p className="px-2 text-sm text-muted-foreground">Nothing marked — available any time.</p>
+          )}
+        </section>
+        {clashes.length ? (
+          <section className="flex flex-col gap-1">
+            <h4 className="text-xs font-medium text-destructive">Scheduled while unavailable</h4>
+            {clashes.map((c) => (
+              <p key={`${c.date}-${c.shift.startMin}`} className="px-2 text-sm tabular-nums">
+                {dayLabel(c.date)} · scheduled {clock(c.shift.startMin)}–{clock(c.shift.endMin)}
+              </p>
+            ))}
+          </section>
+        ) : null}
+      </div>
+      <SheetFooter className="flex-row justify-end">
+        <Button onClick={() => onTarget({ mode: "add", employee, date: todayIso })}>Add unavailability</Button>
+      </SheetFooter>
+    </>
+  );
+}
+
+/** Which days: pick dates in a grid, or weekly on chosen weekdays — shared by add and edit. */
+function WhenEditor({
+  repeat,
+  onRepeat,
+  days,
+  onDays,
+  weekdays,
+  onWeekdays,
+  fields,
+  onFields,
+  todayIso,
+  marks,
+}: {
+  repeat: "days" | "weekly";
+  onRepeat: (r: "days" | "weekly") => void;
+  days: string[];
+  onDays: (d: string[]) => void;
+  weekdays: number[];
+  onWeekdays: (w: number[]) => void;
+  fields: EntryFields;
+  onFields: (f: EntryFields) => void;
+  todayIso: string;
+  marks: (iso: string) => DayMark | null;
+}) {
+  return (
+    <>
+      <Segmented
+        label="Which days"
+        value={repeat}
+        onChange={onRepeat}
+        options={[
+          ["days", "Pick days"],
+          ["weekly", "Repeats weekly"],
+        ]}
+      />
+      {repeat === "days" ? (
+        <DayPicker start={[...days].sort()[0] ?? fields.date} todayIso={todayIso} days={days} marks={marks} onChange={onDays} />
+      ) : (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label>On</Label>
+            <div className="grid grid-cols-7 gap-1" role="group" aria-label="Weekdays">
+              {WEEKDAYS.map((d, i) => {
+                const on = weekdays.includes(i);
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => onWeekdays(on ? weekdays.filter((x) => x !== i) : [...weekdays, i])}
+                    className={cn(
+                      "h-9 rounded-md border text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      on ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                    )}
+                  >
+                    {d}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <Label htmlFor="unavail-start">Starts</Label>
+              <Input id="unavail-start" className={PICKER_INPUT} type="date" value={fields.date} onChange={(e) => onFields({ ...fields, date: e.target.value })} />
+            </div>
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <Label htmlFor="unavail-until">Until (optional)</Label>
+              <Input
+                id="unavail-until"
+                className={PICKER_INPUT}
+                type="date"
+                min={fields.date}
+                value={fields.until ?? ""}
+                onChange={(e) => onFields({ ...fields, until: e.target.value || null })}
+              />
+            </div>
+          </div>
+          {weekdays.length ? (
+            <p className="text-xs text-muted-foreground">
+              First dates: {weekdays.map((w) => onOrAfter(fields.date, w)).sort().map(shortDate).join(" · ")}
+            </p>
+          ) : null}
+        </div>
+      )}
+      <TimeFields fields={fields} onChange={onFields} />
+    </>
   );
 }
 
@@ -267,7 +413,7 @@ function SheetBody({
   onClose,
   onStage,
 }: {
-  target: SheetTarget;
+  target: Exclude<SheetTarget, { mode: "person" }>;
   roster: string[];
   todayIso: string;
   offRows: UnavailabilityRow[];
@@ -275,36 +421,46 @@ function SheetBody({
   onClose: () => void;
   onStage: (c: StagedChange) => void;
 }) {
-  const [fields, setFields] = useState<EntryFields>(() => fieldsFor(target));
-  const [employee, setEmployee] = useState<string | null>(target.mode === "add" ? target.employee : target.row.employee);
+  const row = target.mode === "entry" ? target.row : null;
+  const [fields, setFields] = useState<EntryFields>(() => fieldsFor(target, todayIso));
+  const [employee, setEmployee] = useState<string | null>(row ? row.employee : target.mode === "add" ? target.employee : null);
   const [editing, setEditing] = useState(false);
   const [scope, setScope] = useState<ChangeScope>("series");
-  // A lane tap names the person and day; the panel's Add button starts blank.
-  const fromLane = target.mode === "add" && target.employee != null;
-  const [days, setDays] = useState<string[]>(() => (fromLane ? [target.date] : []));
-  const [repeat, setRepeat] = useState<"days" | "weekly">("days");
-  const [weekdays, setWeekdays] = useState<number[]>(() => (fromLane ? [weekdayOf(target.date)] : []));
+  const [repeat, setRepeat] = useState<"days" | "weekly">(row?.repeat_weekday != null ? "weekly" : "days");
+  const [days, setDays] = useState<string[]>(() => (row && row.repeat_weekday == null ? [row.first_date] : []));
+  const [weekdays, setWeekdays] = useState<number[]>(() => (row?.repeat_weekday != null ? [row.repeat_weekday] : []));
   const stageAndClose = (c: StagedChange) => {
     onStage(c);
     onClose();
   };
+  const marks = (iso: string): DayMark | null => {
+    if (!employee) return null;
+    const off = offRows.filter((r) => r.employee === employee && r.row_key !== row?.row_key && coversDate(r, iso));
+    if (off.some((r) => r.status === "approved")) return "off";
+    if (off.length) return "requested";
+    return shifts.some((x) => x.employee === employee && x.date === iso) ? "shift" : null;
+  };
+  const count = repeat === "days" ? days.length : weekdays.length;
+  const pickError = !count ? (repeat === "days" ? "Pick at least one day." : "Pick at least one weekday.") : null;
+  const changes = (who: string) =>
+    bulkAdds(who, fields, repeat === "days" ? { days } : { weekdays }, (f) => entrySummary(who, f));
+  const editor = (
+    <WhenEditor
+      repeat={repeat}
+      onRepeat={setRepeat}
+      days={days}
+      onDays={setDays}
+      weekdays={weekdays}
+      onWeekdays={setWeekdays}
+      fields={fields}
+      onFields={setFields}
+      todayIso={todayIso}
+      marks={marks}
+    />
+  );
 
   if (target.mode === "add") {
-    const marks = (iso: string): DayMark | null => {
-      if (!employee) return null;
-      const off = offRows.filter((r) => r.employee === employee && coversDate(r, iso));
-      if (off.some((r) => r.status === "approved")) return "off";
-      if (off.length) return "requested";
-      return shifts.some((x) => x.employee === employee && x.date === iso) ? "shift" : null;
-    };
-    const count = repeat === "days" ? days.length : weekdays.length;
-    const err = !employee
-      ? "Pick a person."
-      : !count
-        ? repeat === "days"
-          ? "Pick at least one day."
-          : "Pick at least one weekday."
-        : entryError(fields);
+    const err = !employee ? "Pick a person." : (pickError ?? entryError(fields));
     const noun = repeat === "days" ? (count === 1 ? "day" : "days") : count === 1 ? "weekly repeat" : "weekly repeats";
     return (
       <>
@@ -328,65 +484,7 @@ function SheetBody({
               </SelectContent>
             </Select>
           </div>
-          <Segmented
-            label="Which days"
-            value={repeat}
-            onChange={setRepeat}
-            options={[
-              ["days", "Pick days"],
-              ["weekly", "Repeats weekly"],
-            ]}
-          />
-          {repeat === "days" ? (
-            <DayPicker start={target.date < todayIso ? todayIso : target.date} todayIso={todayIso} days={days} marks={marks} onChange={setDays} />
-          ) : (
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1.5">
-                <Label>On</Label>
-                <div className="grid grid-cols-7 gap-1" role="group" aria-label="Weekdays">
-                  {WEEKDAYS.map((d, i) => {
-                    const on = weekdays.includes(i);
-                    return (
-                      <button
-                        key={d}
-                        type="button"
-                        aria-pressed={on}
-                        onClick={() => setWeekdays(on ? weekdays.filter((x) => x !== i) : [...weekdays, i])}
-                        className={cn(
-                          "h-9 rounded-md border text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                          on ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                        )}
-                      >
-                        {d}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="unavail-start">Starts</Label>
-                  <Input id="unavail-start" type="date" min={todayIso} value={fields.date} onChange={(e) => setFields({ ...fields, date: e.target.value })} />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="unavail-until">Until (optional)</Label>
-                  <Input
-                    id="unavail-until"
-                    type="date"
-                    min={fields.date}
-                    value={fields.until ?? ""}
-                    onChange={(e) => setFields({ ...fields, until: e.target.value || null })}
-                  />
-                </div>
-              </div>
-              {weekdays.length ? (
-                <p className="text-xs text-muted-foreground">
-                  First dates: {weekdays.map((w) => onOrAfter(fields.date, w)).sort().map(shortDate).join(" · ")}
-                </p>
-              ) : null}
-            </div>
-          )}
-          <TimeFields fields={fields} onChange={setFields} />
+          {editor}
         </div>
         <SheetFooter className="flex-row justify-end">
           <Button variant="ghost" onClick={onClose}>
@@ -396,9 +494,7 @@ function SheetBody({
             disabled={err != null}
             title={err ?? undefined}
             onClick={() => {
-              const summarize = (f: EntryFields) => entrySummary(employee!, f);
-              const pick = repeat === "days" ? { days } : { weekdays };
-              for (const c of bulkAdds(employee!, fields, pick, summarize)) onStage(c);
+              for (const c of changes(employee!)) onStage(c);
               onClose();
             }}
           >
@@ -411,7 +507,7 @@ function SheetBody({
 
   const r = target.row;
   const weekly = r.repeat_weekday != null;
-  const scopeDate = scope === "date" ? target.date : r.first_date;
+  const onlyDate = weekly && scope === "date";
   const header = (
     <SheetHeader>
       <div className="flex items-center gap-2 pr-8">
@@ -458,7 +554,20 @@ function SheetBody({
     );
   }
 
-  const err = entryError(fields);
+  // The entry itself becomes the first day / weekday picked; any extra picks are new entries.
+  const save = () => {
+    if (onlyDate) {
+      const f = { ...fields, date: target.date, weekly: false, until: null };
+      stageAndClose({ kind: "edit", rowKey: r.row_key, employee: r.employee, scope: "date", summary: entrySummary(r.employee, f), ...f });
+      return;
+    }
+    const [first, ...rest] = changes(r.employee);
+    if (first?.kind !== "add") return;
+    onStage({ ...first, kind: "edit", rowKey: r.row_key, scope: "series" });
+    for (const c of rest) onStage(c);
+    onClose();
+  };
+  const err = onlyDate ? entryError(fields) : (pickError ?? entryError(fields));
   return (
     <>
       {header}
@@ -466,7 +575,7 @@ function SheetBody({
         {!editing ? (
           <div className="flex flex-col gap-3 text-sm">
             <p className="text-muted-foreground">
-              Approved in ADP. <span className="text-foreground">Edit</span> changes the hours or dates;{" "}
+              Approved in ADP. <span className="text-foreground">Edit</span> changes the days or hours;{" "}
               <span className="text-foreground">Delete</span> removes it from ADP. Either waits with your other changes until you apply.
             </p>
             {weekly ? (
@@ -491,12 +600,7 @@ function SheetBody({
             />
           </div>
         ) : null}
-        {editing ? (
-          <EntryForm
-            fields={scope === "date" ? { ...fields, date: target.date, weekly: false, until: null } : fields}
-            onChange={setFields}
-          />
-        ) : null}
+        {editing ? onlyDate ? <TimeFields fields={fields} onChange={setFields} /> : editor : null}
       </div>
       <SheetFooter className="flex-row justify-end">
         <Button
@@ -507,23 +611,16 @@ function SheetBody({
               rowKey: r.row_key,
               employee: r.employee,
               scope: weekly ? scope : "series",
-              date: scopeDate,
-              summary: `${r.employee} · ${scope === "date" && weekly ? `${dayLabel(target.date)} only` : whenText(r)}`,
+              date: onlyDate ? target.date : r.first_date,
+              summary: `${r.employee} · ${onlyDate ? `${dayLabel(target.date)} only` : whenText(r)}`,
             })
           }
         >
           Delete
         </Button>
         {editing ? (
-          <Button
-            disabled={err != null}
-            title={err ?? undefined}
-            onClick={() => {
-              const f = scope === "date" && weekly ? { ...fields, date: target.date, weekly: false, until: null } : fields;
-              stageAndClose({ kind: "edit", rowKey: r.row_key, employee: r.employee, scope: weekly ? scope : "series", summary: entrySummary(r.employee, f), ...f });
-            }}
-          >
-            Save to changes
+          <Button disabled={err != null} title={err ?? undefined} onClick={save}>
+            {!onlyDate && count > 1 ? `Save + add ${count - 1} more` : "Save to changes"}
           </Button>
         ) : (
           <Button variant="outline" onClick={() => setEditing(true)}>

@@ -67,6 +67,7 @@ import {
   dayRequestCount,
   hitsBlock,
   laneBlocks,
+  scheduleConflicts,
   type LaneBlock,
   type ScheduledShift,
 } from "@/lib/labor/unavailability";
@@ -205,6 +206,7 @@ function DayStrip({
   shortHours,
   draftShifts,
   requestCounts,
+  clashCounts,
 }: {
   chips: CoverageDayChip[];
   selected: string;
@@ -213,6 +215,7 @@ function DayStrip({
   shortHours?: Map<string, number>;
   draftShifts?: Map<string, DraftShift[]>;
   requestCounts?: Map<string, number>;
+  clashCounts?: Map<string, number>;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLButtonElement>(null);
@@ -316,6 +319,11 @@ function DayStrip({
               {requestCounts?.get(chip.date) ? (
                 <span className="mt-0.5 text-[11px] font-medium tabular-nums" style={{ color: REQUEST_COLOR }}>
                   {requestCounts.get(chip.date)} request{requestCounts.get(chip.date) === 1 ? "" : "s"}
+                </span>
+              ) : null}
+              {clashCounts?.get(chip.date) ? (
+                <span className="mt-0.5 text-[11px] font-medium tabular-nums text-destructive">
+                  {clashCounts.get(chip.date)} clash{clashCounts.get(chip.date) === 1 ? "" : "es"}
                 </span>
               ) : null}
             </button>
@@ -454,7 +462,6 @@ function PersonLaneTrack({
   blocks = NO_BLOCKS,
   flagClash = false,
   onBlock,
-  onAdd,
 }: {
   person: CoveragePersonDay;
   axisStart: number;
@@ -464,28 +471,10 @@ function PersonLaneTrack({
   /** Ring scheduled shifts that overlap a block (today and ahead). */
   flagClash?: boolean;
   onBlock?: (row: UnavailabilityRow) => void;
-  /** Tap on free lane space → new unavailability starting at that minute. */
-  onAdd?: (minute: number) => void;
 }) {
   const end = axisStart + axisSpan;
   return (
-    <div
-      className={cn(
-        "relative h-9 w-full shrink-0 overflow-hidden rounded-md bg-muted/40",
-        onAdd && "transition-colors hover:bg-muted/70",
-      )}
-      data-lane={person.employee}
-      onClick={
-        onAdd
-          ? (e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              if (rect.width <= 0) return;
-              const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-              onAdd(snapMinute(axisStart + pct * axisSpan, axisStart, 15));
-            }
-          : undefined
-      }
-    >
+    <div className="relative h-9 w-full shrink-0 overflow-hidden rounded-md bg-muted/40" data-lane={person.employee}>
       {blocks.map((b, i) => {
         const s = Math.max(b.fromMin, axisStart);
         const e = Math.min(b.toMin, end);
@@ -533,7 +522,7 @@ function PersonLaneTrack({
           return (
             <div
               key={`open-${seg.startMin}-${i}`}
-              className="pointer-events-none absolute inset-y-1.5 flex items-center justify-center overflow-hidden rounded-sm border border-dashed text-[11px] font-semibold"
+              className="absolute inset-y-1.5 flex items-center justify-center overflow-hidden rounded-sm border border-dashed text-[11px] font-semibold"
               style={{
                 left: `${left}%`,
                 width: `${Math.max(width, 0.8)}%`,
@@ -552,7 +541,7 @@ function PersonLaneTrack({
             key={`${seg.kind}-${seg.startMin}-${i}`}
             data-clash={clash || undefined}
             className={cn(
-              "pointer-events-none absolute flex items-center justify-center overflow-hidden rounded-sm text-[11px] font-medium text-white",
+              "absolute flex items-center justify-center overflow-hidden rounded-sm text-[11px] font-medium text-white",
               isSched ? "top-[18px] h-3 border border-dashed opacity-90" : "top-1.5 h-3.5",
               clash && "ring-2 ring-destructive",
             )}
@@ -574,6 +563,39 @@ function PersonLaneTrack({
   );
 }
 
+function PersonName({
+  name,
+  italic,
+  muted,
+  color,
+  onPerson,
+}: {
+  name: string;
+  italic?: boolean;
+  muted?: boolean;
+  color?: string;
+  onPerson?: (employee: string) => void;
+}) {
+  const cls = cn("block max-w-full truncate text-left text-sm font-medium", italic && "italic", muted && "text-muted-foreground");
+  if (!onPerson) {
+    return (
+      <span className={cls} style={color ? { color } : undefined} title={name}>
+        {name}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      title={name}
+      onClick={() => onPerson(name)}
+      className={cn(cls, "rounded-sm underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring")}
+    >
+      {name}
+    </button>
+  );
+}
+
 function CoverageTimeline({
   people,
   points,
@@ -586,7 +608,7 @@ function CoverageTimeline({
   draftShifts,
   off,
   onBlock,
-  onAdd,
+  onPerson,
 }: {
   people: CoveragePersonDay[];
   points: OccupancyPoint[];
@@ -600,7 +622,8 @@ function CoverageTimeline({
   /** Unavailability per person on this day. */
   off: Map<string, LaneOff[]>;
   onBlock?: (row: UnavailabilityRow) => void;
-  onAdd?: (employee: string, minute: number) => void;
+  /** Tap a name → that person's unavailability drawer. */
+  onPerson?: (employee: string) => void;
 }) {
   const draft = useMemo(
     () => (draftShifts.length ? draftCountSeries(points, draftShifts) : null),
@@ -821,13 +844,7 @@ function CoverageTimeline({
             return (
               <div key={p.employee} className="flex items-center gap-2">
                 <div className={cn(GUTTER, "shrink-0 truncate")}>
-                  <span
-                    className={cn("block truncate text-sm font-medium", open && "italic")}
-                    style={open ? { color: OPEN } : undefined}
-                    title={p.employee}
-                  >
-                    {p.employee}
-                  </span>
+                  <PersonName name={p.employee} italic={open} color={open ? OPEN : undefined} onPerson={open ? undefined : onPerson} />
                   <span className="text-xs text-muted-foreground">
                     {totalHrs.toFixed(1)}h
                     {open ? (activeDay < todayIso ? " · unfilled" : " · unassigned") : ""}
@@ -851,7 +868,6 @@ function CoverageTimeline({
                     blocks={blocks}
                     flagClash={flagClash}
                     onBlock={onBlock}
-                    onAdd={!open && onAdd ? (m) => onAdd(p.employee, m) : undefined}
                   />
                 </div>
               </div>
@@ -922,9 +938,7 @@ function CoverageTimeline({
           return (
             <div key={`off-${employee}`} className="flex items-center gap-2">
               <div className={cn(GUTTER, "shrink-0 truncate")}>
-                <span className="block truncate text-sm font-medium text-muted-foreground" title={employee}>
-                  {employee}
-                </span>
+                <PersonName name={employee} muted onPerson={onPerson} />
                 <span className="text-xs" style={pending ? { color: REQUEST_COLOR } : undefined}>
                   {pending ? "requested" : <span className="text-muted-foreground">unavailable</span>}
                 </span>
@@ -936,7 +950,6 @@ function CoverageTimeline({
                   axisSpan={span}
                   blocks={blocks}
                   onBlock={onBlock}
-                  onAdd={onAdd ? (m) => onAdd(employee, m) : undefined}
                 />
               </div>
             </div>
@@ -1114,6 +1127,13 @@ export function LaborCoveragePanel({
     () => new Map(strip.map((iso) => [iso, dayRequestCount(unavailability, iso)])),
     [strip, unavailability],
   );
+  const clashCounts = useMemo(() => {
+    const people = new Map<string, Set<string>>();
+    for (const c of scheduleConflicts(offRows, availability?.upcoming ?? [])) {
+      if (c.date >= todayIso) people.set(c.date, (people.get(c.date) ?? new Set()).add(c.employee));
+    }
+    return new Map([...people].map(([d, s]) => [d, s.size]));
+  }, [offRows, availability?.upcoming, todayIso]);
   const pending = useMemo(
     () =>
       collapseWeekly(unavailability.filter((r) => r.status === "pending")).sort(
@@ -1726,6 +1746,7 @@ export function LaborCoveragePanel({
           shortHours={demand?.length ? shortHours : undefined}
           draftShifts={showDraft ? drafts?.byDay : undefined}
           requestCounts={requestCounts}
+          clashCounts={clashCounts}
           onSelect={(next) => {
             setDay(next);
             syncDayInUrl(next);
@@ -1843,7 +1864,7 @@ export function LaborCoveragePanel({
           draftShifts={draftShifts}
           off={dayOff}
           onBlock={canManage && activeDay >= todayIso ? (row) => setTarget({ mode: "entry", row, date: activeDay }) : undefined}
-          onAdd={canManage && activeDay >= todayIso ? (employee, minute) => setTarget({ mode: "add", employee, date: activeDay, fromMin: minute }) : undefined}
+          onPerson={canManage ? (employee) => setTarget({ mode: "person", employee }) : undefined}
         />
 
         <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
@@ -1917,7 +1938,7 @@ export function LaborCoveragePanel({
             <span className="inline-block size-2.5 rounded-sm ring-2 ring-destructive ring-inset" />
             Clash
           </span>
-          {canManage && activeDay >= todayIso ? <span>· Tap a lane to mark someone unavailable</span> : null}
+          {canManage ? <span>· Tap a name for their unavailability</span> : null}
         </div>
 
         <OpenShiftAssignBar
@@ -1940,6 +1961,7 @@ export function LaborCoveragePanel({
               todayIso={todayIso}
               offRows={offRows}
               shifts={availability.upcoming}
+              onTarget={setTarget}
               onClose={() => setTarget(null)}
               onStage={onStage}
             />

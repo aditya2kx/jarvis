@@ -644,7 +644,7 @@ function CoverageTimeline({
   const offAt = hover
     ? [...off.entries()].flatMap(([employee, blocks]) => {
         const b = blocks.find((x) => hover.minute >= x.fromMin && hover.minute < x.toMin);
-        return b ? [{ employee, pending: b.row.status === "pending" }] : [];
+        return b ? [{ employee, pending: b.row.status === "pending", when: hoursText(b.row) }] : [];
       })
     : [];
   const flagClash = activeDay >= todayIso;
@@ -773,16 +773,25 @@ function CoverageTimeline({
           <p className="text-muted-foreground">Nobody on at this time.</p>
         )}
         {offAt.length ? (
-          <p className="mt-1.5 border-t border-border pt-1.5 text-muted-foreground">
-            Unavailable:{" "}
-            {offAt.map((o, i) => (
-              <span key={o.employee} style={o.pending ? { color: REQUEST_COLOR } : undefined}>
-                {i ? ", " : ""}
-                {o.employee}
-                {o.pending ? " (requested)" : ""}
-              </span>
+          <ul className="mt-1.5 flex max-h-40 flex-col gap-1 overflow-y-auto border-t border-border pt-1.5">
+            {offAt.map((o) => (
+              <li key={o.employee} className="flex items-start justify-between gap-3">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className="mt-0.5 inline-block size-2.5 shrink-0 rounded-sm"
+                    style={{ background: o.pending ? REQUEST_HATCH : OFF_HATCH }}
+                  />
+                  <span className="truncate text-muted-foreground">{o.employee}</span>
+                </span>
+                <span
+                  className={cn("shrink-0 tabular-nums", !o.pending && "text-muted-foreground")}
+                  style={o.pending ? { color: REQUEST_COLOR } : undefined}
+                >
+                  {o.when}
+                </span>
+              </li>
             ))}
-          </p>
+          </ul>
         ) : null}
       </div>
     </div>

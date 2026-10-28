@@ -15,7 +15,6 @@ import {
   axisBounds,
   buildOpenLanesForDate,
   buildPersonDaysForDate,
-  coverageNarrative,
   coverageStripDates,
   dayChipSummary,
   filterScheduledForCoverage,
@@ -1207,16 +1206,7 @@ export function LaborCoveragePanel({
       ),
     [activeDay, people, demand, inputs, todayIso],
   );
-  const narrative = useMemo(() => coverageNarrative(points), [points]);
   const dayOff = useMemo(() => (activeDay ? laneBlocks(offRows, activeDay) : new Map<string, LaneOff[]>()), [offRows, activeDay]);
-  const openSummary = useMemo(() => {
-    const segs = people.filter(isOpenLane).flatMap((p) => p.segments);
-    if (!segs.length || !activeDay) return null;
-    const hrs = segs.reduce((sum, s) => sum + s.hours, 0);
-    const noun = segs.length === 1 ? "open shift" : "open shifts";
-    const state = activeDay < todayIso ? "went unfilled" : "unassigned";
-    return `${segs.length} ${noun} (${Number(hrs.toFixed(1))}h) ${state}`;
-  }, [people, activeDay, todayIso]);
 
   const [showDraft, setShowDraft] = useState(true);
 
@@ -1825,12 +1815,6 @@ export function LaborCoveragePanel({
               </Button>
             ) : null}
           </div>
-          <p className="text-sm text-muted-foreground">
-            {narrative}
-            {openSummary ? (
-              <span style={{ color: OPEN }}> · {openSummary}</span>
-            ) : null}
-          </p>
           {shortLine ? (
             <p
               data-testid="coverage-short"

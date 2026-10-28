@@ -330,42 +330,6 @@ export function occupancySeries(
   return out;
 }
 
-/**
- * Plain-English step summary for the dominant series (actual if any, else scheduled).
- * e.g. "1 until 11 AM, then 2 until 2 PM, then 1 until 8 PM"
- */
-export function coverageNarrative(points: OccupancyPoint[]): string {
-  if (!points.length) return "No coverage in range.";
-  const useActual = points.some((p) => p.actual > 0);
-  const series = points.map((p) => ({
-    min: p.min,
-    count: useActual ? p.actual : p.scheduled,
-  }));
-  const steps: { count: number; from: number; to: number }[] = [];
-  for (const p of series) {
-    const last = steps[steps.length - 1];
-    if (last && last.count === p.count) {
-      last.to = p.min;
-    } else {
-      steps.push({ count: p.count, from: p.min, to: p.min });
-    }
-  }
-  // Extend last step to end of final bucket (~+step).
-  if (steps.length && series.length) {
-    const step = series.length > 1 ? series[1]!.min - series[0]!.min : 15;
-    steps[steps.length - 1]!.to = series[series.length - 1]!.min + step;
-  }
-  const nonzero = steps.filter((s) => s.count > 0);
-  if (!nonzero.length) return "No one on the floor.";
-  return nonzero
-    .map((s, i) => {
-      const until = formatClockMin(s.to);
-      if (i === 0) return `${s.count} until ${until}`;
-      return `then ${s.count} until ${until}`;
-    })
-    .join(", ");
-}
-
 export function segmentLeftPct(
   seg: CoverageSegment,
   axisStart: number,

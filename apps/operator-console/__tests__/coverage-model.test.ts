@@ -4,7 +4,6 @@ import {
   buildOpenLanesForDate,
   buildPersonDaysForDate,
   dayChipSummary,
-  coverageNarrative,
   coverageStripDates,
   defaultCoverageDay,
   filterScheduledForCoverage,
@@ -81,7 +80,7 @@ describe("defaultCoverageDay", () => {
 });
 
 describe("buildPersonDaysForDate + occupancy", () => {
-  it("shows 1 until late morning then 2 (actuals)", () => {
+  it("counts 1 in the morning then 2 (actuals)", () => {
     const people = buildPersonDaysForDate(
       "2026-07-31",
       [
@@ -112,11 +111,6 @@ describe("buildPersonDaysForDate + occupancy", () => {
     const at11 = series.find((p) => p.min === 11 * 60);
     expect(at9?.actual).toBe(1);
     expect(at11?.actual).toBe(2);
-    const narrative = coverageNarrative(
-      occupancySeries(people, startMin, endMin, 15),
-    );
-    expect(narrative).toMatch(/1 until/i);
-    expect(narrative).toMatch(/then 2/i);
   });
 
   it("scheduled lanes carry ADP paid hours, not clock span", () => {

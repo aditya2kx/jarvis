@@ -85,14 +85,9 @@ export function laneBlocks<T extends UnavailabilityInput & { row_key: string }>(
   return out;
 }
 
-/** People with time off (approved or scheduling rule) and people with a request waiting, on `iso`. */
-export function dayUnavailabilityCounts(rows: UnavailabilityInput[], iso: string): { off: number; requests: number } {
-  const off = new Set<string>();
-  const requests = new Set<string>();
-  for (const r of rows) {
-    if (coversDate(r, iso)) (r.status === "pending" ? requests : off).add(r.employee);
-  }
-  return { off: off.size, requests: requests.size };
+/** People with an unavailability request waiting on `iso`. */
+export function dayRequestCount(rows: UnavailabilityInput[], iso: string): number {
+  return new Set(rows.filter((r) => r.status === "pending" && coversDate(r, iso)).map((r) => r.employee)).size;
 }
 
 /** Does [s, e) overlap any block? */

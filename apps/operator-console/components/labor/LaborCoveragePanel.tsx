@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronRightIcon } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -63,7 +64,7 @@ import {
   blocksOn,
   collapseWeekly,
   coversDate,
-  dayUnavailabilityCounts,
+  dayRequestCount,
   hitsBlock,
   laneBlocks,
   type LaneBlock,
@@ -203,7 +204,7 @@ function DayStrip({
   todayIso,
   shortHours,
   draftShifts,
-  offCounts,
+  requestCounts,
 }: {
   chips: CoverageDayChip[];
   selected: string;
@@ -211,7 +212,7 @@ function DayStrip({
   todayIso: string;
   shortHours?: Map<string, number>;
   draftShifts?: Map<string, DraftShift[]>;
-  offCounts?: Map<string, { off: number; requests: number }>;
+  requestCounts?: Map<string, number>;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLButtonElement>(null);
@@ -312,13 +313,9 @@ function DayStrip({
                   {shortHours!.get(chip.date)!.toFixed(1)}h short
                 </span>
               ) : null}
-              {offCounts?.get(chip.date)?.requests ? (
+              {requestCounts?.get(chip.date) ? (
                 <span className="mt-0.5 text-[11px] font-medium tabular-nums" style={{ color: REQUEST_COLOR }}>
-                  {offCounts.get(chip.date)!.requests} req off
-                </span>
-              ) : offCounts?.get(chip.date)?.off ? (
-                <span className="mt-0.5 text-[11px] tabular-nums text-muted-foreground">
-                  {offCounts.get(chip.date)!.off} off
+                  {requestCounts.get(chip.date)} request{requestCounts.get(chip.date) === 1 ? "" : "s"}
                 </span>
               ) : null}
             </button>
@@ -635,6 +632,7 @@ function CoverageTimeline({
       })
     : [];
   const flagClash = activeDay >= todayIso;
+  const [showOff, setShowOff] = useState(false);
   const offOnly = [...off.keys()]
     .filter((employee) => !people.some((p) => !isOpenLane(p) && p.employee === employee))
     .sort((a, b) => a.localeCompare(b));
@@ -908,9 +906,17 @@ function CoverageTimeline({
           );
         })}
         {offOnly.length ? (
-          <p className="pt-1 text-xs font-medium text-muted-foreground">Unavailable, not scheduled</p>
+          <button
+            type="button"
+            aria-expanded={showOff}
+            onClick={() => setShowOff((v) => !v)}
+            className="flex w-fit items-center gap-1 rounded-sm pt-1 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ChevronRightIcon className={cn("size-3.5 transition-transform", showOff && "rotate-90")} />
+            {offOnly.length} unavailable, not scheduled
+          </button>
         ) : null}
-        {offOnly.map((employee) => {
+        {(showOff ? offOnly : []).map((employee) => {
           const blocks = off.get(employee)!;
           const pending = blocks.some((b) => b.row.status === "pending");
           return (
@@ -1104,9 +1110,9 @@ export function LaborCoveragePanel({
     ],
     [unavailability, rules.staffRules],
   );
-  const offCounts = useMemo(
-    () => new Map(strip.map((iso) => [iso, dayUnavailabilityCounts(offRows, iso)])),
-    [strip, offRows],
+  const requestCounts = useMemo(
+    () => new Map(strip.map((iso) => [iso, dayRequestCount(unavailability, iso)])),
+    [strip, unavailability],
   );
   const pending = useMemo(
     () =>
@@ -1719,7 +1725,7 @@ export function LaborCoveragePanel({
           todayIso={todayIso}
           shortHours={demand?.length ? shortHours : undefined}
           draftShifts={showDraft ? drafts?.byDay : undefined}
-          offCounts={offCounts}
+          requestCounts={requestCounts}
           onSelect={(next) => {
             setDay(next);
             syncDayInUrl(next);
@@ -1836,7 +1842,7 @@ export function LaborCoveragePanel({
           need={need}
           draftShifts={draftShifts}
           off={dayOff}
-          onBlock={canManage ? (row) => setTarget({ mode: "entry", row, date: activeDay }) : undefined}
+          onBlock={canManage && activeDay >= todayIso ? (row) => setTarget({ mode: "entry", row, date: activeDay }) : undefined}
           onAdd={canManage && activeDay >= todayIso ? (employee, minute) => setTarget({ mode: "add", employee, date: activeDay, fromMin: minute }) : undefined}
         />
 

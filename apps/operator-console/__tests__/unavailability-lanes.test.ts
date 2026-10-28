@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { changeKey, entryError, stage, stagedFor, unstage, type StagedChange } from "@/lib/labor/availability-changes";
-import { dayUnavailabilityCounts, hitsBlock, laneBlocks, type UnavailabilityInput } from "@/lib/labor/unavailability";
+import { dayRequestCount, hitsBlock, laneBlocks, type UnavailabilityInput } from "@/lib/labor/unavailability";
 
 const weeklySat: UnavailabilityInput = {
   employee: "A", status: "pending", first_date: "2026-10-03", from_time: "06:00", to_time: "10:00",
@@ -32,12 +32,12 @@ describe("laneBlocks", () => {
   });
 });
 
-describe("dayUnavailabilityCounts", () => {
-  it("counts people off and people with a request waiting, once each", () => {
-    const dup = { ...allDayMon, from_time: "06:00", to_time: "08:00", all_day: false };
+describe("dayRequestCount", () => {
+  it("counts people with a request waiting, once each, ignoring approved time off", () => {
     const req = { ...weeklySat, first_date: "2026-10-26", repeat_weekday: 0 };
-    expect(dayUnavailabilityCounts([allDayMon, dup, req], "2026-10-26")).toEqual({ off: 1, requests: 1 });
-    expect(dayUnavailabilityCounts([allDayMon, req], "2026-10-27")).toEqual({ off: 0, requests: 0 });
+    const req2 = { ...req, from_time: "12:00", to_time: "14:00" };
+    expect(dayRequestCount([allDayMon, req, req2], "2026-10-26")).toBe(1);
+    expect(dayRequestCount([allDayMon, req], "2026-10-27")).toBe(0);
   });
 });
 

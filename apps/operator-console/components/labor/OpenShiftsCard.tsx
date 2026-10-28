@@ -3,24 +3,20 @@
 import { useMemo, useState } from "react";
 import { useSuggestedHours } from "@/components/labor/SuggestedHoursContext";
 import { LocalMultiSelect } from "@/components/filters/LocalMultiSelect";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
-import { formatClockMin } from "@/lib/labor/coverage-model";
-import { peopleToHire, shiftKind, summarizeOpenShifts, type Cell } from "@/lib/labor/open-shifts-insight";
+import { peopleToHire, summarizeOpenShifts, type Cell } from "@/lib/labor/open-shifts-insight";
 import { DAY_NAMES } from "@/lib/labor/schedule-inputs";
 import { inWeeks, weekOptions, weekStartOf } from "@/lib/labor/week-options";
 import type { LocalMultiSelection } from "@/lib/tables/localMultiFilter";
 
-const OPEN = LABOR_CHART_COLORS.openShift;
 const DRAFT = LABOR_CHART_COLORS.draftShift;
 const KINDS = [
   ["open", "Opener"],
   ["mid", "Mid"],
   ["close", "Closer"],
 ] as const;
-const KIND_LABEL = { open: "Opener", mid: "Mid", close: "Closer" } as const;
 
 function dayLabel(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
@@ -147,50 +143,6 @@ export function OpenShiftsCard({ todayIso }: { todayIso: string }) {
               <p className="mt-1 text-xs text-muted-foreground">
                 Shifts · hours across the selected weeks. Opener starts by 7:30 AM, closer works until 8 PM or later.
               </p>
-            </div>
-
-            <div className="max-h-96 overflow-auto rounded-md border border-border">
-              <Table>
-                <TableHeader className="sticky top-0 bg-card">
-                  <TableRow>
-                    <TableHead className="h-8">Date</TableHead>
-                    <TableHead className="h-8">Shift</TableHead>
-                    <TableHead className="h-8">Time</TableHead>
-                    <TableHead className="h-8 text-right">Hours</TableHead>
-                    <TableHead className="h-8">Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((r, i) => (
-                    <TableRow key={`${r.date}-${r.startMin}-${r.source}-${i}`}>
-                      <TableCell className="whitespace-nowrap tabular-nums">{dayLabel(r.date)}</TableCell>
-                      <TableCell>
-                        <Badge variant="secondary" className="h-5 px-1.5 text-[11px] font-normal">
-                          {KIND_LABEL[shiftKind(r.startMin, r.endMin)]}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap tabular-nums">
-                        {formatClockMin(r.startMin)}–{formatClockMin(r.endMin)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{r.hours.toFixed(1)}</TableCell>
-                      <TableCell>
-                        <span className="flex flex-wrap items-center gap-2">
-                          <Badge
-                            variant="outline"
-                            className="h-5 px-1.5 text-[11px] font-normal"
-                            style={{ borderColor: r.source === "adp" ? OPEN : DRAFT, color: r.source === "adp" ? OPEN : DRAFT }}
-                          >
-                            {r.source === "adp" ? "Posted open in ADP" : "Draft · nobody available"}
-                          </Badge>
-                          {r.suggested ? (
-                            <span className="text-xs text-muted-foreground">{r.suggested} can take it</span>
-                          ) : null}
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
             </div>
           </>
         ) : (

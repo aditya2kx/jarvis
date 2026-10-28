@@ -52,6 +52,12 @@ export const FEATURES = {
    */
   adpUnavailabilityApprove: process.env.CONSOLE_ADP_UNAVAIL_APPROVE === "1",
   /**
+   * Issue #427 — Labor › Availability "Apply to ADP": approve / deny requests and
+   * add / edit / delete entries in ADP in one Cloud Run job. Off = changes can be
+   * staged but not applied. Server-evaluated only.
+   */
+  adpUnavailabilityWrite: process.env.CONSOLE_ADP_UNAVAIL_WRITE === "1",
+  /**
    * Issue #369 — Monthly recognition "Approve & issue": creates + activates real
    * Square gift cards and emails them. Off = preview, draft DM and channel post
    * still work; no money moves. Server-evaluated only.

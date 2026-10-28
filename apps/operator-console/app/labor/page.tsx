@@ -1,6 +1,7 @@
 import {
   adpHoursScrapedAt,
   adpUnavailability,
+  adpUnavailabilityEvents,
   adpDirectoryRoster,
   adpScheduleScrapedAt,
   adpScheduleHorizonEnd,
@@ -21,6 +22,7 @@ import {
   storeConfig,
   type LaborWageRates,
   upcomingRestockDates,
+  type UnavailabilityEventRow,
   type UnavailabilityRow,
   punchFixesNotInHours,
   type PunchFixNotInHoursRow,
@@ -48,9 +50,9 @@ import { PunchGapsPanel } from "@/components/labor/PunchGapsPanel";
 import { PunchFixesNotInHoursNotice } from "@/components/labor/PunchFixesNotInHoursNotice";
 import { buildPunchGaps, mergePunchDays, type PunchGap } from "@/lib/labor/punch-gaps";
 import { scheduleRulesHistory } from "@/lib/labor/schedule-rules-store";
-import { ruleUnavailability, type RulesVersion } from "@/lib/labor/schedule-inputs";
+import type { RulesVersion } from "@/lib/labor/schedule-inputs";
 import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
-import { AdpAvailabilityCard } from "@/components/labor/AdpAvailabilityCard";
+import { isConsolePreview } from "@/lib/config/preview";
 import type { ScheduledShift } from "@/lib/labor/unavailability";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { InfoNote } from "@/components/shell/InfoNote";
@@ -214,6 +216,7 @@ export default async function LaborPage({
   let deliveryDates: string[] = [];
   let rulesHistory: RulesVersion[] = [];
   let unavailability: UnavailabilityRow[] = [];
+  let unavailabilityEvents: UnavailabilityEventRow[] = [];
   let scheduleReadAt: string | null = null;
   let upcomingShifts: ScheduledShift[] = [];
   let adpRosterRows: AdpRosterRow[] = [];
@@ -299,6 +302,7 @@ export default async function LaborPage({
       rates,
       pushRows,
       notInHours,
+      unavailEvents,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -357,7 +361,10 @@ export default async function LaborPage({
       laborWageRates().catch(() => ({ byName: {}, avgPartTime: null })),
       upcomingPushRows(DEFAULT_STORE, weekStartOf(todayIso)).catch(() => []),
       punchFixesNotInHours(DEFAULT_STORE, win.start, win.end).catch(() => []),
+      // Table lands with migration 092; until then history is simply empty.
+      can("availability") ? adpUnavailabilityEvents(DEFAULT_STORE).catch(() => []) : Promise.resolve([]),
     ]);
+    unavailabilityEvents = unavailEvents;
     savedPushRows = pushRows;
     adpRosterRows = directoryRoster;
     wageRates = rates;
@@ -627,7 +634,7 @@ export default async function LaborPage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Labor"
-        subtitle={`Historical ADP hours · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`ADP hours & schedule · ${storeDisplayName(DEFAULT_STORE)}`}
         right={
           <>
             <FilterPills
@@ -768,57 +775,27 @@ export default async function LaborPage({
       <PunchFixesNotInHoursNotice rows={fixesNotInHours} />
 
       <InfoNote summary="How to read these charts">
-        <p>
-          <span className="font-medium text-foreground">Actual</span> (solid colors) =
-          ADP clocked hours, through the last day they have been ingested for.{" "}
-          <span className="font-medium text-foreground">Scheduled</span> (slate) stacks
-          on the hours / concurrent charts only for days after that, through the latest
-          ADP scheduled dates when the Period includes today (not only through Period
-          end) — so a day never shows both, and once the evening ingest lands the day
-          switches from schedule to what was actually worked.{" "}
-          <span className="font-medium text-foreground">Open (unassigned)</span> ADP
-          shifts stack on top in violet hatch on the Hours chart for those same upcoming
-          days (not on Hour of day or Weekday); hover shows the Total if filled, which
-          is what the weekly Goal compares against. Staffing coverage also keeps past
-          open slots as unfilled gaps. Hover
-          also shows{" "}
-          <span className="font-medium text-foreground">Total (combined)</span> vs
-          weekly Goal.{" "}
-          <span className="font-medium text-foreground">% of net sales</span> on the
-          Hours chart uses completed days only (no schedule stacks) and current
-          ADP wage rates × clocked hours over Square net sales (not frozen
-          model-sheet labor $).{" "}
-          {grain === "hour"
-            ? "Hour of day allocates clocked shifts across clock hours and pairs with Sales ops-hour net sales for %; schedule stacks are hidden. "
-            : ""}
-          {showStat
-            ? `Stat Average = typical ${grain === "hour" ? "hour across days" : "weekday"} in the Period; Total = sum across the Period. `
-            : ""}
-          {goalLaborHoursWeek != null && !Number.isNaN(Number(goalLaborHoursWeek))
-            ? `Weekly Goal (${Number(goalLaborHoursWeek)} hrs) is the gold dashed line on Aggregation=Weekly in Hours mode — same value as Home Goals. `
-            : ""}
-          <span className="font-medium text-foreground">Avg concurrent</span> bars =
-          actual only (schedule stays in the hover). PT/FT concurrent is hours ÷ that
-          bucket&apos;s first→last span (one full-timer ≈ 1), not diluted by store-open
-          hours from the other bucket.{" "}
-          <span className="font-medium text-foreground">Staffing coverage</span> is a
-          day strip for the Period (extended through scheduled shifts when today is
-          included) with a headcount ribbon and person swimlanes — Aggregation does not
-          apply here, so scheduled shifts still show when Aggregation is Hour (or any
-          other grain) whenever ADP has them in the schedule window. Scroll the chips when
-          the range is long. Use{" "}
-          <span className="font-medium text-foreground">Sync ADP</span> after editing the
-          ADP schedule or fixing punches — one ADP login refreshes clocked hours, assigned
-          and open shifts, payroll earnings and pay rates. Status under the button shows
-          starting / syncing / done / error without blocking the rest of the page. Hover it
-          when idle for last-synced time. Paid PTO is included in
-          scheduled hours by default (matches ADP); use the PTO filter to exclude it.
-          Per-person hours stack clocked hours with scheduled hours (slate) for the
-          days not yet ingested, through Period end. Pick a{" "}
-          <span className="font-medium text-foreground">Person</span> below it to see
-          their hours by the page&apos;s Aggregation, on the same axis and handoff as
-          the Hours chart.
-        </p>
+        <ul className="list-disc space-y-1 pl-4">
+          <li>
+            A day shows ADP&apos;s schedule until its clocked hours are ingested, then what was actually worked —
+            never both.
+          </li>
+          <li>
+            Paid PTO counts as scheduled hours (as in ADP); the PTO filter excludes it.
+          </li>
+          <li>
+            % of net sales uses completed days only: current ADP wage rates × clocked hours over Square net sales.
+          </li>
+          <li>
+            On the floor: part-/full-time concurrency is that group&apos;s hours ÷ its first-to-last span, so one
+            full-timer ≈ 1.
+          </li>
+          <li>Coverage &amp; shift draft ignores Aggregation; it always shows one day.</li>
+          <li>
+            After editing the ADP schedule or fixing punches, use Sync ADP — one ADP login refreshes clocked hours,
+            shifts, earnings and pay rates.
+          </li>
+        </ul>
       </InfoNote>
 
       {error ? (
@@ -888,24 +865,12 @@ export default async function LaborPage({
               savedPushRows={savedPushRows}
               adpWriteEnabled={FEATURES.adpScheduleWrite}
               scheduleReadAt={scheduleReadAt}
-            />
-            </CollapsibleSection>
-          ) : null}
-
-          {can("availability") ? (
-            <CollapsibleSection id="availability" title="ADP availability">
-            <AdpAvailabilityCard
-              rows={[
-                ...unavailability,
-                ...ruleUnavailability(rulesHistory[0]?.rules.staffRules ?? []).map(
-                  (r): UnavailabilityRow => ({ ...r, expires_at_ct: null, hours_left: null, scraped_at: null }),
-                ),
-              ]}
-              shifts={upcomingShifts}
-              roster={activeStaff ?? []}
-              approveEnabled={FEATURES.adpUnavailabilityApprove}
-              lastReadAt={scheduleReadAt}
-              todayIso={chicagoTodayIso()}
+              availability={{
+                canManage: can("availability"),
+                applyBlock: isConsolePreview() ? "preview" : FEATURES.adpUnavailabilityWrite ? null : "off",
+                events: unavailabilityEvents,
+                upcoming: upcomingShifts,
+              }}
             />
             </CollapsibleSection>
           ) : null}

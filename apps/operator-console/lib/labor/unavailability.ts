@@ -35,7 +35,8 @@ export function coversDate(row: UnavailabilityInput, iso: string): boolean {
   );
 }
 
-function window(row: UnavailabilityInput): [number, number] {
+/** [fromMin, toMin) the row blocks on any day it covers; all-day or unparseable = whole day. */
+export function blockWindow(row: UnavailabilityInput): [number, number] {
   if (row.all_day) return DAY;
   const s = timeToMin(row.from_time ?? "");
   const e = timeToMin(row.to_time ?? "");
@@ -48,10 +49,50 @@ export function blocksOn(rows: UnavailabilityInput[], iso: string): Map<string, 
   const out = new Map<string, Block[]>();
   for (const r of rows) {
     if (!coversDate(r, iso)) continue;
-    const [fromMin, toMin] = window(r);
+    const [fromMin, toMin] = blockWindow(r);
     out.set(r.employee, [...(out.get(r.employee) ?? []), { fromMin, toMin, status: r.status }]);
   }
   return out;
+}
+
+export type LaneBlock<T> = { row: T; fromMin: number; toMin: number };
+
+const isRule = (r: { row_key: string }) => r.row_key.startsWith("rule|");
+
+/**
+ * Entries per person on `iso`, earliest first, for the coverage lanes. A scheduling-rule
+ * day an ADP entry already covers is dropped: it is the same time off, entered twice.
+ */
+export function laneBlocks<T extends UnavailabilityInput & { row_key: string }>(
+  rows: T[],
+  iso: string,
+): Map<string, LaneBlock<T>[]> {
+  const all = new Map<string, LaneBlock<T>[]>();
+  for (const row of rows) {
+    if (!coversDate(row, iso)) continue;
+    const [fromMin, toMin] = blockWindow(row);
+    all.set(row.employee, [...(all.get(row.employee) ?? []), { row, fromMin, toMin }]);
+  }
+  const out = new Map<string, LaneBlock<T>[]>();
+  for (const [employee, blocks] of all) {
+    out.set(
+      employee,
+      blocks
+        .filter((b) => !isRule(b.row) || !blocks.some((o) => !isRule(o.row) && o.fromMin <= b.fromMin && o.toMin >= b.toMin))
+        .sort((a, b) => a.fromMin - b.fromMin),
+    );
+  }
+  return out;
+}
+
+/** People with an unavailability request waiting on `iso`. */
+export function dayRequestCount(rows: UnavailabilityInput[], iso: string): number {
+  return new Set(rows.filter((r) => r.status === "pending" && coversDate(r, iso)).map((r) => r.employee)).size;
+}
+
+/** Does [s, e) overlap any block? */
+export function hitsBlock(s: number, e: number, blocks: readonly { fromMin: number; toMin: number }[]): boolean {
+  return blocks.some((b) => s < b.toMin && b.fromMin < e);
 }
 
 /** Longest part of [s, e) that avoids every block. */

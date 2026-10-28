@@ -593,6 +593,26 @@ def build_employee_schedule_records(weeks: list[dict]) -> list[dict]:
     return [by_key[k] for k in sorted(by_key)]
 
 
+def scheduled_shift_purge_dates(weeks: list[dict]) -> list[str]:
+    """Dates whose ``adp_scheduled_shifts`` rows a scrape replaces.
+
+    Every day with a scraped employee row, plus every day ADP's own footer shows
+    nobody on: removing the last person from a day leaves no row to scope its purge
+    by, so their shift lingered. A day the footer counts people on but the employee
+    extract missed keeps its old rows; so does a week whose footer never painted.
+    """
+    dates = {r["date"] for r in build_employee_schedule_records(weeks)}
+    for wk in weeks:
+        week_start = parse_week_start(wk.get("week_label"))
+        days = (wk.get("days") or [])[:7]
+        if week_start is None or len(days) < 7 or not any(str(c or "").strip() for c in days):
+            continue
+        for i, cell in enumerate(days):
+            if parse_total_cell(cell) == (0, 0.0):
+                dates.add((week_start + datetime.timedelta(days=i)).isoformat())
+    return sorted(dates)
+
+
 def reconcile_employee_vs_footer(
     weeks: list[dict],
     *,

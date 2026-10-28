@@ -18,7 +18,12 @@ import re
 import sys
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
-APPEND_ONLY = ("inventory_order_reco_history", "inventory_order_reco_runs", "inventory_edit_log")
+APPEND_ONLY = (
+    "inventory_order_reco_history",
+    "inventory_order_reco_runs",
+    "inventory_edit_log",
+    "adp_unavailability_events",
+)
 _ROOTS = ("core", "cloud", "agents", "skills", "scripts", "apps/operator-console")
 _SUFFIXES = {".sql", ".py", ".ts", ".tsx"}
 _SKIP_PARTS = {"node_modules", ".next", "__pycache__"}

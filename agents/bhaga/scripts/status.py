@@ -157,6 +157,9 @@ BQ_TARGETS: list[Target] = [
     # class as labor_schedule_rules. NOT a BQ_TARGETS entry.
     # migration 091: console_cache_probe is written only by console_cache_probe.sh (the
     # outside-write check of the console query cache). NOT a BQ_TARGETS entry.
+    # migration 092 (Issue #427): adp_unavailability_changes / adp_unavailability_events are
+    # operator input (rows only on a console unavailability change) — same class as
+    # labor_schedule_pushes. NOT BQ_TARGETS entries.
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —
     # intentionally NOT a BQ_TARGETS entry (same class as store_config /

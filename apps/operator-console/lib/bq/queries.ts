@@ -1085,6 +1085,27 @@ export function adpUnavailability(store: string): Promise<UnavailabilityRow[]> {
   );
 }
 
+export type UnavailabilityEventRow = {
+  event_at: string;
+  employee: string;
+  event: string;
+  summary: string;
+  source: "console" | "adp_read";
+  actor: string | null;
+};
+
+/** Unavailability history, newest first (append-only, migration 092). */
+export function adpUnavailabilityEvents(store: string, limit = 200): Promise<UnavailabilityEventRow[]> {
+  return q<UnavailabilityEventRow>(
+    `SELECT CAST(event_at_utc AS STRING) AS event_at, employee, event, summary, source, actor
+     FROM ${fq("adp_unavailability_events")}
+     WHERE store = @store
+     ORDER BY event_at_utc DESC
+     LIMIT @limit`,
+    { store, limit },
+  );
+}
+
 /** Whether a stored unavailability request is still pending (and not expired). */
 export async function unavailabilityStillPending(rowKey: string): Promise<boolean> {
   const rows = await q<{ n: number }>(

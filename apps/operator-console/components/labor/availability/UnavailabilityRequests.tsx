@@ -56,7 +56,7 @@ export function UnavailabilityRequests({
       <Button size="xs" variant="ghost" onClick={onHistory}>
         <HistoryIcon /> History
       </Button>
-      <Button size="xs" variant="ghost" onClick={onAdd}>
+      <Button size="xs" variant="outline" onClick={onAdd}>
         <PlusIcon /> Add unavailability
       </Button>
     </span>

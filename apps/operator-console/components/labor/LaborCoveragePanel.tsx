@@ -491,7 +491,7 @@ function PersonLaneTrack({
         const e = Math.min(b.toMin, end);
         if (e <= s) return null;
         const pending = b.row.status === "pending";
-        const label = `${pending ? "Requested off" : isRuleRow(b.row) ? "Off (scheduling rule)" : "Off"} · ${hoursText(b.row)}`;
+        const label = `${pending ? "Requested unavailable" : isRuleRow(b.row) ? "Unavailable (scheduling rule)" : "Unavailable"} · ${hoursText(b.row)}`;
         const width = ((e - s) / axisSpan) * 100;
         return (
           <button
@@ -926,7 +926,7 @@ function CoverageTimeline({
                   {employee}
                 </span>
                 <span className="text-xs" style={pending ? { color: REQUEST_COLOR } : undefined}>
-                  {pending ? "requested off" : <span className="text-muted-foreground">off</span>}
+                  {pending ? "requested" : <span className="text-muted-foreground">unavailable</span>}
                 </span>
               </div>
               <div className="relative min-w-0 flex-1 cursor-crosshair">
@@ -1911,7 +1911,7 @@ export function LaborCoveragePanel({
               className="inline-block size-2.5 rounded-sm border border-dashed"
               style={{ borderColor: REQUEST_COLOR, backgroundColor: `${REQUEST_COLOR}1f` }}
             />
-            Requested off
+            Requested
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="inline-block size-2.5 rounded-sm ring-2 ring-destructive ring-inset" />

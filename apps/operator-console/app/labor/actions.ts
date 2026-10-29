@@ -13,8 +13,6 @@ import {
   type DecisionInput,
 } from "@/lib/labor/punch-gaps";
 import { saveScheduleRules } from "@/lib/labor/schedule-rules-store";
-import { queueDraftPush, weekPushRows } from "@/lib/labor/schedule-push-store";
-import { validatePushShifts, type PushRow } from "@/lib/labor/schedule-push";
 import { startScheduleWrite } from "@/lib/bhaga/schedule-write";
 import { validateAdpChanges, type ApplyRow } from "@/lib/labor/adp-changes";
 import { applyRows, queueAdpChanges } from "@/lib/labor/adp-change-store";
@@ -65,51 +63,6 @@ function requireScheduleWrite(): void {
   }
 }
 
-/** Queue the week's draft shifts and start the ADP job that saves them as ADP drafts. */
-export async function saveDraftsToAdpAction(
-  weekStart: string,
-  shifts: unknown,
-): Promise<ActionAck<{ pushId: string; count: number }>> {
-  const denied = await actionDenied("saveDraftsToAdpAction");
-  if (denied) return denied;
-  try {
-    requireScheduleWrite();
-    const valid = validatePushShifts(weekStart, shifts, chicagoTodayIso());
-    const pushId = await queueDraftPush(DEFAULT_STORE, weekStart, valid, await operatorEmail());
-    await startScheduleWrite(DEFAULT_STORE, { mode: "drafts", pushId });
-    // The week now has a saved plan; re-render so it locks to what was just sent.
-    revalidatePath("/labor");
-    return okAck({
-      data: { pushId, count: valid.length },
-      queued: ["adp-schedule-write"],
-      message: `Saving ${valid.length} shifts to ADP as drafts — about 7 s each. Employees can't see drafts until you publish.`,
-    });
-  } catch (e) {
-    return failAck(e);
-  }
-}
-
-/** Publish the week's ADP drafts (employees are notified in ADP Mobile). */
-export async function publishWeekAction(weekStart: string): Promise<ActionAck<{ weekStart: string }>> {
-  const denied = await actionDenied("publishWeekAction");
-  if (denied) return denied;
-  try {
-    requireScheduleWrite();
-    const rows = await weekPushRows(DEFAULT_STORE, weekStart);
-    if (!rows.some((r) => r.status === "drafted")) {
-      throw new Error("Nothing saved to ADP for this week yet — save drafts first.");
-    }
-    await startScheduleWrite(DEFAULT_STORE, { mode: "publish", weekStart });
-    return okAck({
-      data: { weekStart },
-      queued: ["adp-schedule-write"],
-      message: "Publishing the week in ADP — employees are notified in ADP Mobile.",
-    });
-  } catch (e) {
-    return failAck(e);
-  }
-}
-
 /** Re-read the week's open shifts from ADP, then DM the operator or post to Shift Coverage. */
 export async function sendPublishMessageAction(
   weekStart: string,
@@ -121,10 +74,6 @@ export async function sendPublishMessageAction(
     requireScheduleWrite();
     if (to !== "dm" && to !== "channel") {
       throw new Error("Choose a DM or Shift Coverage.");
-    }
-    const rows = await weekPushRows(DEFAULT_STORE, weekStart);
-    if (!rows.some((r) => r.status === "published")) {
-      throw new Error("This week isn't published yet — publish it first.");
     }
     await startScheduleWrite(DEFAULT_STORE, { mode: "dm", weekStart, to });
     return okAck({
@@ -140,36 +89,24 @@ export async function sendPublishMessageAction(
   }
 }
 
-/** Latest ADP push state for a week (poll target for every step). */
-export type ScheduleWriteRun = {
-  mode: "drafts" | "publish" | "dm";
-  pushId?: string;
-  weekStart?: string;
-  to?: "dm" | "channel";
-};
+/** A running "Send ClickUp message" job, if any (survives a reload). */
+export type ScheduleWriteRun = { mode: "dm"; weekStart?: string; to: "dm" | "channel" };
 
-/** The week's push rows plus the ADP schedule-write job still running, if any (survives a reload). */
-export async function schedulePushStatusAction(
-  weekStart: string,
-): Promise<ActionAck<{ rows: PushRow[]; running: ScheduleWriteRun | null }>> {
+/** The ADP schedule-write message job still running, if any (poll target for Send ClickUp message). */
+export async function schedulePushStatusAction(): Promise<ActionAck<{ running: ScheduleWriteRun | null }>> {
   const denied = await actionDenied("schedulePushStatusAction");
   if (denied) return denied;
   try {
-    const [rows, hit] = await Promise.all([
-      weekPushRows(DEFAULT_STORE, weekStart),
-      runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE"),
-    ]);
-    const mode = hit?.env.BHAGA_ADP_SCHEDULE_WRITE;
+    const hit = await runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE");
     const running: ScheduleWriteRun | null =
-      hit && (mode === "drafts" || mode === "publish" || mode === "dm")
+      hit?.env.BHAGA_ADP_SCHEDULE_WRITE === "dm"
         ? {
-            mode,
-            pushId: hit.env.BHAGA_SCHEDULE_PUSH_ID,
+            mode: "dm",
             weekStart: hit.env.BHAGA_SCHEDULE_WEEK_START,
             to: hit.env.BHAGA_SCHEDULE_MESSAGE_TO === "channel" ? "channel" : "dm",
           }
         : null;
-    return okAck({ data: { rows, running } });
+    return okAck({ data: { running } });
   } catch (e) {
     return failAck(e);
   }

@@ -5,7 +5,7 @@
 --   Cloud Run job applies each in ADP and sets 'applied' | 'skipped' | 'failed'. 'applied'
 --   is only written after the job's own read-back of ADP shows the change.
 --   kind: open-add | open-assign | open-edit | open-delete
---       | shift-add | shift-edit | shift-delete | shift-reassign
+--       | shift-add | shift-edit | shift-delete | shift-reassign | shift-publish (make an ADP draft live)
 --   start_min/end_min: the shift as it is in ADP now (the new shift for *-add).
 --   to_start_min/to_end_min: new times (*-edit). to_employee: new person (shift-reassign).
 --   count: open shifts to create (open-add). employee: the person (assign / shift-*).

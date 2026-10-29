@@ -41,8 +41,6 @@ export const MUTATING_ACTIONS = [
   { name: "syncAdpAction", page: "labor", heavy: "adp-sync", access: ["labor", "payroll"] },
   { name: "pollAdpSyncAction", page: "labor", heavy: null, access: ["labor", "payroll"] },
   { name: "runningAdpSyncAction", page: "labor", heavy: null, access: ["labor", "payroll"] },
-  { name: "saveDraftsToAdpAction", page: "labor", heavy: "adp-schedule-write", access: ["labor:coverage"] },
-  { name: "publishWeekAction", page: "labor", heavy: "adp-schedule-write", access: ["labor:coverage"] },
   { name: "sendPublishMessageAction", page: "labor", heavy: "adp-schedule-write", access: ["labor:coverage"] },
   { name: "schedulePushStatusAction", page: "labor", heavy: null, access: ["labor:coverage"] },
   { name: "applyAdpChangesAction", page: "labor", heavy: "adp-schedule-write", access: ["labor:coverage", "labor:availability"] },

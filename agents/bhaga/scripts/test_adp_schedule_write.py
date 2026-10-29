@@ -376,10 +376,11 @@ class FakeApplyQuery:
 
 
 class FakeApplyAdp:
-    """Published assigned shifts + open-shift counts. ``fail`` maps a backend method to the exception it raises once."""
+    """Published assigned shifts, drafts + open-shift counts. ``fail`` maps a backend method to the exception it raises once."""
 
-    def __init__(self, assigned=(), open_shifts=None, fail=None, lose_open_adds=0):
+    def __init__(self, assigned=(), open_shifts=None, fail=None, lose_open_adds=0, drafts=()):
         self.assigned = set(assigned)
+        self.drafts = set(drafts)
         self.open = Counter(open_shifts or {})
         self.fail = dict(fail or {})
         self.lose_open_adds = lose_open_adds
@@ -392,7 +393,8 @@ class FakeApplyAdp:
             raise exc
 
     def shift_in_grid(self, _f, _p, *, date_iso, employee, start_min, end_min, state="any"):
-        return (employee, date_iso, start_min, end_min) in self.assigned
+        key = (employee, date_iso, start_min, end_min)
+        return (state != "draft" and key in self.assigned) or (state != "published" and key in self.drafts)
 
     def create_shift(self, _f, _p, *, date_iso, employee, start_min, end_min, publish=False, dry_run=False):
         self._step("create_shift", employee, date_iso)
@@ -404,6 +406,7 @@ class FakeApplyAdp:
         self._step("delete_any_shift", employee, date_iso)
         if not dry_run:
             self.assigned.discard((employee, date_iso, start_min, end_min))
+            self.drafts.discard((employee, date_iso, start_min, end_min))
 
     def edit_shift(self, _f, _p, *, date_iso, employee, start_min, end_min, to_start_min, to_end_min, dry_run=False):
         self._step("edit_shift", employee, date_iso)
@@ -526,6 +529,30 @@ class RunApply(unittest.TestCase):
         self.assertIn("no longer an open shift", fq.updates[2][3])
         printed = " ".join(str(c.args[0]) for c in out.call_args_list)
         self.assertIn("BREADCRUMB adp_apply batch_id=b1 change_id=edit kind=shift-edit", printed)
+
+    def test_publish_and_add_make_an_adp_draft_live_and_skip_a_live_shift(self):
+        fq = FakeApplyQuery([
+            _change("pub", "shift-publish", employee="Doe, Alex"),
+            _change("add", "shift-add", employee="Lee, Kim"),
+            _change("live", "shift-publish", employee="Roe, Sam"),
+            _change("gone", "shift-publish", employee="Berding, Kenya"),
+        ])
+        adp = FakeApplyAdp(drafts={("Doe, Alex", "2026-11-03", 540, 900), ("Lee, Kim", "2026-11-03", 540, 900)},
+                           assigned={("Roe, Sam", "2026-11-03", 540, 900)})
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertEqual({u[1]: u[2] for u in fq.updates},
+                         {"pub": "applied", "add": "applied", "live": "skipped", "gone": "failed"})
+        self.assertIn("draft is no longer in ADP", next(u[3] for u in fq.updates if u[1] == "gone"))
+        self.assertEqual(adp.drafts, set())
+        self.assertLessEqual({("Doe, Alex", "2026-11-03", 540, 900), ("Lee, Kim", "2026-11-03", 540, 900)}, adp.assigned)
+        self.assertEqual([c[0] for c in adp.calls], ["delete_any_shift", "create_shift"] * 2)
+
+    def test_publish_whose_add_fails_says_the_draft_was_removed(self):
+        fq = FakeApplyQuery([_change("pub", "shift-publish", employee="Doe, Alex")])
+        adp = FakeApplyAdp(drafts={("Doe, Alex", "2026-11-03", 540, 900)},
+                           fail={"create_shift": wb.ScheduleWriteError("not in ADP's unscheduled list")})
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertIn("removed Doe, Alex's draft but could not add it published", fq.updates[0][3])
 
     def test_reassign_whose_add_fails_says_the_shift_was_removed(self):
         fq = FakeApplyQuery([_change("re", "shift-reassign", employee="Huynh, Hillary", to_employee="Denton, Cimino")])

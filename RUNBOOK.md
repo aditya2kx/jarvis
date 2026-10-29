@@ -1814,8 +1814,8 @@ shortest draft shift (4.5 h — ADP's shortest regular shift). The **Needed** li
 minimum, then day & time rules replace it in their window (e.g. closing duties: 2 people 7:30–8:30 PM).
 The weekly hours goal is a ceiling for order-driven draft shifts, not a target. Drafts start tomorrow.
 ADP open shifts count once (as coverage and hours); the draft only suggests who should take each one
-(free for the whole slot, within hour/shift caps). **Save to ADP as drafts** leaves them out, since it
-can only create new shifts; they're assigned from the **Changes to ADP** tray (below).
+(free for the whole slot, within hour/shift caps). The suggested-week card never re-creates them;
+they're assigned from the **Changes to ADP** tray (below).
 Each draft row's **Who** picker (Issue #412) lists everyone who fits that shift — the suggestion first, each with
 their own times and hours so far this week — plus **Leave open**. A pick re-drafts the rest of the week around it
 (caps, unavailability and last days still apply; a pick that stops fitting after a rule edit is skipped and
@@ -1828,9 +1828,14 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
 `labor-adp-changes:v1:<store>`; a change ADP has overtaken, or a past day, is dropped with a note):
 - Each future day lists its ADP open shifts with a checkbox + **Who** picker (assign), per-row **Edit** /
   **Delete**, and **Add open shift** (several days at once, N per day). Staged adds show in the day's list.
-- Tap a name → the person drawer's **Upcoming shifts** (next 14 days): tap one for **Edit times**,
-  **Reassign** (ADP can't hand an assigned shift to someone else, so the job deletes it and adds the same
-  hours for the new person) or **Delete**; **Add shift** at the bottom.
+- Tap a name → the person drawer's **Upcoming shifts** (next 14 days): tap one to open it on one screen —
+  change its times and/or person (ADP can't hand an assigned shift to someone else, so a reassign deletes it
+  and adds the same hours for the new person) or **Delete**; **Add shift** at the bottom.
+- The **Suggested schedule for <week>** card (Suggestions on) has no ADP button of its own: **Review & add
+  to changes** stages the week's suggested shifts ADP doesn't have (`shift-add`; open shifts as one
+  `open-add` per day and hours, with a count) and the week's assigned ADP drafts (`shift-publish`). Its
+  **Send ClickUp message** is the only other action. (Issue #434 retired the card's Save-as-drafts and
+  Publish-week buttons.)
 - Unavailability changes (#427) stage into the same tray (`CONSOLE_ADP_UNAVAIL_WRITE`, off until its ADP
   writes are proven live; only **approve** is wired in the job today — other kinds fail without a click).
 - **Suggestions** switch (per browser, `labor-show-suggestions:v1:<store>`): off hides draft lanes, `+N draft`
@@ -1839,12 +1844,14 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
 **Apply to ADP** inserts one `queued` row per change under one `batch_id` — shifts in `adp_shift_changes`
 (migration 095), unavailability in `adp_unavailability_changes` (092) — and starts
 `BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_BATCH_ID=<id>` (refused while any schedule write runs).
-Per week the job applies deletes, then edits, reassigns, adds, assigns. Each shift is **published on its own**
+Per week the job applies deletes, then edits, reassigns, adds (and publishes), assigns. Each shift is **published on its own**
 (wizard / Edit **Publish**); the week's **Publish drafts** and **Delete all schedules** are never pressed.
 Every row ends `applied` (ADP re-read shows it: the grid for assigned shifts, the week's open-shift counts for
 open shifts), `skipped` (ADP already showed it — nothing clicked) or `failed` with the reason; nothing is
 retried and a crash marks the rest `not attempted: job stopped (…)`. A reassign whose add fails says
-`removed <name>'s shift but could not add it for <name> … — add it again`. Applied rows append to
+`removed <name>'s shift but could not add it for <name> … — add it again`. A `shift-publish` (or a
+`shift-add` whose exact shift ADP shows as a draft) deletes that draft and adds the same shift published;
+already live → `skipped`; its add failing says `removed <name>'s draft but could not add it published`. Applied rows append to
 `adp_shift_events` / `adp_unavailability_events` (append-only). The job ends by re-reading the touched weeks
 (`refresh_schedule`); the tray polls the batch and keeps any change that didn't land.
 `BREADCRUMB adp_apply batch_id=… change_id=… kind=… error=…` on each failure.
@@ -1854,8 +1861,10 @@ Check: `bq query 'SELECT kind, date, employee, to_employee, summary, status, err
 The #412 command-line assign path still works (`labor_open_shift_assignments`, migration 089):
 `python3 -m agents.bhaga.scripts.adp_schedule_write --queue-assign shifts.json [--execute]`, job mode `assign`.
 
-**Draft shifts → ADP (Issue #337, flag `CONSOLE_ADP_SCHEDULE_WRITE=1` on the console service).** The
-draft card's **Save to ADP as drafts** opens a drawer listing the week's shifts not yet in ADP; its
+**Draft shifts → ADP (Issue #337, flag `CONSOLE_ADP_SCHEDULE_WRITE=1` on the console service).** Since
+Issue #434 the console no longer offers Save as drafts / Publish week (the suggested week goes through the
+Changes to ADP tray); the job's `drafts` / `publish` modes below remain for the command line, and weeks
+saved that way keep their locked plan. The draft card's **Save to ADP as drafts** opened a drawer listing the week's shifts not yet in ADP; its
 confirm inserts one `labor_schedule_pushes` row per shift (migration 078, status `queued`, one
 `push_id`) and starts `BHAGA_ADP_SCHEDULE_WRITE=drafts` (laptop: `adp_schedule_write.py` directly).
 Each shift goes through Actions › Create shift (employee picked from ADP's "Unscheduled employees" list
@@ -1895,7 +1904,7 @@ ready-to-post Shift Coverage & Trades note (Issue #381): `@everyone` + the publi
 ADP open shift from **tomorrow** through that week's Sunday, numbered by date with the slots nested.
 Publish itself never posts to the team (`BREADCRUMB adp_publish_dm` if the DM fails). If the re-read fails the
 DM still goes out from the last sync and says "open shifts are as of <time>". To send it again, use
-**Send ClickUp message** (shown once a week has `published` rows). The drawer offers **Send me a DM**
+**Send ClickUp message** (on the suggested-week card). The drawer offers **Send me a DM**
 (`BHAGA_ADP_SCHEDULE_WRITE=dm`) or **Post to Shift Coverage** (`BHAGA_SCHEDULE_MESSAGE_TO=channel`):
 both re-read open shifts from ADP first. The channel post is `team_post` only — it starts at `@everyone`
 and drops the draft header — and goes to `clickup.shift_coverage_channel` in the store profile. A stale

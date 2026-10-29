@@ -219,6 +219,20 @@ Pass: all green; operator OK on the demo before marking ready.
   ADP can't retime and hand over a shift in one step. The switch reads "Show suggested shifts". These
   became `ui-polish.md` D3 (charts are for reading), D11 (what opens looks like it) and D12 (one screen per
   change), guarded by `__tests__/ux-principles.test.tsx`.
+- **Round 4 — one Apply button on the Labor page** (operator: "make sure we don't add multiple buttons for
+  similar purposes"; picked option B). The suggested-week card (`AdpScheduleFinalize`) loses its
+  "1 · Review & save as ADP drafts" and "2 · Publish" buttons: **Review & add to changes** stages its
+  suggested shifts ADP lacks (`shift-add`; open shifts as `open-add` with a count per day and hours,
+  `suggestedChanges`) and the week's assigned ADP drafts (`shift-publish`, `adpDrafts`) into the tray, so
+  **Apply to ADP** is the only button that writes shifts. The job treats `shift-publish` — and a `shift-add`
+  whose exact shift ADP shows as a draft — as delete-the-draft then add-it-published (proven primitives;
+  ADP's per-shift publish of a draft is unverified). `MAX_CHANGES` 60 → 80 so a full week fits one Apply.
+  **Send ClickUp message** stays on the card (no longer requires `labor_schedule_pushes` rows). Console
+  dead code removed: `saveDraftsToAdpAction`, `publishWeekAction`, `splitAgainstAdp` / `awaitingAdpCheck` /
+  `relevantRows` / `summarizePush` / `validatePushShifts`, `queueDraftPush` / `weekPushRows`,
+  `adpScheduleScrapedAt`. The job's `drafts` / `publish` modes stay for the command line. Guarded by
+  `ux-principles.test.tsx` D2. Open-shift drafts left by the old flow are not offered (ADP only shows a
+  per-day draft count for open shifts).
 - **Out of scope:** unavailability deny/add/edit/delete ADP backends (follow-up once a live ADP session is
   available); editing past shifts; reassigning an open shift that someone already took.
 

@@ -74,10 +74,12 @@ import { hoursText } from "@/lib/labor/unavailability-format";
 import type { ApplyBlock, StagedChange } from "@/lib/labor/availability-changes";
 import {
   adpChangeKey,
+  adpDrafts,
   pruneQueue,
   readStoredQueue,
   stageAdp,
   stagedShift as stagedShiftIn,
+  suggestedChanges,
   unstageAdp,
   type AdpChange,
   type ShiftChange,
@@ -1051,7 +1053,6 @@ export function LaborCoveragePanel({
   activeStaff,
   savedPushRows = NO_PUSH_ROWS,
   adpWriteEnabled = false,
-  scheduleReadAt = null,
   shiftApplyBlock = "off",
   availability,
 }: {
@@ -1079,8 +1080,6 @@ export function LaborCoveragePanel({
   savedPushRows?: PushRow[];
   /** FEATURES.adpScheduleWrite, evaluated on the server. */
   adpWriteEnabled?: boolean;
-  /** Last ADP schedule read (adp_scheduled_shifts.scraped_at_utc) — resolves unconfirmed saves. */
-  scheduleReadAt?: string | null;
   /** Why shift changes can't be applied to ADP here (preview / CONSOLE_ADP_SCHEDULE_WRITE off), or null. */
   shiftApplyBlock?: ApplyBlock;
   /** Managing ADP unavailability from the chart (Issue #427); omitted = view only. */
@@ -1856,6 +1855,18 @@ export function LaborCoveragePanel({
         .map(({ date, employee, startMin, endMin, inAdp }) => ({ date, employee, startMin, endMin, inAdp })),
     [weekDraft],
   );
+  const weekSuggestions = useMemo(() => {
+    if (!weekDraft) return [];
+    const staged = new Set(trayChanges.map(adpChangeKey));
+    const drafts = adpDrafts(upcoming ?? [], todayIso, shiftCalendarDate(weekDraft.weekStart, "day", 6));
+    return suggestedChanges(weekShifts, drafts.filter((d) => d.date >= weekDraft.weekStart), todayIso).filter(
+      (c) => !staged.has(adpChangeKey({ area: "shift", c })),
+    );
+  }, [weekDraft, weekShifts, upcoming, todayIso, trayChanges]);
+  const stageSuggestions = useCallback(
+    (changes: ShiftChange[]) => setQueue((q) => changes.reduce((acc, c) => stageAdp(acc, { area: "shift", c }), q)),
+    [setQueue],
+  );
 
   const shortLine = useMemo(() => {
     if (!need) return null;
@@ -1939,9 +1950,9 @@ export function LaborCoveragePanel({
         {showDraft && weekDraft ? (
           <AdpScheduleFinalize
             weekStart={weekDraft.weekStart}
-            shifts={weekShifts}
+            changes={weekSuggestions}
+            onStage={stageSuggestions}
             enabled={adpWriteEnabled}
-            scheduleReadAt={scheduleReadAt}
           />
         ) : null}
 
@@ -1952,7 +1963,7 @@ export function LaborCoveragePanel({
             </h3>
             <label
               className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"
-              title="Draft shifts, who could fill open shifts, and Save to ADP / Publish. ADP's own shifts always show."
+              title="Suggested shifts and who could fill open shifts. ADP's own shifts always show."
             >
               <Switch checked={showDraft} onCheckedChange={toggleSuggestions} aria-label="Show suggested shifts" />
               Show suggested shifts

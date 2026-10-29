@@ -529,7 +529,7 @@ UNAVAIL_TABLE = "adp_unavailability_changes"
 # Within a week: free slots first so adds and reassigns don't collide with what they replace.
 APPLY_ORDER = {
     "shift-delete": 0, "open-delete": 0, "shift-edit": 1, "open-edit": 1,
-    "shift-reassign": 2, "shift-add": 3, "open-add": 3, "open-assign": 4,
+    "shift-reassign": 2, "shift-add": 3, "shift-publish": 3, "open-add": 3, "open-assign": 4,
 }
 
 
@@ -597,14 +597,33 @@ def _apply_open(frame, page, row: dict, open_now: Counter, *, dry_run: bool) -> 
     return name, after
 
 
+def _publish_draft(frame, page, emp: str, times: dict, *, dry_run: bool) -> str | None:
+    """Make one ADP draft live: delete it, then add the same shift published (that shift only)."""
+    if dry_run:
+        # The add can't be walked while the draft still holds the slot; check the delete only.
+        wb.delete_any_shift(frame, page, employee=emp, **times, dry_run=True)
+        return None
+    wb.delete_any_shift(frame, page, employee=emp, **times)
+    try:
+        return wb.create_shift(frame, page, employee=emp, **times, publish=True)
+    except Exception as exc:
+        raise wb.ScheduleWriteError(
+            f"removed {emp}'s draft but could not add it published ({type(exc).__name__}: {exc}) — add it again"
+        ) from exc
+
+
 def _apply_assigned(frame, page, row: dict, *, dry_run: bool) -> str | None:
     """One assigned-shift change; each backend call confirms itself on the grid. Raises on failure."""
     kind, d, emp = row["kind"], row["date"].isoformat(), row["employee"]
     times = {"date_iso": d, "start_min": row["start_min"], "end_min": row["end_min"]}
     present = wb.shift_in_grid(frame, page, employee=emp, **times)
-    if kind == "shift-add":
+    if kind in ("shift-add", "shift-publish"):
+        if present and wb.shift_in_grid(frame, page, employee=emp, **times, state="published"):
+            raise ApplySkip("already live in ADP")
         if present:
-            raise ApplySkip("already in ADP")
+            return _publish_draft(frame, page, emp, times, dry_run=dry_run)
+        if kind == "shift-publish":
+            raise wb.ScheduleWriteError("the draft is no longer in ADP")
         return wb.create_shift(frame, page, employee=emp, **times, publish=True, dry_run=dry_run)
     if kind == "shift-delete":
         if not present:

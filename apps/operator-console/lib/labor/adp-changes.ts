@@ -22,12 +22,14 @@ export type ShiftChange =
   | ({ kind: "shift-add"; date: string; employee: string } & Times)
   | ({ kind: "shift-edit"; date: string; employee: string; to: Times } & Times)
   | ({ kind: "shift-delete"; date: string; employee: string } & Times)
+  /** A draft ADP already has, made live; the run deletes the draft and adds the same shift published. */
+  | ({ kind: "shift-publish"; date: string; employee: string } & Times)
   /** ADP can't reassign an assigned shift: the run deletes it, then adds the same hours for `toEmployee`. */
   | ({ kind: "shift-reassign"; date: string; employee: string; toEmployee: string } & Times);
 
 export type AdpChange = { area: "shift"; c: ShiftChange } | { area: "unavailability"; c: StagedChange };
 
-export const MAX_CHANGES = 60;
+export const MAX_CHANGES = 80;
 const MAX_SHIFT_MIN = 16 * 60;
 const MAX_OPEN_COUNT = 10;
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
@@ -48,6 +50,7 @@ export function shiftKey(c: ShiftChange): string {
     case "shift-edit":
     case "shift-delete":
     case "shift-reassign":
+    case "shift-publish":
       return `shift|${c.employee}|${c.date}|${span(c)}`;
     default: {
       const never: never = c;
@@ -92,6 +95,7 @@ export function shiftText(c: ShiftChange): string {
       return `Open shift · ${when}`;
     case "shift-add":
     case "shift-delete":
+    case "shift-publish":
       return `${c.employee} · ${when}`;
     case "shift-edit":
       return `${c.employee} · ${when} → ${timeText(c.to)}`;
@@ -113,6 +117,7 @@ export const SHIFT_LABEL: Record<ShiftChange["kind"], string> = {
   "shift-edit": "Edit",
   "shift-delete": "Delete",
   "shift-reassign": "Reassign",
+  "shift-publish": "Publish",
 };
 
 function timesError(t: Times, what: string): string | null {
@@ -140,6 +145,7 @@ export function shiftError(c: ShiftChange, todayIso: string): string | null {
     case "open-assign":
     case "shift-add":
     case "shift-delete":
+    case "shift-publish":
     case "open-delete":
       return "employee" in c && !c.employee.trim() ? "Pick a person." : null;
     case "shift-reassign":
@@ -172,6 +178,7 @@ function parseShift(raw: Record<string, unknown>): ShiftChange {
       return { kind, slot: "", ...base };
     case "shift-add":
     case "shift-delete":
+    case "shift-publish":
       return { kind, ...base, employee: str(raw.employee) };
     case "shift-edit":
       return { kind, ...base, employee: str(raw.employee), to };
@@ -279,8 +286,8 @@ export function trayLines(queue: AdpChange[]): TrayLine[] {
     }
     const c = a.c;
     const group =
-      c.kind === "shift-add"
-        ? `shift-add|${c.employee}|${span(c)}`
+      c.kind === "shift-add" || c.kind === "shift-publish"
+        ? `${c.kind}|${c.employee}|${span(c)}`
         : c.kind === "open-add"
           ? `open-add|${span(c)}|${c.count}`
           : shiftKey(c);
@@ -364,6 +371,7 @@ export function pruneQueue(
       case "shift-edit":
       case "shift-delete":
       case "shift-reassign":
+      case "shift-publish":
         return now.hasShift(c.employee, c.date, c);
       default: {
         const never: never = c;
@@ -416,6 +424,52 @@ export function personShifts(
       if (t) out.push({ date: s.date, startMin: t.startMin, endMin: t.endMin, draft: /draft/i.test(String(r)) });
     }
   }
+  return out.sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin);
+}
+
+export type WeekShift = { date: string; employee: string } & Times;
+
+/** Assigned shifts ADP still shows as drafts, dated after `afterIso` up to `throughIso`. */
+export function adpDrafts(
+  shifts: { date: string; employee: string; shift_ranges_json: string | null }[],
+  afterIso: string,
+  throughIso: string,
+): WeekShift[] {
+  const people = new Set(shifts.filter((s) => s.date > afterIso && s.date <= throughIso).map((s) => s.employee));
+  return [...people].flatMap((employee) =>
+    personShifts(shifts, employee, afterIso)
+      .filter((p) => p.draft && p.date > afterIso && p.date <= throughIso)
+      .map(({ date, startMin, endMin }) => ({ date, employee, startMin, endMin })),
+  );
+}
+
+/**
+ * The suggested week as tray changes: suggested shifts ADP doesn't have become adds (open shifts at
+ * the same day and hours fold into one count), drafts ADP already has become publishes.
+ */
+export function suggestedChanges(
+  suggested: ({ date: string; employee: string | null; inAdp?: boolean } & Times)[],
+  drafts: WeekShift[],
+  todayIso: string,
+): ShiftChange[] {
+  const out: ShiftChange[] = [];
+  const open = new Map<string, Extract<ShiftChange, { kind: "open-add" }>>();
+  for (const s of suggested) {
+    if (s.inAdp || s.date <= todayIso) continue;
+    const t = { startMin: s.startMin, endMin: s.endMin };
+    if (s.employee) {
+      out.push({ kind: "shift-add", date: s.date, employee: s.employee, ...t });
+      continue;
+    }
+    const slot = open.get(`${s.date}|${span(t)}`);
+    if (slot) slot.count += 1;
+    else {
+      const c = { kind: "open-add" as const, date: s.date, count: 1, ...t };
+      open.set(`${s.date}|${span(t)}`, c);
+      out.push(c);
+    }
+  }
+  for (const d of drafts) if (d.date > todayIso) out.push({ kind: "shift-publish", ...d });
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin);
 }
 

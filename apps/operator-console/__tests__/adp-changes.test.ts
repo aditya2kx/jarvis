@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   adpChangeKey,
+  adpDrafts,
   changePeople,
   personShifts,
   pruneQueue,
@@ -9,6 +10,7 @@ import {
   shiftText,
   stageAdp,
   stagedShift,
+  suggestedChanges,
   summarizeApply,
   trayLines,
   unstageAdp,
@@ -165,5 +167,54 @@ describe("personShifts + summarizeApply", () => {
       { change_id: "2", area: "shift", summary: "B", status: "failed", error: "not found" },
     ]);
     expect([s.applied, s.failed, s.errors]).toEqual([1, 1, ["B: not found"]]);
+  });
+});
+
+describe("the suggested week as tray changes", () => {
+  const ranges = (...r: string[]) => JSON.stringify(r);
+  it("lists only ADP drafts after today through the week's end", () => {
+    const out = adpDrafts(
+      [
+        { date: "2026-10-28", employee: "A", shift_ranges_json: ranges("7:00 AM - 1:00 PM DRAFT") },
+        { date: "2026-10-30", employee: "A", shift_ranges_json: ranges("7:00 AM - 1:00 PM DRAFT", "2:00 PM - 8:00 PM") },
+        { date: "2026-11-01", employee: "B", shift_ranges_json: ranges("2:00 PM - 8:00 PM DRAFT") },
+        { date: "2026-11-02", employee: "B", shift_ranges_json: ranges("2:00 PM - 8:00 PM DRAFT") },
+      ],
+      TODAY,
+      "2026-11-01",
+    );
+    expect(out).toEqual([
+      { date: "2026-10-30", employee: "A", startMin: 420, endMin: 780 },
+      { date: "2026-11-01", employee: "B", startMin: 840, endMin: 1200 },
+    ]);
+  });
+
+  it("adds what ADP lacks, folds same-hour open shifts into a count and publishes drafts", () => {
+    const out = suggestedChanges(
+      [
+        { date: "2026-10-30", employee: "Lee, Ana", ...T },
+        { date: "2026-10-30", employee: null, ...T },
+        { date: "2026-10-30", employee: null, ...T },
+        { date: "2026-10-30", employee: "Roe, Sam", ...T, inAdp: true },
+        { date: "2026-10-28", employee: "Day, Ty", ...T },
+      ],
+      [{ date: "2026-10-31", employee: "Roe, Sam", ...T }],
+      TODAY,
+    );
+    expect(out).toEqual([
+      { kind: "shift-add", date: "2026-10-30", employee: "Lee, Ana", ...T },
+      { kind: "open-add", date: "2026-10-30", count: 2, ...T },
+      { kind: "shift-publish", date: "2026-10-31", employee: "Roe, Sam", ...T },
+    ]);
+  });
+
+  it("a publish is its own tray line, checked like any change to an existing shift", () => {
+    const pub: ShiftChange = { kind: "shift-publish", date: "2026-10-31", employee: "Lee, Ana", ...T };
+    expect(trayLines([shift(pub)])[0]).toMatchObject({ label: "Publish", destructive: false });
+    expect(validateAdpChanges([shift(pub)], TODAY)).toEqual([shift(pub)]);
+    expect(shiftError({ ...pub, employee: " " }, TODAY)).toBe("Pick a person.");
+    const keep = (has: boolean) =>
+      pruneQueue([shift(pub)], { todayIso: TODAY, unavailabilityKeys: new Set(), openSlots: new Set(), hasShift: () => has });
+    expect([keep(true).length, keep(false).length]).toEqual([1, 0]);
   });
 });

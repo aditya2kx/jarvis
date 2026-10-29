@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
-// Guards for the console design principles in docs/contributing/ui-polish.md (D3, D11, D12).
+// Guards for the console design principles in docs/contributing/ui-polish.md (D2, D3, D11, D12).
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/app/labor/actions", () => ({
+  schedulePushStatusAction: vi.fn().mockResolvedValue({ ok: true, data: { running: null } }),
+  sendPublishMessageAction: vi.fn(),
+}));
+vi.mock("@/lib/actions/ActionToast", () => ({ useActionToast: () => ({ push: vi.fn() }) }));
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { PersonLaneTrack, PersonName } from "@/components/labor/LaborCoveragePanel";
 import { EntrySheet, type SheetTarget } from "@/components/labor/availability/EntrySheet";
+import { AdpScheduleFinalize } from "@/components/labor/AdpScheduleFinalize";
 import type { CoveragePersonDay } from "@/lib/labor/coverage-model";
 import type { UnavailabilityRow } from "@/lib/bq/queries";
 
@@ -59,6 +65,15 @@ function sheet(target: SheetTarget) {
 }
 
 const opens = (el: Element) => el.querySelector('[data-affordance="opens"]') != null;
+
+describe("D2: one way to send shifts to ADP — the Changes to ADP tray's Apply", () => {
+  it("the suggested week only adds to the tray; it has no save, publish or apply of its own", () => {
+    const add = { kind: "shift-add" as const, date: "2026-10-30", employee: "Lee, Ana", startMin: 420, endMin: 780 };
+    render(<AdpScheduleFinalize weekStart="2026-10-26" changes={[add]} onStage={vi.fn()} enabled />);
+    const writes = screen.getAllByRole("button").filter((b) => /save|publish|apply|draft/i.test(b.textContent ?? ""));
+    expect(writes.map((b) => b.textContent)).toEqual([]);
+  });
+});
 
 describe("D3: the chart is for reading — a tap anywhere on a lane shows who's on", () => {
   it("lanes hold no buttons, and a tap on a shift reaches the timeline (tooltip pins)", () => {

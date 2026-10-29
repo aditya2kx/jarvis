@@ -3,7 +3,6 @@ import {
   adpUnavailability,
   adpUnavailabilityEvents,
   adpDirectoryRoster,
-  adpScheduleScrapedAt,
   adpScheduleHorizonEnd,
   laborActualShiftDays,
   laborActualsThrough,
@@ -217,7 +216,6 @@ export default async function LaborPage({
   let rulesHistory: RulesVersion[] = [];
   let unavailability: UnavailabilityRow[] = [];
   let unavailabilityEvents: UnavailabilityEventRow[] = [];
-  let scheduleReadAt: string | null = null;
   let upcomingShifts: ScheduledShift[] = [];
   let adpRosterRows: AdpRosterRow[] = [];
   let wageRates: LaborWageRates = { byName: {}, avgPartTime: null };
@@ -293,7 +291,6 @@ export default async function LaborPage({
       restockDates,
       rulesVersions,
       unavailRows,
-      scheduleRead,
       upcomingRows,
       weeklyActual,
       weeklySched,
@@ -347,7 +344,6 @@ export default async function LaborPage({
       upcomingRestockDates(DEFAULT_STORE, todayIso).catch(() => []),
       scheduleRulesHistory(DEFAULT_STORE).catch(() => []),
       adpUnavailability(DEFAULT_STORE).catch(() => []),
-      adpScheduleScrapedAt().catch(() => null),
       laborScheduledShiftDays(
         { start: todayIso, end: shiftCalendarDate(todayIso, "day", 56), label: "Next 8 weeks", preset: "custom" },
         { store: DEFAULT_STORE, excludePto: true },
@@ -379,7 +375,6 @@ export default async function LaborPage({
     punchGaps = mergePunchDays(buildPunchGaps(gapRows, gapCoworkers), punchDays, gapCoworkers);
     rulesHistory = rulesVersions;
     unavailability = unavailRows;
-    scheduleReadAt = scheduleRead;
     upcomingShifts = upcomingRows;
     fixesNotInHours = notInHours;
     soloRows = solo;
@@ -864,7 +859,6 @@ export default async function LaborPage({
               activeStaff={activeStaff}
               savedPushRows={savedPushRows}
               adpWriteEnabled={FEATURES.adpScheduleWrite}
-              scheduleReadAt={scheduleReadAt}
               shiftApplyBlock={isConsolePreview() ? "preview" : FEATURES.adpScheduleWrite ? null : "off"}
               availability={{
                 canManage: can("availability"),

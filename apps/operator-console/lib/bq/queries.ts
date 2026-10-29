@@ -3159,6 +3159,8 @@ export interface AutomationRow {
   template: string;
   /** Migration 088; only the unavailability reminder uses it. */
   followup_template?: string | null;
+  /** Migration 094; only the unavailability reminder uses it. */
+  lead_weeks?: number | null;
   updated_at: string | null;
   updated_by: string | null;
 }

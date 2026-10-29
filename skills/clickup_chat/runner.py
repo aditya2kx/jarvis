@@ -216,6 +216,19 @@ def ensure_dm_channel(
     return channel
 
 
+def list_members(team_id: str = DEFAULT_TEAM_ID, *, pat: str | None = None) -> list[dict]:
+    """Workspace members as ``{"id", "username", "email"}`` (v2 /team)."""
+    data = _request("/api/v2/team", pat=pat)
+    for team in data.get("teams", []):
+        if str(team.get("id")) == str(team_id):
+            return [
+                {"id": str(u.get("id")), "username": u.get("username") or "", "email": u.get("email") or ""}
+                for u in (m.get("user") or {} for m in team.get("members", []))
+                if u.get("id")
+            ]
+    return []
+
+
 def list_channels(team_id: str = DEFAULT_TEAM_ID, *, pat: str | None = None) -> list[dict]:
     """List ALL chat channels in a workspace (paginates automatically)."""
     out: list[dict] = []

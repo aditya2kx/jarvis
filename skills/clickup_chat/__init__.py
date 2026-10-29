@@ -7,7 +7,7 @@ by calling ClickUp's v3 chat endpoints directly with a PAT.
 Public API:
     from skills.clickup_chat import (
         get_pat, list_channels, find_channel_by_name, fetch_messages,
-        post_message, ensure_dm_channel,
+        post_message, ensure_dm_channel, list_members,
     )
 
 PAT lookup: macOS Keychain service `jarvis-clickup-palmetto-pat`
@@ -20,6 +20,7 @@ from .runner import (
     find_channel_by_name,
     get_pat,
     list_channels,
+    list_members,
     post_message,
 )
 
@@ -29,5 +30,6 @@ __all__ = [
     "find_channel_by_name",
     "get_pat",
     "list_channels",
+    "list_members",
     "post_message",
 ]

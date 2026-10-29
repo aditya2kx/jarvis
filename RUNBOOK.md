@@ -536,18 +536,42 @@ BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.team_pulse --dry-run
 BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.team_pulse --once   # force day gate; still DM-first
 ```
 
-### Unavailability reminder (Issue #381)
+### Unavailability reminder (Issues #381, #435)
 
-DMs the operator a ready-to-post ClickUp nudge to update ADP unavailability before the Friday
-publish. First configured day (default **Wed**): the full reminder for the week after next
-(`{target_week}` → `Oct 19 - Oct 25`, `{publish_day}` → `Friday(Oct 9)`); later configured days
-(default **Thu**): the one-line follow-up for the same thread. Config is the `automations` row
-`unavailability-reminder` (on/off, days, hour/minute CT, `template`, `followup_template` — migration
-088), edited at Operator Console `/automations/unavailability-reminder` (Preview any date; **DM me
-now** sends today's message and counts as today's send). The scheduler ticks every 15 minutes; the job
+Drafts a ready-to-post ClickUp nudge to update ADP unavailability before the Friday publish. The
+schedule runs `lead_weeks` ahead (default **4**, console **Weeks ahead**; migration 094): each Friday
+publishes through the Sunday of the `lead_weeks`-th week after this one (Fri Oct 30 → through Nov 29).
+First configured day (default **Wed**): the full reminder (`{through_date}` → `Nov 29`,
+`{target_week}` → `Nov 23 - Nov 29`, `{publish_day}` → `Friday(Oct 30)`, `{lead_weeks}` → `4`);
+later configured days (default **Thu**): a one-line follow-up for the same thread whose `{flagged}`
+tags every active hourly person (latest ADP People Directory, salaried / labor-excluded dropped) with
+a week from the week after next through the lead week that has **no** ADP unavailability (pending or
+approved) — the soft "hasn't updated" signal. Each becomes a ClickUp mention when exactly one member
+matches the name, else plain `@First Last`.
+
+**Delivery** (`automations.destination`): `drafts` (default since 094) types the draft into the
+operator-only private channel **#jarvis-drafts** (`8cr6661-7217`) through the ClickUp web app
+(`skills/clickup_browser`), so `@everyone` and people are real chips that survive copy-paste into
+Shift Coverage & Trades (the REST API posts `@everyone` as plain text). A person outside
+#jarvis-drafts triggers ClickUp's "Add to this channel?" — the sender always clicks **Don't Add**. The
+webhook has no browser, so a due tick starts the `bhaga-daily-refresh` job with
+`BHAGA_UNAVAIL_REMINDER=scheduler` (console **Send draft now** → `once`); the job re-checks the gate
+and dedupe, restores the operator's ClickUp session from `gs://bhaga-scrape-cache/_session/clickup-palmetto.json`,
+sends, and writes the refreshed session back. Any browser failure (no/expired session, DOM change)
+falls back to the REST DM with a note. `dm` = REST DM only.
+
+Config is the `automations` row `unavailability-reminder` (on/off, days, hour/minute CT, lead weeks,
+`template`, `followup_template`), edited at Operator Console `/automations/unavailability-reminder`
+(Preview any date, with the real flagged list). The scheduler ticks every 15 minutes; the job
 (`agents/bhaga/scripts/unavailability_reminder.py`) sends only on a configured day at/after the
-configured time, and at most once per CT day (`automation_posts`). Python and console compose from
-the shared fixture `core/testdata/unavailability_reminder_golden.json`.
+configured time, and at most once per CT day (`automation_posts`). Python and console compose and flag
+from the shared fixture `core/testdata/unavailability_reminder_golden.json`.
+
+**ClickUp session** (`cu_refresh` lasts ~1 year; the job refreshes it on each send). Re-seed after a
+`BREADCRUMB unavailability_reminder browser send failed … no ClickUp session` / expired sign-in: sign in
+to ClickUp as adi@mypalmetto.co (Google) in a Playwright browser, save `context.storage_state()` to
+`local/sessions/clickup-palmetto.json` (gitignored), then from an owner ADC surface:
+`gcloud storage cp local/sessions/clickup-palmetto.json gs://bhaga-scrape-cache/_session/clickup-palmetto.json`.
 
 | Field | Value |
 |---|---|
@@ -562,10 +586,12 @@ gcloud scheduler jobs create http bhaga-unavailability-reminder \
   --uri='https://bhaga-webhook-4yl5izovxq-uc.a.run.app/unavailability-reminder' \
   --http-method=POST --headers=X-Team-Pulse-Token=TOKEN
 
-BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.unavailability_reminder --dry-run --date 2026-10-14
-BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.unavailability_reminder --once   # ignore day/time gate
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.unavailability_reminder --dry-run --date 2026-10-29
+BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.unavailability_reminder --once --in-browser-job   # laptop with a session
 ```
-Logs: `unavailability_reminder result=` on `bhaga-webhook`; `BREADCRUMB unavailability_reminder failed`.
+Logs: `unavailability_reminder result=` on `bhaga-webhook` (`status=queued` = job started);
+`[unavailability-reminder] mode=` and `unavailability_reminder: sent kind=… dest=… chips=` on the job;
+`BREADCRUMB unavailability_reminder failed` / `… browser send failed` / `… flags failed`.
 
 > The `bhaga-daily-diff` scheduler + Cloud Run job have been **retired** (deleted 2026-05-29) and
 > the diff build/deploy steps were removed from `.github/workflows/deploy.yml`. `cloud/diff/` source
@@ -1866,7 +1892,11 @@ DM still goes out from the last sync and says "open shifts are as of <time>". To
 both re-read open shifts from ADP first. The channel post is `team_post` only — it starts at `@everyone`
 and drops the draft header — and goes to `clickup.shift_coverage_channel` in the store profile. A stale
 ADP read is DMed with the "as of" note, but never posted to the team
-(`BREADCRUMB adp_publish_channel … not posted to the team`; the job exits 1). Laptop equivalent:
+(`BREADCRUMB adp_publish_channel … not posted to the team`; the job exits 1). The channel post is
+typed through the ClickUp web app (`skills/clickup_browser`, the unavailability reminder's stored
+session) so `@everyone` is a real mention (Issue #435); if that fails the API posts it with `@everyone`
+as plain text (`BREADCRUMB adp_publish_browser … posted by the API instead`). The DM stays on the API
+(ClickUp offers no Everyone mention in a DM). Laptop equivalent:
 `BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.adp_schedule_write --publish-dm
 --week-start <Mon> [--to channel]`. **Publishing
 in ADP directly also works:** every Team Schedule load (nightly, Sync ADP, after any console write)

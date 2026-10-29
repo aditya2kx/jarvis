@@ -558,7 +558,16 @@ class PublishMessage(unittest.TestCase):
         self.assertEqual(w.open_shift_window(D(2026, 10, 19), D(2026, 10, 9)), (D(2026, 10, 10), D(2026, 10, 25)))
 
 
+BROWSER_SEND = "agents.bhaga.scripts.unavailability_reminder.browser_send"
+
+
 class NotifyPublished(unittest.TestCase):
+    def setUp(self):
+        # The REST path is the default under test; the browser path has its own tests below.
+        p = mock.patch(BROWSER_SEND, side_effect=RuntimeError("no ClickUp session"))
+        self.browser = p.start()
+        self.addCleanup(p.stop)
+
     def _notify(self, fresh=True, scraped="2026-10-09T17:58:30+00:00"):
         calls = []
 
@@ -613,6 +622,44 @@ class NotifyPublished(unittest.TestCase):
             self.assertFalse(w.notify_published("palmetto", D(2026, 10, 19), fresh=False, to="channel"))
         post.assert_not_called()
         self.assertIn("not posted to the team", out.call_args[0][0])
+
+    def _shift_rows(self):
+        return [{"date": D(2026, 10, 13), "shift_range": "3:00 PM - 8:30 PM", "scraped_at_utc": "2026-10-09T17:58:30+00:00"}]
+
+    def test_channel_post_is_typed_in_the_web_app(self):
+        self.browser.side_effect = None
+        with mock.patch.object(w, "_query", return_value=self._shift_rows()), \
+             mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
+             mock.patch("core.datastore.fq", lambda t: t), \
+             mock.patch("skills.clickup_chat.post_message") as post:
+            self.assertTrue(w.notify_published("palmetto", D(2026, 10, 19), to="channel"))
+        team_id, channel_id = w.shift_coverage_target("palmetto")
+        store, ch, content, team = self.browser.call_args[0]
+        self.assertEqual((store, ch, team), ("palmetto", channel_id, team_id))
+        self.assertTrue(content.startswith("@everyone"))
+        post.assert_not_called()
+
+    def test_browser_failure_falls_back_to_the_api_with_a_breadcrumb(self):
+        posted = []
+        with mock.patch.object(w, "_query", return_value=self._shift_rows()), \
+             mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
+             mock.patch("core.datastore.fq", lambda t: t), \
+             mock.patch("skills.clickup_chat.post_message", lambda ch, content, team_id: posted.append(ch)), \
+             mock.patch("builtins.print") as out:
+            self.assertTrue(w.notify_published("palmetto", D(2026, 10, 19), to="channel"))
+        _team_id, channel_id = w.shift_coverage_target("palmetto")
+        self.assertEqual(posted, [channel_id])
+        self.assertIn("BREADCRUMB adp_publish_browser", out.call_args_list[0][0][0])
+
+    def test_dm_draft_stays_on_the_api(self):
+        with mock.patch.object(w, "_query", return_value=self._shift_rows()), \
+             mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
+             mock.patch("core.datastore.fq", lambda t: t), \
+             mock.patch("skills.clickup_chat.ensure_dm_channel", return_value={"id": "dm1"}), \
+             mock.patch("skills.clickup_chat.post_message") as post:
+            self.assertTrue(w.notify_published("palmetto", D(2026, 10, 19)))
+        self.browser.assert_not_called()
+        self.assertEqual(post.call_args[0][0], "dm1")
 
 
 class RefreshWindow(unittest.TestCase):

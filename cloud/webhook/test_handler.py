@@ -2099,6 +2099,20 @@ class TestUnavailabilityReminderKick:
         assert resp.status_code == 200
         assert [f.__name__ for f in called] == ["_run_unavailability_reminder_job"]
 
+    def test_drafts_tick_starts_the_browser_job(self, monkeypatch):
+        from agents.bhaga.scripts import unavailability_reminder as ur
+
+        triggered = []
+        monkeypatch.setattr(handler, "_trigger_cloud_run_job_with_env",
+                            lambda date_str, env: triggered.append(env) or True)
+
+        def fake_run(**kw):
+            return {"status": "queued" if kw["start_browser_job"]() else "skipped"}
+
+        monkeypatch.setattr(ur, "run_reminder", fake_run)
+        handler._run_unavailability_reminder_job()
+        assert triggered == [[("BHAGA_UNAVAIL_REMINDER", "scheduler")]]
+
 
 class TestStalenessAlarm:
     """The alarm must fire from a beat the nightly cannot silence."""

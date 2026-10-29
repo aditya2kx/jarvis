@@ -329,6 +329,8 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 088 (Issue #381): automations.followup_template for the
     # unavailability reminder's Thursday reply. Additive column on the 054 config
     # table — no new BQ_TARGETS/GRAFANA_VIEWS.
+    # migration 094 (Issue #435): automations.lead_weeks + reminder defaults move to
+    # drafts. Additive column on the 054 config table — no new BQ_TARGETS/GRAFANA_VIEWS.
     # migration 055 (Issue #225): inventory_order_tub_overrides + rewrite
     # tvf_order_reco_slot1 / tvf_order_reco_slot_n for Manual pins on Estimated
     # dates. Console /inventory drawer — not model_* / no Grafana panel; freshness

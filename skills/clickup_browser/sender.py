@@ -8,6 +8,7 @@ person mention, and the chips survive copy-paste into another channel.
   * ``@everyone``                       → the channel's Everyone chip
   * ``[@First Last](#user_mention#<id>)`` → that person's chip (picked by ClickUp user id)
 A person who can't be picked is typed as plain ``First Last`` and reported in ``plain``.
+``**text**`` is typed bold; a ``---`` line is dropped.
 
 Session: a Playwright ``storage_state`` of the operator's ClickUp sign-in
 (``cu_refresh`` lasts about a year). The file is rewritten after each send so
@@ -20,6 +21,7 @@ import re
 from dataclasses import dataclass, field
 
 TOKEN_RE = re.compile(r"\[@([^\]]+)\]\(#user_mention#(\d+)\)|@everyone\b")
+BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 COMPOSER = '[data-test="comment-bar__editor-input"]'
 OPTION = "cu3-combo-box-item[role=option]"
 APP = "https://app.clickup.com"
@@ -58,12 +60,18 @@ def plain_text(content: str) -> str:
 def _type_text(page, text: str) -> None:
     # insert_text, not type: a typed "#", "/" or ":" opens a ClickUp picker that eats the
     # keys after it. A "---" line becomes a divider that moves the caret, so it is dropped.
+    # Inserted text skips ClickUp's markdown shortcuts, so **bold** is typed with Ctrl+B.
     lines = re.sub(r"\n*^---$\n*", "\n\n", text, flags=re.M).split("\n")
     for i, line in enumerate(lines):
         if i:
             page.keyboard.press("Shift+Enter")
-        if line:
-            page.keyboard.insert_text(line)
+        for j, part in enumerate(BOLD_RE.split(line)):
+            if j % 2:
+                page.keyboard.press("Control+B")
+                page.keyboard.insert_text(part)
+                page.keyboard.press("Control+B")
+            elif part:
+                page.keyboard.insert_text(part)
 
 
 def _pick(page, query: str, option) -> bool:

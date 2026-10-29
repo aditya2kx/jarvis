@@ -1892,7 +1892,10 @@ DM still goes out from the last sync and says "open shifts are as of <time>". To
 both re-read open shifts from ADP first. The channel post is `team_post` only — it starts at `@everyone`
 and drops the draft header — and goes to `clickup.shift_coverage_channel` in the store profile. A stale
 ADP read is DMed with the "as of" note, but never posted to the team
-(`BREADCRUMB adp_publish_channel … not posted to the team`; the job exits 1). Laptop equivalent:
+(`BREADCRUMB adp_publish_channel … not posted to the team`; the job exits 1). The DM and the channel
+post are typed through the ClickUp web app (`skills/clickup_browser`, the unavailability reminder's
+stored session) so `@everyone` is a real mention (Issue #435). If that fails the API sends it with
+`@everyone` as plain text (`BREADCRUMB adp_publish_browser … sent by the API instead`). Laptop equivalent:
 `BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.adp_schedule_write --publish-dm
 --week-start <Mon> [--to channel]`. **Publishing
 in ADP directly also works:** every Team Schedule load (nightly, Sync ADP, after any console write)

@@ -87,6 +87,14 @@ class TypeMessage(unittest.TestCase):
         self.assertEqual(page.log.count(("press", "Shift+Enter")), 3)  # one blank line for the ---, one \n
         self.assertNotIn(("press", "Enter"), page.log)
 
+    def test_bold_is_typed_with_ctrl_b(self):
+        page = _Page(set())
+        sender.type_message(page, "The schedule for **Nov 9–15** is out")
+        self.assertEqual(page.log, [
+            ("insert", "The schedule for "), ("press", "Control+B"), ("insert", "Nov 9–15"),
+            ("press", "Control+B"), ("insert", " is out"),
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

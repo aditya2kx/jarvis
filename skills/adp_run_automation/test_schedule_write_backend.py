@@ -1,6 +1,7 @@
 """ADP Team Schedule write helpers (Issue #337)."""
 from __future__ import annotations
 
+import contextlib
 import datetime
 import unittest
 from unittest import mock
@@ -273,3 +274,76 @@ class PublishDraftsLag(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConsoleShiftChanges(unittest.TestCase):
+    """Issue #434: delete / edit any shift, open-shift edit / delete, publish-mode creates."""
+
+    T = {"date_iso": "2026-11-03", "employee": "Lee, Kim", "start_min": 540, "end_min": 900}
+
+    def _patch(self, **over):
+        self.calls = []
+        grid = over.pop("grid", [True])
+        base = {
+            "_open_assigned_shift": mock.MagicMock(side_effect=lambda *_a, **k: self.calls.append(("open", k["state"]))),
+            "_press_delete": mock.MagicMock(side_effect=lambda *_a, dry_run: self.calls.append(("delete", dry_run)) or not dry_run),
+            "_edit_times": mock.MagicMock(side_effect=lambda *_a, dry_run, **_k: self.calls.append(("edit", dry_run)) or not dry_run),
+            "shift_in_grid": mock.MagicMock(side_effect=lambda *_a, **k: self.calls.append(("grid", k.get("state", "any"), k["start_min"])) or grid.pop(0)),
+            "_wait_for": mock.MagicMock(side_effect=lambda _p, check, *_a: check()),
+            "_open_shift_details": mock.MagicMock(side_effect=lambda *_a, **_k: self.calls.append(("open-details",))),
+            "_visible_button": mock.MagicMock(return_value=object()),
+            **over,
+        }
+        stack = contextlib.ExitStack()
+        for name, fake in base.items():
+            stack.enter_context(mock.patch.object(wb, name, fake))
+        self.addCleanup(stack.close)
+
+    def test_confirm_texts_and_never_delete_all(self):
+        self.assertTrue(wb.DELETE_CONFIRM_RE.search("Are you sure you want to delete this shift?"))
+        self.assertTrue(wb.DELETE_CONFIRM_RE.search("Are you sure you want to delete this open shift?"))
+        self.assertTrue(wb.CONFIRM_RE.match("Yes, delete"))
+        self.assertIsNone(wb.CONFIRM_RE.match("Delete all schedules"))
+        self.assertFalse(wb.CANCEL_RE.match("Delete"))
+
+    def test_delete_any_shift_opens_any_state_and_confirms_on_the_grid(self):
+        self._patch(grid=[False])
+        wb.delete_any_shift(mock.MagicMock(), mock.Mock(), **self.T)
+        self.assertEqual(self.calls, [("open", "any"), ("delete", False), ("grid", "any", 540)])
+
+    def test_delete_any_shift_still_on_the_grid_is_unconfirmed(self):
+        self._patch(grid=[True])
+        with self.assertRaises(wb.UnconfirmedSave):
+            wb.delete_any_shift(mock.MagicMock(), mock.Mock(), **self.T)
+
+    def test_delete_any_shift_dry_run_cancels_and_skips_the_read_back(self):
+        self._patch()
+        wb.delete_any_shift(mock.MagicMock(), mock.Mock(), **self.T, dry_run=True)
+        self.assertEqual(self.calls, [("open", "any"), ("delete", True)])
+
+    def test_edit_shift_is_confirmed_live_at_the_new_times(self):
+        self._patch(grid=[True])
+        wb.edit_shift(mock.MagicMock(), mock.Mock(), **self.T, to_start_min=600, to_end_min=960)
+        self.assertEqual(self.calls, [("open", "any"), ("edit", False), ("grid", "published", 600)])
+
+    def test_edit_shift_not_shown_at_the_new_times_is_unconfirmed(self):
+        self._patch(grid=[False])
+        with self.assertRaises(wb.UnconfirmedSave):
+            wb.edit_shift(mock.MagicMock(), mock.Mock(), **self.T, to_start_min=600, to_end_min=960)
+
+    def test_open_shift_edit_and_delete_go_through_its_details_pane(self):
+        self._patch()
+        times = {"date_iso": "2026-11-03", "start_min": 540, "end_min": 900}
+        wb.edit_open_shift(mock.MagicMock(), mock.Mock(), **times, to_start_min=600, to_end_min=900, dry_run=True)
+        wb.delete_open_shift(mock.MagicMock(), mock.Mock(), **times)
+        self.assertEqual(self.calls, [("open-details",), ("edit", True), ("open-details",), ("delete", False)])
+
+    def test_published_create_presses_publish_never_save_as_draft_and_checks_the_grid(self):
+        clicked = []
+        self._patch(grid=[True], _open_action=mock.MagicMock(), _fill_times=mock.MagicMock(),
+                    _settled_picker=mock.MagicMock(return_value=[{"name": "Lee, Kim", "value": "7"}]),
+                    _click=mock.MagicMock(side_effect=lambda _f, _p, what: clicked.append(what)),
+                    _back_out=mock.MagicMock(), drafts_pending=mock.MagicMock(side_effect=AssertionError("no count")))
+        name = wb.create_shift(mock.MagicMock(), mock.Mock(), **self.T, publish=True)
+        self.assertEqual((name, clicked), ("Lee, Kim", ["Next", "Publish"]))
+        self.assertEqual(self.calls[-1], ("grid", "published", 540))

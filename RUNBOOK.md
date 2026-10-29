@@ -1811,7 +1811,7 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
   chip counts, the Finalize card, the shift-draft table and suggested names. ADP's own shifts always show.
 
 **Apply to ADP** inserts one `queued` row per change under one `batch_id` — shifts in `adp_shift_changes`
-(migration 093), unavailability in `adp_unavailability_changes` (092) — and starts
+(migration 094), unavailability in `adp_unavailability_changes` (092) — and starts
 `BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_BATCH_ID=<id>` (refused while any schedule write runs).
 Per week the job applies deletes, then edits, reassigns, adds, assigns. Each shift is **published on its own**
 (wizard / Edit **Publish**); the week's **Publish drafts** and **Delete all schedules** are never pressed.

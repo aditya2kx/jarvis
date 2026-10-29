@@ -2560,6 +2560,19 @@ export function inventoryStockLevels(store: string): Promise<InventoryStockRow[]
   );
 }
 
+/**
+ * Bases whose Current Qty is an operator override still in force — i.e. saved
+ * after that base's latest ClickUp closing (migration 093, Issue #438).
+ */
+export async function currentQtyOverrideItems(store: string): Promise<string[]> {
+  const rows = await q<{ item: string }>(
+    `SELECT item FROM ${fq("vw_inventory_order_assistant")}
+     WHERE store = @store AND current_qty_source = 'override'`,
+    { store },
+  );
+  return rows.map((r) => r.item);
+}
+
 // vw_order_reco_next_dates (031 + 041 + 051 + 052) — up to order_reco_max_slots
 // planning dates (default 4): future, plus today until a base closing exists.
 export interface NextDateRow {

@@ -991,8 +991,8 @@ export async function clearUsageDayOverride(
 }
 
 /**
- * Sticky Current Qty override (Issue #240). COALESCE'd in
- * vw_inventory_order_assistant.
+ * Current Qty override (Issue #240). vw_inventory_order_assistant applies it
+ * until the next ClickUp closing for that base (migration 093, Issue #438).
  */
 export async function setCurrentQtyOverride(
   store: string,

@@ -253,10 +253,11 @@ The Inventory / Ordering screen must render the **dual-date** recommendation fro
 - **Frozen identity columns** (left, pinned): `Item`, `Current Qty`, `Avg per day`.
   **Current Qty** is editable when `FEATURES.writeRestock` is on (Issue #240): click the
   cell or header pencil → right Sheet listing **all bases** (same pattern as Order Tubs)
-  → Apply once → sticky `inventory_current_qty_overrides` MERGEs (COALESCE into
-  `vw_inventory_order_assistant`) → order-reco refresh requested; the status banner
-  shows progress and the table repaints when the run commits.
-  Reset all clears overrides so ClickUp closings win again.
+  → Apply once → `inventory_current_qty_overrides` MERGEs → order-reco refresh requested;
+  the status banner shows progress and the table repaints when the run commits.
+  `vw_inventory_order_assistant` applies an override only until the next ClickUp closing
+  for that base (migration 093, Issue #438); while one is in force the cell shows a
+  "Manual" badge. Reset all clears overrides immediately.
 - **Restock horizon (Issue #416):** on page load, `ensureRestockHorizon` reads
   `store_config restock_delivery_weekday` / `restock_horizon_dates` and
   INSERT-only tops up live `inventory_restock_schedule` dates (same planner as

@@ -160,7 +160,7 @@ BQ_TARGETS: list[Target] = [
     # migration 092 (Issue #427): adp_unavailability_changes / adp_unavailability_events are
     # operator input (rows only on a console unavailability change) — same class as
     # labor_schedule_pushes. NOT BQ_TARGETS entries.
-    # migration 093 (Issue #434): adp_shift_changes / adp_shift_events are operator input
+    # migration 094 (Issue #434): adp_shift_changes / adp_shift_events are operator input
     # (rows only on a console Apply to ADP) — same class. NOT BQ_TARGETS entries.
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —
@@ -348,6 +348,8 @@ GRAFANA_VIEWS: list[Target] = [
     # vw_inventory_order_assistant.latest_reading. Console /inventory Current Qty
     # edit — not model_* / no Grafana panel; freshness via inventory_order_reco
     # refresh. No new BQ_TARGETS/GRAFANA_VIEWS.
+    # migration 093 (Issue #438): same view; override applies only until the next
+    # closing, + current_qty_source column. No new BQ_TARGETS/GRAFANA_VIEWS.
     # migration 059 (Issue #251): employee_perks + rewrite vw_model_payroll_period
     # (PT tip-alloc UNION FT shifts; wage_rate, ot_hours, perks). Same view already
     # in GRAFANA_VIEWS — no new target.

@@ -37,7 +37,7 @@ describe("AdpScheduleFinalize: the suggested week goes through the Changes to AD
     const names = screen.getAllByRole("button").map((b) => b.textContent);
     expect(names).toEqual(["Review & add to changes", "Send ClickUp message"]);
     expect(screen.getByTestId("adp-finalize-status").textContent).toBe(
-      "3 suggested shifts (1 assigned, 2 open, 18.0h) aren't in ADP yet. 1 shift in ADP is still a draft staff can't see. Add them to your changes, then Apply to ADP.",
+      "3 suggested shifts (18.0h, 2 open) aren't in ADP yet. 1 shift in ADP is still a draft staff can't see. Add them to your changes, then Apply to ADP.",
     );
   });
 

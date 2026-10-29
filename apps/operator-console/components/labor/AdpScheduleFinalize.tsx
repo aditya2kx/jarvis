@@ -167,7 +167,7 @@ export function AdpScheduleFinalize({
           {lineCount
             ? [
                 addCount
-                  ? `${plural(addCount, "suggested shift")} (${addCount - openCount} assigned, ${openCount} open, ${hoursOf(adds).toFixed(1)}h) ${addCount === 1 ? "isn't" : "aren't"} in ADP yet.`
+                  ? `${plural(addCount, "suggested shift")} (${hoursOf(adds).toFixed(1)}h${openCount ? `, ${openCount} open` : ""}) ${addCount === 1 ? "isn't" : "aren't"} in ADP yet.`
                   : "",
                 publishes.length === 1
                   ? "1 shift in ADP is still a draft staff can't see."
@@ -209,7 +209,7 @@ export function AdpScheduleFinalize({
           {sheet === "add" ? (
             <>
               <SheetHeader>
-                <SheetTitle>Add the {range} suggestions to your changes</SheetTitle>
+                <SheetTitle>Suggested shifts · {range}</SheetTitle>
                 <SheetDescription>
                   {`To add: ${[
                     addCount ? `${plural(addCount, "new shift")} (${hoursOf(adds).toFixed(1)}h)` : "",

@@ -209,7 +209,7 @@ export function AdpChangesTray({
   return (
     <div
       data-testid="adp-changes-tray"
-      className="sticky bottom-3 z-20 flex flex-col gap-2 rounded-xl border border-border bg-popover p-3 shadow-lg max-md:bottom-[calc(4.5rem+env(safe-area-inset-bottom))]"
+      className="sticky bottom-3 z-20 flex flex-col gap-2 rounded-xl border border-border bg-card p-3 shadow-lg max-md:bottom-[calc(4.5rem+env(safe-area-inset-bottom))]"
     >
       <div className="flex flex-wrap items-center gap-2">
         {busy ? (

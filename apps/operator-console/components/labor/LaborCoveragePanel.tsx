@@ -796,7 +796,11 @@ function CoverageTimeline({
           <p className="text-muted-foreground">Nobody on at this time.</p>
         )}
         {offAt.length ? (
-          <ul className="mt-1.5 flex max-h-40 flex-col gap-1 overflow-y-auto border-t border-border pt-1.5">
+          <ul
+            className="mt-1.5 flex max-h-40 flex-col gap-1 overflow-y-auto border-t border-border pt-1.5"
+            aria-label="Unavailable at this time"
+          >
+            <li className="text-[11px] font-medium text-muted-foreground">Unavailable · their hours that day</li>
             {offAt.map((o) => (
               <li key={o.employee} className="flex items-start justify-between gap-3">
                 <span className="flex min-w-0 items-center gap-1.5">
@@ -810,7 +814,7 @@ function CoverageTimeline({
                   className={cn("shrink-0 tabular-nums", !o.pending && "text-muted-foreground")}
                   style={o.pending ? { color: REQUEST_COLOR } : undefined}
                 >
-                  {o.when}
+                  {o.pending ? `Requested · ${o.when}` : o.when}
                 </span>
               </li>
             ))}

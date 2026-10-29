@@ -1009,7 +1009,7 @@ function ShiftBody({
         )}
         <p className="text-xs text-muted-foreground">
           {to && !isOpen
-            ? `ADP can't hand an assigned shift to someone else, so this deletes it and adds it for ${to}.`
+            ? `ADP can't hand an assigned shift to someone else, so this deletes it and adds it for ${to}. `
             : isOpen
               ? "Only people your scheduling rules allow are listed. "
               : ""}

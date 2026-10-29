@@ -20,6 +20,7 @@ res.everyone, res.users, res.plain       # True, ["123"], [] — plain = names w
 |---|---|
 | `@everyone` | Everyone chip (channels only; ClickUp offers none in DMs) |
 | `[@Name](#user_mention#<id>)` | that person's chip, picked by ClickUp user id (`item_<id>` option) |
+| `**text**` | bold (typed with Ctrl+B; inserted text skips ClickUp's markdown shortcuts) |
 | a `---` line | dropped (ClickUp turns it into a divider that moves the caret) |
 
 Plain text is inserted, not typed: a typed `#`, `/` or `:` opens a ClickUp picker

@@ -635,17 +635,17 @@ def notify_published(store: str, week_start: dt.date, *, fresh: bool = True, to:
         if to == "channel":
             content = team_post(week_start, open_shifts)
             team_id, channel_id = shift_coverage_target(store)
+            # The API stores @everyone as plain text; the web app makes it a real mention.
+            try:
+                browser_send(store, channel_id, content, team_id)
+            except Exception as exc:  # noqa: BLE001 — still post, as plain text
+                print(f"BREADCRUMB adp_publish_browser store={store} week_start={week_start}"
+                      f" error={type(exc).__name__}: {exc} — posted by the API instead"[:500])
+                post_message(channel_id, content, team_id=team_id)
         else:
             content = publish_message(week_start, open_shifts, stale_as_of=None if fresh else (as_of or "unknown"))
-            team_id = DEFAULT_WORKSPACE_ID
-            channel_id = str(ensure_dm_channel([DEFAULT_DM_USER_ID], team_id=team_id)["id"])
-        # The API stores @everyone as plain text; the web app makes it a real mention.
-        try:
-            browser_send(store, channel_id, content, team_id)
-        except Exception as exc:  # noqa: BLE001 — still deliver, as plain text
-            print(f"BREADCRUMB adp_publish_browser store={store} week_start={week_start} to={to}"
-                  f" error={type(exc).__name__}: {exc} — sent by the API instead"[:500])
-            post_message(channel_id, content, team_id=team_id)
+            channel = ensure_dm_channel([DEFAULT_DM_USER_ID], team_id=DEFAULT_WORKSPACE_ID)
+            post_message(str(channel["id"]), content, team_id=DEFAULT_WORKSPACE_ID)
     except Exception as exc:  # noqa: BLE001
         print(f"BREADCRUMB adp_publish_dm store={store} week_start={week_start} to={to} error={type(exc).__name__}: {exc}"[:500])
         return False

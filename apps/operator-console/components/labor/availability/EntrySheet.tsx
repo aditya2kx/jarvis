@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { StagedBadge } from "@/components/labor/StagedBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,10 +36,11 @@ export type SheetTarget =
   /** One of a person's ADP shifts (draft or published): edit times, reassign or delete. */
   | { mode: "shift"; employee: string; shift: PersonShift }
   | { mode: "open-add"; date: string }
-  | { mode: "open-edit"; slot: string; date: string; startMin: number; endMin: number };
+  /** One ADP open shift: assign (to `options`, the people the rules allow), edit times or delete. */
+  | { mode: "open-shift"; slot: string; date: string; startMin: number; endMin: number; options: string[]; suggested: string | null };
 
 type UnavailTarget = Extract<SheetTarget, { mode: "add" | "entry" }>;
-type ShiftTarget = Extract<SheetTarget, { mode: "shift-add" | "shift" | "open-add" | "open-edit" }>;
+type ShiftTarget = Extract<SheetTarget, { mode: "shift-add" | "shift" | "open-add" | "open-shift" }>;
 
 const fromRule = (r: UnavailabilityRow) => r.row_key.startsWith("rule|");
 
@@ -295,8 +297,8 @@ function targetKey(t: SheetTarget): string {
       return `shift-${t.employee}-${t.shift.date}-${t.shift.startMin}`;
     case "open-add":
       return `open-add-${t.date}`;
-    case "open-edit":
-      return `open-edit-${t.slot}`;
+    case "open-shift":
+      return `open-shift-${t.slot}`;
     default: {
       const never: never = t;
       return never;
@@ -369,7 +371,7 @@ function PersonBody({
                     {dayLabel(x.date)} · {timeText(x)}
                   </span>
                   {change ? (
-                    <Badge variant={change.kind === "shift-delete" ? "destructive" : "default"}>{stagedShiftText(change)}</Badge>
+                    <StagedBadge remove={change.kind === "shift-delete"}>{stagedShiftText(change)}</StagedBadge>
                   ) : x.draft ? (
                     <Badge variant="outline">Draft</Badge>
                   ) : null}
@@ -850,12 +852,14 @@ function ShiftBody({
   onClose: () => void;
   onStage: (c: ShiftChange) => void;
 }) {
-  const existing = target.mode === "shift" ? target.shift : target.mode === "open-edit" ? target : null;
+  const existing = target.mode === "shift" ? target.shift : target.mode === "open-shift" ? target : null;
   const [times, setTimes] = useState<Times>(existing ? { startMin: existing.startMin, endMin: existing.endMin } : DEFAULT_TIMES);
-  const [employee, setEmployee] = useState<string | null>(target.mode === "shift-add" ? target.employee : null);
+  const [employee, setEmployee] = useState<string | null>(
+    target.mode === "shift-add" ? target.employee : target.mode === "open-shift" ? target.suggested : null,
+  );
   const [days, setDays] = useState<string[]>(() => (target.mode === "shift-add" || target.mode === "open-add" ? [target.date > todayIso ? target.date : addDays(todayIso, 1)] : []));
   const [count, setCount] = useState(1);
-  const [editing, setEditing] = useState<"times" | "reassign" | null>(target.mode === "open-edit" ? "times" : null);
+  const [editing, setEditing] = useState<"times" | "person" | null>(null);
   const tomorrow = addDays(todayIso, 1);
   const stageAll = (changes: ShiftChange[]) => {
     for (const c of changes) onStage(c);
@@ -923,40 +927,29 @@ function ShiftBody({
     );
   }
 
-  if (target.mode === "open-edit") {
-    const change: ShiftChange = { kind: "open-edit", slot: target.slot, date: target.date, startMin: target.startMin, endMin: target.endMin, to: times };
-    return (
-      <>
-        <SheetHeader>
-          <SheetTitle>Change open shift</SheetTitle>
-          <SheetDescription>
-            {dayLabel(target.date)} · {timeText(target)} · open in ADP
-          </SheetDescription>
-        </SheetHeader>
-        <div className="flex flex-col gap-4 px-4">
-          <ShiftTimes value={times} onChange={setTimes} />
-        </div>
-        {footer(shiftError(change, todayIso), "Save to changes", [change])}
-      </>
-    );
-  }
-
-  const x = target.shift;
-  const base = { date: x.date, employee: target.employee, startMin: x.startMin, endMin: x.endMin };
-  const past = x.date <= todayIso;
+  const isOpen = target.mode === "open-shift";
+  const shift = isOpen ? target : target.shift;
+  const base = { date: shift.date, startMin: shift.startMin, endMin: shift.endMin };
+  const past = shift.date <= todayIso;
   const header = (
     <SheetHeader>
       <div className="flex items-center gap-2 pr-8">
-        <SheetTitle className="truncate">{target.employee}</SheetTitle>
-        <Badge variant={x.draft ? "outline" : "secondary"}>{x.draft ? "Draft" : "Published"}</Badge>
+        <SheetTitle className={cn("truncate", isOpen && "italic")}>{isOpen ? "Open shift" : target.employee}</SheetTitle>
+        {isOpen ? (
+          <Badge variant="outline">Unassigned</Badge>
+        ) : (
+          <Badge variant={target.shift.draft ? "outline" : "secondary"}>{target.shift.draft ? "Draft" : "Published"}</Badge>
+        )}
       </div>
       <SheetDescription>
-        {dayLabel(x.date)} · {timeText(x)}
+        {dayLabel(shift.date)} · {timeText(shift)}
       </SheetDescription>
     </SheetHeader>
   );
   if (editing === "times") {
-    const change: ShiftChange = { kind: "shift-edit", ...base, to: times };
+    const change: ShiftChange = isOpen
+      ? { kind: "open-edit", slot: target.slot, ...base, to: times }
+      : { kind: "shift-edit", employee: target.employee, ...base, to: times };
     return (
       <>
         {header}
@@ -967,46 +960,46 @@ function ShiftBody({
       </>
     );
   }
-  if (editing === "reassign") {
-    const change: ShiftChange = { kind: "shift-reassign", ...base, toEmployee: employee ?? "" };
+  if (editing === "person") {
+    const change: ShiftChange = isOpen
+      ? { kind: "open-assign", slot: target.slot, ...base, employee: employee ?? "" }
+      : { kind: "shift-reassign", employee: target.employee, ...base, toEmployee: employee ?? "" };
+    const people = isOpen ? target.options : roster.filter((n) => n !== target.employee);
     return (
       <>
         {header}
         <div className="flex flex-col gap-4 px-4">
           <p className="text-sm text-muted-foreground">
-            ADP can&apos;t hand an assigned shift to someone else, so this deletes it and adds the same hours for the person
-            you pick.
+            {isOpen
+              ? "Only people your scheduling rules allow on this shift are listed. ADP notifies them once you apply."
+              : "ADP can't hand an assigned shift to someone else, so this deletes it and adds the same hours for the person you pick."}
           </p>
-          <PersonSelect value={employee} roster={roster.filter((n) => n !== target.employee)} label="Give it to" onChange={setEmployee} />
+          {people.length ? (
+            <PersonSelect value={employee} roster={people} label="Give it to" onChange={setEmployee} />
+          ) : (
+            <p className="text-sm">Nobody fits your rules for this shift.</p>
+          )}
         </div>
-        {footer(employee ? shiftError(change, todayIso) : "Pick a person.", "Reassign in changes", [change])}
+        {footer(employee ? shiftError(change, todayIso) : "Pick a person.", "Save to changes", [change])}
       </>
     );
   }
+  const remove: ShiftChange = isOpen ? { kind: "open-delete", slot: target.slot, ...base } : { kind: "shift-delete", employee: target.employee, ...base };
   return (
     <>
       {header}
       <p className="px-4 text-sm text-muted-foreground">
-        {past ? (
-          "Today's and earlier shifts can't be changed from here."
-        ) : (
-          <>
-            <span className="text-foreground">Edit times</span>, <span className="text-foreground">Reassign</span> or{" "}
-            <span className="text-foreground">Delete</span> — each waits with your other changes until you apply.
-          </>
-        )}
+        {past ? "Today's and earlier shifts can't be changed from here." : "Nothing changes in ADP until you press Apply to ADP."}
       </p>
       {past ? null : (
-        <SheetFooter className="flex-row flex-wrap justify-end">
-          <Button variant="destructive" onClick={() => stageAll([{ kind: "shift-delete", ...base }])}>
+        <SheetFooter className="flex-row flex-wrap items-center">
+          <Button variant="destructive" className="mr-auto" onClick={() => stageAll([remove])}>
             Delete
-          </Button>
-          <Button variant="outline" onClick={() => setEditing("reassign")}>
-            Reassign
           </Button>
           <Button variant="outline" onClick={() => setEditing("times")}>
             Edit times
           </Button>
+          <Button onClick={() => setEditing("person")}>{isOpen ? "Assign" : "Reassign"}</Button>
         </SheetFooter>
       )}
     </>

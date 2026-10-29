@@ -53,8 +53,7 @@ function list({
     onToggle: vi.fn(),
     onPick: vi.fn(),
     onAdd: vi.fn(),
-    onEdit: vi.fn(),
-    onDelete: vi.fn(),
+    onOpen: vi.fn(),
     onUndo: vi.fn(),
   };
   render(
@@ -101,12 +100,12 @@ describe("OpenShiftDayList", () => {
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(A, "Huynh, Hillary"));
   });
 
-  it("edits, deletes and adds open shifts", () => {
+  it("Change opens the open shift's sheet; Add open shift adds more", () => {
     const p = list();
     fireEvent.click(screen.getAllByRole("button", { name: "Change the 4:30 PM–8:30 PM open shift" })[0]!);
-    expect(p.onEdit).toHaveBeenCalledWith(SHIFTS[0]);
-    fireEvent.click(screen.getAllByRole("button", { name: /Delete the/ })[2]!);
-    expect(p.onDelete).toHaveBeenCalledWith(SHIFTS[2]);
+    expect(p.onOpen).toHaveBeenCalledWith(SHIFTS[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Change the 7 AM–12 PM open shift" }));
+    expect(p.onOpen).toHaveBeenCalledWith(SHIFTS[2]);
     fireEvent.click(screen.getByRole("button", { name: /Add open shift/ }));
     expect(p.onAdd).toHaveBeenCalled();
   });

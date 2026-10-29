@@ -1,7 +1,8 @@
 "use client";
 
-import { PencilIcon, PlusIcon, Trash2Icon, Undo2Icon } from "lucide-react";
+import { PlusIcon, Undo2Icon } from "lucide-react";
 import { ShiftPersonPicker } from "@/components/labor/ShiftPersonPicker";
+import { StagedBadge } from "@/components/labor/StagedBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
@@ -72,8 +73,7 @@ export function OpenShiftDayList({
   onToggle,
   onPick,
   onAdd,
-  onEdit,
-  onDelete,
+  onOpen,
   onUndo,
 }: {
   dayLabel: string;
@@ -89,8 +89,8 @@ export function OpenShiftDayList({
   /** A person, or undefined = back to the suggestion. */
   onPick: (slot: string, employee: string | undefined) => void;
   onAdd: () => void;
-  onEdit: (shift: DayOpenShift) => void;
-  onDelete: (shift: DayOpenShift) => void;
+  /** The same sheet a tap on the shift in the chart opens: assign, edit times or delete. */
+  onOpen: (shift: DayOpenShift) => void;
   onUndo: (key: string) => void;
 }) {
   const add = (
@@ -173,7 +173,7 @@ export function OpenShiftDayList({
               <span className="min-w-0 flex-1 basis-48">
                 {change ? (
                   <span className="flex items-center gap-1.5">
-                    <Badge variant={change.kind === "open-delete" ? "destructive" : "default"}>{stagedText(change)}</Badge>
+                    <StagedBadge remove={change.kind === "open-delete"}>{stagedText(change)}</StagedBadge>
                     <Button size="icon-sm" variant="ghost" aria-label="Undo" onClick={() => onUndo(shiftKey(change))}>
                       <Undo2Icon />
                     </Button>
@@ -189,14 +189,9 @@ export function OpenShiftDayList({
                 )}
               </span>
               {change ? null : (
-                <span className="flex items-center gap-0.5">
-                  <Button size="icon-sm" variant="ghost" aria-label={`Change the ${time(s)} open shift`} title="Change times" onClick={() => onEdit(s)}>
-                    <PencilIcon />
-                  </Button>
-                  <Button size="icon-sm" variant="ghost" aria-label={`Delete the ${time(s)} open shift`} title="Delete" onClick={() => onDelete(s)}>
-                    <Trash2Icon />
-                  </Button>
-                </span>
+                <Button size="xs" variant="ghost" aria-label={`Change the ${time(s)} open shift`} onClick={() => onOpen(s)}>
+                  Change
+                </Button>
               )}
             </li>
           );
@@ -212,7 +207,7 @@ export function OpenShiftDayList({
               <span className="text-xs tabular-nums text-muted-foreground">{((c.endMin - c.startMin) / 60).toFixed(1)}h</span>
             </span>
             <span className="flex min-w-0 flex-1 basis-48 items-center gap-1.5">
-              <Badge>{c.count > 1 ? `Will add ${c.count}` : "Will add"}</Badge>
+              <StagedBadge>{c.count > 1 ? `Will add ${c.count}` : "Will add"}</StagedBadge>
               <Button size="icon-sm" variant="ghost" aria-label={`Undo adding the ${time(c)} open shift`} onClick={() => onUndo(shiftKey(c))}>
                 <Undo2Icon />
               </Button>

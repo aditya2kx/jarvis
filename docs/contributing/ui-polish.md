@@ -40,11 +40,11 @@ another doc; link here instead.
 | # | Principle | In practice | Source |
 |---|---|---|---|
 | D1 | **Enhance an existing view before adding a new one.** Every extra page, tab, section or chart adds reading and upkeep cost. | Unavailability lives in the Coverage chart, not a separate Availability page or tabs. | #427 |
-| D2 | **One way to do a thing.** Two paths to the same action are confusing. | Edit unavailability via the person's name; lanes only inspect. | #427 |
+| D2 | **One way to do a thing.** Two paths to the same action are confusing. | A shift, open shift or unavailability band has one sheet; the chart, the day's list and the person drawer all open that same sheet. | #427, #434 |
 | D3 | **New UX never regresses old capabilities.** Before showing anything, re-check every existing interaction, including on iPhone with real touch, not only mouse-emulated taps. | Tapping a shift still shows its start/end tooltip after unavailability landed on the lanes. | #427 |
 | D4 | **Convey each fact once.** No table, sentence or label that restates what a chart already shows; keep only rows/labels that add an action or a fact the visual can't. | Saved-shifts table lists only shifts needing a pick or an ADP fix; no narration under the headcount ribbon. | #427 |
 | D5 | **One meaning per visual encoding, clearly distinct from the others.** A clear encoding replaces text labels and saves space. | Hatching = unavailable only (no label); shifts = tinted outlines. | #427 |
-| D6 | **Same kind of thing, same interaction.** | Any lane — shift, open shift, unavailability, free person — taps to the same tooltip. | #427 |
+| D6 | **Same kind of thing, same interaction — and act where you see it.** If the operator can't tell where to tap, the thing they're looking at should be the control. | On days that can still change, tapping a shift, open shift or unavailability band opens it; the headcount ribbon and empty lane space tap to the who's-on tooltip. ("didn't know where to tap", PR #436.) | #427, #434 |
 | D7 | **Efficient bulk input, batched apply.** One selection covers many dates or a recurrence; stage changes, then apply them to the external system in one run. | Unavailability: pick days / repeats weekly for one person; review tray → one ADP run. | #427 |
 | D8 | **Self-explanatory wording.** Plain language over shorthand; if the operator has to ask what a label means, rename it. | "Off all day" prompted a rename to plain unavailability wording. | #427 |
 | D9 | **Complete picture, compact default.** Show everyone relevant, but collapse the secondary part so the default stays short. | Coverage day: collapsed "N not scheduled · M free" group lists every active person. | #427 |

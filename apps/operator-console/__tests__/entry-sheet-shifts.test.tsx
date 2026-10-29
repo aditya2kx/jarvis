@@ -90,7 +90,40 @@ describe("EntrySheet — shifts", () => {
     sheet({ mode: "shift", employee: "Lee, Ana", shift: { date: "2026-10-30", startMin: 420, endMin: 780, draft: false } });
     fireEvent.click(screen.getByRole("button", { name: "Reassign" }));
     expect(screen.getByText(/deletes it and adds the same hours/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Reassign in changes" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Save to changes" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("an open shift: Assign lists only the people the rules allow, prefilled with the suggestion", () => {
+    const target: SheetTarget = {
+      mode: "open-shift",
+      slot: "2026-10-30|adp|420|780",
+      date: "2026-10-30",
+      startMin: 420,
+      endMin: 780,
+      options: ["Bo, Kim"],
+      suggested: "Bo, Kim",
+    };
+    const p = sheet(target);
+    expect(screen.getByText("Unassigned")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Assign" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save to changes" }));
+    expect(p.onStageShift).toHaveBeenCalledWith({
+      kind: "open-assign",
+      slot: "2026-10-30|adp|420|780",
+      date: "2026-10-30",
+      startMin: 420,
+      endMin: 780,
+      employee: "Bo, Kim",
+    });
+    cleanup();
+    const q = sheet(target);
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(q.onStageShift).toHaveBeenCalledWith({ kind: "open-delete", slot: "2026-10-30|adp|420|780", date: "2026-10-30", startMin: 420, endMin: 780 });
+    cleanup();
+    sheet({ ...target, options: [], suggested: null });
+    fireEvent.click(screen.getByRole("button", { name: "Assign" }));
+    expect(screen.getByText("Nobody fits your rules for this shift.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save to changes" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("add open shift: many days at once with a count each", () => {

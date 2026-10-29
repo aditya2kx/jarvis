@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import {
   Card,
@@ -30,6 +30,7 @@ import {
   type CoverageDayChip,
   type CoverageKind,
   type CoveragePersonDay,
+  type CoverageSegment,
   type OccupancyPoint,
   type OpenShiftInput,
   type ScheduledShiftInput,
@@ -74,8 +75,10 @@ import { hoursText } from "@/lib/labor/unavailability-format";
 import type { ApplyBlock, StagedChange } from "@/lib/labor/availability-changes";
 import {
   adpChangeKey,
+  personShifts,
   pruneQueue,
   readStoredQueue,
+  shiftKey,
   stageAdp,
   stagedShift as stagedShiftIn,
   unstageAdp,
@@ -186,6 +189,7 @@ const NO_RULES_HISTORY: RulesVersion[] = [];
 const NO_UNAVAILABILITY: UnavailabilityRow[] = [];
 const NO_BLOCKS: LaneOff[] = [];
 const NO_PUSH_ROWS: PushRow[] = [];
+const NO_UPCOMING: ScheduledShift[] = [];
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {
   const [y, m, d] = iso.split("-").map(Number);
@@ -466,12 +470,49 @@ function AxisTicks({ axisStart, axisEnd }: { axisStart: number; axisEnd: number 
   );
 }
 
-function PersonLaneTrack({
+/**
+ * A full-lane-height hit area over a shift or unavailability band, so a finger finds it. Its
+ * pointerdown stops at the button: tapping a thing opens it instead of pinning the tooltip.
+ */
+function LaneTap({
+  left,
+  width,
+  label,
+  onTap,
+  children,
+}: {
+  left: number;
+  width: number;
+  label: string;
+  onTap: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      className="group absolute inset-y-0 cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      style={{ left: `${left}%`, width: `${Math.max(width, 0.8)}%` }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={onTap}
+    >
+      {children}
+    </button>
+  );
+}
+
+const TAPPABLE = "transition-[filter,box-shadow] group-hover:brightness-125 group-hover:ring-2 group-hover:ring-foreground/30";
+
+export function PersonLaneTrack({
   person,
   axisStart,
   axisSpan,
   blocks = NO_BLOCKS,
   flagClash = false,
+  onShift,
+  onBlock,
+  staged,
 }: {
   person: CoveragePersonDay;
   axisStart: number;
@@ -480,6 +521,12 @@ function PersonLaneTrack({
   blocks?: LaneOff[];
   /** Ring scheduled shifts that overlap a block (today and ahead). */
   flagClash?: boolean;
+  /** Set on days that can still change: a tap on a scheduled or open shift opens it. */
+  onShift?: (seg: CoverageSegment) => void;
+  /** Set when the operator can change unavailability: a tap on a band opens that entry. */
+  onBlock?: (row: UnavailabilityRow) => void;
+  /** The shift has a change waiting in the tray. */
+  staged?: (seg: CoverageSegment) => boolean;
 }) {
   const end = axisStart + axisSpan;
   return (
@@ -490,21 +537,23 @@ function PersonLaneTrack({
         if (e <= s) return null;
         const pending = b.row.status === "pending";
         const label = `${pending ? "Requested unavailable" : isRuleRow(b.row) ? "Unavailable (scheduling rule)" : "Unavailable"} · ${hoursText(b.row)}`;
+        const left = ((s - axisStart) / axisSpan) * 100;
         const width = ((e - s) / axisSpan) * 100;
-        return (
-          // Shading only: a tap falls through to the timeline tooltip like a shift; edits go via the name.
+        const band = (
           <div
-            key={`off-${b.row.row_key}-${i}`}
-            role="img"
+            role={onBlock ? undefined : "img"}
             data-off={pending ? "pending" : "approved"}
-            aria-label={`${person.employee} · ${label}`}
-            className="absolute inset-y-0 rounded-sm"
-            style={{
-              left: `${((s - axisStart) / axisSpan) * 100}%`,
-              width: `${Math.max(width, 0.8)}%`,
-              background: pending ? REQUEST_HATCH : OFF_HATCH,
-            }}
+            aria-label={onBlock ? undefined : `${person.employee} · ${label}`}
+            className={cn("absolute inset-y-0 rounded-sm", onBlock ? "inset-x-0" : undefined)}
+            style={onBlock ? { background: pending ? REQUEST_HATCH : OFF_HATCH } : { left: `${left}%`, width: `${Math.max(width, 0.8)}%`, background: pending ? REQUEST_HATCH : OFF_HATCH }}
           />
+        );
+        return onBlock ? (
+          <LaneTap key={`off-${b.row.row_key}-${i}`} left={left} width={width} label={`${person.employee} · ${label}`} onTap={() => onBlock(b.row)}>
+            {band}
+          </LaneTap>
+        ) : (
+          <Fragment key={`off-${b.row.row_key}-${i}`}>{band}</Fragment>
         );
       })}
       {person.segments.map((seg, i) => {
@@ -512,42 +561,43 @@ function PersonLaneTrack({
         const width = segmentWidthPct(seg, axisStart, axisSpan);
         const color = barColor(person.labor_bucket, seg.kind);
         const isSched = seg.kind === "scheduled";
-        if (seg.kind === "open") {
-          return (
+        const tap = onShift && seg.kind !== "actual" ? () => onShift(seg) : null;
+        const ring = staged?.(seg) ? "ring-2 ring-primary" : null;
+        const place = tap ? { left: 0, width: "100%" } : { left: `${left}%`, width: `${Math.max(width, 0.8)}%` };
+        const bar =
+          seg.kind === "open" ? (
             <div
-              key={`open-${seg.startMin}-${i}`}
-              className="absolute inset-y-1.5 flex items-center justify-center overflow-hidden rounded-sm border border-dashed text-[11px] font-semibold"
-              style={{
-                left: `${left}%`,
-                width: `${Math.max(width, 0.8)}%`,
-                borderColor: OPEN,
-                color: OPEN,
-                background: OPEN_FILL,
-              }}
+              className={cn(
+                "absolute inset-y-1.5 flex items-center justify-center overflow-hidden rounded-sm border border-dashed text-[11px] font-semibold",
+                tap && TAPPABLE,
+                ring,
+              )}
+              style={{ ...place, borderColor: OPEN, color: OPEN, background: OPEN_FILL }}
+            >
+              {width > 8 ? `${seg.hours}h` : null}
+            </div>
+          ) : (
+            <div
+              data-clash={(flagClash && hitsBlock(seg.startMin, seg.endMin, blocks)) || undefined}
+              className={cn(
+                "absolute flex items-center justify-center overflow-hidden rounded-sm text-[11px] font-medium text-white",
+                isSched ? "top-[18px] h-3 border border-dashed opacity-90" : "top-1.5 h-3.5",
+                flagClash && hitsBlock(seg.startMin, seg.endMin, blocks) && "ring-2 ring-destructive",
+                tap && TAPPABLE,
+                ring,
+              )}
+              style={{ ...place, backgroundColor: isSched ? `${color}33` : color, borderColor: isSched ? color : undefined }}
             >
               {width > 8 ? `${seg.hours}h` : null}
             </div>
           );
-        }
-        const clash = flagClash && hitsBlock(seg.startMin, seg.endMin, blocks);
+        const key = `${seg.kind}-${seg.startMin}-${i}`;
+        if (!tap) return <Fragment key={key}>{bar}</Fragment>;
+        const who = seg.kind === "open" ? "Open shift" : person.employee;
         return (
-          <div
-            key={`${seg.kind}-${seg.startMin}-${i}`}
-            data-clash={clash || undefined}
-            className={cn(
-              "absolute flex items-center justify-center overflow-hidden rounded-sm text-[11px] font-medium text-white",
-              isSched ? "top-[18px] h-3 border border-dashed opacity-90" : "top-1.5 h-3.5",
-              clash && "ring-2 ring-destructive",
-            )}
-            style={{
-              left: `${left}%`,
-              width: `${Math.max(width, 0.8)}%`,
-              backgroundColor: isSched ? `${color}33` : color,
-              borderColor: isSched ? color : undefined,
-            }}
-          >
-            {width > 8 ? `${seg.hours}h` : null}
-          </div>
+          <LaneTap key={key} left={left} width={width} label={`${who} · ${formatClockMin(seg.startMin)}–${formatClockMin(seg.endMin)} — change`} onTap={tap}>
+            {bar}
+          </LaneTap>
         );
       })}
     </div>
@@ -600,6 +650,9 @@ function CoverageTimeline({
   off,
   activeStaff,
   onPerson,
+  onShift,
+  onBlock,
+  staged,
 }: {
   people: CoveragePersonDay[];
   points: OccupancyPoint[];
@@ -616,6 +669,11 @@ function CoverageTimeline({
   activeStaff?: ReadonlySet<string> | null;
   /** Tap a name → that person's unavailability drawer. */
   onPerson?: (employee: string) => void;
+  /** Tap a scheduled or open shift → its actions; set only on days that can still change. */
+  onShift?: (lane: CoveragePersonDay, seg: CoverageSegment) => void;
+  /** Tap an unavailability band → that entry. */
+  onBlock?: (row: UnavailabilityRow) => void;
+  staged?: (lane: CoveragePersonDay, seg: CoverageSegment) => boolean;
 }) {
   const draft = useMemo(
     () => (draftShifts.length ? draftCountSeries(points, draftShifts) : null),
@@ -897,6 +955,9 @@ function CoverageTimeline({
                     axisSpan={span}
                     blocks={blocks}
                     flagClash={flagClash}
+                    onShift={onShift ? (seg) => onShift(p, seg) : undefined}
+                    onBlock={onBlock}
+                    staged={staged ? (seg) => staged(p, seg) : undefined}
                   />
                 </div>
               </div>
@@ -974,6 +1035,7 @@ function CoverageTimeline({
                   axisStart={axisStart}
                   axisSpan={span}
                   blocks={blocks}
+                  onBlock={onBlock}
                 />
               </div>
             </div>
@@ -1784,10 +1846,60 @@ export function LaborCoveragePanel({
   );
   const stageShift = useCallback(
     (c: ShiftChange) => {
+      // An open shift's assignment is the week's pick plus a tick, so the list and the tray stay in step.
+      if (c.kind === "open-assign") {
+        pickShift(weekOf(c.slot.slice(0, 10)), c.slot, c.employee);
+        toggleOpen([c.slot], true);
+        return;
+      }
       setQueue((q) => stageAdp(q, { area: "shift", c }));
       if (c.kind === "open-edit" || c.kind === "open-delete") toggleOpen([c.slot], false);
     },
-    [setQueue, toggleOpen],
+    [setQueue, toggleOpen, pickShift],
+  );
+  const openShiftTarget = useCallback(
+    (s: DayOpenShift): SheetTarget => ({
+      mode: "open-shift",
+      slot: s.slot,
+      date: s.date,
+      startMin: s.startMin,
+      endMin: s.endMin,
+      options: s.fill?.options?.flatMap((o) => (o.employee ? [o.employee] : [])) ?? [],
+      suggested: s.fill?.employee && (showDraft || s.fill.picked || selected.has(s.slot)) ? s.fill.employee : null,
+    }),
+    [showDraft, selected],
+  );
+  const upcomingShifts = availability?.upcoming ?? NO_UPCOMING;
+  const laneDay = activeDay ?? "";
+  // The chart's open segments in the same order openSlots numbers them, so a tapped bar is its slot.
+  const laneSlots = useMemo(
+    () => new Map(laneDay ? openSlotsOn(laneDay, people).map(({ seg, slot }) => [seg, slot]) : []),
+    [laneDay, people],
+  );
+  const onLaneShift = useCallback(
+    (lane: CoveragePersonDay, seg: CoverageSegment) => {
+      if (seg.kind === "open") {
+        const s = openSlots.get(laneSlots.get(seg) ?? "");
+        if (s) setTarget(openShiftTarget(s));
+        return;
+      }
+      const shift = personShifts(upcomingShifts, lane.employee, laneDay).find(
+        (x) => x.date === laneDay && x.startMin === seg.startMin && x.endMin === seg.endMin,
+      ) ?? { date: laneDay, startMin: seg.startMin, endMin: seg.endMin, draft: false };
+      setTarget({ mode: "shift", employee: lane.employee, shift });
+    },
+    [openSlots, laneSlots, openShiftTarget, upcomingShifts, laneDay],
+  );
+  const laneStaged = useCallback(
+    (lane: CoveragePersonDay, seg: CoverageSegment) => {
+      if (seg.kind === "open") {
+        const slot = laneSlots.get(seg);
+        return slot != null && (selected.has(slot) || stagedShift(`open|${slot}`) != null);
+      }
+      const t = { date: laneDay, startMin: seg.startMin, endMin: seg.endMin };
+      return stagedShift(shiftKey({ kind: "shift-delete", employee: lane.employee, ...t })) != null;
+    },
+    [laneSlots, selected, stagedShift, laneDay],
   );
   const undoChanges = useCallback(
     (keys: string[]) => {
@@ -1854,12 +1966,8 @@ export function LaborCoveragePanel({
           Staffing coverage
         </CardTitle>
         <CardDescription>
-          Day chips follow the Period (and, when today is in range, through the latest
-          ADP schedule — same horizon as the charts above). Scheduled swimlanes always
-          render when ADP has shifts in that window — Aggregation does not filter them.
-          Scroll for more days; chips update this panel in place. Hover the timeline for
-          headcount + who is on (start–end). Solid = clocked; slate hatch = scheduled;
-          violet dashed = open (unassigned) ADP shift — on past days, a slot nobody filled.
+          Pick a day. Hover or tap the headcount for who is on at that time; on past days a violet open shift is a slot
+          nobody filled.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
@@ -1931,8 +2039,8 @@ export function LaborCoveragePanel({
               className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"
               title="Draft shifts, who could fill open shifts, and Save to ADP / Publish. ADP's own shifts always show."
             >
-              <Switch checked={showDraft} onCheckedChange={toggleSuggestions} aria-label="Suggestions" />
-              Suggestions
+              <Switch checked={showDraft} onCheckedChange={toggleSuggestions} aria-label="Show suggested shifts" />
+              Show suggested shifts
             </label>
           </div>
           {shortLine ? (
@@ -1948,6 +2056,11 @@ export function LaborCoveragePanel({
               {shortLine}
             </p>
           ) : null}
+          <p className="text-xs text-muted-foreground" data-testid="coverage-tap-hint">
+            {activeDay > todayIso
+              ? `Tap a shift to change, reassign or delete it${canManage ? ", a hatched band to change unavailability," : ""} or a name for that person's week.`
+              : `Tap a name for that person's shifts${canManage ? " and unavailability" : ""}.`}
+          </p>
         </div>
 
         {activeDay > todayIso ? (
@@ -1964,8 +2077,7 @@ export function LaborCoveragePanel({
               if (employee) toggleOpen([slot], true);
             }}
             onAdd={() => setTarget({ mode: "open-add", date: activeDay })}
-            onEdit={(x) => setTarget({ mode: "open-edit", slot: x.slot, date: x.date, startMin: x.startMin, endMin: x.endMin })}
-            onDelete={(x) => stageShift({ kind: "open-delete", slot: x.slot, date: x.date, startMin: x.startMin, endMin: x.endMin })}
+            onOpen={(x) => setTarget(openShiftTarget(x))}
             onUndo={(key) => undoChanges([`s:${key}`])}
           />
         ) : null}
@@ -2004,6 +2116,9 @@ export function LaborCoveragePanel({
           off={dayOff}
           activeStaff={active}
           onPerson={(employee) => setTarget({ mode: "person", employee })}
+          onShift={activeDay > todayIso ? onLaneShift : undefined}
+          onBlock={canManage ? (row) => setTarget({ mode: "entry", row, date: activeDay }) : undefined}
+          staged={activeDay > todayIso ? laneStaged : undefined}
         />
 
         <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
@@ -2077,7 +2192,6 @@ export function LaborCoveragePanel({
             <span className="inline-block size-2.5 rounded-sm ring-2 ring-destructive ring-inset" />
             Clash
           </span>
-          <span>· Tap a name for their shifts{canManage ? " and unavailability" : ""}</span>
         </div>
 
         <AdpChangesTray

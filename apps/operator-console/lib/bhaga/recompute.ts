@@ -295,6 +295,23 @@ export async function triggerAdpUnavailabilityApprove(
   return runJob(env, `triggerAdpUnavailabilityApprove(store=${store})`, adpJobResource());
 }
 
+/**
+ * Unavailability reminder "Send now" when it drafts through the ClickUp web app (Issue #435):
+ * the job types today's draft into the drafts channel. Short-circuits via BHAGA_UNAVAIL_REMINDER.
+ */
+export async function triggerUnavailabilityReminder(store: string): Promise<{ executionName: string }> {
+  if (!store) throw new Error("triggerUnavailabilityReminder: store is required");
+  return runJob(
+    [
+      { name: "BHAGA_UNAVAIL_REMINDER", value: "once" },
+      { name: "BHAGA_IGNORE_HALT", value: "1" },
+      { name: "BHAGA_STORE", value: store },
+    ],
+    `triggerUnavailabilityReminder(store=${store})`,
+    adpJobResource(),
+  );
+}
+
 function payrollDraftOnlyEnv(
   store: string,
   periodStart: string,

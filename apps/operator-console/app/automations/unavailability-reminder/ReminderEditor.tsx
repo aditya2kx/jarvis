@@ -13,10 +13,13 @@ import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import type { AutomationPostRow, AutomationRow } from "@/lib/bq/queries";
 import { cadenceSummary, DAY_LABELS, parseDays } from "@/lib/automations/teamPulse";
 import {
+  clampLeadWeeks,
   REMINDER_DEFAULT_DAYS,
   REMINDER_DEFAULT_FOLLOWUP,
   REMINDER_DEFAULT_HOUR,
   REMINDER_DEFAULT_TEMPLATE,
+  REMINDER_MAX_LEAD_WEEKS,
+  REMINDER_MIN_LEAD_WEEKS,
   reminderKind,
 } from "@/lib/automations/unavailabilityReminder";
 import {
@@ -45,12 +48,16 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
   );
   const [hour, setHour] = useState(initial?.hour_local ?? REMINDER_DEFAULT_HOUR);
   const [minute, setMinute] = useState(initial?.minute_local ?? 0);
+  const [leadWeeks, setLeadWeeks] = useState(() => clampLeadWeeks(initial?.lead_weeks));
+  const drafts = !initial || initial.destination === "drafts";
   const [template, setTemplate] = useState(initial?.template || REMINDER_DEFAULT_TEMPLATE);
   const [followup, setFollowup] = useState(
     initial?.followup_template || REMINDER_DEFAULT_FOLLOWUP,
   );
   const [previewDate, setPreviewDate] = useState(todayIso);
-  const [preview, setPreview] = useState<{ kind: string; content: string } | null>(null);
+  const [preview, setPreview] = useState<{ kind: string; content: string; flagged: string[] } | null>(
+    null,
+  );
 
   const cadence = useMemo(
     () => cadenceSummary(days, hour, minute, "America/Chicago"),
@@ -62,6 +69,7 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
     days_of_week: days,
     hour_local: hour,
     minute_local: minute,
+    lead_weeks: leadWeeks,
     template,
     followup_template: followup,
   };
@@ -84,7 +92,10 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
   }
 
   async function onSendNow() {
-    await run(() => sendReminderOnceAction(), { saving: "Sending…", done: "Sent to your DM." });
+    await run(() => sendReminderOnceAction(), {
+      saving: drafts ? "Starting…" : "Sending…",
+      done: drafts ? "Started — the draft lands in #jarvis-drafts in a few minutes." : "Sent to your DM.",
+    });
   }
 
   const postColumns: ColumnDef<AutomationPostRow>[] = [
@@ -130,7 +141,7 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
             <span>
               <span className="font-medium">Automation on</span>
               <span className="block text-xs text-muted-foreground">
-                Off = no scheduled DMs. Preview and DM me now still work.
+                Off = no scheduled drafts. Preview and Send now still work.
               </span>
             </span>
           </label>
@@ -157,7 +168,7 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 sm:max-w-xs">
+          <div className="grid grid-cols-3 gap-3 sm:max-w-md">
             <div>
               <Label htmlFor="ur-hour">Hour (CT)</Label>
               <Input
@@ -183,9 +194,27 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
                 onChange={(e) => setMinute(Number(e.target.value))}
               />
             </div>
+            <div>
+              <Label htmlFor="ur-lead">Weeks ahead</Label>
+              <Input
+                id="ur-lead"
+                type="number"
+                min={REMINDER_MIN_LEAD_WEEKS}
+                max={REMINDER_MAX_LEAD_WEEKS}
+                className="min-h-11"
+                value={leadWeeks}
+                onChange={(e) => {
+                  setLeadWeeks(Number(e.target.value));
+                  setPreview(null);
+                }}
+              />
+            </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Checked every 15 minutes; sends one DM to you per day, at or after this time.
+            Checked every 15 minutes; sends you one draft per day, at or after this time
+            {drafts ? ", typed into #jarvis-drafts so @mentions are real and copy-paste keeps them" : ""}.
+            Weeks ahead = how far the Friday publish reaches; the follow-up tags everyone with a week
+            in that horizon (from the week after next) that has no ADP unavailability.
           </p>
         </CardContent>
       </Card>
@@ -199,10 +228,13 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
             <Label htmlFor="ur-template">Reminder · {firstDay}</Label>
             <p className="text-xs text-muted-foreground">
               Sent on the first selected day.{" "}
-              <code className="rounded bg-muted px-1">{"{target_week}"}</code> is the week after
-              next (e.g. Oct 19 - Oct 25);{" "}
+              <code className="rounded bg-muted px-1">{"{through_date}"}</code> is the last day
+              this Friday publishes (e.g. Nov 29);{" "}
+              <code className="rounded bg-muted px-1">{"{target_week}"}</code> is that week (e.g.
+              Nov 23 - Nov 29);{" "}
               <code className="rounded bg-muted px-1">{"{publish_day}"}</code> is this week’s
-              Friday (e.g. Friday(Oct 9)).
+              Friday (e.g. Friday(Oct 30));{" "}
+              <code className="rounded bg-muted px-1">{"{lead_weeks}"}</code> is Weeks ahead.
             </p>
             <textarea
               id="ur-template"
@@ -214,7 +246,9 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="ur-followup">Follow-up · other selected days</Label>
             <p className="text-xs text-muted-foreground">
-              A reply for the reminder’s thread. Same placeholders work here.
+              A reply for the reminder’s thread. Same placeholders, plus{" "}
+              <code className="rounded bg-muted px-1">{"{flagged}"}</code>: an @mention for each
+              person with a blank week (left out when nobody is).
             </p>
             <textarea
               id="ur-followup"
@@ -261,11 +295,11 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
           disabled={isPending}
           onClick={() => void onSendNow()}
         >
-          DM me now
+          {drafts ? "Send draft now" : "DM me now"}
         </Button>
       </div>
       <p className="-mt-2 text-xs text-muted-foreground">
-        DM me now sends today’s saved message and counts as today’s send.
+        {drafts ? "Send draft now" : "DM me now"} sends today’s saved message and counts as today’s send.
       </p>
       {(stage || error) && (
         <p className={`text-sm ${error ? "text-destructive" : "text-muted-foreground"}`}>
@@ -279,8 +313,14 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
             <CardTitle className="text-base">Preview</CardTitle>
             <Badge variant="secondary">{preview.kind === "reminder" ? "Reminder" : "Follow-up"}</Badge>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-col gap-2">
             <pre className="whitespace-pre-wrap rounded-md bg-muted/50 p-3 text-sm">{preview.content}</pre>
+            {preview.flagged.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {preview.flagged.length} tagged for a blank week in the horizon. In ClickUp each
+                becomes a real mention when a single member matches the name.
+              </p>
+            )}
           </CardContent>
         </Card>
       )}

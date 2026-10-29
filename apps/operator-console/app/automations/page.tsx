@@ -115,7 +115,7 @@ export default async function AutomationsPage() {
               <div>
                 <CardTitle className="text-base">Unavailability reminder (ClickUp)</CardTitle>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  DMs you a ready-to-post nudge to update ADP unavailability before the Friday publish
+                  Drafts a ready-to-post nudge for you to update ADP unavailability before the Friday publish
                 </p>
               </div>
               <Badge variant={reminderOn ? "outline" : "secondary"} className={reminderOn ? OK_BADGE_CLASS : undefined}>

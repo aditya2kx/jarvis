@@ -1108,13 +1108,16 @@ export type AutomationUpsert = {
   hour_local: number;
   minute_local: number;
   timezone: string;
-  destination: "dm" | "channel";
+  /** `drafts` (unavailability reminder): typed into `channel_id` through the ClickUp web app. */
+  destination: "dm" | "channel" | "drafts";
   channel_id: string;
   dm_user_id: string;
   workspace_id: string;
   template: string;
   /** Unavailability reminder only; omitted = column left as is. */
   followup_template?: string;
+  /** Unavailability reminder only (migration 094); omitted = column left as is. */
+  lead_weeks?: number;
 };
 
 export async function upsertAutomation(
@@ -1124,6 +1127,7 @@ export async function upsertAutomation(
   by: string,
 ): Promise<void> {
   const followup = cfg.followup_template !== undefined;
+  const lead = cfg.lead_weeks !== undefined;
   await mutate(
     `MERGE ${fq("automations")} T
      USING (SELECT @store AS store, @id AS automation_id) S
@@ -1138,16 +1142,16 @@ export async function upsertAutomation(
        channel_id = @channel_id,
        dm_user_id = @dm_user_id,
        workspace_id = @workspace_id,
-       template = @template,${followup ? "\n       followup_template = @followup," : ""}
+       template = @template,${followup ? "\n       followup_template = @followup," : ""}${lead ? "\n       lead_weeks = @lead," : ""}
        updated_at = CURRENT_TIMESTAMP(),
        updated_by = @by
      WHEN NOT MATCHED THEN INSERT (
        store, automation_id, enabled, days_of_week, hour_local, minute_local,
-       timezone, destination, channel_id, dm_user_id, workspace_id, template,${followup ? " followup_template," : ""}
+       timezone, destination, channel_id, dm_user_id, workspace_id, template,${followup ? " followup_template," : ""}${lead ? " lead_weeks," : ""}
        updated_at, updated_by
      ) VALUES (
        @store, @id, @enabled, @days, @hour, @minute,
-       @tz, @destination, @channel_id, @dm_user_id, @workspace_id, @template,${followup ? " @followup," : ""}
+       @tz, @destination, @channel_id, @dm_user_id, @workspace_id, @template,${followup ? " @followup," : ""}${lead ? " @lead," : ""}
        CURRENT_TIMESTAMP(), @by
      )`,
     {
@@ -1164,6 +1168,7 @@ export async function upsertAutomation(
       workspace_id: cfg.workspace_id,
       template: cfg.template,
       ...(followup ? { followup: cfg.followup_template } : {}),
+      ...(lead ? { lead: intParam(cfg.lead_weeks!) } : {}),
       by,
     },
   );

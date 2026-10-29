@@ -1,4 +1,4 @@
--- 094: ADP shift changes written from the console + their history — Issue #434
+-- 095: ADP shift changes written from the console + their history — Issue #434
 -- adp_shift_changes: the console's one "Apply to ADP" inserts one row per staged shift
 --   change (status='queued', one batch_id per Apply, shared with any
 --   adp_unavailability_changes rows of the same Apply). The BHAGA_ADP_SCHEDULE_WRITE=apply

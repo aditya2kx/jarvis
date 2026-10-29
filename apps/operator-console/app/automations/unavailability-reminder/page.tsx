@@ -27,7 +27,7 @@ export default async function UnavailabilityReminderPage() {
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Unavailability reminder"
-        subtitle="ClickUp DM drafts asking the team to update ADP unavailability before the Friday publish"
+        subtitle="ClickUp drafts for you to forward, asking the team to update ADP unavailability before the Friday publish"
       />
       {error ? (
         <p className="text-sm text-muted-foreground">

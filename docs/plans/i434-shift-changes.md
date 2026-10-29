@@ -208,16 +208,17 @@ Pass: all green; operator OK on the demo before marking ready.
 - **S0 sandbox demo** (operator ask before prod ADP): PR preview `operator-console-pr436` on prod data,
   desktop + iPhone 14 WebKit — Suggestions off/on, Add open shift (2 days × 2), staged add in the day's list,
   person drawer → shift → Reassign, tray Review with Apply blocked "Read-only preview".
-- **Tap where you see it** (operator on the preview: "the ux is not intuitive … didn't know where to tap"):
-  on days that can still change, a tap on a scheduled or open shift bar opens its sheet and a tap on an
-  unavailability band opens that entry (full-lane-height hit area, hover ring, focus ring; its pointerdown
-  stops so the who's-on tooltip doesn't pin). Empty lane space and the headcount ribbon still tap to the
-  tooltip; today and earlier are inspect-only. The open-shift sheet has **Assign** (only the people the
-  rules allow, prefilled with the suggestion) / **Edit times** / **Delete**, mirroring a person's shift
-  (**Reassign** / **Edit times** / **Delete**). The day's list row has one **Change** button for that
-  sheet. A shift with a staged change gets a primary ring on the chart. Staged badges are outlined (status,
-  not buttons). The switch reads "Show suggested shifts". A one-line hint under the Coverage heading says
-  where to tap. `ui-polish.md` D2/D6 examples updated.
+- **Round 3 — iPhone review of the preview** (operator: chart taps opening a sheet killed the who's-on line,
+  "a regression which keeps on happening"; names and drawer rows didn't look tappable; the Edit times /
+  Reassign menu was an unnecessary extra screen). The round-2 bar/band taps are reverted, so the chart is
+  read-only again and every tap shows the who's-on line. Names on the chart get a dotted underline + `›`;
+  person-drawer rows are bordered cells (≥44px) with `›`; the day's open-shift list has an outlined
+  **Change ›**. The shift, open-shift and approved-unavailability sheets open straight on their fields
+  (Starts / Ends / Person or Assign to; days and hours) with **Delete** and **Save to changes**, and Save
+  stays disabled until something changes. A new person plus new times stages delete + `shift-add`, because
+  ADP can't retime and hand over a shift in one step. The switch reads "Show suggested shifts". These
+  became `ui-polish.md` D3 (charts are for reading), D11 (what opens looks like it) and D12 (one screen per
+  change), guarded by `__tests__/ux-principles.test.tsx`.
 - **Out of scope:** unavailability deny/add/edit/delete ADP backends (follow-up once a live ADP session is
   available); editing past shifts; reassigning an open shift that someone already took.
 

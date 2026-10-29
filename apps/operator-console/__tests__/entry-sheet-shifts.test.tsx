@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { EntrySheet, type SheetTarget } from "@/components/labor/availability/EntrySheet";
 import type { ShiftChange } from "@/lib/labor/adp-changes";
 
@@ -63,67 +63,79 @@ describe("EntrySheet — shifts", () => {
     expect(screen.queryByRole("button", { name: "Add unavailability" })).toBeNull();
   });
 
-  it("a shift: Delete stages straight away; Edit times stages the new times", () => {
-    const target: SheetTarget = { mode: "shift", employee: "Lee, Ana", shift: { date: "2026-10-30", startMin: 420, endMin: 780, draft: false } };
-    const p = sheet(target);
+  const SHIFT: SheetTarget = { mode: "shift", employee: "Lee, Ana", shift: { date: "2026-10-30", startMin: 420, endMin: 780, draft: false } };
+  const base = { date: "2026-10-30", startMin: 420, endMin: 780 };
+  const pick = async (name: string) => {
+    fireEvent.click(screen.getByRole("combobox"));
+    const opt = (await screen.findAllByRole("option")).find((o) => o.textContent?.includes(name))!;
+    opt.focus();
+    fireEvent.keyDown(opt, { key: "Enter" });
+    await waitFor(() => expect(screen.getByRole("combobox").textContent).toContain(name));
+  };
+  const save = () => screen.getByRole("button", { name: "Save to changes" }) as HTMLButtonElement;
+
+  it("a shift: Delete stages straight away", () => {
+    const p = sheet(SHIFT);
     expect(screen.getByText("Published")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    expect(p.onStageShift).toHaveBeenCalledWith({ kind: "shift-delete", date: "2026-10-30", employee: "Lee, Ana", startMin: 420, endMin: 780 });
-    cleanup();
-    const q = sheet(target);
-    fireEvent.click(screen.getByRole("button", { name: "Edit times" }));
-    const save = screen.getByRole("button", { name: "Save to changes" }) as HTMLButtonElement;
-    expect(save.disabled).toBe(true);
+    expect(p.onStageShift).toHaveBeenCalledWith({ kind: "shift-delete", employee: "Lee, Ana", ...base });
+  });
+
+  it("a shift: new times stage an edit; Save waits for a change", () => {
+    const p = sheet(SHIFT);
+    expect(save().disabled).toBe(true);
     fireEvent.change(screen.getByLabelText("Starts"), { target: { value: "08:00" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save to changes" }));
-    expect(q.onStageShift).toHaveBeenCalledWith({
-      kind: "shift-edit",
-      date: "2026-10-30",
-      employee: "Lee, Ana",
-      startMin: 420,
-      endMin: 780,
-      to: { startMin: 480, endMin: 780 },
-    });
+    fireEvent.click(save());
+    expect(p.onStageShift).toHaveBeenCalledWith({ kind: "shift-edit", employee: "Lee, Ana", ...base, to: { startMin: 480, endMin: 780 } });
   });
 
-  it("Reassign explains delete + new shift and needs a person", () => {
-    sheet({ mode: "shift", employee: "Lee, Ana", shift: { date: "2026-10-30", startMin: 420, endMin: 780, draft: false } });
-    fireEvent.click(screen.getByRole("button", { name: "Reassign" }));
-    expect(screen.getByText(/deletes it and adds the same hours/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Save to changes" }) as HTMLButtonElement).disabled).toBe(true);
+  it("a shift: a new person stages a reassign and says ADP deletes + adds", async () => {
+    const p = sheet(SHIFT);
+    await pick("Bo, Kim");
+    expect(screen.getByText(/deletes it and adds it for Bo, Kim/)).toBeTruthy();
+    fireEvent.click(save());
+    expect(p.onStageShift).toHaveBeenCalledWith({ kind: "shift-reassign", employee: "Lee, Ana", ...base, toEmployee: "Bo, Kim" });
   });
 
-  it("an open shift: Assign lists only the people the rules allow, prefilled with the suggestion", () => {
-    const target: SheetTarget = {
-      mode: "open-shift",
-      slot: "2026-10-30|adp|420|780",
-      date: "2026-10-30",
-      startMin: 420,
-      endMin: 780,
-      options: ["Bo, Kim"],
-      suggested: "Bo, Kim",
-    };
-    const p = sheet(target);
+  it("a shift: new person and new times = delete + a new shift", async () => {
+    const p = sheet(SHIFT);
+    await pick("Bo, Kim");
+    fireEvent.change(screen.getByLabelText("Ends"), { target: { value: "14:00" } });
+    fireEvent.click(save());
+    expect(p.onStageShift.mock.calls.map((c) => c[0])).toEqual([
+      { kind: "shift-delete", employee: "Lee, Ana", ...base },
+      { kind: "shift-add", date: "2026-10-30", employee: "Bo, Kim", startMin: 420, endMin: 840 },
+    ]);
+  });
+
+  const OPEN: SheetTarget = { mode: "open-shift", slot: "2026-10-30|adp|420|780", ...base, options: ["Bo, Kim"], suggested: "Bo, Kim" };
+
+  it("an open shift: prefilled with the suggestion, Save assigns; Delete removes", () => {
+    const p = sheet(OPEN);
     expect(screen.getByText("Unassigned")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Assign" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save to changes" }));
-    expect(p.onStageShift).toHaveBeenCalledWith({
-      kind: "open-assign",
-      slot: "2026-10-30|adp|420|780",
-      date: "2026-10-30",
-      startMin: 420,
-      endMin: 780,
-      employee: "Bo, Kim",
-    });
+    fireEvent.click(save());
+    expect(p.onStageShift).toHaveBeenCalledWith({ kind: "open-assign", slot: "2026-10-30|adp|420|780", ...base, employee: "Bo, Kim" });
     cleanup();
-    const q = sheet(target);
+    const q = sheet(OPEN);
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    expect(q.onStageShift).toHaveBeenCalledWith({ kind: "open-delete", slot: "2026-10-30|adp|420|780", date: "2026-10-30", startMin: 420, endMin: 780 });
+    expect(q.onStageShift).toHaveBeenCalledWith({ kind: "open-delete", slot: "2026-10-30|adp|420|780", ...base });
+  });
+
+  it("an open shift with nobody picked: new times stage an edit; nobody fits → only times", () => {
+    const p = sheet({ ...OPEN, suggested: null });
+    expect(save().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Starts"), { target: { value: "08:00" } });
+    fireEvent.click(save());
+    expect(p.onStageShift).toHaveBeenCalledWith({ kind: "open-edit", slot: "2026-10-30|adp|420|780", ...base, to: { startMin: 480, endMin: 780 } });
     cleanup();
-    sheet({ ...target, options: [], suggested: null });
-    fireEvent.click(screen.getByRole("button", { name: "Assign" }));
+    sheet({ ...OPEN, options: [], suggested: null });
     expect(screen.getByText("Nobody fits your rules for this shift.")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Save to changes" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("today's shift can't be changed", () => {
+    sheet({ ...SHIFT, shift: { ...SHIFT.shift, date: TODAY } } as SheetTarget);
+    expect(screen.getByText(/can.t be changed from here/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
   });
 
   it("add open shift: many days at once with a count each", () => {

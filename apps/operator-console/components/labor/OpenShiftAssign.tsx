@@ -1,6 +1,6 @@
 "use client";
 
-import { PlusIcon, Undo2Icon } from "lucide-react";
+import { ChevronRightIcon, PlusIcon, Undo2Icon } from "lucide-react";
 import { ShiftPersonPicker } from "@/components/labor/ShiftPersonPicker";
 import { StagedBadge } from "@/components/labor/StagedBadge";
 import { Badge } from "@/components/ui/badge";
@@ -89,7 +89,7 @@ export function OpenShiftDayList({
   /** A person, or undefined = back to the suggestion. */
   onPick: (slot: string, employee: string | undefined) => void;
   onAdd: () => void;
-  /** The same sheet a tap on the shift in the chart opens: assign, edit times or delete. */
+  /** The open shift's sheet: assign, change its times or delete it on one screen. */
   onOpen: (shift: DayOpenShift) => void;
   onUndo: (key: string) => void;
 }) {
@@ -189,8 +189,9 @@ export function OpenShiftDayList({
                 )}
               </span>
               {change ? null : (
-                <Button size="xs" variant="ghost" aria-label={`Change the ${time(s)} open shift`} onClick={() => onOpen(s)}>
+                <Button size="xs" variant="outline" aria-label={`Change the ${time(s)} open shift`} onClick={() => onOpen(s)}>
                   Change
+                  <ChevronRightIcon aria-hidden data-affordance="opens" />
                 </Button>
               )}
             </li>

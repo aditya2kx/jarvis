@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { ChevronRightIcon } from "lucide-react";
 import { StagedBadge } from "@/components/labor/StagedBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -315,6 +316,46 @@ function stagedShiftText(c: ShiftChange): string {
   return c.kind === "shift-delete" ? "Will delete" : SHIFT_LABEL[c.kind];
 }
 
+/**
+ * A row that opens something. It looks like a list cell with a chevron so it reads as tappable on
+ * a phone, where there is no hover; `expanded` turns the chevron down for a row that unfolds.
+ */
+function OpensRow({
+  expanded,
+  disabled,
+  className,
+  children,
+  onClick,
+}: {
+  expanded?: boolean;
+  disabled?: boolean;
+  className?: string;
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-expanded={expanded}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "flex min-h-11 w-full items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm tabular-nums transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:border-transparent disabled:px-2 disabled:hover:bg-transparent",
+        className,
+      )}
+    >
+      <span className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-2 gap-y-1">{children}</span>
+      {disabled ? null : (
+        <ChevronRightIcon
+          aria-hidden
+          data-affordance="opens"
+          className={cn("size-4 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-90")}
+        />
+      )}
+    </button>
+  );
+}
+
 function PersonBody({
   employee,
   todayIso,
@@ -346,25 +387,22 @@ function PersonBody({
   const nextWeek = addDays(todayIso, 7);
   const [open, setOpen] = useState<string | null>(null);
   const entry = canAvailability ? (r: UnavailabilityRow) => onTarget({ mode: "entry", row: r, date: nextDate(r, todayIso) }) : undefined;
-  const ROW =
-    "w-full rounded-md px-2 py-1.5 text-left text-sm tabular-nums transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-transparent";
   return (
     <>
       <SheetHeader>
         <SheetTitle className="truncate pr-8">{employee}</SheetTitle>
-        <SheetDescription>Shifts and unavailability from ADP, plus your scheduling rules. Tap one to change it.</SheetDescription>
+        <SheetDescription>Shifts and unavailability from ADP, plus your scheduling rules.</SheetDescription>
       </SheetHeader>
       <div className="flex flex-col gap-5 px-4">
-        <section className="flex flex-col gap-1" data-testid="person-shifts">
+        <section className="flex flex-col gap-1.5" data-testid="person-shifts">
           <h4 className="text-xs font-medium text-muted-foreground">Upcoming shifts</h4>
           {shown.length ? (
             shown.map((x) => {
               const change = stagedShift(shiftKey({ kind: "shift-delete", employee, ...x }));
               return (
-                <button
+                <OpensRow
                   key={`${x.date}-${x.startMin}`}
-                  type="button"
-                  className={cn(ROW, "flex items-center justify-between gap-2", change && "bg-primary/5")}
+                  className={cn(change && "bg-primary/5")}
                   onClick={() => onTarget({ mode: "shift", employee, shift: x })}
                 >
                   <span className={cn(change?.kind === "shift-delete" && "line-through opacity-60")}>
@@ -375,7 +413,7 @@ function PersonBody({
                   ) : x.draft ? (
                     <Badge variant="outline">Draft</Badge>
                   ) : null}
-                </button>
+                </OpensRow>
               );
             })
           ) : (
@@ -388,27 +426,25 @@ function PersonBody({
           ) : null}
         </section>
         {pending.length ? (
-          <section className="flex flex-col gap-1">
+          <section className="flex flex-col gap-1.5">
             <h4 className="text-xs font-medium text-muted-foreground">Requests waiting on you</h4>
             {pending.map((r) => (
-              <button key={`${r.row_key}-${r.repeat_until ?? ""}`} type="button" className={ROW} disabled={!entry} onClick={() => entry?.(r)}>
+              <OpensRow key={`${r.row_key}-${r.repeat_until ?? ""}`} disabled={!entry} onClick={() => entry?.(r)}>
                 <span className="text-amber-600 dark:text-amber-400">{whenText(r)}</span>
-              </button>
+              </OpensRow>
             ))}
           </section>
         ) : null}
-        <section className="flex flex-col gap-1">
+        <section className="flex flex-col gap-1.5">
           <h4 className="text-xs font-medium text-muted-foreground">Standing unavailability</h4>
           {lines.length ? (
             lines.map((l) => {
               const key = `${l.weekdays.join("")}-${l.date}-${l.from_time}`;
               const many = l.rows.length > 1;
               return (
-                <div key={key} className="flex flex-col">
-                  <button
-                    type="button"
-                    className={ROW}
-                    aria-expanded={many ? open === key : undefined}
+                <div key={key} className="flex flex-col gap-1.5">
+                  <OpensRow
+                    expanded={many ? open === key : undefined}
                     disabled={!many && !entry}
                     onClick={() => (many ? setOpen(open === key ? null : key) : entry?.(l.rows[0]!))}
                   >
@@ -416,13 +452,13 @@ function PersonBody({
                       {lineText(l, lastWeekFrom, nextWeek)}
                       {l.rows.every(fromRule) ? " · scheduling rule" : ""}
                     </span>
-                    {many ? <span className="ml-1.5 text-xs text-muted-foreground">· {l.rows.length} ADP entries</span> : null}
-                  </button>
+                    {many ? <span className="text-xs text-muted-foreground">{l.rows.length} ADP entries</span> : null}
+                  </OpensRow>
                   {many && open === key
                     ? l.rows.map((r) => (
-                        <button key={r.row_key} type="button" className={cn(ROW, "pl-5 text-muted-foreground")} disabled={!entry} onClick={() => entry?.(r)}>
+                        <OpensRow key={r.row_key} className="ml-4 w-auto text-muted-foreground" disabled={!entry} onClick={() => entry?.(r)}>
                           {whenText(r)}
-                        </button>
+                        </OpensRow>
                       ))
                     : null}
                 </div>
@@ -565,11 +601,11 @@ function SheetBody({
   const row = target.mode === "entry" ? target.row : null;
   const [fields, setFields] = useState<EntryFields>(() => fieldsFor(target, todayIso));
   const [employee, setEmployee] = useState<string | null>(row ? row.employee : target.mode === "add" ? target.employee : null);
-  const [editing, setEditing] = useState(false);
   const [scope, setScope] = useState<ChangeScope>("series");
   const [repeat, setRepeat] = useState<"days" | "weekly">(row?.repeat_weekday != null ? "weekly" : "days");
   const [days, setDays] = useState<string[]>(() => (row && row.repeat_weekday == null ? [row.first_date] : []));
   const [weekdays, setWeekdays] = useState<number[]>(() => (row?.repeat_weekday != null ? [row.repeat_weekday] : []));
+  const [initial] = useState(() => ({ fields: JSON.stringify(fields), when: JSON.stringify({ days, weekdays, repeat }) }));
   const stageAndClose = (c: StagedChange) => {
     onStage(c);
     onClose();
@@ -708,23 +744,17 @@ function SheetBody({
     for (const c of rest) onStage(c);
     onClose();
   };
-  const err = onlyDate ? entryError(fields) : (pickError ?? entryError(fields));
+  const unchanged =
+    JSON.stringify(fields) === initial.fields && (onlyDate || JSON.stringify({ days, weekdays, repeat }) === initial.when);
+  const err = unchanged ? "Change the days or hours." : onlyDate ? entryError(fields) : (pickError ?? entryError(fields));
   return (
     <>
       {header}
       <div className="flex flex-col gap-4 px-4">
-        {!editing ? (
-          <div className="flex flex-col gap-3 text-sm">
-            <p className="text-muted-foreground">
-              Approved in ADP. <span className="text-foreground">Edit</span> changes the days or hours;{" "}
-              <span className="text-foreground">Delete</span> removes it from ADP. Either waits with your other changes until you apply.
-            </p>
-            {weekly ? (
-              <div className="flex flex-col gap-1">
-                <span className="text-xs font-medium text-muted-foreground">Next dates</span>
-                <span className="tabular-nums">{nextDates(r, target.date).map(shortDate).join(" · ") || "None left"}</span>
-              </div>
-            ) : null}
+        {weekly ? (
+          <div className="flex flex-col gap-1 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">Next dates</span>
+            <span className="tabular-nums">{nextDates(r, target.date).map(shortDate).join(" · ") || "None left"}</span>
           </div>
         ) : null}
         {weekly ? (
@@ -741,11 +771,13 @@ function SheetBody({
             />
           </div>
         ) : null}
-        {editing ? onlyDate ? <TimeFields fields={fields} onChange={setFields} /> : editor : null}
+        {onlyDate ? <TimeFields fields={fields} onChange={setFields} /> : editor}
+        <p className="text-xs text-muted-foreground">Nothing changes in ADP until you press Apply to ADP.</p>
       </div>
-      <SheetFooter className="flex-row justify-end">
+      <SheetFooter className="flex-row items-center">
         <Button
           variant="destructive"
+          className="mr-auto"
           onClick={() =>
             stageAndClose({
               kind: "delete",
@@ -759,15 +791,9 @@ function SheetBody({
         >
           Delete
         </Button>
-        {editing ? (
-          <Button disabled={err != null} title={err ?? undefined} onClick={save}>
-            {!onlyDate && count > 1 ? `Save + add ${count - 1} more` : "Save to changes"}
-          </Button>
-        ) : (
-          <Button variant="outline" onClick={() => setEditing(true)}>
-            Edit
-          </Button>
-        )}
+        <Button disabled={err != null} title={err ?? undefined} onClick={save}>
+          {!onlyDate && count > 1 ? `Save + add ${count - 1} more` : "Save to changes"}
+        </Button>
       </SheetFooter>
     </>
   );
@@ -855,11 +881,10 @@ function ShiftBody({
   const existing = target.mode === "shift" ? target.shift : target.mode === "open-shift" ? target : null;
   const [times, setTimes] = useState<Times>(existing ? { startMin: existing.startMin, endMin: existing.endMin } : DEFAULT_TIMES);
   const [employee, setEmployee] = useState<string | null>(
-    target.mode === "shift-add" ? target.employee : target.mode === "open-shift" ? target.suggested : null,
+    target.mode === "shift-add" || target.mode === "shift" ? target.employee : target.mode === "open-shift" ? target.suggested : null,
   );
   const [days, setDays] = useState<string[]>(() => (target.mode === "shift-add" || target.mode === "open-add" ? [target.date > todayIso ? target.date : addDays(todayIso, 1)] : []));
   const [count, setCount] = useState(1);
-  const [editing, setEditing] = useState<"times" | "person" | null>(null);
   const tomorrow = addDays(todayIso, 1);
   const stageAll = (changes: ShiftChange[]) => {
     for (const c of changes) onStage(c);
@@ -946,62 +971,59 @@ function ShiftBody({
       </SheetDescription>
     </SheetHeader>
   );
-  if (editing === "times") {
-    const change: ShiftChange = isOpen
-      ? { kind: "open-edit", slot: target.slot, ...base, to: times }
-      : { kind: "shift-edit", employee: target.employee, ...base, to: times };
+  if (past) {
     return (
       <>
         {header}
-        <div className="flex flex-col gap-4 px-4">
-          <ShiftTimes value={times} onChange={setTimes} />
-        </div>
-        {footer(shiftError(change, todayIso), "Save to changes", [change])}
+        <p className="px-4 text-sm text-muted-foreground">Today&apos;s and earlier shifts can&apos;t be changed from here.</p>
       </>
     );
   }
-  if (editing === "person") {
-    const change: ShiftChange = isOpen
-      ? { kind: "open-assign", slot: target.slot, ...base, employee: employee ?? "" }
-      : { kind: "shift-reassign", employee: target.employee, ...base, toEmployee: employee ?? "" };
-    const people = isOpen ? target.options : roster.filter((n) => n !== target.employee);
-    return (
-      <>
-        {header}
-        <div className="flex flex-col gap-4 px-4">
-          <p className="text-sm text-muted-foreground">
-            {isOpen
-              ? "Only people your scheduling rules allow on this shift are listed. ADP notifies them once you apply."
-              : "ADP can't hand an assigned shift to someone else, so this deletes it and adds the same hours for the person you pick."}
-          </p>
-          {people.length ? (
-            <PersonSelect value={employee} roster={people} label="Give it to" onChange={setEmployee} />
-          ) : (
-            <p className="text-sm">Nobody fits your rules for this shift.</p>
-          )}
-        </div>
-        {footer(employee ? shiftError(change, todayIso) : "Pick a person.", "Save to changes", [change])}
-      </>
-    );
-  }
+  const retimed = times.startMin !== shift.startMin || times.endMin !== shift.endMin;
+  const to = isOpen ? employee : employee !== target.employee ? employee : null;
   const remove: ShiftChange = isOpen ? { kind: "open-delete", slot: target.slot, ...base } : { kind: "shift-delete", employee: target.employee, ...base };
+  // ADP can't retime and hand over a shift in one step, so both at once is delete + a new shift.
+  const changes: ShiftChange[] =
+    to && retimed
+      ? [remove, { kind: "shift-add", date: shift.date, employee: to, ...times }]
+      : to
+        ? [
+            isOpen
+              ? { kind: "open-assign", slot: target.slot, ...base, employee: to }
+              : { kind: "shift-reassign", employee: target.employee, ...base, toEmployee: to },
+          ]
+        : retimed
+          ? [isOpen ? { kind: "open-edit", slot: target.slot, ...base, to: times } : { kind: "shift-edit", employee: target.employee, ...base, to: times }]
+          : [];
+  const people = isOpen ? target.options : roster;
+  const err = firstError(changes, "Change the times or the person.");
   return (
     <>
       {header}
-      <p className="px-4 text-sm text-muted-foreground">
-        {past ? "Today's and earlier shifts can't be changed from here." : "Nothing changes in ADP until you press Apply to ADP."}
-      </p>
-      {past ? null : (
-        <SheetFooter className="flex-row flex-wrap items-center">
-          <Button variant="destructive" className="mr-auto" onClick={() => stageAll([remove])}>
-            Delete
-          </Button>
-          <Button variant="outline" onClick={() => setEditing("times")}>
-            Edit times
-          </Button>
-          <Button onClick={() => setEditing("person")}>{isOpen ? "Assign" : "Reassign"}</Button>
-        </SheetFooter>
-      )}
+      <div className="flex flex-col gap-4 px-4">
+        <ShiftTimes value={times} onChange={setTimes} />
+        {people.length ? (
+          <PersonSelect value={employee} roster={people} label={isOpen ? "Assign to" : "Person"} onChange={setEmployee} />
+        ) : (
+          <p className="text-sm text-muted-foreground">Nobody fits your rules for this shift.</p>
+        )}
+        <p className="text-xs text-muted-foreground">
+          {to && !isOpen
+            ? `ADP can't hand an assigned shift to someone else, so this deletes it and adds it for ${to}.`
+            : isOpen
+              ? "Only people your scheduling rules allow are listed. "
+              : ""}
+          Nothing changes in ADP until you press Apply to ADP.
+        </p>
+      </div>
+      <SheetFooter className="flex-row items-center">
+        <Button variant="destructive" className="mr-auto" onClick={() => stageAll([remove])}>
+          Delete
+        </Button>
+        <Button disabled={err != null} title={err ?? undefined} onClick={() => stageAll(changes)}>
+          Save to changes
+        </Button>
+      </SheetFooter>
     </>
   );
 }

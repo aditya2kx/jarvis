@@ -1,26 +1,63 @@
 {
-  "_comment": "Issue #381. Shared by agents/bhaga/scripts/test_unavailability_reminder.py and apps/operator-console/__tests__/unavailability-reminder.test.ts so the Python job and the console preview compose identical DMs.",
+  "_comment": "Issues #381, #435. Shared by agents/bhaga/scripts/test_unavailability_reminder.py and apps/operator-console/__tests__/unavailability-reminder.test.ts so the Python job and the console preview compose identical drafts and flag the same people. Cases without template/followup use the defaults; without lead_weeks, 4.",
   "cases": [
     {
-      "name": "wednesday full reminder (operator's 2026-10-07 post)",
-      "today": "2026-10-07",
+      "name": "wednesday reminder before the first 3-week publish (Fri Oct 30 publishes through Nov 29)",
+      "today": "2026-10-28",
       "days": [2, 3],
       "kind": "reminder",
-      "content": "Unavailability reminder for Shift Coverage & Trades — copy and post:\n\n---\n\n@everyone Friendly reminder to update unavailability on ADP. Schedule for Oct 19 - Oct 25, will be published this Friday(Oct 9) based entirely off your ADP unavailability. Please update it beforehand to avoid swapping shifts after that."
+      "content": "Unavailability reminder for Shift Coverage & Trades — copy and post:\n\n---\n\n@everyone Friendly reminder to update unavailability on ADP. Schedules through Nov 29 will be published this Friday(Oct 30) based entirely off your ADP unavailability. Please keep it updated at least 4 weeks in advance to avoid swapping shifts after that."
     },
     {
-      "name": "thursday follow-up (operator's 2026-10-08 thread reply)",
-      "today": "2026-10-08",
+      "name": "thursday follow-up tags the flagged people in one line",
+      "today": "2026-10-29",
+      "days": [2, 3],
+      "flagged": ["@Dana Lee", "[@Sam Roe](#user_mention#123)"],
+      "kind": "followup",
+      "content": "Unavailability follow-up — post as a reply in this week's reminder thread:\n\n---\n\n@Dana Lee [@Sam Roe](#user_mention#123) One last reminder before shifts through Nov 29 get published tomorrow. Please keep your ADP unavailability updated at least 4 weeks ahead."
+    },
+    {
+      "name": "thursday follow-up with nobody flagged",
+      "today": "2026-10-29",
       "days": [2, 3],
       "kind": "followup",
-      "content": "Unavailability follow-up — post as a reply in this week's reminder thread:\n\n---\n\nOne last reminder before shifts get published tomorrow"
+      "content": "Unavailability follow-up — post as a reply in this week's reminder thread:\n\n---\n\nOne last reminder before shifts through Nov 29 get published tomorrow. Please keep your ADP unavailability updated at least 4 weeks ahead."
     },
     {
-      "name": "target week crosses a month",
-      "today": "2026-10-14",
+      "name": "steady state: the lead week crosses a month",
+      "today": "2026-11-04",
       "days": [2, 3],
       "kind": "reminder",
-      "content": "Unavailability reminder for Shift Coverage & Trades — copy and post:\n\n---\n\n@everyone Friendly reminder to update unavailability on ADP. Schedule for Oct 26 - Nov 1, will be published this Friday(Oct 16) based entirely off your ADP unavailability. Please update it beforehand to avoid swapping shifts after that."
+      "content": "Unavailability reminder for Shift Coverage & Trades — copy and post:\n\n---\n\n@everyone Friendly reminder to update unavailability on ADP. Schedules through Dec 6 will be published this Friday(Nov 6) based entirely off your ADP unavailability. Please keep it updated at least 4 weeks in advance to avoid swapping shifts after that."
+    },
+    {
+      "name": "legacy 2-week text and lead (operator's 2026-10-07 post)",
+      "today": "2026-10-07",
+      "days": [2, 3],
+      "lead_weeks": 2,
+      "template": "@everyone Friendly reminder to update unavailability on ADP. Schedule for {target_week}, will be published this {publish_day} based entirely off your ADP unavailability. Please update it beforehand to avoid swapping shifts after that.",
+      "kind": "reminder",
+      "content": "Unavailability reminder for Shift Coverage & Trades — copy and post:\n\n---\n\n@everyone Friendly reminder to update unavailability on ADP. Schedule for Oct 19 - Oct 25, will be published this Friday(Oct 9) based entirely off your ADP unavailability. Please update it beforehand to avoid swapping shifts after that."
+    }
+  ],
+  "unmarked": [
+    {
+      "name": "a person with any week in the horizon left blank is flagged",
+      "today": "2026-10-28",
+      "lead_weeks": 4,
+      "check_weeks": ["2026-11-09", "2026-11-16", "2026-11-23"],
+      "roster": ["Lee, Dana", "Roe, Sam", "Kim, Ava", "Ng, Bo"],
+      "rows": [
+        {"employee": "Kim, Ava", "first_date": "2026-09-01", "repeat_weekday": 1, "repeat_until": null},
+        {"employee": "Ng, Bo", "first_date": "2026-11-10", "repeat_weekday": null, "repeat_until": null},
+        {"employee": "Ng, Bo", "first_date": "2026-11-17", "repeat_weekday": null, "repeat_until": null},
+        {"employee": "Ng, Bo", "first_date": "2026-11-26", "repeat_weekday": null, "repeat_until": null},
+        {"employee": "Lee, Dana", "first_date": "2026-11-10", "repeat_weekday": null, "repeat_until": null},
+        {"employee": "Lee, Dana", "first_date": "2026-11-18", "repeat_weekday": null, "repeat_until": null},
+        {"employee": "Roe, Sam", "first_date": "2026-10-03", "repeat_weekday": 5, "repeat_until": "2026-11-20"},
+        {"employee": "Old, Gone", "first_date": "2026-11-10", "repeat_weekday": null, "repeat_until": null}
+      ],
+      "flagged": ["Lee, Dana", "Roe, Sam"]
     }
   ]
 }

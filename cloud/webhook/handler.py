@@ -2049,7 +2049,12 @@ def _run_unavailability_reminder_job() -> None:
         os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
         from agents.bhaga.scripts.unavailability_reminder import run_reminder
 
-        result = run_reminder(trigger="scheduler", updated_by="bhaga-webhook")
+        result = run_reminder(
+            trigger="scheduler", updated_by="bhaga-webhook",
+            start_browser_job=lambda: _trigger_cloud_run_job_with_env(
+                "unavailability-reminder", [("BHAGA_UNAVAIL_REMINDER", "scheduler")],
+            ),
+        )
         log.info("unavailability_reminder result=%s", {k: result.get(k) for k in ("status", "reason", "kind", "message_id", "post_date_ct")})
     except Exception as exc:  # noqa: BLE001
         log.error("BREADCRUMB unavailability_reminder failed: %s", exc)

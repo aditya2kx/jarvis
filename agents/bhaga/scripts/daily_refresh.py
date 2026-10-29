@@ -2856,6 +2856,18 @@ def _run_refresh(run_id: str) -> int:
     )
     _RUN_SUMMARY.update(refresh_date=refresh_date, store=args.store, dry_run=args.dry_run)
 
+    # Unavailability reminder draft (Issue #435): typed through the ClickUp web
+    # app so mentions are real chips; the webhook tick starts this mode.
+    reminder_mode = os.environ.get("BHAGA_UNAVAIL_REMINDER", "").strip()
+    if reminder_mode:
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        from agents.bhaga.scripts import unavailability_reminder  # noqa: PLC0415
+        argv = ["--store", os.environ.get("BHAGA_STORE") or args.store, "--in-browser-job"]
+        if reminder_mode == "once":
+            argv.append("--once")
+        print(f"[unavailability-reminder] mode={reminder_mode} argv={argv}")
+        return unavailability_reminder.main(argv)
+
     # Console Labor "Save to ADP as drafts" / "Publish week" (Issue #337): ADP
     # Team Schedule writes only, each an operator-confirmed click.
     write_mode = os.environ.get("BHAGA_ADP_SCHEDULE_WRITE", "").strip()

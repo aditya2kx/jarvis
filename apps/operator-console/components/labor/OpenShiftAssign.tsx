@@ -174,7 +174,7 @@ export function OpenShiftDayList({
                 {change ? (
                   <span className="flex items-center gap-1.5">
                     <Badge variant={change.kind === "open-delete" ? "destructive" : "default"}>{stagedText(change)}</Badge>
-                    <Button size="icon-xs" variant="ghost" aria-label="Undo" onClick={() => onUndo(shiftKey(change))}>
+                    <Button size="icon-sm" variant="ghost" aria-label="Undo" onClick={() => onUndo(shiftKey(change))}>
                       <Undo2Icon />
                     </Button>
                   </span>
@@ -213,7 +213,7 @@ export function OpenShiftDayList({
             </span>
             <span className="flex min-w-0 flex-1 basis-48 items-center gap-1.5">
               <Badge>{c.count > 1 ? `Will add ${c.count}` : "Will add"}</Badge>
-              <Button size="icon-xs" variant="ghost" aria-label={`Undo adding the ${time(c)} open shift`} onClick={() => onUndo(shiftKey(c))}>
+              <Button size="icon-sm" variant="ghost" aria-label={`Undo adding the ${time(c)} open shift`} onClick={() => onUndo(shiftKey(c))}>
                 <Undo2Icon />
               </Button>
             </span>

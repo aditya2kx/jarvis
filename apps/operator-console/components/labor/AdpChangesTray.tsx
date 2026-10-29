@@ -70,11 +70,11 @@ function Lines({ lines, onUndo }: { lines: TrayLine[]; onUndo?: (keys: string[])
                   <Badge variant={l.destructive ? "destructive" : "outline"} className="w-[4.5rem] shrink-0 justify-center">
                     {l.label}
                   </Badge>
-                  <span className="line-clamp-2 min-w-0 flex-1 text-muted-foreground" title={l.text}>
+                  <span className="min-w-0 flex-1 break-words text-muted-foreground">
                     {l.text}
                   </span>
                   {onUndo ? (
-                    <Button size="icon-xs" variant="ghost" aria-label={`Undo ${l.label.toLowerCase()} ${l.text}`} onClick={() => onUndo(l.keys)}>
+                    <Button size="icon-sm" variant="ghost" aria-label={`Undo ${l.label.toLowerCase()} ${l.text}`} onClick={() => onUndo(l.keys)}>
                       <Undo2Icon />
                     </Button>
                   ) : null}

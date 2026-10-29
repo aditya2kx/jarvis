@@ -1,4 +1,4 @@
--- 093_unavailability_reminder_lead_weeks.sql
+-- 094_unavailability_reminder_lead_weeks.sql
 -- Issue #435: the schedule moves from 1-2 to 3-4 weeks published; each Friday adds
 -- the lead_weeks-th week out. The reminder states that horizon, its Thursday
 -- follow-up tags people with a blank week in it, and drafts go to the operator's

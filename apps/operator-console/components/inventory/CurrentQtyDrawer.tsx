@@ -133,8 +133,8 @@ export function CurrentQtyDrawer({
           <SheetTitle>Edit Current Qty</SheetTitle>
           <SheetDescription>
             Override on-hand for each base, then Apply once. Saves rematerialize order reco so
-            On hand, Order tubs, Days left, and Base runway update. Sticky until Reset all to
-            ClickUp closings.
+            On hand, Order tubs, Days left, and Base runway update. Each value applies until
+            the next ClickUp closing for that base replaces it.
           </SheetDescription>
         </SheetHeader>
 

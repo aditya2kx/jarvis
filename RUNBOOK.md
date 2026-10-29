@@ -539,7 +539,7 @@ BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.team_pulse --once   # f
 ### Unavailability reminder (Issues #381, #435)
 
 Drafts a ready-to-post ClickUp nudge to update ADP unavailability before the Friday publish. The
-schedule runs `lead_weeks` ahead (default **4**, console **Weeks ahead**; migration 093): each Friday
+schedule runs `lead_weeks` ahead (default **4**, console **Weeks ahead**; migration 094): each Friday
 publishes through the Sunday of the `lead_weeks`-th week after this one (Fri Oct 30 → through Nov 29).
 First configured day (default **Wed**): the full reminder (`{through_date}` → `Nov 29`,
 `{target_week}` → `Nov 23 - Nov 29`, `{publish_day}` → `Friday(Oct 30)`, `{lead_weeks}` → `4`);
@@ -549,7 +549,7 @@ a week from the week after next through the lead week that has **no** ADP unavai
 approved) — the soft "hasn't updated" signal. Each becomes a ClickUp mention when exactly one member
 matches the name, else plain `@First Last`.
 
-**Delivery** (`automations.destination`): `drafts` (default since 093) types the draft into the
+**Delivery** (`automations.destination`): `drafts` (default since 094) types the draft into the
 operator-only private channel **#jarvis-drafts** (`8cr6661-7217`) through the ClickUp web app
 (`skills/clickup_browser`), so `@everyone` and people are real chips that survive copy-paste into
 Shift Coverage & Trades (the REST API posts `@everyone` as plain text). A person outside

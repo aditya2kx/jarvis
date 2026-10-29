@@ -329,7 +329,7 @@ GRAFANA_VIEWS: list[Target] = [
     # migration 088 (Issue #381): automations.followup_template for the
     # unavailability reminder's Thursday reply. Additive column on the 054 config
     # table — no new BQ_TARGETS/GRAFANA_VIEWS.
-    # migration 093 (Issue #435): automations.lead_weeks + reminder defaults move to
+    # migration 094 (Issue #435): automations.lead_weeks + reminder defaults move to
     # drafts. Additive column on the 054 config table — no new BQ_TARGETS/GRAFANA_VIEWS.
     # migration 055 (Issue #225): inventory_order_tub_overrides + rewrite
     # tvf_order_reco_slot1 / tvf_order_reco_slot_n for Manual pins on Estimated
@@ -348,6 +348,8 @@ GRAFANA_VIEWS: list[Target] = [
     # vw_inventory_order_assistant.latest_reading. Console /inventory Current Qty
     # edit — not model_* / no Grafana panel; freshness via inventory_order_reco
     # refresh. No new BQ_TARGETS/GRAFANA_VIEWS.
+    # migration 093 (Issue #438): same view; override applies only until the next
+    # closing, + current_qty_source column. No new BQ_TARGETS/GRAFANA_VIEWS.
     # migration 059 (Issue #251): employee_perks + rewrite vw_model_payroll_period
     # (PT tip-alloc UNION FT shifts; wage_rate, ot_hours, perks). Same view already
     # in GRAFANA_VIEWS — no new target.

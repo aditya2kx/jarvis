@@ -991,8 +991,8 @@ export async function clearUsageDayOverride(
 }
 
 /**
- * Sticky Current Qty override (Issue #240). COALESCE'd in
- * vw_inventory_order_assistant.
+ * Current Qty override (Issue #240). vw_inventory_order_assistant applies it
+ * until the next ClickUp closing for that base (migration 093, Issue #438).
  */
 export async function setCurrentQtyOverride(
   store: string,
@@ -1116,7 +1116,7 @@ export type AutomationUpsert = {
   template: string;
   /** Unavailability reminder only; omitted = column left as is. */
   followup_template?: string;
-  /** Unavailability reminder only (migration 093); omitted = column left as is. */
+  /** Unavailability reminder only (migration 094); omitted = column left as is. */
   lead_weeks?: number;
 };
 

@@ -48,6 +48,9 @@ class _Keyboard:
     def type(self, s, delay=0):
         self.log.append(("type", s))
 
+    def insert_text(self, s):
+        self.log.append(("insert", s))
+
     def press(self, k):
         self.log.append(("press", k))
 
@@ -70,12 +73,18 @@ class _Page:
 class TypeMessage(unittest.TestCase):
     def test_picks_chips_and_falls_back_to_plain_names(self):
         page = _Page({(sender.OPTION, "Everyone"), (f"{sender.OPTION}#item_11", None)})
-        res = sender.type_message(page, "@everyone x [@Dana Lee](#user_mention#11) [@Bo Ng](#user_mention#99)\ny")
+        res = sender.type_message(
+            page, "Head (#1)\n\n---\n\n@everyone x [@Dana Lee](#user_mention#11) [@Bo Ng](#user_mention#99)\ny",
+        )
         self.assertEqual((res.everyone, res.users, res.plain), (True, ["11"], ["Bo Ng"]))
         picks = [e for e in page.log if e[0] == "pick"]
         self.assertEqual(picks, [("pick", sender.OPTION, "Everyone"), ("pick", f"{sender.OPTION}#item_11", None)])
-        self.assertIn(("type", "Bo Ng"), page.log)
-        self.assertIn(("press", "Shift+Enter"), page.log)
+        self.assertEqual([e[1] for e in page.log if e[0] == "type"], ["@every", "@Dana Lee", "@Bo Ng"])
+        self.assertIn(("insert", "Head (#1)"), page.log)
+        self.assertIn(("insert", "Bo Ng"), page.log)
+        self.assertIn(("insert", "x "), page.log)  # the space after the Everyone chip is ClickUp's
+        self.assertNotIn(("insert", "---"), page.log)
+        self.assertEqual(page.log.count(("press", "Shift+Enter")), 3)  # one blank line for the ---, one \n
         self.assertNotIn(("press", "Enter"), page.log)
 
 

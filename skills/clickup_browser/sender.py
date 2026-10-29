@@ -56,11 +56,14 @@ def plain_text(content: str) -> str:
 
 
 def _type_text(page, text: str) -> None:
-    for i, line in enumerate(text.split("\n")):
+    # insert_text, not type: a typed "#", "/" or ":" opens a ClickUp picker that eats the
+    # keys after it. A "---" line becomes a divider that moves the caret, so it is dropped.
+    lines = re.sub(r"\n*^---$\n*", "\n\n", text, flags=re.M).split("\n")
+    for i, line in enumerate(lines):
         if i:
             page.keyboard.press("Shift+Enter")
         if line:
-            page.keyboard.type(line, delay=10)
+            page.keyboard.insert_text(line)
 
 
 def _pick(page, query: str, option) -> bool:
@@ -85,18 +88,22 @@ def _pick(page, query: str, option) -> bool:
 def type_message(page, content: str) -> SendResult:
     """Type ``content`` into the focused composer, turning mention tokens into chips."""
     res = SendResult()
+    chip = False  # ClickUp puts a space after a picked chip
     for kind, value, user_id in segments(content):
         if kind == "text":
-            _type_text(page, value)
+            _type_text(page, value[1:] if chip and value.startswith(" ") else value)
+            chip = False
         elif kind == "everyone":
-            res.everyone = _pick(page, "every", page.locator(OPTION).filter(has_text="Everyone"))
+            res.everyone = chip = _pick(page, "every", page.locator(OPTION).filter(has_text="Everyone"))
             if not res.everyone:
-                page.keyboard.type("@everyone", delay=10)
+                page.keyboard.insert_text("@everyone")
         elif _pick(page, value, page.locator(f"{OPTION}#item_{user_id}")):
             res.users.append(user_id)
+            chip = True
         else:
-            page.keyboard.type(value, delay=10)
+            page.keyboard.insert_text(value)
             res.plain.append(value)
+            chip = False
     return res
 
 
@@ -119,8 +126,12 @@ def send(
             composer.first.wait_for(state="visible", timeout=60_000)
         except Exception as exc:  # noqa: BLE001
             raise SessionExpired(f"no ClickUp composer at {page.url} — session expired?") from exc
+        page.wait_for_timeout(2000)  # mention pickers attach after the composer shows
         box = composer.first.bounding_box()
         page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        # ClickUp restores an unsent draft per channel; start from an empty composer.
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Backspace")
         res = type_message(page, content)
         page.keyboard.press("Enter")
         page.wait_for_function(

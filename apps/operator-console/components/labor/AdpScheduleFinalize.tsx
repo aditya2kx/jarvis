@@ -1,14 +1,7 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  publishWeekAction,
-  saveDraftsToAdpAction,
-  schedulePushStatusAction,
-  sendPublishMessageAction,
-  type ScheduleWriteRun,
-} from "@/app/labor/actions";
+import { useCallback, useEffect, useState } from "react";
+import { schedulePushStatusAction, sendPublishMessageAction, type ScheduleWriteRun } from "@/app/labor/actions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,14 +14,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
-import { formatClockMin } from "@/lib/labor/coverage-model";
-import {
-  relevantRows,
-  splitAgainstAdp,
-  summarizePush,
-  type PushRow,
-  type PushShift,
-} from "@/lib/labor/schedule-push";
+import { timeText, type ShiftChange } from "@/lib/labor/adp-changes";
 
 const POLL_MS = 5000;
 const GRACE_MS = 90 * 1000;
@@ -53,13 +39,14 @@ export function weekRangeLabel(weekStart: string): string {
     : `${month(start)} ${start.getDate()} – ${month(end)} ${end.getDate()}`;
 }
 
-const hoursOf = (shifts: PushShift[]) => shifts.reduce((a, s) => a + (s.endMin - s.startMin) / 60, 0);
+const shiftsIn = (c: ShiftChange) => (c.kind === "open-add" ? c.count : 1);
+const hoursOf = (changes: ShiftChange[]) =>
+  changes.reduce((a, c) => a + (shiftsIn(c) * (c.endMin - c.startMin)) / 60, 0);
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
-function ShiftList({ shifts }: { shifts: PushShift[] }) {
-  const byDay = new Map<string, PushShift[]>();
-  for (const s of [...shifts].sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin)) {
-    byDay.set(s.date, [...(byDay.get(s.date) ?? []), s]);
-  }
+function ChangeList({ changes }: { changes: ShiftChange[] }) {
+  const byDay = new Map<string, ShiftChange[]>();
+  for (const c of changes) byDay.set(c.date, [...(byDay.get(c.date) ?? []), c]);
   return (
     <div className="flex flex-col gap-3 px-4">
       {[...byDay].map(([date, list]) => (
@@ -67,25 +54,30 @@ function ShiftList({ shifts }: { shifts: PushShift[] }) {
           <p className="flex justify-between text-xs font-medium text-muted-foreground">
             <span>{dayLabel(date)}</span>
             <span className="tabular-nums">
-              {list.length} shift{list.length === 1 ? "" : "s"} · {hoursOf(list).toFixed(1)}h
+              {plural(list.reduce((n, c) => n + shiftsIn(c), 0), "shift")} · {hoursOf(list).toFixed(1)}h
             </span>
           </p>
           <ul className="flex flex-col divide-y rounded-md border">
-            {list.map((s) => (
+            {list.map((c) => (
               <li
-                key={`${s.employee ?? "open"}-${s.startMin}`}
+                key={`${c.kind}-${"employee" in c ? c.employee : "open"}-${c.startMin}-${c.endMin}`}
                 className="flex items-center justify-between gap-3 px-3 py-1.5 text-sm"
               >
-                <span className="tabular-nums">
-                  {formatClockMin(s.startMin)}–{formatClockMin(s.endMin)}
+                <span className="tabular-nums">{timeText(c)}</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  {c.kind === "open-add" ? (
+                    <Badge variant="outline" className="font-normal">
+                      {c.count > 1 ? `${c.count} open shifts` : "Open shift"}
+                    </Badge>
+                  ) : (
+                    <span className="truncate font-medium">{"employee" in c ? c.employee : ""}</span>
+                  )}
+                  {c.kind === "shift-publish" ? (
+                    <Badge variant="secondary" className="font-normal">
+                      ADP draft
+                    </Badge>
+                  ) : null}
                 </span>
-                {s.employee ? (
-                  <span className="truncate font-medium">{s.employee}</span>
-                ) : (
-                  <Badge variant="outline" className="font-normal">
-                    Open shift
-                  </Badge>
-                )}
               </li>
             ))}
           </ul>
@@ -96,64 +88,40 @@ function ShiftList({ shifts }: { shifts: PushShift[] }) {
 }
 
 /**
- * "Save to ADP as drafts" then "Publish week" (Issue #337). Each opens a drawer
- * listing exactly what will be written; nothing reaches ADP until its confirm
- * button. Drafts stay invisible to employees until the week is published.
+ * The suggested week (Issue #337) goes to ADP through the one "Changes to ADP" tray (Issue #434):
+ * this card only adds its shifts to the tray, and sends the week's ClickUp message.
  */
 export function AdpScheduleFinalize({
   weekStart,
-  shifts,
+  changes,
+  onStage,
   enabled,
-  scheduleReadAt = null,
 }: {
   weekStart: string;
-  /** inAdp = ADP's synced schedule already has this exact shift. */
-  shifts: (PushShift & { inAdp?: boolean })[];
+  /** Suggested shifts ADP doesn't have yet, and ADP drafts to publish — minus what's already in the tray. */
+  changes: ShiftChange[];
+  onStage: (changes: ShiftChange[]) => void;
+  /** CONSOLE_ADP_SCHEDULE_WRITE: gates the ClickUp message (the tray gates Apply itself). */
   enabled: boolean;
-  /** Last time ADP's schedule was read into BQ (adp_scheduled_shifts.scraped_at_utc). */
-  scheduleReadAt?: string | null;
 }) {
-  const [allRows, setRows] = useState<PushRow[]>([]);
   const [running, setRunning] = useState<ScheduleWriteRun | null>(null);
-  const [loadedWeek, setLoadedWeek] = useState<string | null>(null);
   // Right after a click the Cloud Run execution may not be listed yet; keep polling meanwhile.
   const [graceUntil, setGraceUntil] = useState(0);
-  const [lastAction, setLastAction] = useState<"save" | "publish" | "dm" | "channel" | null>(null);
-  const [sheet, setSheet] = useState<"save" | "publish" | "message" | null>(null);
+  const [sentTo, setSentTo] = useState<"dm" | "channel" | null>(null);
+  const [sheet, setSheet] = useState<"add" | "message" | null>(null);
   const { isPending, run } = useConsoleAction();
-  const router = useRouter();
 
   const refresh = useCallback(async () => {
-    const ack = await schedulePushStatusAction(weekStart);
-    if (ack.ok && ack.data) {
-      setRows(ack.data.rows);
-      setRunning(ack.data.running);
-    }
-  }, [weekStart]);
+    // A refused or failed status read (network, read-only preview) must not throw.
+    const ack = await schedulePushStatusAction().catch(() => null);
+    if (ack?.ok && ack.data) setRunning(ack.data.running);
+  }, []);
 
   useEffect(() => {
-    let live = true;
-    // A refused or failed status read (network, read-only preview) must not throw.
-    void schedulePushStatusAction(weekStart).catch(() => null).then((ack) => {
-      if (!live) return;
-      if (ack?.ok && ack.data) {
-        setRows(ack.data.rows);
-        setRunning(ack.data.running);
-      }
-      setLoadedWeek(weekStart);
-    });
-    return () => {
-      live = false;
-    };
-  }, [weekStart]);
+    void refresh();
+  }, [refresh]);
 
   const polling = running != null || graceUntil > 0;
-  // A finished job also reloaded ADP's schedule for the week; re-fetch the page's data.
-  const wasRunning = useRef(false);
-  useEffect(() => {
-    if (wasRunning.current && running == null) router.refresh();
-    wasRunning.current = running != null;
-  }, [running, router]);
   useEffect(() => {
     if (!polling) return;
     const id = setInterval(() => {
@@ -163,54 +131,8 @@ export function AdpScheduleFinalize({
     return () => clearInterval(id);
   }, [polling, graceUntil, refresh]);
 
-  const rows = useMemo(() => relevantRows(shifts, allRows), [shifts, allRows]);
-  const summary = useMemo(() => summarizePush(rows), [rows]);
-  const stalled = !polling && summary.queued > 0;
-  const { toSave, inAdp, checking } = useMemo(
-    () => splitAgainstAdp(shifts, rows, { stalled, scheduleReadAt }),
-    [shifts, rows, stalled, scheduleReadAt],
-  );
-  const drafted = rows.filter((r) => r.status === "drafted");
-  const loaded = loadedWeek === weekStart;
-  const busy = polling || !loaded;
-  const pushRowsNow = running?.pushId ? rows.filter((r) => r.push_id === running.pushId) : [];
-  const otherWeek =
-    running != null &&
-    (running.mode === "drafts" ? pushRowsNow.length === 0 : running.weekStart !== weekStart) &&
-    graceUntil === 0;
-  const saving = !otherWeek && (running?.mode === "drafts" || (graceUntil > 0 && lastAction === "save"));
-  const publishing = !otherWeek && (running?.mode === "publish" || (graceUntil > 0 && lastAction === "publish"));
-  const messaging =
-    !otherWeek &&
-    (running?.mode === "dm" || (graceUntil > 0 && (lastAction === "dm" || lastAction === "channel")));
-  const postingChannel =
-    (running?.mode === "dm" && running.to === "channel") || (graceUntil > 0 && lastAction === "channel");
-  const savedSoFar = pushRowsNow.filter((r) => r.status !== "queued").length;
-
-  const start = (action: "save" | "publish" | "dm" | "channel") => {
-    setSheet(null);
-    setLastAction(action);
-    setGraceUntil(Date.now() + GRACE_MS);
-  };
-
-  const save = async () => {
-    const ack = await run(() => saveDraftsToAdpAction(weekStart, toSave), {
-      saving: "Queuing drafts…",
-      queued: "Saving drafts to ADP in the background.",
-    });
-    if (ack.ok) {
-      start("save");
-      await refresh();
-    }
-  };
-
-  const publish = async () => {
-    const ack = await run(() => publishWeekAction(weekStart), {
-      saving: "Starting publish…",
-      queued: "Publishing the week in ADP in the background.",
-    });
-    if (ack.ok) start("publish");
-  };
+  const messaging = running?.mode === "dm" || (graceUntil > 0 && sentTo != null);
+  const toChannel = running?.mode === "dm" ? running.to === "channel" : sentTo === "channel";
 
   const sendMessage = async (to: "dm" | "channel") => {
     const ack = await run(() => sendPublishMessageAction(weekStart, to), {
@@ -220,13 +142,19 @@ export function AdpScheduleFinalize({
           ? "Posting to Shift Coverage in the background."
           : "Sending you the ClickUp DM in the background.",
     });
-    if (ack.ok) start(to);
+    if (ack.ok) {
+      setSheet(null);
+      setSentTo(to);
+      setGraceUntil(Date.now() + GRACE_MS);
+    }
   };
 
-  const disabledTitle = enabled ? undefined : "ADP schedule writes are off (CONSOLE_ADP_SCHEDULE_WRITE)";
   const range = weekRangeLabel(weekStart);
-  const days = new Set(toSave.map((s) => s.date)).size;
-  const open = toSave.filter((s) => !s.employee).length;
+  const adds = changes.filter((c) => c.kind !== "shift-publish");
+  const publishes = changes.filter((c) => c.kind === "shift-publish");
+  const addCount = adds.reduce((n, c) => n + shiftsIn(c), 0);
+  const openCount = adds.reduce((n, c) => n + (c.kind === "open-add" ? c.count : 0), 0);
+  const lineCount = changes.length;
 
   return (
     <div
@@ -234,138 +162,74 @@ export function AdpScheduleFinalize({
       className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2.5"
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <h4 className="text-sm font-medium text-foreground">Send the suggested schedule for {range} to ADP</h4>
+        <h4 className="text-sm font-medium text-foreground">Suggested schedule for {range}</h4>
         <p data-testid="adp-finalize-status" className="text-xs text-muted-foreground">
-          {!loaded
-            ? "Checking ADP status…"
-            : otherWeek
-              ? "ADP is busy saving or publishing another week — this week's buttons unlock when it finishes."
-              : saving
-                ? `Saving to ADP as drafts — ${savedSoFar} of ${pushRowsNow.length || "…"} done (about 7 s per shift, after ~2 min to sign in to ADP). Safe to leave or reload this page.`
-                : publishing
-                  ? "Publishing the week in ADP — employees get notified when it finishes. Safe to leave or reload this page."
-                  : messaging
-                    ? postingChannel
-                      ? "Re-reading open shifts from ADP, then posting to Shift Coverage (about 3 min). Safe to leave or reload this page."
-                      : "Re-reading open shifts from ADP, then sending you the ClickUp DM (about 3 min). Safe to leave or reload this page."
-                    : toSave.length
-                    ? `The shifts this page drafted for every day of the week (the “+N draft” on each day above): ${toSave.length} shifts — ${toSave.length - open} assigned, ${open} open — ${hoursOf(toSave).toFixed(1)}h. Not in ADP yet.`
-                    : drafted.length
-                      ? `All ${drafted.length} suggested shifts are ADP drafts — employees don't see them until you publish.`
-                      : summary.published
-                        ? "Published — employees can see this week in ADP."
-                        : "Every suggested shift of this week is already in ADP."}
+          {lineCount
+            ? [
+                addCount
+                  ? `${plural(addCount, "suggested shift")} (${hoursOf(adds).toFixed(1)}h${openCount ? `, ${openCount} open` : ""}) ${addCount === 1 ? "isn't" : "aren't"} in ADP yet.`
+                  : "",
+                publishes.length === 1
+                  ? "1 shift in ADP is still a draft staff can't see."
+                  : publishes.length
+                    ? `${publishes.length} shifts in ADP are still drafts staff can't see.`
+                    : "",
+                "Add them to your changes, then Apply to ADP.",
+              ]
+                .filter(Boolean)
+                .join(" ")
+            : "Everything suggested for this week is in ADP or in your changes."}
         </p>
-        {stalled ? (
-          <p className="text-xs text-rose-600 dark:text-rose-400">
-            The save stopped with {summary.queued} shift{summary.queued === 1 ? "" : "s"} not saved.
-            {toSave.length ? " Save again to retry them." : ""}
+        {messaging ? (
+          <p className="text-xs text-muted-foreground">
+            {toChannel
+              ? "Re-reading open shifts from ADP, then posting to Shift Coverage (about 3 min)."
+              : "Re-reading open shifts from ADP, then sending you the ClickUp DM (about 3 min)."}{" "}
+            Safe to leave or reload this page.
           </p>
-        ) : null}
-        {!polling && checking.length ? (
-          <p data-testid="adp-finalize-checking" className="text-xs text-amber-700 dark:text-amber-400">
-            {checking.length} shift{checking.length === 1 ? "" : "s"} may already be in ADP (the save
-            wasn&apos;t confirmed). Sync ADP to check — a shift ADP shows stays out of the next save; the rest
-            are offered again.
-          </p>
-        ) : null}
-        {rows.length ? (
-          <div className="flex flex-wrap gap-1.5 text-[11px]">
-            {summary.queued ? (
-              <Badge variant="secondary">
-                {summary.queued} {stalled ? "not saved" : "waiting"}
-              </Badge>
-            ) : null}
-            {drafted.length ? <Badge variant="outline">{drafted.length} ADP drafts</Badge> : null}
-            {summary.published ? <Badge variant="default">{summary.published} published</Badge> : null}
-            {summary.failed ? <Badge variant="destructive">{summary.failed} failed</Badge> : null}
-          </div>
-        ) : null}
-        {summary.errors.length ? (
-          <ul className="text-[11px] text-rose-600 dark:text-rose-400">
-            {[...new Set(summary.errors)].slice(0, 3).map((e) => (
-              <li key={e}>{e}</li>
-            ))}
-          </ul>
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!enabled || busy || isPending || toSave.length === 0}
-          title={disabledTitle ?? "Step 1 — employees don't see drafts"}
-          onClick={() => setSheet("save")}
-        >
-          {saving
-            ? pushRowsNow.length
-              ? `Saving to ADP… ${savedSoFar} of ${pushRowsNow.length}`
-              : "Saving to ADP…"
-            : "1 · Review & save as ADP drafts"}
+        <Button size="sm" variant="outline" disabled={lineCount === 0} onClick={() => setSheet("add")}>
+          Review &amp; add to changes
         </Button>
         <Button
           size="sm"
-          disabled={!enabled || busy || isPending || drafted.length === 0}
-          title={disabledTitle ?? (drafted.length ? "Step 2 — notifies employees" : "Save drafts first")}
-          onClick={() => setSheet("publish")}
+          variant="ghost"
+          disabled={!enabled || messaging || isPending}
+          title={enabled ? "DM yourself, or post it to Shift Coverage" : "ADP schedule writes are off (CONSOLE_ADP_SCHEDULE_WRITE)"}
+          onClick={() => setSheet("message")}
         >
-          {publishing ? "Publishing…" : `2 · Publish ${range}`}
+          {messaging ? (toChannel ? "Posting to Shift Coverage…" : "Sending ClickUp message…") : "Send ClickUp message"}
         </Button>
-        {summary.published ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={!enabled || busy || isPending}
-            title={disabledTitle ?? "DM yourself, or post it to Shift Coverage"}
-            onClick={() => setSheet("message")}
-          >
-            {messaging ? (postingChannel ? "Posting to Shift Coverage…" : "Sending ClickUp message…") : "Send ClickUp message"}
-          </Button>
-        ) : null}
       </div>
 
       <Sheet open={sheet != null} onOpenChange={(o) => !o && setSheet(null)}>
         <SheetContent className="w-full max-w-md overflow-y-auto">
-          {sheet === "save" ? (
+          {sheet === "add" ? (
             <>
               <SheetHeader>
-                <SheetTitle>Save week of {range} to ADP as drafts</SheetTitle>
+                <SheetTitle>Suggested shifts · {range}</SheetTitle>
                 <SheetDescription>
-                  {`Creates these ${toSave.length} suggested shifts (${days} days) in ADP Team Schedule as drafts.`}
-                  Employees don&apos;t see drafts until you publish the week. Takes about 7 s per
-                  shift; you can keep using the page.
-                  {inAdp.length ? ` ${inAdp.length} shifts already in ADP are left alone.` : ""}
+                  {`To add: ${[
+                    addCount ? `${plural(addCount, "new shift")} (${hoursOf(adds).toFixed(1)}h)` : "",
+                    publishes.length ? `${plural(publishes.length, "ADP draft")} to publish` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(", ")}. `}
+                  Nothing changes in ADP until you press Apply to ADP; then each shift goes live and staff
+                  see it. You can undo any line before that.
                 </SheetDescription>
               </SheetHeader>
-              <ShiftList shifts={toSave} />
+              <ChangeList changes={changes} />
               <SheetFooter>
-                <Button onClick={() => void save()} disabled={isPending}>
-                  {isPending ? "Queuing…" : `Save ${toSave.length} drafts to ADP`}
-                </Button>
-                <SheetClose render={<Button variant="outline">Cancel</Button>} />
-              </SheetFooter>
-            </>
-          ) : sheet === "publish" ? (
-            <>
-              <SheetHeader>
-                <SheetTitle>Publish week of {range}</SheetTitle>
-                <SheetDescription>
-                  Publishes every ADP draft for this week (including any you added in ADP) — employees
-                  get notified in ADP Mobile. You then get a ClickUp DM with a draft message for the team,
-                  listing the week&apos;s open shifts, to copy and post.
-                </SheetDescription>
-              </SheetHeader>
-              <ShiftList
-                shifts={drafted.map((r) => ({
-                  date: r.date,
-                  employee: r.employee,
-                  startMin: Number(r.start_min),
-                  endMin: Number(r.end_min),
-                }))}
-              />
-              <SheetFooter>
-                <Button onClick={() => void publish()} disabled={isPending}>
-                  {isPending ? "Starting…" : `Publish ${range}`}
+                <Button
+                  onClick={() => {
+                    onStage(changes);
+                    setSheet(null);
+                  }}
+                >
+                  Add {plural(lineCount, "line")} to changes
                 </Button>
                 <SheetClose render={<Button variant="outline">Cancel</Button>} />
               </SheetFooter>
@@ -375,9 +239,9 @@ export function AdpScheduleFinalize({
               <SheetHeader>
                 <SheetTitle>Send the {range} schedule message</SheetTitle>
                 <SheetDescription>
-                  Re-reads this week&apos;s open shifts from ADP (about 3 min), then sends the note you
-                  already got as a DM. A DM keeps the &quot;copy and post&quot; header. Shift Coverage
-                  starts at @everyone and notifies the team. Publish still only DMs you.
+                  Re-reads this week&apos;s open shifts from ADP (about 3 min), then sends the note. A DM
+                  keeps the &quot;copy and post&quot; header; Shift Coverage starts at @everyone and notifies
+                  the team.
                 </SheetDescription>
               </SheetHeader>
               <SheetFooter>

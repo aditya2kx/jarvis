@@ -160,6 +160,8 @@ BQ_TARGETS: list[Target] = [
     # migration 092 (Issue #427): adp_unavailability_changes / adp_unavailability_events are
     # operator input (rows only on a console unavailability change) — same class as
     # labor_schedule_pushes. NOT BQ_TARGETS entries.
+    # migration 095 (Issue #434): adp_shift_changes / adp_shift_events are operator input
+    # (rows only on a console Apply to ADP) — same class. NOT BQ_TARGETS entries.
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —
     # intentionally NOT a BQ_TARGETS entry (same class as store_config /

@@ -100,7 +100,11 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    can re-DM or post the note from `@everyone` to Shift Coverage after re-reading ADP), plus
    Issue #412 **Write to ADP** (same flag): assigns operator-ticked existing ADP open shifts to
    the person chosen, only from ADP's own eligible list, confirmed by a re-read open-shift count
-   (`labor_open_shift_assignments`, `BHAGA_ADP_SCHEDULE_WRITE=assign`). Never on the nightly. The only request
+   (`labor_open_shift_assignments`, `BHAGA_ADP_SCHEDULE_WRITE=assign`), and Issue #434 **Apply to ADP**
+   (same flag): one batch of operator-staged shift changes (add / edit / delete / reassign a shift, add /
+   edit / delete / assign an open shift), each published on its own, confirmed by an ADP re-read, never
+   retried; never Publish drafts or Delete all schedules (`adp_shift_changes`, `BHAGA_ADP_SCHEDULE_WRITE=apply`).
+   Never on the nightly. The only request
    write is the operator's **Approve** on one pending unavailability request
    (`FEATURES.adpUnavailabilityApprove` / `CONSOLE_ADP_UNAVAIL_APPROVE`): clicks APPROVE on
    the single matching card, never Reject, never retried. Every other Team Schedule touch

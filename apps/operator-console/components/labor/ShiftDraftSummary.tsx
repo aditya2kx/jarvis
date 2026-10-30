@@ -1,6 +1,7 @@
 "use client";
 
 import { ShiftPersonPicker } from "@/components/labor/ShiftPersonPicker";
+import { StaffTagBadge, TRAINING_TEXT_CLASS } from "@/components/labor/StaffTag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -158,7 +159,8 @@ export function ShiftDraftSummary({
   const over = goalHoursWeek != null && total > goalHoursWeek;
   const byName = new Map(roster.map((a) => [a.employee, a]));
   // The coverage chart already draws every shift ADP has; list only what needs a pick or ADP fix.
-  const rows = shifts.filter((s) => !s.inAdp || s.adpOpen);
+  // An ADP open shift nobody can take stays in the open-shift list above, with its reasons.
+  const rows = shifts.filter((s) => (!s.inAdp || s.adpOpen) && !(s.fillsOpen && !s.employee));
 
   const weekLine = (
     <>
@@ -291,7 +293,10 @@ export function ShiftDraftSummary({
                         {choosable ? (
                           <ShiftPersonPicker shift={s} onPick={(employee) => onPick!(s.slot!, employee)} />
                         ) : (
-                          <span className="font-medium">{s.employee}</span>
+                          <>
+                            <span className="font-medium">{s.employee}</span>
+                            <StaffTagBadge employee={s.employee!} />
+                          </>
                         )}
                         {a?.targetWeekHours != null ? (
                           <span className="text-xs text-muted-foreground">
@@ -313,8 +318,13 @@ export function ShiftDraftSummary({
                         ) : null}
                       </span>
                     ) : (
-                      <span className="text-muted-foreground">
-                        Unassigned — posts as an open shift
+                      <span className="flex flex-col gap-0.5">
+                        <span className="text-muted-foreground">Unassigned — posts as an open shift</span>
+                        {s.blocked?.map((b) => (
+                          <span key={b.employee} className={cn("text-xs", TRAINING_TEXT_CLASS)}>
+                            {b.employee} · {b.reason}
+                          </span>
+                        ))}
                       </span>
                     )}
                   </TableCell>

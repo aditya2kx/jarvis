@@ -1,5 +1,6 @@
 "use client";
 
+import { StaffTagBadge } from "@/components/labor/StaffTag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +21,8 @@ const DRAFT_COLOR = LABOR_CHART_COLORS.draftShift;
 
 /** Select value for "leave it open" (Select treats null as no selection). */
 const OPEN = "__open__";
+/** Disabled rows for new hires the training gate keeps off this shift. */
+const BLOCKED = "__blocked__:";
 
 const fmtH = (h: number) => `${Number(h.toFixed(1))}h`;
 
@@ -59,7 +62,7 @@ export function ShiftPersonPicker({
       <Select
         value={value}
         onValueChange={(v) => {
-          if (v == null || v === value) return;
+          if (v == null || v === value || String(v).startsWith(BLOCKED)) return;
           onPick(v === OPEN ? null : String(v));
         }}
       >
@@ -104,6 +107,7 @@ export function ShiftPersonPicker({
                         Suggested
                       </Badge>
                     ) : null}
+                    <StaffTagBadge employee={o.employee!} />
                   </span>
                   {optionMeta(o, shift) ? (
                     <span className="truncate text-xs text-muted-foreground">{optionMeta(o, shift)}</span>
@@ -112,6 +116,25 @@ export function ShiftPersonPicker({
               </SelectItem>
             ))}
           </SelectGroup>
+          {shift.blocked?.length ? (
+            <>
+              <SelectSeparator />
+              <SelectGroup>
+                <SelectLabel>Not yet — new-hire training</SelectLabel>
+                {shift.blocked.map((b) => (
+                  <SelectItem key={b.employee} value={`${BLOCKED}${b.employee}`} disabled className="py-1.5">
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="flex items-center gap-1.5">
+                        <span className="truncate font-medium">{b.employee}</span>
+                        <StaffTagBadge employee={b.employee} />
+                      </span>
+                      <span className="text-xs text-muted-foreground">{b.reason}</span>
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </>
+          ) : null}
           {canLeaveOpen ? (
             <>
               <SelectSeparator />

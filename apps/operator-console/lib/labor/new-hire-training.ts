@@ -34,6 +34,12 @@ export function overlapMinutes(s: number, e: number, spans: readonly (readonly [
   return total;
 }
 
+/**
+ * Clocked history read for the first-shift fallback. Longer than the widest new-hire window (365)
+ * so a long-timer's first shift in it predates the window instead of looking new.
+ */
+export const NEW_HIRE_LOOKBACK_DAYS = 400;
+
 /** Supervised shifts still to do; absent = not (or no longer) a new hire. */
 export type TrainingLeft = { open: number; close: number };
 
@@ -66,6 +72,41 @@ export function progressLabel(t: Pick<TrainingStatus, "open" | "close" | "needOp
   return parts.join(" · ");
 }
 
+/** How a person reads in the console's pickers and lanes. */
+export type StaffTag =
+  | { kind: "experienced" }
+  | { kind: "training"; label: string; detail: string; unsupervised: ReadonlySet<string> };
+
+const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+const goal = (t: TrainingStatus) =>
+  [t.needOpen ? count(t.needOpen, "opener") : "", t.needClose ? count(t.needClose, "closer") : ""]
+    .filter(Boolean)
+    .join(" and ");
+
+const monthDay = (iso: string) => {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y!, m! - 1, d!).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+};
+
+/** Experienced staff and new hires still training; cleared new hires and everyone else get no tag. */
+export function staffTags(rules: TrainingRules, progress: ReadonlyMap<string, TrainingStatus>): Map<string, StaffTag> {
+  const out = new Map<string, StaffTag>();
+  if (rules.newHireDays <= 0 || !rules.experienced.length) return out;
+  for (const name of rules.experienced) out.set(name, { kind: "experienced" });
+  const overlap = `${Number((rules.overlapMin / 60).toFixed(2))}h`;
+  for (const t of progress.values()) {
+    if (t.cleared) continue;
+    const started = t.hireDate ? `Hired ${monthDay(t.hireDate)}` : `First ADP shift ${monthDay(t.since)}`;
+    out.set(t.employee, {
+      kind: "training",
+      label: `New hire · ${progressLabel(t)}`,
+      detail: `${started}. Drafted only beside experienced staff (${overlap}+ together) until they've done ${goal(t)}.`,
+      unsupervised: new Set(t.unsupervised),
+    });
+  }
+  return out;
+}
+
 function spansOf(p: CoveragePersonDay): [number, number][] {
   return p.segments.map((s) => [s.startMin, s.endMin]);
 }
@@ -84,7 +125,8 @@ export function trainingProgress(args: {
 }): Map<string, TrainingStatus> {
   const { rules, todayIso } = args;
   const out = new Map<string, TrainingStatus>();
-  if (rules.newHireDays <= 0) return out;
+  // Nobody to train beside means the gate would leave every new hire's shift open — treat as off.
+  if (rules.newHireDays <= 0 || !rules.experienced.length) return out;
   const experienced = new Set(rules.experienced);
   const cutoff = shiftCalendarDate(todayIso, "day", -rules.newHireDays);
   const dates = [...args.days.keys()].sort();

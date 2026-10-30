@@ -637,7 +637,12 @@ export function fillOpenShift(args: {
   const pin = args.pins?.get(slot);
   const pinned = ranked.find((a) => a.employee === pin);
   const pick = pinned ?? ranked[0];
-  if (!pick) return null;
+  if (!pick) {
+    // Only new hires fit: nobody to suggest, but the console says why (they still read as unfilled).
+    return blocked.length
+      ? { date: args.iso, kind, startMin: s, endMin: e, hours, employee: null, trimmed: false, fillsOpen: true, slot, blocked }
+      : null;
+  }
   const options: ShiftOption[] = [pick, ...ranked.filter((a) => a !== pick)].map((a) => ({
     employee: a.employee,
     startMin: s,

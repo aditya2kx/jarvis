@@ -576,5 +576,10 @@ describe("new-hire training gate (Issue #450)", () => {
     expect(alone.employee).toBe("Sam");
     expect(alone.options!.map((o) => o.employee)).toEqual(["Sam"]);
     expect(alone.blocked).toEqual([{ employee: "Kai", reason: "New hire — no experienced person on for 3h of it" }]);
+    const onlyKai = fillOpenShift({
+      iso, startMin: 810, endMin: 1230, roster: [kai], weekHours: new Map(), busy: new Set(), training: training([0, 1]),
+    })!;
+    expect(onlyKai).toMatchObject({ employee: null, fillsOpen: true, blocked: [{ employee: "Kai" }] });
+    expect(fillOpenShift({ iso, startMin: 810, endMin: 1230, roster: [], weekHours: new Map(), busy: new Set() })).toBeNull();
   });
 });

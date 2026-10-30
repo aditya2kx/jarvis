@@ -4,6 +4,7 @@ import {
   overlapMinutes,
   progressLabel,
   shiftKindOf,
+  staffTags,
   trainingLeftOf,
   trainingProgress,
 } from "@/lib/labor/new-hire-training";
@@ -82,5 +83,30 @@ describe("trainingProgress", () => {
     expect([...out.keys()]).toEqual(["Fresh, Lee"]);
     expect(out.get("Fresh, Lee")).toMatchObject({ hireDate: null, since: "2026-10-25", open: 0 });
     expect(trainingProgress({ ...base, rules: { ...rules, newHireDays: 0 } }).size).toBe(0);
+    expect(trainingProgress({ ...base, rules: { ...rules, experienced: [] } }).size).toBe(0);
+  });
+});
+
+describe("staffTags", () => {
+  it("tags experienced staff and new hires still training, with plain-language detail", () => {
+    const days = new Map<string, CoveragePersonDay[]>([
+      ["2026-11-02", [opener("Other, Sam"), lane("New, Kai", 450, 840)]],
+    ]);
+    const progress = trainingProgress({
+      todayIso: "2026-10-30",
+      rules,
+      employees: ["New, Kai"],
+      hireDates: new Map([["New, Kai", "2026-10-15"]]),
+      days,
+    });
+    const tags = staffTags(rules, progress);
+    expect(tags.get("Pro, Dolce")).toEqual({ kind: "experienced" });
+    const kai = tags.get("New, Kai");
+    expect(kai).toMatchObject({ kind: "training", label: "New hire · 0/2 openers · 0/2 closers" });
+    expect(kai?.kind === "training" && kai.detail).toBe(
+      "Hired Oct 15. Drafted only beside experienced staff (3h+ together) until they've done 2 openers and 2 closers.",
+    );
+    expect(kai?.kind === "training" && [...kai.unsupervised]).toEqual(["2026-11-02"]);
+    expect(staffTags({ ...rules, experienced: [] }, progress).size).toBe(0);
   });
 });

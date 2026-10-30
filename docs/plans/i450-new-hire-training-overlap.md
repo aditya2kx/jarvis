@@ -66,7 +66,7 @@ export type TrainingRules = {
 };
 ```
 
-Versions saved before #450 load `DEFAULT_TRAINING` (seeded experienced names) — `parseStaffing`.
+Versions saved before #450 load `DEFAULT_TRAINING` (90 days, 2 + 2, 3 h, no experienced staff — names are picked in the console, never in git; gate off until saved) — `parseStaffing`.
 
 New `lib/labor/new-hire-training.ts` (pure):
 

@@ -114,6 +114,13 @@ expire unless approved) and approved blocks in the grid. A weekly repeat carries
 `repeat_weekday` + `repeat_until`. The shift draft avoids both pending and approved
 entries; nothing here affects pay or tips.
 
+**Hire date** (`adp_hire_dates`, Issue #450): one row per `(store, employee_name)` — the ADP
+hire date (a rehire date wins) from the pay_info profile, else the People directory column;
+`source` says which. **New hire** = hired within the training window (default 90 days) and
+not yet through the supervised openers/closers set in the versioned schedule rules: until then
+the shift draft only places them beside experienced staff (overlap ≥ the set hours) and leaves
+the slot open otherwise. Scheduling only — no pay or tip effect.
+
 **Needed headcount** (Labor → Staffing coverage, Issue #337): ⌈median Payment orders for that
 weekday + hour over the last 8 weeks ÷ orders one person handles per hour⌉, never below the
 minimum while staffed, then day & time rules override their window. The inputs are the versioned

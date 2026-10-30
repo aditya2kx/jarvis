@@ -133,9 +133,19 @@ class TierTests(unittest.TestCase):
                     "UPDATE `p.d.t` SET a = 1 WHERE TRUE;", "MERGE `p.d.t` T USING s ON FALSE WHEN NOT MATCHED THEN INSERT ROW;",
                     "TRUNCATE TABLE `p.d.t`;", "CREATE OR REPLACE TABLE `p.d.t` (a INT64);",
                     "ALTER TABLE `p.d.t` SET OPTIONS (partition_expiration_days = 7);",
+                    "EXECUTE IMMEDIATE CONCAT('DR', 'OP TABLE `p.d.t`');",
                     "CREATE TABLE IF NOT EXISTS `p.d.t` (a INT64); -- then DROP it"):
             self._migration("901_risky.sql", sql)
             self.assertEqual(self._tier("/prod-ops apply-migrations"), "gated", sql)
+
+    def test_a_changed_migration_runner_needs_approval(self):
+        self._migration("900_new.sql", "CREATE TABLE IF NOT EXISTS `p.d.t` (a INT64);")
+        runner = self.root / "core" / "datastore.py"
+        runner.write_bytes((prod_ops.REPO_ROOT / "core" / "datastore.py").read_bytes())
+        self.assertEqual(self._tier("/prod-ops apply-migrations"), "auto")
+        runner.write_text(runner.read_text() + "\n# runs other SQL\n")
+        self.assertEqual(prod_ops.tier(parse_comment("/prod-ops apply-migrations"), self.root),
+                         ("gated", "migration runner differs from main: core/datastore.py"))
 
     def test_migrations_already_on_main_are_not_rechecked(self):
         main_copy = next((prod_ops.REPO_ROOT / "core" / "migrations").glob("*.sql"))

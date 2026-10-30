@@ -55,7 +55,8 @@ _DRY_RUN_ENV = {"BHAGA_ADP_SCHEDULE_WRITE", "BHAGA_SCHEDULE_DRY_RUN", "BHAGA_SCH
 # Run on the PR head first: they pin that --dry-run walks the ADP wizards and saves nothing.
 _DRY_RUN_TESTS = [sys.executable, "-m", "unittest", "agents.bhaga.scripts.test_adp_schedule_write"]
 # Anything that can lose or rewrite rows. Over-matching only costs an approval.
-_DESTRUCTIVE_SQL = re.compile(r"\b(DROP|DELETE|UPDATE|MERGE|TRUNCATE)\b|OR\s+REPLACE\s+TABLE|EXPIRATION", re.I)
+_DESTRUCTIVE_SQL = re.compile(
+    r"\b(DROP|DELETE|UPDATE|MERGE|TRUNCATE)\b|OR\s+REPLACE\s+TABLE|EXPIRATION|EXECUTE\s+IMMEDIATE", re.I)
 
 
 class RequestError(ValueError):
@@ -188,11 +189,18 @@ def cleanup(req: dict, pr: str | None) -> list[list[str]]:
     return [["gcloud", "run", "jobs", "delete", name, f"--region={REGION}", f"--project={PROJECT}", "--quiet"]]
 
 
+def _changed_vs_main(code_root: Path, pattern: str) -> list[Path]:
+    """Files under code_root matching pattern that main (REPO_ROOT) lacks or has with different bytes."""
+    out = []
+    for p in sorted(code_root.glob(pattern)):
+        base = REPO_ROOT / p.relative_to(code_root)
+        if not base.is_file() or base.read_bytes() != p.read_bytes():
+            out.append(p)
+    return out
+
+
 def new_migrations(code_root: Path) -> list[Path]:
-    """Migration files under code_root that main (REPO_ROOT) lacks or has with different bytes."""
-    main_dir = REPO_ROOT / "core" / "migrations"
-    return [p for p in sorted((code_root / "core" / "migrations").glob("*.sql"))
-            if not (main_dir / p.name).is_file() or (main_dir / p.name).read_bytes() != p.read_bytes()]
+    return _changed_vs_main(code_root, "core/migrations/*.sql")
 
 
 def _sql_body(path: Path) -> str:
@@ -206,6 +214,10 @@ def tier(req: dict, code_root: Path) -> tuple[str, str]:
     if op == "whoami":
         return "auto", "read-only"
     if op == "apply-migrations":
+        # ensure_schema() is PR-head Python: only main's runner may apply unapproved SQL.
+        runner = [str(p.relative_to(code_root)) for p in _changed_vs_main(code_root, "core/*.py")]
+        if runner:
+            return "gated", f"migration runner differs from main: {', '.join(runner)}"
         risky = [p.name for p in new_migrations(code_root) if _DESTRUCTIVE_SQL.search(_sql_body(p))]
         if risky:
             return "gated", f"migrations that can drop or rewrite rows: {', '.join(risky)}"

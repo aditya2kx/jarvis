@@ -189,6 +189,27 @@ def cleanup(req: dict, pr: str | None) -> list[list[str]]:
     return [["gcloud", "run", "jobs", "delete", name, f"--region={REGION}", f"--project={PROJECT}", "--quiet"]]
 
 
+def dump_failed_job(name: str) -> None:
+    """Print the copy's last execution status (and logs when the SA can read them) before cleanup deletes it."""
+    loc = [f"--region={REGION}", f"--project={PROJECT}"]
+    listed = subprocess.run(
+        ["gcloud", "run", "jobs", "executions", "list", f"--job={name}", *loc,
+         "--limit=1", "--format=json(name,status)"],
+        capture_output=True, text=True,
+    )
+    print(f"prod-ops: last execution: {(listed.stdout or listed.stderr).strip()}", flush=True)
+    logs = subprocess.run(
+        ["gcloud", "logging", "read",
+         f'resource.type="cloud_run_job" AND resource.labels.job_name="{name}"',
+         f"--project={PROJECT}", "--freshness=1h", "--limit=80", "--format=value(textPayload)"],
+        capture_output=True, text=True,
+    )
+    if logs.returncode == 0:
+        print(logs.stdout or "(no log lines)", flush=True)
+    else:
+        print(f"prod-ops: could not read job logs — {(logs.stderr or '').strip()[:240]}", flush=True)
+
+
 def _changed_vs_main(code_root: Path, pattern: str) -> list[Path]:
     """Files under code_root matching pattern that main (REPO_ROOT) lacks or has with different bytes."""
     out = []
@@ -272,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
         rc = subprocess.run(c, cwd=cwd, env=env).returncode
         if rc != 0:
             break
+    if rc != 0 and copy_started and req["op"] == "run-job-pr" and pr:
+        dump_failed_job(pr_job(req, pr)[0])
     for c in after if copy_started else []:
         print(f"prod-ops: $ {shlex.join(c)}  (cleanup)", flush=True)
         if subprocess.run(c, cwd=cwd, env=env).returncode != 0:

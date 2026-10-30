@@ -2617,7 +2617,8 @@ Cloud Agent prod access: `/prod-read` + `/prod-ops`
 ([docs/contributing/dev-anywhere.md](docs/contributing/dev-anywhere.md)); dry runs and additive
 migrations run without approval (Environment `prod-auto`, audit trail in its deployments). `/prod-ops run-job-pr
 bhaga-daily-refresh …` runs a PR's code once on a temporary copy of the job (`bhaga-daily-refresh-pr<N>`,
-deleted after the run; if `prod-ops` prints `BREADCRUMB prod_ops cleanup failed`, run
+deleted after the run; a failed execution prints its status (and logs when the SA can read them) before
+the delete; if `prod-ops` prints `BREADCRUMB prod_ops cleanup failed`, run
 `gcloud run jobs delete bhaga-daily-refresh-pr<N> --region us-central1`).
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)

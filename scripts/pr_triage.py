@@ -229,10 +229,21 @@ def _collect_merge_status(pr: int, repo: str) -> dict:
 
 def _collect_pr_state(pr: int) -> dict:
     """Lifecycle state, so a report never says 'merge-ready' about a PR that is
-    already approved or merged."""
-    data = _gh_json(["pr", "view", str(pr), "--json", "state,reviews,mergedAt,baseRefName,isDraft"])
+    already approved or merged.
+
+    ``auto_merge_armed`` mirrors GitHub's ``autoMergeRequest`` — only True when
+    squash/merge auto-merge is actually queued. Approval during conflicts does
+    not leave it armed after a later fix push (Issues #445 / #446).
+    """
+    data = _gh_json([
+        "pr", "view", str(pr),
+        "--json", "state,reviews,mergedAt,baseRefName,isDraft,autoMergeRequest",
+    ])
     if not isinstance(data, dict):
-        return {"state": "", "approved_by": [], "merged_at": None, "base": "", "draft": False}
+        return {
+            "state": "", "approved_by": [], "merged_at": None, "base": "",
+            "draft": False, "auto_merge_armed": False,
+        }
     latest: dict[str, str] = {}
     for r in data.get("reviews") or []:
         if r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
@@ -243,6 +254,7 @@ def _collect_pr_state(pr: int) -> dict:
         "merged_at": data.get("mergedAt"),
         "base": data.get("baseRefName") or "",
         "draft": bool(data.get("isDraft")),
+        "auto_merge_armed": data.get("autoMergeRequest") is not None,
     }
 
 
@@ -359,7 +371,11 @@ def _print_report(triage: dict) -> None:
         who = f" (already approved by {', '.join(st['approved_by'])})" if st.get("approved_by") else ""
         print(f"PR STATE: DRAFT{who} — a draft cannot be approved or merged; mark it ready (ManagePullRequest update_pr draft=false) once checks are green")
     elif st.get("approved_by"):
-        print(f"PR STATE: open, already APPROVED by {', '.join(st['approved_by'])} — do not ask for approval")
+        armed = "auto-merge armed" if st.get("auto_merge_armed") else "auto-merge NOT armed"
+        print(
+            f"PR STATE: open, already APPROVED by {', '.join(st['approved_by'])}"
+            f" ({armed}) — do not ask for approval"
+        )
     print(f"\n=== PR #{pr} triage report ===\n")
 
     # Merge status
@@ -436,15 +452,24 @@ def _print_report(triage: dict) -> None:
 
     # Summary
     print()
-    if (triage.get("pr_state") or {}).get("state") == "MERGED":
+    st = triage.get("pr_state") or {}
+    if st.get("state") == "MERGED":
         print("RESULT: already merged — run post-merge verification, nothing to approve.")
-    elif (triage.get("pr_state") or {}).get("draft") and not _has_work(triage):
+    elif st.get("draft") and not _has_work(triage):
         print("RESULT: green but still a DRAFT — mark it ready, then ask the operator to approve.")
     elif _has_work(triage):
         print("RESULT: work remaining — fix ALL items above, then push ONCE.")
+    elif st.get("approved_by") and st.get("auto_merge_armed"):
+        print("RESULT: all clear — PR is approved and will auto-merge.")
+    elif st.get("approved_by"):
+        # Approval while conflicted does not re-arm after a later clean push (#441/#446).
+        print(
+            "RESULT: all clear — approved but auto-merge is NOT armed. "
+            "Ask the operator to Squash and merge (or Enable auto-merge) — "
+            "lead with the full https PR link; do not say merge is imminent."
+        )
     else:
-        approved = (triage.get("pr_state") or {}).get("approved_by")
-        print("RESULT: all clear — PR is " + ("approved and will auto-merge." if approved else "merge-ready; awaiting operator approval."))
+        print("RESULT: all clear — PR is merge-ready; awaiting operator approval.")
     print()
 
 

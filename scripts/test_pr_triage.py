@@ -602,6 +602,42 @@ class TestPrState(unittest.TestCase):
         self.assertIn("still a DRAFT", buf.getvalue())
         self.assertNotIn("merge-ready", buf.getvalue())
 
+    def test_collector_reads_auto_merge_armed(self):
+        base = {"state": "OPEN", "baseRefName": "main", "reviews": [
+            {"author": {"login": "a"}, "state": "APPROVED"}], "isDraft": False}
+        self.assertTrue(self._state({**base, "autoMergeRequest": {"enabledAt": "t"}})["auto_merge_armed"])
+        self.assertFalse(self._state({**base, "autoMergeRequest": None})["auto_merge_armed"])
+        self.assertFalse(self._state(base)["auto_merge_armed"])
+
+    def _result(self, pr_state):
+        import io
+        from contextlib import redirect_stdout
+        from scripts.pr_triage import _print_report
+        tri = {"pr": 1, "repo": "o/r", "unresolved_threads": [], "failing_checks": [],
+               "pending_checks": [], "merge_status": {}, "claude_verdict": {},
+               "pr_state": pr_state}
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _print_report(tri)
+        return buf.getvalue()
+
+    def test_approved_with_auto_merge_armed_says_will_auto_merge(self):
+        out = self._result({
+            "state": "OPEN", "draft": False, "approved_by": ["aditya2kx"],
+            "auto_merge_armed": True,
+        })
+        self.assertIn("will auto-merge", out)
+        self.assertNotIn("NOT armed", out)
+
+    def test_approved_without_auto_merge_does_not_claim_will_auto_merge(self):
+        out = self._result({
+            "state": "OPEN", "draft": False, "approved_by": ["aditya2kx"],
+            "auto_merge_armed": False,
+        })
+        self.assertIn("auto-merge is NOT armed", out)
+        self.assertIn("Squash and merge", out)
+        self.assertNotIn("will auto-merge", out)
+
 
 if __name__ == "__main__":
     unittest.main()

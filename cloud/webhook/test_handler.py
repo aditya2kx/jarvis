@@ -1479,6 +1479,44 @@ class TestAliasCommands:
         assert "not available" in follow_ups[0]["text"].lower() or "unavailable" in follow_ups[0]["text"].lower()
 
 
+class TestClickupMentionCommands:
+    """Verify /bhaga-cloud clickup-mention set/rm (#447)."""
+
+    def test_set_merges_bq(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
+        fake_bq = MagicMock()
+        fake_bq.query.return_value.result.return_value = []
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(
+                client, 'clickup-mention set "Huynh, Hillary" 101332333', user_name="adi",
+            )
+        assert resp.status_code == 200
+        assert len(follow_ups) == 1
+        assert "Huynh, Hillary" in follow_ups[0]["text"]
+        assert "101332333" in follow_ups[0]["text"]
+        call_sql = fake_bq.query.call_args[0][0]
+        assert "MERGE" in call_sql
+        assert "clickup_mention_aliases" in call_sql
+
+    def test_rm_deletes_bq(self, monkeypatch):
+        follow_ups = _sync_dispatch(monkeypatch)
+        fake_bq = MagicMock()
+        job = MagicMock()
+        job.num_dml_affected_rows = 1
+        job.result.return_value = []
+        fake_bq.query.return_value = job
+        monkeypatch.setattr(handler, "_bq", fake_bq)
+        with app.test_client() as client:
+            resp = _post_command(client, 'clickup-mention rm "Huynh, Hillary"')
+        assert resp.status_code == 200
+        assert len(follow_ups) == 1
+        assert "Removed" in follow_ups[0]["text"]
+        call_sql = fake_bq.query.call_args[0][0]
+        assert "DELETE" in call_sql
+        assert "clickup_mention_aliases" in call_sql
+
+
 class TestExcludeCommands:
     """Verify /bhaga-cloud exclude set parse and store_config call."""
 
@@ -1517,6 +1555,7 @@ class TestExcludeCommands:
         assert "training set" in body["text"]
         assert "training rm" in body["text"]
         assert "alias set" in body["text"]
+        assert "clickup-mention set" in body["text"]
         assert "exclude set" in body["text"]
 
 

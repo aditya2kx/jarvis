@@ -1,3 +1,7 @@
+## 2026-10-30 — Draft shifts keep new hires beside experienced staff until trained (Issue #450)
+
+**Scope:** Schedule inputs › **New-hire training** (versioned with the other rules): anyone hired in the last 90 days (configurable) is drafted only where an experienced person overlaps them by ≥ 3 h, until they've done 2 supervised openers + 2 closers (configurable; one-time, counted over all ADP shifts). Hard rule — otherwise the slot stays open and the draft row says why. Pickers tag **Experienced** / **New hire · 1/2 openers · 0/2 closers** and list blocked people with the reason. Hire dates come from ADP (`adp_hire_dates`, migration 096; refreshed on every pay_info scrape; backfill `BHAGA_ADP_HIRE_DATES=1`). **Decision:** experienced staff are picked in the console (no names in git); the gate is off until that list is saved.
+
 ## 2026-10-30 — pr_triage auto-merge honesty + ClickUp mention aliases (#445 / #446 / #447)
 
 **Scope:** `pr_triage.py` only says a PR "will auto-merge" when GitHub's `autoMergeRequest` is armed; approved-but-unarmed (common after approving during conflicts) tells the agent to ask for Squash and merge. Unavailability reminder mentions consult `clickup_mention_aliases` (migration 095) after fuzzy username match fails; `/bhaga-cloud clickup-mention set|rm` edits the map without a deploy. Seed: payroll `Huynh, Hillary` → ClickUp `Linhchi Huynh`.

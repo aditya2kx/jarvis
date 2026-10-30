@@ -102,7 +102,7 @@ UI (design-system `Badge`, `Select`, `NumberField`, muted text; tap targets `h-9
 - `ScheduleInputsPanel`: new **New-hire training** section — window, openers, closers, overlap,
   experienced chips + add select, and a progress list (hired date, x/y openers, x/y closers, cleared).
 
-Data path: `app/labor/page.tsx` adds `adpHireDates(store)` and `laborActualShiftDays(last 180 days)`
+Data path: `app/labor/page.tsx` adds `adpHireDates(store)` and `laborActualShiftDays(last 400 days)`
 (`lib/bq/queries.ts`).
 
 ### Invariants
@@ -165,7 +165,7 @@ run (read-only) plus the PR preview on prod data.
 
 `RUNBOOK.md` draft-shift paragraph (new-hire training gate + backfill command), `agents/bhaga/scripts/README.md`
 (hire-date scrape / `BHAGA_ADP_HIRE_DATES`), `agents/bhaga/knowledge-base/DOMAIN.md` (adp_hire_dates),
-`docs/operator-console/ARCHITECTURE.md` scheduling bullet. `PROGRESS.md` via the retro follow-up only.
+`docs/operator-console/ARCHITECTURE.md` scheduling bullet. `PROGRESS.md` dated entry in this PR; `agents/bhaga/scripts/status.py` note (not a freshness target).
 Run `python3 scripts/check_doc_freshness.py`.
 
 ## PR mechanics

@@ -224,6 +224,7 @@ def mention(
         return f"[@{label}](#user_mention#{uid})"
     return f"@{tp.display_name(canonical)}"
 
+
 def load_roster(store: str) -> list[str]:
     """Active hourly staff from the latest ADP People Directory snapshot (console ``adpDirectoryRoster``)."""
     from core.datastore import fq, read_query

@@ -207,7 +207,8 @@ def dump_failed_job(name: str) -> None:
     if logs.returncode == 0:
         print(logs.stdout or "(no log lines)", flush=True)
     else:
-        print(f"prod-ops: could not read job logs — {(logs.stderr or '').strip()[:240]}", flush=True)
+        err = " ".join((logs.stderr or "").split())[:240]
+        print(f"prod-ops: could not read job logs — {err}", flush=True)
 
 
 def _changed_vs_main(code_root: Path, pattern: str) -> list[Path]:

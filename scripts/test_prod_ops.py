@@ -4,9 +4,11 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import prod_ops  # noqa: E402
 from prod_ops import RequestError, cleanup, clone_job_spec, commands, parse_comment  # noqa: E402
 
 LOC = ["--region=us-central1", "--project=jarvis-bhaga-prod"]
@@ -51,6 +53,27 @@ class ProdOpsTests(unittest.TestCase):
             commands(parse_comment("/prod-ops run-job-pr bhaga-daily-refresh"), None)
         with self.assertRaises(RequestError):
             parse_comment("/prod-ops run-job-pr operator-console")
+
+    def _run_main(self, fail_on: str | None):
+        ran = []
+
+        def fake_run(cmd, **_kw):
+            ran.append(cmd)
+            return mock.Mock(returncode=1 if fail_on and fail_on in cmd else 0)
+
+        env = {"COMMENT_BODY": "/prod-ops run-job-pr bhaga-daily-refresh A=1", "ISSUE": "436",
+               "HEAD_SHA": "abc", "PROD_OPS_CODE_ROOT": "/tmp"}
+        with mock.patch.dict(os.environ, env), mock.patch("prod_ops.subprocess.run", fake_run):
+            rc = prod_ops.main(["run"])
+        steps = {"configure-docker", "build", "push", "clone-job", "execute", "delete"}
+        return rc, [next(a for a in c if a in steps) for c in ran]
+
+    def test_run_deletes_the_copy_even_when_its_execution_fails(self):
+        self.assertEqual(self._run_main(None), (0, ["configure-docker", "build", "push", "clone-job", "execute", "delete"]))
+        self.assertEqual(self._run_main("execute"), (1, ["configure-docker", "build", "push", "clone-job", "execute", "delete"]))
+
+    def test_run_skips_the_delete_when_no_copy_was_started(self):
+        self.assertEqual(self._run_main("build"), (1, ["configure-docker", "build"]))
 
     def test_clone_job_spec_renames_repoints_and_drops_system_fields(self):
         spec = {

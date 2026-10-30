@@ -162,10 +162,7 @@ def commands(req: dict, pr: str | None = None) -> list[list[str]]:
             flag = "--remove-env-vars=" + ",".join(req["keys"])
         return [["gcloud", "run", "services", "update", CONSOLE_SERVICE, *loc, flag, "--quiet"]]
     if op == "run-job":
-        cmd = ["gcloud", "run", "jobs", "execute", req["job"], *loc, "--async"]
-        if req["env"]:
-            cmd.append("--update-env-vars=" + ",".join(f"{k}={v}" for k, v in req["env"].items()))
-        return [cmd]
+        return [["gcloud", "run", "jobs", "execute", req["job"], *loc, "--async", *_env_flag(req["env"])]]
     if op == "apply-migrations":
         return [[sys.executable, "-c",
                  "from core.datastore import ensure_schema; print('applied:', ensure_schema() or 'none')"]]
@@ -173,7 +170,7 @@ def commands(req: dict, pr: str | None = None) -> list[list[str]]:
 
 
 def cleanup(req: dict, pr: str | None) -> list[list[str]]:
-    """Run even when a command failed: the run-job-pr copy never outlives its run."""
+    """Run once the copy step has started, even when a later command failed: the copy never outlives its run."""
     if req["op"] != "run-job-pr" or not pr:
         return []
     name, _ = pr_job(req, pr)
@@ -209,13 +206,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     env = {**os.environ, "BHAGA_DATASTORE": "bigquery"}
     cwd = os.environ.get("PROD_OPS_CODE_ROOT") or REPO_ROOT
-    rc = 0
+    rc, copy_started = 0, False
     for c in cmds:
         print(f"prod-ops: $ {shlex.join(c)}  (cwd={cwd})", flush=True)
+        copy_started = copy_started or "clone-job" in c
         rc = subprocess.run(c, cwd=cwd, env=env).returncode
         if rc != 0:
             break
-    for c in after:
+    for c in after if copy_started else []:
         print(f"prod-ops: $ {shlex.join(c)}  (cleanup)", flush=True)
         if subprocess.run(c, cwd=cwd, env=env).returncode != 0:
             print(f"BREADCRUMB prod_ops cleanup failed: {shlex.join(c)} — delete it by hand")

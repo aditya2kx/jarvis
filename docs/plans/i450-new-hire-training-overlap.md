@@ -18,7 +18,7 @@ Branch `cursor/450-labor-shift-scheduling-for-new-hires-joined-in-past-3-months-
 - **Tags**: wherever people are picked (draft picker, ADP open-shift picker) and on the coverage
   lanes, show *New hire · 1/2 openers · 0/2 closers* or *Experienced*, and why a new hire was not
   drafted, so a manual ADP edit is informed.
-- Experienced default: Dolce, Lynn, both assistant managers, Ximena — editable list.
+- Experienced staff: the operator's list (two senior staff, both assistant managers, one more) — picked in the console, not seeded in git.
 
 ## Design
 

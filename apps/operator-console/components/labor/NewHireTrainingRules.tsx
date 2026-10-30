@@ -5,7 +5,7 @@ import { StaffTagBadge } from "@/components/labor/StaffTag";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { progressLabel, type TrainingStatus } from "@/lib/labor/new-hire-training";
+import { progressLabel, TRAINING_FROM, type TrainingStatus } from "@/lib/labor/new-hire-training";
 import type { TrainingRules } from "@/lib/labor/schedule-inputs";
 import { WARN_BADGE_CLASS } from "@/lib/run-status";
 import { cn } from "@/lib/utils";
@@ -72,19 +72,11 @@ export function NewHireTrainingRules({
   onChange: (patch: Partial<TrainingRules>) => void;
 }) {
   const addable = employees.filter((n) => !t.experienced.includes(n));
-  const on = t.newHireDays > 0 && t.experienced.length > 0;
+  const on = t.experienced.length > 0;
   const people = [...trainees].sort((a, b) => Number(a.cleared) - Number(b.cleared) || b.since.localeCompare(a.since));
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
-        <Field
-          label="New hire for"
-          unit="days after hire"
-          value={t.newHireDays}
-          min={0}
-          max={365}
-          onChange={(v) => onChange({ newHireDays: Math.round(v) })}
-        />
         <Field
           label="Supervised openers"
           unit="shifts"
@@ -148,9 +140,7 @@ export function NewHireTrainingRules({
         </div>
         {!on ? (
           <p className="text-xs text-muted-foreground">
-            {t.newHireDays > 0
-              ? "Add experienced staff to turn this on — until then new hires are drafted like anyone else."
-              : "Off — new hires are drafted like anyone else."}
+            Add experienced staff to turn this on — until then new hires are drafted like anyone else.
           </p>
         ) : null}
       </div>
@@ -185,7 +175,7 @@ export function NewHireTrainingRules({
             ))}
           </ul>
         ) : (
-          <p className="text-xs text-muted-foreground">No new hires in the last {t.newHireDays} days.</p>
+          <p className="text-xs text-muted-foreground">No new hires since {shortDate(TRAINING_FROM)}.</p>
         )
       ) : null}
     </div>

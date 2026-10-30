@@ -116,7 +116,7 @@ entries; nothing here affects pay or tips.
 
 **Hire date** (`adp_hire_dates`, Issue #450): one row per `(store, employee_name)` — the ADP
 hire date (a rehire date wins) from the pay_info profile, else the People directory column;
-`source` says which. **New hire** = hired within the training window (default 90 days) and
+`source` says which. **New hire** = hired on or after 2026-08-01 (the rule's start; every hire since) and
 not yet through the supervised openers/closers set in the versioned schedule rules: until then
 the shift draft only places them beside experienced staff (overlap ≥ the set hours) and leaves
 the slot open otherwise. Scheduling only — no pay or tip effect.

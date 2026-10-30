@@ -54,7 +54,7 @@ import { scheduleRulesHistory } from "@/lib/labor/schedule-rules-store";
 import type { RulesVersion } from "@/lib/labor/schedule-inputs";
 import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
 import { isConsolePreview } from "@/lib/config/preview";
-import { NEW_HIRE_LOOKBACK_DAYS } from "@/lib/labor/new-hire-training";
+import { TRAINING_HISTORY_FROM } from "@/lib/labor/new-hire-training";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { InfoNote } from "@/components/shell/InfoNote";
 import { FilterSelect } from "@/components/filters/FilterSelect";
@@ -373,7 +373,7 @@ export default async function LaborPage({
       can("coverage") ? adpHireDates(DEFAULT_STORE).catch(() => []) : Promise.resolve([]),
       can("coverage")
         ? laborActualShiftDays({
-            start: shiftCalendarDate(todayIso, "day", -NEW_HIRE_LOOKBACK_DAYS),
+            start: TRAINING_HISTORY_FROM,
             end: todayIso,
             label: "New-hire history",
             preset: "custom",

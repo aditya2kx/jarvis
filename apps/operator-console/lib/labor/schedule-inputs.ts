@@ -87,8 +87,6 @@ export type StaffingBasics = {
  * closers (Issue #450). One-time, not per week.
  */
 export type TrainingRules = {
-  /** Hired (ADP hire date) within this many days = new hire; 0 turns the rule off. */
-  newHireDays: number;
   openShifts: number;
   closeShifts: number;
   /** Minutes an experienced person must overlap each training shift. */
@@ -113,7 +111,6 @@ export type RulesVersion = {
 };
 
 export const DEFAULT_TRAINING: TrainingRules = {
-  newHireDays: 90,
   openShifts: 2,
   closeShifts: 2,
   overlapMin: 180,
@@ -414,7 +411,6 @@ function parseTraining(raw: unknown): TrainingRules {
   if (raw == null) return DEFAULT_TRAINING;
   const t = raw as Partial<TrainingRules>;
   const whole = (v: unknown, lo: number, hi: number) => Number.isInteger(v) && (v as number) >= lo && (v as number) <= hi;
-  if (!whole(t.newHireDays, 0, 365)) throw new Error("New-hire window must be 0–365 days");
   if (!whole(t.openShifts, 0, 10) || !whole(t.closeShifts, 0, 10)) {
     throw new Error("Training openers and closers must be whole numbers 0–10");
   }
@@ -425,7 +421,6 @@ function parseTraining(raw: unknown): TrainingRules {
     throw new Error("Experienced staff must be a list of names");
   }
   return {
-    newHireDays: t.newHireDays!,
     openShifts: t.openShifts!,
     closeShifts: t.closeShifts!,
     overlapMin: t.overlapMin!,

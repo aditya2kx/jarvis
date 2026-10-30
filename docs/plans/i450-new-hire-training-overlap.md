@@ -8,7 +8,7 @@ Branch `cursor/450-labor-shift-scheduling-for-new-hires-joined-in-past-3-months-
 
 ## Jam outcome (operator, 2026-10-30)
 
-- **New hire** = ADP hire date within the last *N* days (default 90). Hire date comes from ADP; a
+- **New hire** = ADP hire date on or after `TRAINING_FROM` (2026-08-01 — about three months back at launch, then every hire; operator follow-up: no window setting). Hire date comes from ADP; a
   backfill run is fine.
 - **One-time requirement**: before a new hire may work with non-experienced staff or solo they must
   complete *O* opening + *C* closing shifts (default 2 + 2; operator may use 3 + 3), each overlapping an
@@ -58,7 +58,6 @@ MERGE key `(store, employee_name)` — one current hire date per ADP record (ide
 
 ```ts
 export type TrainingRules = {
-  newHireDays: number;      // 0 = off; 1–365
   openShifts: number;       // 0–10
   closeShifts: number;      // 0–10
   overlapMin: number;       // 60–600, 15-min steps
@@ -66,7 +65,7 @@ export type TrainingRules = {
 };
 ```
 
-Versions saved before #450 load `DEFAULT_TRAINING` (90 days, 2 + 2, 3 h, no experienced staff — names are picked in the console, never in git; gate off until saved) — `parseStaffing`.
+Versions saved before #450 load `DEFAULT_TRAINING` (2 + 2, 3 h, no experienced staff — names are picked in the console, never in git; gate off until saved) — `parseStaffing`.
 
 New `lib/labor/new-hire-training.ts` (pure):
 
@@ -102,7 +101,7 @@ UI (design-system `Badge`, `Select`, `NumberField`, muted text; tap targets `h-9
 - `ScheduleInputsPanel`: new **New-hire training** section — window, openers, closers, overlap,
   experienced chips + add select, and a progress list (hired date, x/y openers, x/y closers, cleared).
 
-Data path: `app/labor/page.tsx` adds `adpHireDates(store)` and `laborActualShiftDays(last 400 days)`
+Data path: `app/labor/page.tsx` adds `adpHireDates(store)` and `laborActualShiftDays(since TRAINING_HISTORY_FROM)`
 (`lib/bq/queries.ts`).
 
 ### Invariants
@@ -114,7 +113,7 @@ append-only (`labor_schedule_rules` versions); no hardcoded store ids; breadcrum
 ### Feature flag
 
 No flag: the gate only removes candidates (can only leave a shift open, never invent hours), drafts
-are suggestions until the operator's confirmed Save to ADP, and `newHireDays = 0` turns it off at
+are suggestions until the operator's confirmed Save to ADP, and an empty experienced list turns it off at
 runtime through the rules (preference 29). Silent-wrong-number test: no money or hours path changes.
 
 ## Milestones

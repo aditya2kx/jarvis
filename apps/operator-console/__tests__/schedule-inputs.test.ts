@@ -384,11 +384,16 @@ describe("new-hire training rules (Issue #450)", () => {
     staffing: { ...DEFAULT_STAFFING, training },
   });
 
-  it("loads versions saved before training with the defaults (2 + 2, 3 h, 90 days)", () => {
+  it("loads versions saved before training with the defaults (2 + 2, 3 h)", () => {
     const { training: _t, ...older } = DEFAULT_STAFFING;
     const t = parseScheduleRules({ dayRules: [], staffRules: [], staffing: older }).staffing.training;
     expect(t).toEqual(DEFAULT_TRAINING);
-    expect(t).toMatchObject({ newHireDays: 90, openShifts: 2, closeShifts: 2, overlapMin: 180 });
+    expect(t).toMatchObject({ openShifts: 2, closeShifts: 2, overlapMin: 180 });
+  });
+
+  it("ignores the retired new-hire window on versions that saved one", () => {
+    const t = parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, newHireDays: 90 })).staffing.training;
+    expect(t).toEqual(DEFAULT_TRAINING);
   });
 
   it("keeps 3 + 3 and a trimmed, de-duplicated, sorted experienced list", () => {
@@ -400,7 +405,6 @@ describe("new-hire training rules (Issue #450)", () => {
   });
 
   it("rejects out-of-range values", () => {
-    expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, newHireDays: 400 }))).toThrow(/New-hire window/);
     expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, openShifts: 1.5 }))).toThrow(/openers and closers/);
     expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, overlapMin: 100 }))).toThrow(/overlap/);
     expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, experienced: [""] }))).toThrow(/Experienced/);

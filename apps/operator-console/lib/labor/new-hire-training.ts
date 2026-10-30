@@ -1,5 +1,5 @@
 /**
- * New-hire training (Issue #450): someone hired within the last `newHireDays` works only beside an
+ * New-hire training (Issue #450): someone hired on or after `TRAINING_FROM` works only beside an
  * experienced person until they have done `openShifts` openers and `closeShifts` closers that each
  * overlap an experienced person by `overlapMin`. A one-time requirement, counted over every ADP shift
  * since they started — clocked and scheduled.
@@ -8,7 +8,6 @@
 import { isOpenLane, type CoveragePersonDay } from "@/lib/labor/coverage-model";
 import type { TrainingRules } from "@/lib/labor/schedule-inputs";
 import type { ShiftKind } from "@/lib/labor/shift-draft";
-import { shiftCalendarDate } from "@/lib/filters/range";
 
 /** ADP open / close by clock time: starts by 7:30 AM = opener, ends 8 PM or later = closer. */
 const OPENER_BY = 7 * 60 + 30;
@@ -35,10 +34,16 @@ export function overlapMinutes(s: number, e: number, spans: readonly (readonly [
 }
 
 /**
- * Clocked history read for the first-shift fallback. Longer than the widest new-hire window (365)
- * so a long-timer's first shift in it predates the window instead of looking new.
+ * Everyone hired before this was already working when the rule started (Oct 30, 2026, reaching back
+ * about three months to the latest hires); from here on every new hire trains.
  */
-export const NEW_HIRE_LOOKBACK_DAYS = 400;
+export const TRAINING_FROM = "2026-08-01";
+
+/**
+ * Start of the shift history read for progress and the first-shift fallback: well before
+ * `TRAINING_FROM`, so a long-timer's first shift predates it instead of looking new.
+ */
+export const TRAINING_HISTORY_FROM = "2026-01-01";
 
 /** Supervised shifts still to do; absent = not (or no longer) a new hire. */
 export type TrainingLeft = { open: number; close: number };
@@ -47,7 +52,7 @@ export type TrainingStatus = {
   employee: string;
   /** ADP hire date, when the scrape has it. */
   hireDate: string | null;
-  /** The date the new-hire window counts from: hire date, else first ADP shift. */
+  /** When they started: hire date, else first ADP shift. */
   since: string;
   open: number;
   close: number;
@@ -91,7 +96,7 @@ const monthDay = (iso: string) => {
 /** Experienced staff and new hires still training; cleared new hires and everyone else get no tag. */
 export function staffTags(rules: TrainingRules, progress: ReadonlyMap<string, TrainingStatus>): Map<string, StaffTag> {
   const out = new Map<string, StaffTag>();
-  if (rules.newHireDays <= 0 || !rules.experienced.length) return out;
+  if (!rules.experienced.length) return out;
   for (const name of rules.experienced) out.set(name, { kind: "experienced" });
   const overlap = `${Number((rules.overlapMin / 60).toFixed(2))}h`;
   for (const t of progress.values()) {
@@ -126,9 +131,8 @@ export function trainingProgress(args: {
   const { rules, todayIso } = args;
   const out = new Map<string, TrainingStatus>();
   // Nobody to train beside means the gate would leave every new hire's shift open — treat as off.
-  if (rules.newHireDays <= 0 || !rules.experienced.length) return out;
+  if (!rules.experienced.length) return out;
   const experienced = new Set(rules.experienced);
-  const cutoff = shiftCalendarDate(todayIso, "day", -rules.newHireDays);
   const dates = [...args.days.keys()].sort();
   const firstShift = new Map<string, string>();
   for (const iso of dates) {
@@ -140,7 +144,7 @@ export function trainingProgress(args: {
     if (experienced.has(employee)) continue;
     const hireDate = args.hireDates.get(employee) ?? null;
     const since = hireDate ?? firstShift.get(employee);
-    if (!since || since < cutoff) continue;
+    if (!since || since < TRAINING_FROM) continue;
     const t: TrainingStatus = {
       employee,
       hireDate,

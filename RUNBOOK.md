@@ -1824,7 +1824,7 @@ their own times and hours so far this week — plus **Leave open**. A pick re-dr
 flagged). Picks live in that browser's local storage per week until the week is saved to ADP, so they don't
 follow you to another device.
 **New-hire training (Issue #450)** is part of the same versioned rules (Schedule inputs › **New-hire
-training**): anyone hired in the last N days (default 90) is drafted only beside an experienced person
+training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hire from now on) is drafted only beside an experienced person
 (the operator picks the list; empty = gate off) for at least the set overlap (default 3 h) until they've
 done the set number of supervised openers and closers (default 2 + 2). It's one-time, counted over
 every ADP shift (past actuals + upcoming schedule), not per week. It's a hard rule: a slot no trainee

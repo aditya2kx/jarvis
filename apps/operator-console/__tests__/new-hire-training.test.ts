@@ -7,6 +7,7 @@ import {
   staffTags,
   trainingLeftOf,
   trainingProgress,
+  TRAINING_FROM,
 } from "@/lib/labor/new-hire-training";
 import { DEFAULT_TRAINING, type TrainingRules } from "@/lib/labor/schedule-inputs";
 
@@ -73,7 +74,7 @@ describe("trainingProgress", () => {
     expect(cleared.cleared).toBe(true);
   });
 
-  it("falls back to the first ADP shift without a hire date, and skips long-timers and the switch-off", () => {
+  it("falls back to the first ADP shift without a hire date, and skips long-timers and an empty experienced list", () => {
     const days = new Map<string, CoveragePersonDay[]>([
       ["2026-05-01", [opener("Old, Ana")]],
       ["2026-10-25", [opener("Fresh, Lee")]],
@@ -82,8 +83,18 @@ describe("trainingProgress", () => {
     const out = trainingProgress({ ...base, rules });
     expect([...out.keys()]).toEqual(["Fresh, Lee"]);
     expect(out.get("Fresh, Lee")).toMatchObject({ hireDate: null, since: "2026-10-25", open: 0 });
-    expect(trainingProgress({ ...base, rules: { ...rules, newHireDays: 0 } }).size).toBe(0);
     expect(trainingProgress({ ...base, rules: { ...rules, experienced: [] } }).size).toBe(0);
+  });
+
+  it("applies to everyone hired on or after TRAINING_FROM, however long ago", () => {
+    const out = trainingProgress({
+      todayIso: "2027-06-01",
+      rules,
+      employees: ["Aug, One", "Jul, Last"],
+      hireDates: new Map([["Aug, One", TRAINING_FROM], ["Jul, Last", "2026-07-31"]]),
+      days: new Map(),
+    });
+    expect([...out.keys()]).toEqual(["Aug, One"]);
   });
 });
 

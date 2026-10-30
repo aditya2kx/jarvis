@@ -349,7 +349,7 @@ function clock(min: number): string {
 }
 
 function trainingSummary(t: TrainingRules): string {
-  if (!t.newHireDays || !t.experienced.length) return "";
+  if (!t.experienced.length) return "";
   return ` · new hires: ${t.openShifts} openers + ${t.closeShifts} closers beside ${t.experienced.length} experienced`;
 }
 
@@ -1067,7 +1067,7 @@ export function ScheduleInputsPanel({
           <div className="md:col-span-2">
             <Section
               title="New-hire training"
-              hint="Someone hired in the window is drafted only beside experienced staff until they have done the supervised openers and closers below, once. Until then, a shift no experienced person overlaps stays open. Hire dates come from ADP; without one, the first ADP shift counts."
+              hint="Every new hire is drafted only beside experienced staff until they have done the supervised openers and closers below, once. Until then, a shift no experienced person overlaps stays open. Hire dates come from ADP; without one, the first ADP shift counts."
             >
               <NewHireTrainingRules
                 training={rules.staffing.training}

@@ -13,7 +13,8 @@ at all unless that environment exists with a required reviewer.
     /prod-ops apply-migrations                        # core.datastore.ensure_schema() from the PR head
                                                       # (PROD_OPS_CODE_ROOT; migrations are additive)
     /prod-ops run-job-pr bhaga-daily-refresh [KEY=v …] # PR comments only: build the PR head's image,
-                                                      # copy the job as <job>-pr<N> on it, run once, delete the copy
+                                                      # copy the job as <job>-pr<N> on it, run once, delete the copy.
+                                                      # Cloud Agent comments post as cursor[bot]; the guard accepts that login.
 
 `plan` prints exactly what will run (shown in the approval request); `run` executes it.
 """

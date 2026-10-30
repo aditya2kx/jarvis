@@ -31,7 +31,8 @@ jobs:
     if: >-
       (github.event_name == 'issue_comment' &&
        startsWith(github.event.comment.body, '/prod-ops') &&
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+       (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+        github.event.comment.user.login == 'cursor[bot]')) ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest

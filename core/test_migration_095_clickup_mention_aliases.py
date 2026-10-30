@@ -1,6 +1,6 @@
 """Tests for core/migrations/095_clickup_mention_aliases.sql (Issue #447).
 
-Structural only (no live BQ): the table DDL plus an insert-only seed, so
+Structural only (no live BQ here; sandbox-live evidence is in PR §4): the table DDL plus an insert-only seed, so
 re-applying the migration never overwrites a runtime `clickup-mention set`.
 """
 from __future__ import annotations

@@ -81,7 +81,7 @@ Reassign in the drawer stages `shift-delete` + `shift-add` together (one tray li
 - `lib/bhaga/recompute.ts:251` `triggerAdpScheduleWrite` gains `{ mode: "apply"; batchId }` →
   env `BHAGA_SCHEDULE_BATCH_ID`.
 
-### Migration `core/migrations/095_adp_shift_changes.sql`
+### Migration `core/migrations/096_adp_shift_changes.sql`
 ```sql
 CREATE TABLE IF NOT EXISTS `jarvis-bhaga-prod.bhaga.adp_shift_changes` (
   store STRING NOT NULL, batch_id STRING NOT NULL, change_id STRING NOT NULL,
@@ -161,8 +161,8 @@ python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --apply-batc
 ```
 Pass: green; dry run reaches each final button and backs out.
 
-## Milestone 2 — migration 095 + apply job (Opus)
-`095_adp_shift_changes.sql`, `run_apply`, `daily_refresh` mode, append-only registration. Tests
+## Milestone 2 — migration 096 + apply job (Opus)
+`096_adp_shift_changes.sql`, `run_apply`, `daily_refresh` mode, append-only registration. Tests
 `agents/bhaga/scripts/test_adp_schedule_write.py`: only queued rows; order deletes→edits→adds→assigns;
 skipped when ADP already matches; unconfirmed → failed; crash marks unsettled failed; events written only on
 applied; refresh over changed weeks; dry run leaves BQ.
@@ -196,7 +196,7 @@ Pass: all green; operator OK on the demo before marking ready.
 - **Model:** `ShiftChange` carries `startMin/endMin` = the shift as ADP has it now plus `to: Times` for edits,
   and a separate `shift-reassign { toEmployee }` kind (one tray line, one row; the job deletes then adds).
   Open-shift kinds carry the ADP `slot`. No `summary` in the client type (`shiftText` builds it server-side).
-- **Migration 095 columns:** `to_start_min`, `to_end_min`, `to_employee` (no `from_*`); `adp_shift_events`
+- **Migration 096 columns:** `to_start_min`, `to_end_min`, `to_employee` (no `from_*`); `adp_shift_events`
   has no `employee` column (the summary names the people).
 - **D5:** no lane ring/dim — a staged change shows where it was made (open-shift row badge "Will delete" /
   "Will change to …" / "Will add N", drawer shift badge) and in the tray; lanes stay ADP-only.

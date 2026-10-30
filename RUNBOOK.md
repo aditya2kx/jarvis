@@ -1842,7 +1842,7 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
   chip counts, the Finalize card, the shift-draft table and suggested names. ADP's own shifts always show.
 
 **Apply to ADP** inserts one `queued` row per change under one `batch_id` — shifts in `adp_shift_changes`
-(migration 095), unavailability in `adp_unavailability_changes` (092) — and starts
+(migration 096), unavailability in `adp_unavailability_changes` (092) — and starts
 `BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_BATCH_ID=<id>` (refused while any schedule write runs). Without the console, `BHAGA_SCHEDULE_CHANGES="open-add 2027-01-12 10:00-14:00 count=2; …"`
 queues and applies command-line changes (a PR's code runs live via `/prod-ops run-job-pr bhaga-daily-refresh …`).
 Per week the job applies deletes, then edits, reassigns, adds (and publishes), assigns. Each shift is **published on its own**

@@ -64,7 +64,6 @@ import {
   trainingLeftOf,
   trainingProgress,
   type TrainingLeft,
-  type TrainingStatus,
 } from "@/lib/labor/new-hire-training";
 import { StaffTagsContext, TRAINING_TEXT_CLASS, useStaffTag } from "@/components/labor/StaffTag";
 import { savedPlan, type PushRow } from "@/lib/labor/schedule-push";

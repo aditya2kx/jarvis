@@ -547,7 +547,9 @@ later configured days (default **Thu**): a one-line follow-up for the same threa
 tags every active hourly person (latest ADP People Directory, salaried / labor-excluded dropped) with
 a week from the week after next through the lead week that has **no** ADP unavailability (pending or
 approved) — the soft "hasn't updated" signal. Each becomes a ClickUp mention when exactly one member
-matches the name, else plain `@First Last`.
+matches the name, else when `clickup_mention_aliases` maps the payroll canonical name to a ClickUp
+`user_id` (Issue #447; seeded Hillary → Linhchi; edit live via
+`/bhaga-cloud clickup-mention set "Last, First" <user_id>`), else plain `@First Last`.
 
 **Delivery** (`automations.destination`): `drafts` (default since 094) types the draft into the
 operator-only private channel **#jarvis-drafts** (`8cr6661-7217`) through the ClickUp web app
@@ -821,7 +823,7 @@ Both modes add `BHAGA_IGNORE_HALT=1` (operator-driven backfill includes the fix)
 
 Parse errors (bad date, over-cap, unknown token) are still synchronous and appear inline.
 
-The same two-phase pattern applies to every `/bhaga-cloud` command: `status`, `config get/set`, `training set/rm`, `alias set`, and `exclude set` all return an immediate ack and post their real result as an ephemeral `response_url` follow-up (operator-private).
+The same two-phase pattern applies to every `/bhaga-cloud` command: `status`, `config get/set`, `training set/rm`, `alias set`, `clickup-mention set/rm`, and `exclude set` all return an immediate ack and post their real result as an ephemeral `response_url` follow-up (operator-private).
 
 ### `/bhaga-cloud restock` — register a restock delivery date + upload/reset actuals (Issue #137)
 

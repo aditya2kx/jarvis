@@ -185,13 +185,44 @@ def match_member(canonical: str, members: list[dict]) -> dict | None:
     return None
 
 
-def mention(canonical: str, members: list[dict]) -> str:
-    """A ``[@Name](#user_mention#id)`` token, or plain ``@First Last`` when no single member matches."""
+def load_mention_aliases(store: str) -> dict[str, str]:
+    """Payroll canonical_name → ClickUp user_id from ``clickup_mention_aliases`` (#447)."""
+    from core.datastore import fq, read_query
+
+    s = tp._escape(store)
+    rows = read_query(
+        f"SELECT canonical_name, clickup_user_id FROM {fq('clickup_mention_aliases')}"
+        f" WHERE store = '{s}'"
+    )
+    out: dict[str, str] = {}
+    for r in rows:
+        name = str(r.get("canonical_name") or "").strip()
+        uid = str(r.get("clickup_user_id") or "").strip()
+        if name and uid:
+            out[name] = uid
+    return out
+
+
+def mention(
+    canonical: str,
+    members: list[dict],
+    aliases: dict[str, str] | None = None,
+) -> str:
+    """A ``[@Name](#user_mention#id)`` token, or plain ``@First Last`` when no single member matches.
+
+    Prefer an explicit ``clickup_mention_aliases`` row (Issue #447) when fuzzy
+    username match fails — e.g. payroll Hillary vs ClickUp Linhchi.
+    """
     m = match_member(canonical, members)
     if m:
         return f"[@{m['username']}](#user_mention#{m['id']})"
+    uid = (aliases or {}).get(canonical)
+    if uid:
+        by_id = {str(x.get("id")): x for x in members}
+        hit = by_id.get(str(uid))
+        label = (hit.get("username") if hit else None) or tp.display_name(canonical)
+        return f"[@{label}](#user_mention#{uid})"
     return f"@{tp.display_name(canonical)}"
-
 
 def load_roster(store: str) -> list[str]:
     """Active hourly staff from the latest ADP People Directory snapshot (console ``adpDirectoryRoster``)."""
@@ -264,9 +295,10 @@ def flagged_mentions(store: str, today: dt.date, lead_weeks: int, workspace_id: 
     rows = load_unavailability(store, weeks[0], weeks[-1] + dt.timedelta(days=6))
     names = unmarked(load_roster(store), rows, weeks)
     members = list_members(workspace_id)
+    aliases = load_mention_aliases(store)
     logger.info("unavailability_reminder: flagged %d of the roster for weeks %s",
                 len(names), [w.isoformat() for w in weeks])
-    return [mention(n, members) for n in names]
+    return [mention(n, members, aliases) for n in names]
 
 
 def ensure_default_config(store: str, *, updated_by: str) -> dict:

@@ -1,3 +1,7 @@
+## 2026-10-30 — pr_triage auto-merge honesty + ClickUp mention aliases (#445 / #446 / #447)
+
+**Scope:** `pr_triage.py` only says a PR "will auto-merge" when GitHub's `autoMergeRequest` is armed; approved-but-unarmed (common after approving during conflicts) tells the agent to ask for Squash and merge. Unavailability reminder mentions consult `clickup_mention_aliases` (migration 095) after fuzzy username match fails; `/bhaga-cloud clickup-mention set|rm` edits the map without a deploy. Seed: payroll `Huynh, Hillary` → ClickUp `Linhchi Huynh`.
+
 ## 2026-10-28 — Inventory Current Qty follows each new ClickUp closing (Issue #438)
 
 **Scope:** a Current Qty saved in the console used to stick until someone pressed Reset, so every later ClickUp closing for that base was ignored. Current Qty, On hand at each delivery, Order tubs and Days left all drifted away from "Base usage by day" and ClickUp. **Fix:** migration 093 makes an override apply only while it is newer than that base's latest closing, and exposes `current_qty_source`. `/inventory` marks a still-active override with a "Manual" badge. The operator-console deploy applies the migration and then refreshes order reco, so prod numbers correct themselves on deploy. Expired override rows stay in the table as history.

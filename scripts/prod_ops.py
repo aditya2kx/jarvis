@@ -12,6 +12,8 @@ at all unless that environment exists with a required reviewer.
     /prod-ops run-job bhaga-daily-refresh [REFRESH_DATE=2026-10-10 …]
     /prod-ops apply-migrations                        # core.datastore.ensure_schema() from the PR head
                                                       # (PROD_OPS_CODE_ROOT; migrations are additive)
+    /prod-ops run-job-pr bhaga-daily-refresh [KEY=v …] # PR comments only: build the PR head's image,
+                                                      # copy the job as <job>-pr<N> on it, run once, delete the copy
 
 `plan` prints exactly what will run (shown in the approval request); `run` executes it.
 """
@@ -30,6 +32,14 @@ PROJECT = "jarvis-bhaga-prod"
 REGION = "us-central1"
 CONSOLE_SERVICE = "operator-console"
 REPO_ROOT = Path(__file__).resolve().parent.parent
+REGISTRY = f"{REGION}-docker.pkg.dev/{PROJECT}/jarvis-images"
+# Jobs whose PR image `docker build .` at the repo root produces.
+_PR_IMAGES = {"bhaga-daily-refresh": "bhaga-orchestrator"}
+# Set by Cloud Run on the source job; a new job must not inherit them.
+_SYSTEM_ANNOTATIONS = {
+    "run.googleapis.com/creator", "run.googleapis.com/lastModifier", "run.googleapis.com/operation-id",
+    "run.googleapis.com/client-name", "run.googleapis.com/client-version",
+}
 
 _KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _JOB = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -85,12 +95,64 @@ def parse_comment(body: str) -> dict:
         if not rest or not _JOB.match(rest[0]):
             raise RequestError("run-job <job-name> [KEY=value …]")
         return {"op": op, "job": rest[0], "env": _pairs(rest[1:])}
+    if op == "run-job-pr":
+        if not rest or rest[0] not in _PR_IMAGES:
+            raise RequestError(f"run-job-pr <job> [KEY=value …]; job is one of {sorted(_PR_IMAGES)}")
+        return {"op": op, "job": rest[0], "env": _pairs(rest[1:])}
     raise RequestError(f"unknown operation {op!r}")
 
 
-def commands(req: dict) -> list[list[str]]:
+def _env_flag(env: dict[str, str]) -> list[str]:
+    return ["--update-env-vars=" + ",".join(f"{k}={v}" for k, v in env.items())] if env else []
+
+
+def pr_job(req: dict, pr: str) -> tuple[str, str]:
+    """(copy job name, PR image) for a run-job-pr request."""
+    return f"{req['job']}-pr{pr}", f"{REGISTRY}/{_PR_IMAGES[req['job']]}:pr{pr}-verify"
+
+
+def clone_job_spec(spec: dict, name: str, image: str) -> dict:
+    """The exported job spec renamed to `name` and running `image`; settings, SA and secrets unchanged."""
+    meta = spec["metadata"]
+    meta["name"] = name
+    for key in ("uid", "resourceVersion", "generation", "creationTimestamp", "selfLink"):
+        meta.pop(key, None)
+    for m in (meta, spec["spec"]["template"].get("metadata") or {}):
+        notes = m.get("annotations") or {}
+        for key in _SYSTEM_ANNOTATIONS & set(notes):
+            del notes[key]
+    spec.pop("status", None)
+    containers = spec["spec"]["template"]["spec"]["template"]["spec"]["containers"]
+    containers[0]["image"] = image
+    return spec
+
+
+def clone_job(source: str, name: str, image: str) -> int:
+    # Imported here: the workflow's guard job plans with a bare python3 (no requirements installed).
+    import yaml  # noqa: PLC0415
+
+    loc = [f"--region={REGION}", f"--project={PROJECT}"]
+    out = subprocess.run(["gcloud", "run", "jobs", "describe", source, *loc, "--format=export"],
+                         capture_output=True, text=True, check=True).stdout
+    path = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / f"{name}.yaml"
+    path.write_text(yaml.safe_dump(clone_job_spec(yaml.safe_load(out), name, image)))
+    return subprocess.run(["gcloud", "run", "jobs", "replace", str(path), *loc, "--quiet"]).returncode
+
+
+def commands(req: dict, pr: str | None = None) -> list[list[str]]:
     loc = [f"--region={REGION}", f"--project={PROJECT}"]
     op = req["op"]
+    if op == "run-job-pr":
+        if not pr:
+            raise RequestError("run-job-pr only runs from a PR comment (it builds that PR's head)")
+        name, image = pr_job(req, pr)
+        return [
+            ["gcloud", "auth", "configure-docker", f"{REGION}-docker.pkg.dev", "--quiet"],
+            ["docker", "build", "-t", image, "."],
+            ["docker", "push", image],
+            [sys.executable, str(Path(__file__).resolve()), "clone-job", req["job"], name, image],
+            ["gcloud", "run", "jobs", "execute", name, *loc, "--wait", *_env_flag(req["env"])],
+        ]
     if op == "whoami":
         return [["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"]]
     if op == "console-env":
@@ -110,27 +172,56 @@ def commands(req: dict) -> list[list[str]]:
     raise RequestError(f"unknown operation {op!r}")
 
 
+def cleanup(req: dict, pr: str | None) -> list[list[str]]:
+    """Run even when a command failed: the run-job-pr copy never outlives its run."""
+    if req["op"] != "run-job-pr" or not pr:
+        return []
+    name, _ = pr_job(req, pr)
+    return [["gcloud", "run", "jobs", "delete", name, f"--region={REGION}", f"--project={PROJECT}", "--quiet"]]
+
+
+def _pr_number() -> str | None:
+    """The PR this comment is on: IS_PR in the guard, the PR head SHA in the run job."""
+    on_pr = os.environ.get("IS_PR") == "true" or bool(os.environ.get("HEAD_SHA"))
+    return (os.environ.get("ISSUE") or None) if on_pr else None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("mode", choices=["plan", "run"])
+    ap.add_argument("mode", choices=["plan", "run", "clone-job"])
+    ap.add_argument("args", nargs="*", help="clone-job: <source job> <new name> <image>")
     a = ap.parse_args(argv)
+    if a.mode == "clone-job":
+        return clone_job(*a.args)
+    pr = _pr_number()
     try:
         req = parse_comment(os.environ.get("COMMENT_BODY", ""))
+        cmds = commands(req, pr)
     except RequestError as e:
         print(f"prod-ops: rejected — {e}")
         return 2
-    cmds = commands(req)
+    after = cleanup(req, pr)
     if a.mode == "plan":
-        print(json.dumps({"request": req, "commands": [shlex.join(c) for c in cmds]}))
+        print(json.dumps({"request": req, "commands": [shlex.join(c) for c in cmds + after]}))
         return 0
+    if req["op"] == "run-job-pr" and not os.environ.get("PROD_OPS_CODE_ROOT"):
+        print("prod-ops: rejected — run-job-pr needs the PR head checkout (PROD_OPS_CODE_ROOT)")
+        return 2
     env = {**os.environ, "BHAGA_DATASTORE": "bigquery"}
     cwd = os.environ.get("PROD_OPS_CODE_ROOT") or REPO_ROOT
+    rc = 0
     for c in cmds:
         print(f"prod-ops: $ {shlex.join(c)}  (cwd={cwd})", flush=True)
         rc = subprocess.run(c, cwd=cwd, env=env).returncode
         if rc != 0:
-            print(f"prod-ops: failed op={req['op']} rc={rc}")
-            return rc
+            break
+    for c in after:
+        print(f"prod-ops: $ {shlex.join(c)}  (cleanup)", flush=True)
+        if subprocess.run(c, cwd=cwd, env=env).returncode != 0:
+            print(f"BREADCRUMB prod_ops cleanup failed: {shlex.join(c)} — delete it by hand")
+    if rc != 0:
+        print(f"prod-ops: failed op={req['op']} rc={rc}")
+        return rc
     print(f"prod-ops: ok op={req['op']}")
     return 0
 

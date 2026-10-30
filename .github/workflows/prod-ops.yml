@@ -81,6 +81,8 @@ jobs:
                         "/prod-ops console-env set CONSOLE_PREVIEW=1"; do
               COMMENT_BODY="$body" python3 scripts/prod_ops.py plan || true
             done
+            COMMENT_BODY="/prod-ops run-job-pr bhaga-daily-refresh BHAGA_SCHEDULE_DRY_RUN=1" \
+              IS_PR=true ISSUE=1 python3 scripts/prod_ops.py plan || true
             exit 0
           fi
           set +e

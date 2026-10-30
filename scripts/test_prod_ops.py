@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from prod_ops import RequestError, commands, parse_comment  # noqa: E402
+from prod_ops import RequestError, cleanup, clone_job_spec, commands, parse_comment  # noqa: E402
 
 LOC = ["--region=us-central1", "--project=jarvis-bhaga-prod"]
 
@@ -33,6 +33,47 @@ class ProdOpsTests(unittest.TestCase):
         self.assertEqual(cmd[:5], ["gcloud", "run", "jobs", "execute", "bhaga-daily-refresh"])
         self.assertIn("--async", cmd)
         self.assertEqual(cmd[-1], "--update-env-vars=REFRESH_DATE=2026-10-10")
+
+    def test_run_job_pr_builds_copies_runs_then_deletes(self):
+        req = parse_comment('/prod-ops run-job-pr bhaga-daily-refresh "BHAGA_SCHEDULE_CHANGES=open-add 2027-01-12 10:00-14:00"')
+        cmds = commands(req, "436")
+        image = "us-central1-docker.pkg.dev/jarvis-bhaga-prod/jarvis-images/bhaga-orchestrator:pr436-verify"
+        self.assertEqual(cmds[1], ["docker", "build", "-t", image, "."])
+        self.assertEqual(cmds[3][-4:], ["clone-job", "bhaga-daily-refresh", "bhaga-daily-refresh-pr436", image])
+        self.assertEqual(cmds[4], ["gcloud", "run", "jobs", "execute", "bhaga-daily-refresh-pr436", *LOC, "--wait",
+                                   "--update-env-vars=BHAGA_SCHEDULE_CHANGES=open-add 2027-01-12 10:00-14:00"])
+        self.assertEqual(cleanup(req, "436"),
+                         [["gcloud", "run", "jobs", "delete", "bhaga-daily-refresh-pr436", *LOC, "--quiet"]])
+        self.assertEqual(cleanup(parse_comment("/prod-ops whoami"), "436"), [])
+
+    def test_run_job_pr_needs_a_pr_and_a_known_job(self):
+        with self.assertRaises(RequestError):
+            commands(parse_comment("/prod-ops run-job-pr bhaga-daily-refresh"), None)
+        with self.assertRaises(RequestError):
+            parse_comment("/prod-ops run-job-pr operator-console")
+
+    def test_clone_job_spec_renames_repoints_and_drops_system_fields(self):
+        spec = {
+            "apiVersion": "run.googleapis.com/v1", "kind": "Job",
+            "metadata": {"name": "bhaga-daily-refresh", "uid": "u", "generation": 7,
+                         "annotations": {"run.googleapis.com/creator": "x", "run.googleapis.com/launch-stage": "BETA"}},
+            "spec": {"template": {
+                "metadata": {"annotations": {"run.googleapis.com/client-name": "gcloud",
+                                             "run.googleapis.com/execution-environment": "gen2"}},
+                "spec": {"template": {"spec": {"serviceAccountName": "sa@x",
+                                               "containers": [{"image": "old", "env": [{"name": "A", "value": "1"}]}]}}},
+            }},
+            "status": {"executionCount": 3},
+        }
+        out = clone_job_spec(spec, "bhaga-daily-refresh-pr436", "new")
+        self.assertEqual(out["metadata"], {"name": "bhaga-daily-refresh-pr436",
+                                           "annotations": {"run.googleapis.com/launch-stage": "BETA"}})
+        self.assertEqual(out["spec"]["template"]["metadata"]["annotations"],
+                         {"run.googleapis.com/execution-environment": "gen2"})
+        inner = out["spec"]["template"]["spec"]["template"]["spec"]
+        self.assertEqual((inner["serviceAccountName"], inner["containers"][0]["image"]), ("sa@x", "new"))
+        self.assertEqual(inner["containers"][0]["env"], [{"name": "A", "value": "1"}])
+        self.assertNotIn("status", out)
 
     def test_rejects_injection_and_junk(self):
         for body in (

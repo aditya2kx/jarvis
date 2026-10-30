@@ -602,7 +602,8 @@ class TestDirectoryStatus(unittest.TestCase):
     def test_directory_roster_scrolls_until_list_stops_growing(self):
         pages = [
             [{"name": "Garcia, Jacob", "status": "Active"}],
-            [{"name": "Garcia, Jacob", "status": "Active"}, {"name": "Flores, Juan", "status": "Terminated"}],
+            [{"name": "Garcia, Jacob", "status": "Active", "hire": "09/02/2026"},
+             {"name": "Flores, Juan", "status": "Terminated", "hire": ""}],
         ]
         calls = iter(pages + [pages[-1]] * 5)
         page = mock.MagicMock()
@@ -610,8 +611,8 @@ class TestDirectoryStatus(unittest.TestCase):
              mock.patch.object(pib, "_directory_candidates", side_effect=lambda _p: next(calls)):
             rows = pib.directory_roster(page)
         self.assertEqual(rows, [
-            {"name": "Flores, Juan", "status": "Terminated"},
-            {"name": "Garcia, Jacob", "status": "Active"},
+            {"name": "Flores, Juan", "status": "Terminated", "hire_date": None},
+            {"name": "Garcia, Jacob", "status": "Active", "hire_date": "2026-09-02"},
         ])
 
     def test_snapshot_rows_share_scrape_time_and_drop_blank_status(self):
@@ -639,3 +640,83 @@ class TestDirectoryStatus(unittest.TestCase):
         with mock.patch("core.datastore.load_rows") as load:
             self.assertEqual(pib.write_directory_status_bq({"scraped_at_utc": "x"}), 0)
         load.assert_not_called()
+
+
+class TestHireDates(unittest.TestCase):
+    """ADP hire dates for the console's new-hire training gate (Issue #450)."""
+
+    def test_parse_labelled_dates(self):
+        self.assertEqual(pib.parse_hire_date("Status Active Hire date 08/04/2026 Pay"), "2026-08-04")
+        self.assertEqual(pib.parse_hire_date("Date of hire: Aug 4, 2026"), "2026-08-04")
+        self.assertEqual(pib.parse_hire_date("Hired on 8/4/2026"), "2026-08-04")
+        self.assertIsNone(pib.parse_hire_date("Added on 08/31/2026 Hourly pay rate $15.25"))
+        self.assertIsNone(pib.parse_hire_date("Hire date 13/45/2026"))
+
+    def test_rehire_date_wins(self):
+        text = "Hire date 03/01/2025 Rehire date 09/15/2026"
+        self.assertEqual(pib.parse_hire_date(text), "2026-09-15")
+
+    def test_scrape_one_carries_the_profile_hire_date(self):
+        pane = {**TestPayrollPaneRetry.READY, "text": "Hire date 10/01/2026"}
+        with mock.patch.object(pib, "_open_profile", return_value="Huynh, Hillary"), \
+                mock.patch.object(pib, "_read_payroll_info", return_value=pane):
+            raw = pib.scrape_one_pay_info(mock.Mock(), "Huynh, Hillary", dashboard_url="u")
+        self.assertEqual(raw["hire_date"], "2026-10-01")
+
+    def test_rows_prefer_profile_over_directory_and_skip_blanks(self):
+        payload = {
+            "store": "palmetto",
+            "scraped_at_utc": "2026-10-30T10:00:00Z",
+            "directory": [
+                {"name": "Doe,  Alex", "status": "Active", "hire_date": "2026-09-01"},
+                {"name": "Roe, Sam", "status": "Active", "hire_date": "2026-01-02"},
+                {"name": "Poe, Kim", "status": "Active", "hire_date": None},
+            ],
+            "hire_dates": {"Roe, Sam": "2026-08-20"},
+        }
+        rows = pib.hire_date_rows(payload)
+        self.assertEqual(
+            [(r["employee_name"], r["hire_date"], r["source"]) for r in rows],
+            [("Doe, Alex", "2026-09-01", "directory"), ("Roe, Sam", "2026-08-20", "profile")],
+        )
+        self.assertTrue(all(r["store"] == "palmetto" and r["scraped_at_utc"] for r in rows))
+        self.assertEqual(pib.hire_date_rows({**payload, "scraped_at_utc": None}), [])
+
+    def test_profile_read_tries_other_tabs_until_a_date_parses(self):
+        page = mock.Mock()
+        page.evaluate.side_effect = lambda js, *a: (
+            ["EMPLOYEE_PAYROLL", "EMPLOYEE_PERSONAL"] if js is pib._PROFILE_TABS_JS else None
+        )
+        texts = iter(["Payroll info Hourly pay rate $15.25", "Payroll info", "Personal Hire date 10/02/2026"])
+        with mock.patch.object(pib, "_page_text", side_effect=lambda _p: next(texts)), \
+                mock.patch.object(pib, "dismiss_blocking_modals", return_value=False):
+            iso, where = pib.read_profile_hire_date(page)
+        self.assertEqual(iso, "2026-10-02")
+        self.assertEqual(where["tabs"], ["EMPLOYEE_PAYROLL", "EMPLOYEE_PERSONAL"])
+
+    def test_profile_read_breadcrumbs_a_miss(self):
+        page = mock.Mock()
+        page.evaluate.side_effect = lambda js, *a: [] if js is pib._PROFILE_TABS_JS else None
+        with mock.patch.object(pib, "_page_text", return_value="Hire info pending"), \
+                mock.patch.object(pib, "_open_profile", return_value="Doe, Alex"), \
+                mock.patch("builtins.print") as out:
+            found, errors = pib.scrape_hire_dates(page, ["Doe, Alex"], dashboard_url="u")
+        self.assertEqual(found, {})
+        self.assertIn("Doe, Alex", errors)
+        crumb = next(c.args[0] for c in out.call_args_list if "hire_date_missing" in c.args[0])
+        self.assertIn("Hire info", crumb)
+
+    def test_backfill_reads_profiles_only_for_active_people_without_a_directory_date(self):
+        directory = [
+            {"name": "Doe, Alex", "status": "Active", "hire_date": "2026-09-01"},
+            {"name": "Roe, Sam", "status": "Active", "hire_date": None},
+            {"name": "Old, Pat", "status": "Terminated", "hire_date": None},
+        ]
+        with mock.patch.object(pib, "directory_roster", return_value=directory), \
+                mock.patch.object(pib, "scrape_hire_dates", return_value=({"Roe, Sam": "2026-10-01"}, {})) as sh, \
+                mock.patch.object(pib, "write_hire_dates_bq", return_value=2) as w, \
+                mock.patch("builtins.print"):
+            out = pib.backfill_hire_dates(mock.Mock(url="u"), store="palmetto")
+        self.assertEqual(sh.call_args.args[1], ["Roe, Sam"])
+        self.assertEqual(w.call_args.args[0]["hire_dates"], {"Roe, Sam": "2026-10-01"})
+        self.assertEqual(out["rows"], 2)

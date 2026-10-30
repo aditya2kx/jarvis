@@ -7,6 +7,7 @@ import {
   uncoveredWindows,
   DEFAULT_RULES,
   DEFAULT_STAFFING,
+  DEFAULT_TRAINING,
   parseScheduleRules,
   minToTime,
   ruleUnavailability,
@@ -373,5 +374,39 @@ describe("unavailable staff rule", () => {
     expect(rows.map((r) => r.first_date)).toEqual(["2026-10-17", "2026-10-18"]);
     expect(rows.every((r) => r.all_day && r.status === "approved" && r.row_key.startsWith("rule|"))).toBe(true);
     expect(staffLimits([rule]).size).toBe(0);
+  });
+});
+
+describe("new-hire training rules (Issue #450)", () => {
+  const withTraining = (training: unknown) => ({
+    dayRules: [],
+    staffRules: [],
+    staffing: { ...DEFAULT_STAFFING, training },
+  });
+
+  it("loads versions saved before training with the defaults (2 + 2, 3 h)", () => {
+    const { training: _t, ...older } = DEFAULT_STAFFING;
+    const t = parseScheduleRules({ dayRules: [], staffRules: [], staffing: older }).staffing.training;
+    expect(t).toEqual(DEFAULT_TRAINING);
+    expect(t).toMatchObject({ openShifts: 2, closeShifts: 2, overlapMin: 180 });
+  });
+
+  it("ignores the retired new-hire window on versions that saved one", () => {
+    const t = parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, newHireDays: 90 })).staffing.training;
+    expect(t).toEqual(DEFAULT_TRAINING);
+  });
+
+  it("keeps 3 + 3 and a trimmed, de-duplicated, sorted experienced list", () => {
+    const t = parseScheduleRules(
+      withTraining({ ...DEFAULT_TRAINING, openShifts: 3, closeShifts: 3, overlapMin: 240, experienced: ["Ortiz, Ximena ", "Johnson, Dolce", "Ortiz, Ximena"] }),
+    ).staffing.training;
+    expect(t).toMatchObject({ openShifts: 3, closeShifts: 3, overlapMin: 240 });
+    expect(t.experienced).toEqual(["Johnson, Dolce", "Ortiz, Ximena"]);
+  });
+
+  it("rejects out-of-range values", () => {
+    expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, openShifts: 1.5 }))).toThrow(/openers and closers/);
+    expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, overlapMin: 100 }))).toThrow(/overlap/);
+    expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, experienced: [""] }))).toThrow(/Experienced/);
   });
 });

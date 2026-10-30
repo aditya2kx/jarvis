@@ -7,6 +7,8 @@ import {
   paidHours,
   type Availability,
   type DraftPreference,
+  type DraftTraining,
+  trainingBlock,
 } from "@/lib/labor/shift-draft";
 
 const mins: number[] = [];
@@ -502,5 +504,77 @@ describe("paidHours", () => {
     expect(paidHours(9 * 60, 15 * 60, meal)).toBe(6);
     expect(paidHours(7 * 60, 16 * 60, meal)).toBe(8.5);
     expect(paidHours(7 * 60, 16 * 60)).toBe(9);
+  });
+});
+
+describe("new-hire training gate (Issue #450)", () => {
+  const iso = "2026-09-28";
+  const pro: Availability = { employee: "Pro", maxWeekHours: 40, experienced: true, recentHours: 50, windows: all([390, 840]) };
+  const kai: Availability = { employee: "Kai", maxWeekHours: 40, windows: all([360, 1260]) };
+  const sam: Availability = { employee: "Sam", maxWeekHours: 40, recentHours: 10, windows: all([780, 1260]) };
+  const training = (left: [number, number], experiencedOn: [number, number][] = []): DraftTraining => ({
+    overlapMin: 180,
+    left: new Map([["Kai", { open: left[0], close: left[1] }]]),
+    experiencedOn,
+  });
+  const draft = (roster: Availability[], t?: DraftTraining) =>
+    draftDay({ iso, mins, onFloor: zeros, need: floorNeed, roster, weekHours: new Map(), busy: new Set(), training: t });
+  const together = (out: ReturnType<typeof draft>, who: string) => {
+    const s = out.find((x) => x.employee === who)!;
+    const p = out.find((x) => x.employee === "Pro")!;
+    return Math.min(s.endMin, p.endMin) - Math.max(s.startMin, p.startMin);
+  };
+
+  it("pairs a new hire with experienced staff on an opener they still need and counts it", () => {
+    const t = training([1, 1]);
+    const out = draft([pro, kai, sam], t);
+    const k = out.find((s) => s.employee === "Kai")!;
+    expect(k.kind).toBe("open");
+    expect(together(out, "Kai")).toBeGreaterThanOrEqual(180);
+    expect(t.left.get("Kai")).toEqual({ open: 0, close: 1 });
+  });
+
+  it("leaves shifts open rather than give a new hire one without experienced staff, and says why", () => {
+    const out = draft([kai], training([2, 2]));
+    expect(out.some((s) => s.employee === "Kai")).toBe(false);
+    expect(out.every((s) => s.employee === null)).toBe(true);
+    const reasons = out.flatMap((s) => s.blocked ?? []);
+    expect(reasons.length).toBeGreaterThan(0);
+    expect(reasons.every((b) => b.employee === "Kai")).toBe(true);
+    expect(reasons.map((b) => b.reason)).toContain("New hire — no experienced person on for 3h of it");
+  });
+
+  it("keeps a new hire to the openers / closers they still need", () => {
+    expect(trainingBlock(training([0, 2], [[390, 1230]]), "Kai", "open", 450, 840)).toBe(
+      "New hire — needs 2 closers with experienced staff first",
+    );
+    expect(trainingBlock(training([1, 0], [[390, 1230]]), "Kai", "mid", 600, 1020)).toBe(
+      "New hire — needs 1 opener with experienced staff first",
+    );
+    expect(trainingBlock(training([0, 1], [[600, 1020]]), "Kai", "close", 810, 1230)).toBeNull();
+    // Requirement met earlier this week: any shift, still beside experienced staff.
+    expect(trainingBlock(training([0, 0], [[600, 1020]]), "Kai", "mid", 600, 1020)).toBeNull();
+    expect(trainingBlock(training([0, 0]), "Kai", "mid", 600, 1020)).toMatch(/no experienced person/);
+    expect(trainingBlock(training([1, 1]), "Sam", "open", 390, 840)).toBeNull();
+  });
+
+  it("drafts exactly as before when nobody is in training", () => {
+    const strip = (out: ReturnType<typeof draft>) => out.map(({ employee, startMin, endMin }) => ({ employee, startMin, endMin }));
+    const cleared: DraftTraining = { overlapMin: 180, left: new Map(), experiencedOn: [] };
+    expect(strip(draft([pro, kai, sam], cleared))).toEqual(strip(draft([pro, kai, sam])));
+    expect(draft([kai]).some((s) => s.employee === "Kai")).toBe(true);
+  });
+
+  it("suggests a new hire for an ADP open shift only beside experienced staff", () => {
+    const fill = (experiencedOn: [number, number][]) =>
+      fillOpenShift({
+        iso, startMin: 810, endMin: 1230, roster: [kai, sam], weekHours: new Map([["Sam", 30]]), busy: new Set(),
+        training: training([0, 1], experiencedOn),
+      });
+    expect(fill([[600, 1020]])?.employee).toBe("Kai");
+    const alone = fill([])!;
+    expect(alone.employee).toBe("Sam");
+    expect(alone.options!.map((o) => o.employee)).toEqual(["Sam"]);
+    expect(alone.blocked).toEqual([{ employee: "Kai", reason: "New hire — no experienced person on for 3h of it" }]);
   });
 });

@@ -79,6 +79,22 @@ export type StaffingBasics = {
   /** ADP meal policy: shifts longer than `mealAfterMin` lose `unpaidMealMin` of paid time. */
   unpaidMealMin: number;
   mealAfterMin: number;
+  training: TrainingRules;
+};
+
+/**
+ * New hires work only beside experienced staff until they've done enough supervised openers and
+ * closers (Issue #450). One-time, not per week.
+ */
+export type TrainingRules = {
+  /** Hired (ADP hire date) within this many days = new hire; 0 turns the rule off. */
+  newHireDays: number;
+  openShifts: number;
+  closeShifts: number;
+  /** Minutes an experienced person must overlap each training shift. */
+  overlapMin: number;
+  /** Canonical names of the people new hires train with. */
+  experienced: string[];
 };
 
 export type ShiftTimes = "history" | "need";
@@ -96,6 +112,14 @@ export type RulesVersion = {
   createdAt: string;
 };
 
+export const DEFAULT_TRAINING: TrainingRules = {
+  newHireDays: 90,
+  openShifts: 2,
+  closeShifts: 2,
+  overlapMin: 180,
+  experienced: [],
+};
+
 /** ADP's shortest regular shift is 4.5 h (4:00–8:30 PM closer). */
 export const DEFAULT_STAFFING: StaffingBasics = {
   ordersPerPerson: 4,
@@ -110,6 +134,7 @@ export const DEFAULT_STAFFING: StaffingBasics = {
   minWeekShifts: 0,
   unpaidMealMin: 30,
   mealAfterMin: 6 * 60,
+  training: DEFAULT_TRAINING,
 };
 
 export const DEFAULT_RULES: ScheduleRules = {
@@ -380,6 +405,31 @@ function parseStaffing(raw: unknown): StaffingBasics {
     minWeekShifts,
     unpaidMealMin,
     mealAfterMin,
+    training: parseTraining(s.training),
+  };
+}
+
+/** Versions saved before Issue #450 load the defaults. */
+function parseTraining(raw: unknown): TrainingRules {
+  if (raw == null) return DEFAULT_TRAINING;
+  const t = raw as Partial<TrainingRules>;
+  const whole = (v: unknown, lo: number, hi: number) => Number.isInteger(v) && (v as number) >= lo && (v as number) <= hi;
+  if (!whole(t.newHireDays, 0, 365)) throw new Error("New-hire window must be 0–365 days");
+  if (!whole(t.openShifts, 0, 10) || !whole(t.closeShifts, 0, 10)) {
+    throw new Error("Training openers and closers must be whole numbers 0–10");
+  }
+  if (!whole(t.overlapMin, 15, 12 * 60) || t.overlapMin! % 15) {
+    throw new Error("Training overlap must be 15 min–12 hours in 15-minute steps");
+  }
+  if (!Array.isArray(t.experienced) || t.experienced.some((n) => typeof n !== "string" || !n.trim())) {
+    throw new Error("Experienced staff must be a list of names");
+  }
+  return {
+    newHireDays: t.newHireDays!,
+    openShifts: t.openShifts!,
+    closeShifts: t.closeShifts!,
+    overlapMin: t.overlapMin!,
+    experienced: [...new Set(t.experienced.map((n) => n.trim()))].sort((a, b) => a.localeCompare(b)),
   };
 }
 

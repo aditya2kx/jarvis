@@ -544,6 +544,96 @@ def apply_plan(rows: list[dict]) -> list[tuple[dt.date, list[dict]]]:
     ]
 
 
+_MAX_CHANGES = 80
+_MAX_OPEN_COUNT = 10
+_SPAN = re.compile(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})")
+_NEEDS_EMPLOYEE = {"open-assign", "shift-add", "shift-delete", "shift-edit", "shift-reassign", "shift-publish"}
+
+
+def _span(text: str, where: str) -> tuple[int, int]:
+    m = _SPAN.fullmatch(text)
+    start, end = (int(m[1]) * 60 + int(m[2]), int(m[3]) * 60 + int(m[4])) if m else (-1, -1)
+    if not 0 <= start < end <= 24 * 60:
+        raise ValueError(f"{where}: times are HH:MM-HH:MM, got {text!r}")
+    return start, end
+
+
+def parse_changes(spec: str, today: dt.date) -> list[dict]:
+    """Command-line shift changes, same rules as the console's shiftError. Raises ValueError.
+
+    ';'-separated, each `kind YYYY-MM-DD HH:MM-HH:MM [to=HH:MM-HH:MM] [count=N] [employee=First_Last]
+    [to_employee=First_Last]` ('_' stands for a space in names).
+    """
+    out = []
+    for i, text in enumerate([t for t in spec.split(";") if t.strip()], start=1):
+        where = f"Change {i} ({text.strip()})"
+        parts = text.split()
+        if len(parts) < 3:
+            raise ValueError(f"{where}: expected kind date HH:MM-HH:MM")
+        kind, date, span, *extra = parts
+        if kind not in APPLY_ORDER:
+            raise ValueError(f"{where}: unknown kind {kind!r}")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or dt.date.fromisoformat(date) <= today:
+            raise ValueError(f"{where}: shifts can only change from tomorrow on")
+        start, end = _span(span, where)
+        opts = dict(e.split("=", 1) for e in extra if "=" in e)
+        if set(opts) - {"to", "count", "employee", "to_employee"} or len(opts) != len(extra):
+            raise ValueError(f"{where}: options are to= count= employee= to_employee=")
+        row = {"kind": kind, "date": dt.date.fromisoformat(date), "start_min": start, "end_min": end,
+               "employee": opts.get("employee", "").replace("_", " ").strip() or None,
+               "to_start_min": None, "to_end_min": None, "to_employee": None, "count": None}
+        if kind == "open-add":
+            count = opts.get("count", "1")
+            if not count.isdigit() or not 1 <= int(count) <= _MAX_OPEN_COUNT:
+                raise ValueError(f"{where}: add 1 to {_MAX_OPEN_COUNT} open shifts at a time")
+            row["count"] = int(count)
+        if kind in ("open-edit", "shift-edit"):
+            row["to_start_min"], row["to_end_min"] = _span(opts.get("to", ""), where)
+            if (row["to_start_min"], row["to_end_min"]) == (start, end):
+                raise ValueError(f"{where}: change the start or end time")
+        if kind in _NEEDS_EMPLOYEE and not row["employee"]:
+            raise ValueError(f"{where}: pick a person (employee=)")
+        if kind == "shift-reassign":
+            row["to_employee"] = opts.get("to_employee", "").replace("_", " ").strip() or None
+            if not row["to_employee"] or row["to_employee"] == row["employee"]:
+                raise ValueError(f"{where}: pick someone else (to_employee=)")
+        out.append(row)
+    if not out or len(out) > _MAX_CHANGES:
+        raise ValueError(f"1 to {_MAX_CHANGES} changes at a time, got {len(out)}")
+    return out
+
+
+def change_rows(spec: str, *, by: str, today: dt.date | None = None) -> list[dict]:
+    """Parsed command-line changes as adp_shift_changes rows (no batch yet)."""
+    return [
+        {**r, "change_id": str(uuid.uuid4()), "requested_by": by,
+         "summary": f"{r['kind']} {r['date'].isoformat()} {r['start_min']}-{r['end_min']}"}
+        for r in parse_changes(spec, today or _today_ct())
+    ]
+
+
+def queue_changes(store: str, rows: list[dict], *, by: str) -> str:
+    """Queue change_rows as one Apply batch (what the console's Apply inserts)."""
+    batch_id = str(uuid.uuid4())
+    payload = json.dumps([{**r, "date": r["date"].isoformat()} for r in rows])
+    _query(
+        "INSERT INTO {T} (store, batch_id, change_id, kind, date, employee, start_min, end_min,"
+        "  to_start_min, to_end_min, to_employee, count, summary, status, error, adp_name,"
+        "  requested_by, requested_at, updated_at)"
+        " SELECT @store, @batch, JSON_VALUE(s, '$.change_id'), JSON_VALUE(s, '$.kind'),"
+        "        DATE(JSON_VALUE(s, '$.date')), JSON_VALUE(s, '$.employee'),"
+        "        CAST(JSON_VALUE(s, '$.start_min') AS INT64), CAST(JSON_VALUE(s, '$.end_min') AS INT64),"
+        "        CAST(JSON_VALUE(s, '$.to_start_min') AS INT64), CAST(JSON_VALUE(s, '$.to_end_min') AS INT64),"
+        "        JSON_VALUE(s, '$.to_employee'), CAST(JSON_VALUE(s, '$.count') AS INT64),"
+        "        JSON_VALUE(s, '$.summary'), 'queued', NULL, NULL, @by, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()"
+        " FROM UNNEST(JSON_QUERY_ARRAY(@items)) AS s",
+        [("store", "STRING", store), ("batch", "STRING", batch_id), ("by", "STRING", by),
+         ("items", "STRING", payload)],
+        table=SHIFT_TABLE,
+    )
+    return batch_id
+
+
 class ApplySkip(Exception):
     """ADP already shows the change — nothing was clicked."""
 
@@ -660,21 +750,26 @@ def _apply_assigned(frame, page, row: dict, *, dry_run: bool) -> str | None:
     raise ValueError(f"unknown shift change {kind!r}")
 
 
-def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool) -> int:
+def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows: list[dict] | None = None) -> int:
     """Apply one console "Apply to ADP" batch: queued adp_shift_changes + adp_unavailability_changes.
 
     Every row ends 'applied' (ADP re-read shows it), 'skipped' (ADP already showed it,
     nothing clicked) or 'failed' (breadcrumb + reason). Nothing is retried: a crash
     marks every unsettled row failed. Then the changed weeks are re-read into BQ.
     Unavailability: only approve is wired; other kinds fail without a click.
+    `rows`: walk these unqueued shift changes instead (dry run only — nothing in BQ to settle).
     """
     params = [("store", "STRING", store), ("id", "STRING", batch_id)]
-    shifts = _query(
-        "SELECT * FROM {T} WHERE store = @store AND batch_id = @id AND status = 'queued'", params, table=SHIFT_TABLE,
-    )
-    unavail = _query(
-        "SELECT * FROM {T} WHERE store = @store AND batch_id = @id AND status = 'queued'", params, table=UNAVAIL_TABLE,
-    )
+    if rows is not None:
+        assert dry_run, "unqueued rows can only be dry-run"
+        shifts, unavail = rows, []
+    else:
+        shifts = _query(
+            "SELECT * FROM {T} WHERE store = @store AND batch_id = @id AND status = 'queued'", params, table=SHIFT_TABLE,
+        )
+        unavail = _query(
+            "SELECT * FROM {T} WHERE store = @store AND batch_id = @id AND status = 'queued'", params, table=UNAVAIL_TABLE,
+        )
     print(f"[schedule_write] apply batch_id={batch_id} shifts={len(shifts)} unavailability={len(unavail)} dry_run={dry_run}")
     if not shifts and not unavail:
         return 0
@@ -1293,6 +1388,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--delete", help="';'-separated row_keys of drafted shifts to remove from ADP (--week-start)")
     p.add_argument("--assign-id", help="assign the queued open shifts of this labor_open_shift_assignments run")
     p.add_argument("--apply-batch", help="apply every queued change of this console Apply to ADP batch")
+    p.add_argument("--queue-changes", metavar="SPEC",
+                   help="queue shift changes as one batch, then apply it (see parse_changes for SPEC)")
     p.add_argument("--queue-assign", metavar="FILE",
                    help="queue open shifts from this JSON file ('-' = stdin); refuses while a schedule write is running")
     p.add_argument("--execute", action="store_true",
@@ -1321,6 +1418,18 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"started {start_assign_job(a.store, assign_id)}")
         return 0
+    if a.queue_changes:
+        if a.apply_batch:
+            p.error("--queue-changes makes its own batch; drop --apply-batch")
+        try:
+            rows = change_rows(a.queue_changes, by=a.requested_by)
+        except ValueError as exc:
+            print(f"refused: {exc}")
+            return 1
+        if a.dry_run:
+            return run_apply(a.store, "dry-run", headless=a.headless, dry_run=True, rows=rows)
+        a.apply_batch = queue_changes(a.store, rows, by=a.requested_by)
+        print(f"queued batch_id={a.apply_batch} rows={len(rows)}")
     if a.apply_batch:
         return run_apply(a.store, a.apply_batch, headless=a.headless, dry_run=a.dry_run)
     if a.assign_id:

@@ -1843,7 +1843,8 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
 
 **Apply to ADP** inserts one `queued` row per change under one `batch_id` — shifts in `adp_shift_changes`
 (migration 095), unavailability in `adp_unavailability_changes` (092) — and starts
-`BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_BATCH_ID=<id>` (refused while any schedule write runs).
+`BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_BATCH_ID=<id>` (refused while any schedule write runs). Without the console, `BHAGA_SCHEDULE_CHANGES="open-add 2027-01-12 10:00-14:00 count=2; …"`
+queues and applies command-line changes (a PR's code runs live via `/prod-ops run-job-pr bhaga-daily-refresh …`).
 Per week the job applies deletes, then edits, reassigns, adds (and publishes), assigns. Each shift is **published on its own**
 (wizard / Edit **Publish**); the week's **Publish drafts** and **Delete all schedules** are never pressed.
 Every row ends `applied` (ADP re-read shows it: the grid for assigned shifts, the week's open-shift counts for

@@ -233,6 +233,12 @@ Pass: all green; operator OK on the demo before marking ready.
   `adpScheduleScrapedAt`. The job's `drafts` / `publish` modes stay for the command line. Guarded by
   `ux-principles.test.tsx` D2. Open-shift drafts left by the old flow are not offered (ADP only shows a
   per-day draft count for open shifts).
+- **Live runs before merge:** the prod job runs `main`'s image and the preview console is read-only, so
+  live ADP evidence runs this PR's code on a temporary copy of the job (`/prod-ops run-job-pr
+  bhaga-daily-refresh …`, added by a prerequisite PR) with `BHAGA_ADP_SCHEDULE_WRITE=apply` and
+  `BHAGA_SCHEDULE_CHANGES="<kind> <date> HH:MM-HH:MM …"`. `adp_schedule_write --queue-changes` queues those
+  rows with the console's rules (`parse_changes`), then applies them as one batch; with `--dry-run` it walks
+  them in memory and queues nothing.
 - **Out of scope:** unavailability deny/add/edit/delete ADP backends (follow-up once a live ADP session is
   available); editing past shifts; reassigning an open shift that someone already took.
 

@@ -10,6 +10,7 @@ from collections import Counter
 from unittest import mock
 
 from agents.bhaga.scripts import adp_schedule_write as w
+from agents.bhaga.scripts import daily_refresh
 from skills.adp_run_automation import schedule_write_backend as wb
 
 D = datetime.date(2026, 10, 3)
@@ -611,6 +612,82 @@ class RunApply(unittest.TestCase):
         with mock.patch.object(w, "run_apply", return_value=0) as ra:
             self.assertEqual(w.main(["--store", "palmetto", "--apply-batch", "b9", "--headless"]), 0)
         ra.assert_called_once_with("palmetto", "b9", headless=True, dry_run=False)
+
+
+class QueueChanges(unittest.TestCase):
+    TODAY = datetime.date(2026, 10, 28)
+
+    def test_parses_each_kind_like_the_console(self):
+        rows = w.parse_changes(
+            "open-add 2026-11-03 10:00-14:00 count=2; open-edit 2026-11-03 10:00-14:00 to=11:00-15:00;"
+            "shift-reassign 2026-11-04 9:00-15:00 employee=Doe,_Alex to_employee=Lee,_Kim", self.TODAY)
+        self.assertEqual([(r["kind"], r["date"].isoformat(), r["start_min"], r["end_min"]) for r in rows], [
+            ("open-add", "2026-11-03", 600, 840), ("open-edit", "2026-11-03", 600, 840),
+            ("shift-reassign", "2026-11-04", 540, 900)])
+        self.assertEqual(rows[0]["count"], 2)
+        self.assertEqual((rows[1]["to_start_min"], rows[1]["to_end_min"]), (660, 900))
+        self.assertEqual((rows[2]["employee"], rows[2]["to_employee"]), ("Doe, Alex", "Lee, Kim"))
+
+    def test_refuses_what_the_console_refuses(self):
+        for spec in (
+            "open-add 2026-10-28 10:00-14:00",                 # today
+            "open-add 2026-11-03 14:00-10:00",                 # end before start
+            "open-add 2026-11-03 10:00-14:00 count=11",
+            "open-edit 2026-11-03 10:00-14:00 to=10:00-14:00",  # no change
+            "shift-delete 2026-11-03 10:00-14:00",              # no person
+            "shift-reassign 2026-11-03 10:00-14:00 employee=A to_employee=A",
+            "open-add 2026-11-03 10:00-14:00 colour=red",
+            "approve 2026-11-03 10:00-14:00",
+            "open-add 2026-11-03",
+            "",
+        ):
+            with self.assertRaises(ValueError, msg=spec):
+                w.parse_changes(spec, self.TODAY)
+
+    def test_queue_then_apply_one_batch(self):
+        calls = []
+        fq_insert = mock.MagicMock(side_effect=lambda sql, params, *, table: calls.append((table, dict(
+            (n, v) for n, _t, v in params))) or [])
+        with mock.patch.object(w, "_query", fq_insert), \
+                mock.patch.object(w, "_today_ct", return_value=self.TODAY), \
+                mock.patch.object(w, "run_apply", return_value=0) as ra:
+            self.assertEqual(w.main(["--queue-changes", "open-delete 2026-11-03 10:00-14:00", "--headless"]), 0)
+        (table, p), = calls
+        self.assertEqual((table, p["by"]), (w.SHIFT_TABLE, "agent:cli"))
+        (item,) = json.loads(p["items"])
+        self.assertEqual((item["kind"], item["date"], item["start_min"], item["count"]), ("open-delete", "2026-11-03", 600, None))
+        ra.assert_called_once_with("palmetto", p["batch"], headless=True, dry_run=False)
+
+    def test_dry_run_walks_unqueued_rows_and_writes_nothing(self):
+        adp = FakeApplyAdp(open_shifts={("2026-11-03", 600, 840): 1})
+        query = mock.MagicMock(side_effect=AssertionError("dry run must not touch BQ"))
+        with mock.patch.object(w, "_query", query), \
+                mock.patch.object(w, "_today_ct", return_value=self.TODAY), \
+                mock.patch.object(w, "run_apply", wraps=w.run_apply) as ra:
+            patches = [mock.patch.object(wb, m, getattr(adp, m)) for m in (
+                "shift_in_grid", "read_open_shifts", "create_open_shift", "delete_open_shift")]
+            with contextlib.ExitStack() as stack:
+                for patch in patches:
+                    stack.enter_context(patch)
+                stack.enter_context(mock.patch("skills.adp_run_automation.runner.adp_session", fake_session))
+                stack.enter_context(mock.patch("skills.adp_run_automation.runner._open_team_schedule"))
+                stack.enter_context(mock.patch.object(wb, "goto_week"))
+                code = w.main(["--queue-changes",
+                               "open-add 2026-11-03 10:00-14:00 count=2; open-delete 2026-11-03 10:00-14:00",
+                               "--dry-run", "--headless"])
+        self.assertEqual(code, 0)
+        self.assertTrue(ra.call_args.kwargs["dry_run"])
+        self.assertEqual([c[0] for c in adp.calls], ["delete_open_shift", "create_open_shift"])
+        self.assertEqual(adp.open[("2026-11-03", 600, 840)], 1)
+
+    def test_cloud_run_apply_with_changes_env_queues_them(self):
+        env = {"BHAGA_ADP_SCHEDULE_WRITE": "apply", "BHAGA_SCHEDULE_CHANGES": "open-add 2026-11-03 10:00-14:00"}
+        with mock.patch.dict("os.environ", env, clear=True), mock.patch.object(w, "main", return_value=0) as m, \
+                mock.patch("sys.argv", ["daily_refresh", "--store", "palmetto"]):
+            self.assertEqual(daily_refresh.main(), 0)
+        argv = m.call_args.args[0]
+        self.assertEqual(argv[argv.index("--queue-changes") + 1], "open-add 2026-11-03 10:00-14:00")
+        self.assertNotIn("--apply-batch", argv)
 
 
 class RunDelete(unittest.TestCase):

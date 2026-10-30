@@ -2889,7 +2889,10 @@ def _run_refresh(run_id: str) -> int:
         elif write_mode == "assign":
             argv += ["--assign-id", os.environ.get("BHAGA_SCHEDULE_ASSIGN_ID", "")]
         elif write_mode == "apply":
-            argv += ["--apply-batch", os.environ.get("BHAGA_SCHEDULE_BATCH_ID", "")]
+            # BHAGA_SCHEDULE_CHANGES: command-line changes (`/prod-ops run-job-pr`), queued then applied.
+            changes = os.environ.get("BHAGA_SCHEDULE_CHANGES", "").strip()
+            argv += (["--queue-changes", changes, "--requested-by", "agent:prod-ops"] if changes
+                     else ["--apply-batch", os.environ.get("BHAGA_SCHEDULE_BATCH_ID", "")])
         elif write_mode == "delete":
             argv += ["--delete", os.environ.get("BHAGA_SCHEDULE_DELETE_KEYS", ""),
                      "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]

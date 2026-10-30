@@ -2614,7 +2614,10 @@ whose branch starts `<prefix>/<issue>-` deploys its own preview (label `issue`).
 (`git push origin :preview/<name> && git push origin HEAD:preview/<name>`). Never deploy a branch onto `operator-console`
 itself: a revision's env becomes the service template (`/prod-ops` refuses `CONSOLE_PREVIEW`).
 Cloud Agent prod access: `/prod-read` + `/prod-ops`
-([docs/contributing/dev-anywhere.md](docs/contributing/dev-anywhere.md)).
+([docs/contributing/dev-anywhere.md](docs/contributing/dev-anywhere.md)). `/prod-ops run-job-pr
+bhaga-daily-refresh …` runs a PR's code once on a temporary copy of the job (`bhaga-daily-refresh-pr<N>`,
+deleted after the run; if `prod-ops` prints `BREADCRUMB prod_ops cleanup failed`, run
+`gcloud run jobs delete bhaga-daily-refresh-pr<N> --region us-central1`).
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)
 

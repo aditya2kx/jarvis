@@ -31,7 +31,8 @@ jobs:
     if: >-
       (github.event_name == 'issue_comment' &&
        startsWith(github.event.comment.body, '/prod-ops') &&
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+       (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+        github.event.comment.user.login == 'cursor[bot]')) ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
@@ -81,6 +82,8 @@ jobs:
                         "/prod-ops console-env set CONSOLE_PREVIEW=1"; do
               COMMENT_BODY="$body" python3 scripts/prod_ops.py plan || true
             done
+            COMMENT_BODY="/prod-ops run-job-pr bhaga-daily-refresh BHAGA_SCHEDULE_DRY_RUN=1" \
+              IS_PR=true ISSUE=1 python3 scripts/prod_ops.py plan || true
             exit 0
           fi
           set +e

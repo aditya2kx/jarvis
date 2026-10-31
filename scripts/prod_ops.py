@@ -3,7 +3,7 @@
 
 A `/prod-ops …` PR comment runs `.github/workflows/prod-ops.yml`. `tier()` sorts it:
 - auto — cannot change data the operator relies on (read-only, additive migrations,
-  an ADP schedule dry run after its no-write tests pass on the PR head). Runs at once
+  an ADP read sync, an ADP schedule dry run after its no-write tests pass on the PR head). Runs at once
   in Environment `prod-auto` (no reviewer; the deployment list there is the audit log).
 - gated — everything else. Waits in Environment `prod` until the operator approves
   (GitHub web or mobile); the workflow refuses unless `prod` has a required reviewer.
@@ -12,6 +12,8 @@ A `/prod-ops …` PR comment runs `.github/workflows/prod-ops.yml`. `tier()` sor
     /prod-ops console-env set CONSOLE_FOO=1 BAR=x     # operator-console runtime flags
     /prod-ops console-env unset CONSOLE_FOO
     /prod-ops run-job bhaga-daily-refresh [REFRESH_DATE=2026-10-10 …]
+                                                      # auto when it is one ADP read sync, e.g.
+                                                      # BHAGA_ADP_HIRE_DATES=1 (also on run-job-pr)
     /prod-ops apply-migrations                        # core.datastore.ensure_schema() from the PR head
                                                       # (PROD_OPS_CODE_ROOT); auto when every migration
                                                       # new vs main is additive
@@ -52,6 +54,10 @@ _DEPLOY_OWNED = {"BQ_PROJECT", "BQ_DATASET", "PLAID_ENV", "PLAID_WEBHOOK_URL", "
 # An unapproved run-job-pr may set only these, and must be an `apply` dry run: any other key
 # could steer the job off the dry-run path.
 _DRY_RUN_ENV = {"BHAGA_ADP_SCHEDULE_WRITE", "BHAGA_SCHEDULE_DRY_RUN", "BHAGA_SCHEDULE_CHANGES", "BHAGA_STORE"}
+# Each makes daily_refresh log in, read ADP and upsert BQ from it, then exit — what the nightly
+# and the console's Sync ADP button already run unapproved. Payroll drafts, schedule writes,
+# punch fixes and unavailability approvals are separate keys and stay gated.
+_ADP_READ_SYNCS = {"BHAGA_ADP_HIRE_DATES", "BHAGA_ADP_SYNC_ALL", "BHAGA_ADP_SCHEDULE_ONLY", "BHAGA_ADP_TIMECARD_ONLY"}
 # Run on the PR head first: they pin that --dry-run walks the ADP wizards and saves nothing.
 _DRY_RUN_TESTS = [sys.executable, "-m", "unittest", "agents.bhaga.scripts.test_adp_schedule_write"]
 # Anything that can lose or rewrite rows. Over-matching only costs an approval.
@@ -237,7 +243,9 @@ def tier(req: dict, code_root: Path) -> tuple[str, str]:
         return "auto", "read-only"
     if op == "apply-migrations":
         # ensure_schema() is PR-head Python: only main's runner may apply unapproved SQL.
-        runner = [str(p.relative_to(code_root)) for p in _changed_vs_main(code_root, "core/*.py")]
+        # A migration's own test_*.py ships with it; ensure_schema() never imports tests.
+        runner = [str(p.relative_to(code_root)) for p in _changed_vs_main(code_root, "core/*.py")
+                  if not p.name.startswith("test_")]
         if runner:
             return "gated", f"migration runner differs from main: {', '.join(runner)}"
         risky = [p.name for p in new_migrations(code_root) if _DESTRUCTIVE_SQL.search(_sql_body(p))]
@@ -247,6 +255,10 @@ def tier(req: dict, code_root: Path) -> tuple[str, str]:
     if (op == "run-job-pr" and env.get("BHAGA_ADP_SCHEDULE_WRITE") == "apply"
             and env.get("BHAGA_SCHEDULE_DRY_RUN") == "1" and set(env) <= _DRY_RUN_ENV):
         return "auto", "ADP schedule dry run — saves nothing; its no-write tests run first"
+    syncs = set(env) & _ADP_READ_SYNCS
+    if (op in ("run-job", "run-job-pr") and req["job"] == "bhaga-daily-refresh" and len(syncs) == 1
+            and env[next(iter(syncs))] == "1" and set(env) <= syncs | {"BHAGA_STORE"}):
+        return "auto", "ADP read sync — reads ADP, upserts BQ from it like the nightly"
     return "gated", "changes prod"
 
 
@@ -272,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"prod-ops: rejected — {e}")
         return 2
     level, why = tier(req, cwd)
-    if level == "auto" and req["op"] == "run-job-pr":
+    if level == "auto" and req["op"] == "run-job-pr" and "BHAGA_ADP_SCHEDULE_WRITE" in req["env"]:
         cmds = [_DRY_RUN_TESTS, *cmds]
     after = cleanup(req, pr)
     if a.mode == "plan":

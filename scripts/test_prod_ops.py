@@ -89,6 +89,11 @@ class ProdOpsTests(unittest.TestCase):
                          (0, ["unittest", "configure-docker", "build", "push", "clone-job", "execute", "delete"]))
         self.assertEqual(self._run_main("unittest", body, "auto"), (1, ["unittest"]))
 
+    def test_unapproved_read_sync_runs_without_the_schedule_tests(self):
+        body = "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1"
+        self.assertEqual(self._run_main(None, body, "auto"),
+                         (0, ["configure-docker", "build", "push", "clone-job", "execute", "delete"]))
+
     def test_run_refuses_an_op_planned_without_approval_that_now_needs_it(self):
         self.assertEqual(self._run_main(None, tier="auto"), (2, []))
         self.assertEqual(self._run_main(None, tier=""), (2, []))
@@ -121,6 +126,31 @@ class TierTests(unittest.TestCase):
             dry + " REFRESH_DATE=2026-10-10",
         ):
             self.assertEqual(self._tier(body), "gated", body)
+
+    def test_a_single_adp_read_sync_skips_approval(self):
+        for body in (
+            "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1",
+            "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1 BHAGA_STORE=palmetto",
+            "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_SYNC_ALL=1",
+            "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_SCHEDULE_ONLY=1",
+            "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_TIMECARD_ONLY=1",
+        ):
+            self.assertEqual(self._tier(body), "auto", body)
+        for body in (
+            "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=0",
+            "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1 BHAGA_ADP_SYNC_ALL=1",
+            "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_SYNC_ALL=1 BHAGA_PAYROLL_DRAFT_ONLY=1",
+            "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_TIMECARD_ONLY=1 BHAGA_PUNCH_FIX_APPLY_ONLY=1",
+            "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_SYNC_ALL=1 REFRESH_DATE=2026-10-10",
+            "/prod-ops run-job other-job BHAGA_ADP_SYNC_ALL=1",
+            "/prod-ops run-job bhaga-daily-refresh",
+        ):
+            self.assertEqual(self._tier(body), "gated", body)
+
+    def test_a_migrations_own_test_file_is_not_a_runner_change(self):
+        self._migration("900_new.sql", "CREATE TABLE IF NOT EXISTS `p.d.t` (a INT64);")
+        (self.root / "core" / "test_migration_900_new.py").write_text("import unittest\n")
+        self.assertEqual(self._tier("/prod-ops apply-migrations"), "auto")
 
     def test_additive_migrations_skip_approval(self):
         self._migration("900_new.sql", "-- never UPDATE/DELETE/MERGE this table\n"

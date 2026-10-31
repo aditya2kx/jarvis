@@ -2595,7 +2595,7 @@ def _should_record_pipeline_run() -> bool:
     laptop run (e.g. a local e2e against prod BQ) must NOT record — that was the
     bug that polluted Pipeline Health with non-prod rows.
     """
-    if _RUN_SUMMARY.get("dry_run"):
+    if _RUN_SUMMARY.get("dry_run") or _RUN_SUMMARY.get("side_job"):
         return False
     if _RUN_SUMMARY.get("refresh_date") is None:
         return False
@@ -2611,6 +2611,7 @@ def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> No
     if not _should_record_pipeline_run():
         reason = (
             "dry_run" if _RUN_SUMMARY.get("dry_run")
+            else f"side_job={_RUN_SUMMARY['side_job']}" if _RUN_SUMMARY.get("side_job")
             else "no_refresh_date" if _RUN_SUMMARY.get("refresh_date") is None
             else "not_cloud_run"
         )
@@ -2860,6 +2861,7 @@ def _run_refresh(run_id: str) -> int:
     # app so mentions are real chips; the webhook tick starts this mode.
     reminder_mode = os.environ.get("BHAGA_UNAVAIL_REMINDER", "").strip()
     if reminder_mode:
+        _RUN_SUMMARY["side_job"] = "unavailability-reminder"
         os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
         from agents.bhaga.scripts import unavailability_reminder  # noqa: PLC0415
         argv = ["--store", os.environ.get("BHAGA_STORE") or args.store, "--in-browser-job"]
@@ -2872,6 +2874,9 @@ def _run_refresh(run_id: str) -> int:
     # Team Schedule writes only, each an operator-confirmed click.
     write_mode = os.environ.get("BHAGA_ADP_SCHEDULE_WRITE", "").strip()
     if write_mode:
+        # Not a nightly: a row here would read as the day's pipeline outcome (Pipeline
+        # Health, _last_pipeline_run_failed recovery).
+        _RUN_SUMMARY["side_job"] = f"adp-schedule-write:{write_mode}"
         args.store = os.environ.get("BHAGA_STORE") or args.store
         os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
         from agents.bhaga.scripts import adp_schedule_write  # noqa: PLC0415

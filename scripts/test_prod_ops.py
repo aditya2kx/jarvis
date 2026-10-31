@@ -71,12 +71,14 @@ class ProdOpsTests(unittest.TestCase):
                "PROD_OPS_TIER": tier}
         with mock.patch.dict(os.environ, env), mock.patch("prod_ops.subprocess.run", fake_run):
             rc = prod_ops.main(["run"])
-        steps = {"unittest", "configure-docker", "build", "push", "clone-job", "execute", "delete"}
+        steps = {"unittest", "configure-docker", "build", "push", "clone-job", "execute", "delete", "list", "read"}
         return rc, [next(a for a in c if a in steps) for c in ran]
 
     def test_run_deletes_the_copy_even_when_its_execution_fails(self):
         self.assertEqual(self._run_main(None), (0, ["configure-docker", "build", "push", "clone-job", "execute", "delete"]))
-        self.assertEqual(self._run_main("execute"), (1, ["configure-docker", "build", "push", "clone-job", "execute", "delete"]))
+        # On execute failure, dump_failed_job lists the execution (and tries logging read) before delete.
+        self.assertEqual(self._run_main("execute"),
+                         (1, ["configure-docker", "build", "push", "clone-job", "execute", "list", "read", "delete"]))
 
     def test_run_skips_the_delete_when_no_copy_was_started(self):
         self.assertEqual(self._run_main("build"), (1, ["configure-docker", "build"]))

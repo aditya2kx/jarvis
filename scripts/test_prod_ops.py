@@ -60,21 +60,21 @@ class ProdOpsTests(unittest.TestCase):
             parse_comment("/prod-ops run-job-pr operator-console")
 
     def _run_main(self, fail_on: str | None, body: str = "/prod-ops run-job-pr bhaga-daily-refresh A=1",
-                  tier: str = "gated"):
+):
         ran = []
 
         def fake_run(cmd, **_kw):
             ran.append(cmd)
             return mock.Mock(returncode=1 if fail_on and fail_on in cmd else 0)
 
-        env = {"COMMENT_BODY": body, "ISSUE": "436", "HEAD_SHA": "abc", "PROD_OPS_CODE_ROOT": "/tmp",
-               "PROD_OPS_TIER": tier}
+        env = {"COMMENT_BODY": body, "ISSUE": "436", "HEAD_SHA": "abc", "PROD_OPS_CODE_ROOT": "/tmp"}
         with mock.patch.dict(os.environ, env), mock.patch("prod_ops.subprocess.run", fake_run):
             rc = prod_ops.main(["run"])
         steps = {"unittest", "configure-docker", "build", "push", "clone-job", "execute", "delete", "list", "read"}
         return rc, [next(a for a in c if a in steps) for c in ran]
 
     def test_run_deletes_the_copy_even_when_its_execution_fails(self):
+        # A=1 is changes-prod: it runs with no approval step.
         self.assertEqual(self._run_main(None), (0, ["configure-docker", "build", "push", "clone-job", "execute", "delete"]))
         # On execute failure, dump_failed_job lists the execution (and tries logging read) before delete.
         self.assertEqual(self._run_main("execute"),
@@ -83,24 +83,20 @@ class ProdOpsTests(unittest.TestCase):
     def test_run_skips_the_delete_when_no_copy_was_started(self):
         self.assertEqual(self._run_main("build"), (1, ["configure-docker", "build"]))
 
-    def test_unapproved_dry_run_runs_its_no_write_tests_first_and_stops_if_they_fail(self):
+    def test_safe_dry_run_runs_its_no_write_tests_first_and_stops_if_they_fail(self):
         body = "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_DRY_RUN=1"
-        self.assertEqual(self._run_main(None, body, "auto"),
+        self.assertEqual(self._run_main(None, body),
                          (0, ["unittest", "configure-docker", "build", "push", "clone-job", "execute", "delete"]))
-        self.assertEqual(self._run_main("unittest", body, "auto"), (1, ["unittest"]))
+        self.assertEqual(self._run_main("unittest", body), (1, ["unittest"]))
 
-    def test_unapproved_read_sync_runs_without_the_schedule_tests(self):
+    def test_read_sync_runs_without_the_schedule_tests(self):
         body = "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1"
-        self.assertEqual(self._run_main(None, body, "auto"),
+        self.assertEqual(self._run_main(None, body),
                          (0, ["configure-docker", "build", "push", "clone-job", "execute", "delete"]))
-
-    def test_run_refuses_an_op_planned_without_approval_that_now_needs_it(self):
-        self.assertEqual(self._run_main(None, tier="auto"), (2, []))
-        self.assertEqual(self._run_main(None, tier=""), (2, []))
 
 
 class TierTests(unittest.TestCase):
-    """What may run without the operator's approval in Environment `prod`."""
+    """Which ops the PR reply labels safe vs changes-prod."""
 
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
@@ -112,11 +108,11 @@ class TierTests(unittest.TestCase):
     def _migration(self, name: str, sql: str) -> None:
         (self.root / "core" / "migrations" / name).write_text(sql)
 
-    def test_only_read_only_and_dry_runs_skip_approval(self):
+    def test_only_read_only_and_dry_runs_are_safe(self):
         dry = "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_DRY_RUN=1"
-        self.assertEqual(self._tier("/prod-ops whoami"), "auto")
+        self.assertEqual(self._tier("/prod-ops whoami"), "safe")
         self.assertEqual(self._tier(dry + ' BHAGA_STORE=palmetto "BHAGA_SCHEDULE_CHANGES=open-add 2026-11-03 10:00-14:00"'),
-                         "auto")
+                         "safe")
         for body in (
             "/prod-ops console-env set CONSOLE_X=1",
             "/prod-ops run-job bhaga-daily-refresh BHAGA_SCHEDULE_DRY_RUN=1",
@@ -125,9 +121,9 @@ class TierTests(unittest.TestCase):
             "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_SCHEDULE_WRITE=publish BHAGA_SCHEDULE_DRY_RUN=1",
             dry + " REFRESH_DATE=2026-10-10",
         ):
-            self.assertEqual(self._tier(body), "gated", body)
+            self.assertEqual(self._tier(body), "changes-prod", body)
 
-    def test_a_single_adp_read_sync_skips_approval(self):
+    def test_a_single_adp_read_sync_is_safe(self):
         for body in (
             "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1",
             "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1 BHAGA_STORE=palmetto",
@@ -135,7 +131,7 @@ class TierTests(unittest.TestCase):
             "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_SCHEDULE_ONLY=1",
             "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_TIMECARD_ONLY=1",
         ):
-            self.assertEqual(self._tier(body), "auto", body)
+            self.assertEqual(self._tier(body), "safe", body)
         for body in (
             "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=0",
             "/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1 BHAGA_ADP_SYNC_ALL=1",
@@ -145,22 +141,22 @@ class TierTests(unittest.TestCase):
             "/prod-ops run-job other-job BHAGA_ADP_SYNC_ALL=1",
             "/prod-ops run-job bhaga-daily-refresh",
         ):
-            self.assertEqual(self._tier(body), "gated", body)
+            self.assertEqual(self._tier(body), "changes-prod", body)
 
     def test_a_migrations_own_test_file_is_not_a_runner_change(self):
         self._migration("900_new.sql", "CREATE TABLE IF NOT EXISTS `p.d.t` (a INT64);")
         (self.root / "core" / "test_migration_900_new.py").write_text("import unittest\n")
-        self.assertEqual(self._tier("/prod-ops apply-migrations"), "auto")
+        self.assertEqual(self._tier("/prod-ops apply-migrations"), "safe")
 
-    def test_additive_migrations_skip_approval(self):
+    def test_additive_migrations_are_safe(self):
         self._migration("900_new.sql", "-- never UPDATE/DELETE/MERGE this table\n"
                         "CREATE TABLE IF NOT EXISTS `p.d.t` (a INT64);\n"
                         "ALTER TABLE `p.d.t` ADD COLUMN IF NOT EXISTS b STRING;\n"
                         "CREATE OR REPLACE VIEW `p.d.v` AS SELECT a FROM `p.d.t`;\n"
                         "INSERT INTO `p.d.t` (a) VALUES (1);")
-        self.assertEqual(self._tier("/prod-ops apply-migrations"), "auto")
+        self.assertEqual(self._tier("/prod-ops apply-migrations"), "safe")
 
-    def test_migrations_that_can_lose_or_rewrite_rows_need_approval(self):
+    def test_migrations_that_can_lose_or_rewrite_rows_change_prod(self):
         for sql in ("DROP TABLE `p.d.t`;", "ALTER TABLE `p.d.t` DROP COLUMN b;", "DELETE FROM `p.d.t` WHERE TRUE;",
                     "UPDATE `p.d.t` SET a = 1 WHERE TRUE;", "MERGE `p.d.t` T USING s ON FALSE WHEN NOT MATCHED THEN INSERT ROW;",
                     "TRUNCATE TABLE `p.d.t`;", "CREATE OR REPLACE TABLE `p.d.t` (a INT64);",
@@ -168,16 +164,16 @@ class TierTests(unittest.TestCase):
                     "EXECUTE IMMEDIATE CONCAT('DR', 'OP TABLE `p.d.t`');",
                     "CREATE TABLE IF NOT EXISTS `p.d.t` (a INT64); -- then DROP it"):
             self._migration("901_risky.sql", sql)
-            self.assertEqual(self._tier("/prod-ops apply-migrations"), "gated", sql)
+            self.assertEqual(self._tier("/prod-ops apply-migrations"), "changes-prod", sql)
 
-    def test_a_changed_migration_runner_needs_approval(self):
+    def test_a_changed_migration_runner_changes_prod(self):
         self._migration("900_new.sql", "CREATE TABLE IF NOT EXISTS `p.d.t` (a INT64);")
         runner = self.root / "core" / "datastore.py"
         runner.write_bytes((prod_ops.REPO_ROOT / "core" / "datastore.py").read_bytes())
-        self.assertEqual(self._tier("/prod-ops apply-migrations"), "auto")
+        self.assertEqual(self._tier("/prod-ops apply-migrations"), "safe")
         runner.write_text(runner.read_text() + "\n# runs other SQL\n")
         self.assertEqual(prod_ops.tier(parse_comment("/prod-ops apply-migrations"), self.root),
-                         ("gated", "migration runner differs from main: core/datastore.py"))
+                         ("changes-prod", "migration runner differs from main: core/datastore.py"))
 
     def test_migrations_already_on_main_are_not_rechecked(self):
         main_copy = next((prod_ops.REPO_ROOT / "core" / "migrations").glob("*.sql"))
@@ -192,7 +188,7 @@ class TierTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out):
             prod_ops.main(["plan"])
         plan = json.loads(out.getvalue())
-        self.assertEqual((plan["tier"], plan["why"]), ("auto", "read-only"))
+        self.assertEqual((plan["tier"], plan["why"]), ("safe", "read-only"))
 
     def test_clone_job_spec_renames_repoints_and_drops_system_fields(self):
         spec = {

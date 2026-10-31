@@ -110,6 +110,11 @@ non-fatal to the nightly run), and lands in BQ `adp_scheduled_daily` via
 `backfill_from_downloads.py` → Grafana panel "Scheduled Hours vs Goal Hours".
 Selector/flow knowledge is codified in `schedule_backend.py` (constants +
 `SCHEDULE_EXTRACT_JS`); parser is unit-tested in `test_schedule_backend.py`.
+Team Schedule and Timecards open through hidden home-page TEMPUS anchors that
+sometimes never hydrate on the first dashboard render; `_click_tempus_anchor`
+reopens the dashboard and tries once more (breadcrumb `[adp_tempus]
+BREADCRUMB anchor_missing`) before failing. `_raise_with_evidence` screenshots
+go to the runtime evidence dir and GCS; the error carries the `gs://` path.
 
 **Open shifts** (Issue #342): the grid's first `.calendar-row` (no `.worker-name`,
 label "Open Shifts N Shifts, HH:MM HRS") shows only a per-day `.open-shift-count`.

@@ -38,7 +38,6 @@ import math
 import os
 import pathlib
 import re
-import subprocess
 import sys
 import time
 from typing import Optional
@@ -47,6 +46,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from skills._browser_runtime.runtime import (
     DOWNLOADS_DIR,
+    EVIDENCE_DIR,
+    _upload_evidence_to_gcs,
     attach_cdp,
     download_to,
     is_fresh_download,
@@ -1053,12 +1054,13 @@ def _raise_with_evidence(page, *, store: str, reason: str, exc_factory=RuntimeEr
     reusing the same screenshot-capture path; defaults to ``RuntimeError``.
     """
     try:
-        ts = subprocess.run(["date", "+%Y%m%d-%H%M%S"], capture_output=True, text=True).stdout.strip()
-        snap = f"/Users/adityaparikh/.bhaga/state/screenshots/adp-{store}-authfail-{ts}.png"
-        page.screenshot(path=snap, full_page=True)
-        reason += f"\nScreenshot: {snap}"
-    except Exception:  # noqa: BLE001
-        pass
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+        snap = EVIDENCE_DIR / f"adp-{store}-authfail-{ts}.png"
+        page.screenshot(path=str(snap), full_page=True)
+        reason += f"\nScreenshot: {_upload_evidence_to_gcs(snap) or snap}"
+    except Exception as exc:  # noqa: BLE001
+        reason += f"\nScreenshot: none ({type(exc).__name__})"
     raise exc_factory(reason)
 
 
@@ -1779,6 +1781,50 @@ def _earnings_within_session(
 # ── Team Schedule scrape (DOM, no file export) ─────────────────────
 
 
+_NUDGE_TIME_JS = """() => {
+  const t = document.querySelector('[data-test-id="Time-btn"]')
+    || [...document.querySelectorAll('button,a')].find(
+         e => (e.getAttribute('aria-label')||'') === 'Time'
+            || /^(Time)$/i.test((e.innerText||'').trim()));
+  if (t) t.click();
+}"""
+_CLICK_ANCHOR_JS = "(id) => { const a=document.getElementById(id); if(a){a.click(); return true;} return false; }"
+
+
+def _click_tempus_anchor(page, anchor_id: str, *, label: str, store: str = "palmetto",
+                         waits_s: tuple[float, ...] = (20.0, 40.0)) -> None:
+    """Click a hidden home-page TEMPUS anchor, reopening the dashboard between tries.
+
+    The anchors hydrate only after the Time widgets load, and on some logins they
+    never do on the first dashboard render (2026-10-30: two PR #436 runs missed
+    #TEMPUS_WEEKLY_SCHEDULE after 20s while the same day's nightly found it).
+    """
+    tenant = (_load_store_profile(store).get("adp_run") or {}).get("tenant_uuid", "")
+    for attempt, wait_s in enumerate(waits_s, start=1):
+        if attempt > 1:
+            print(f"[adp_tempus] BREADCRUMB anchor_missing id={anchor_id} attempt={attempt - 1}/{len(waits_s)} "
+                  f"url={page.url} — reopening the dashboard")
+            if tenant:
+                page.goto(f"https://runpayrollmain.adp.com/@{tenant}/v2/",
+                          wait_until="domcontentloaded", timeout=60_000)
+            else:
+                page.reload(wait_until="domcontentloaded", timeout=60_000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=20_000)
+            except Exception:  # noqa: BLE001 — ADP keeps long-polls open
+                pass
+        page.evaluate(_NUDGE_TIME_JS)
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(500)
+            if page.evaluate(_CLICK_ANCHOR_JS, anchor_id):
+                return
+    _raise_with_evidence(
+        page, store=store,
+        reason=f"{label} anchor #{anchor_id} not found on dashboard after {len(waits_s)} tries (url={page.url}).",
+    )
+
+
 def _open_team_schedule(page, *, timeout_ms: int = 30_000):
     """From the v2 dashboard, open "Manage Schedules" and return the grid frame.
 
@@ -1798,33 +1844,7 @@ def _open_team_schedule(page, *, timeout_ms: int = 30_000):
 
     if _grid_frame() is None:
         print(f"[adp_schedule] step=open-team-schedule (#{sb.TEAM_SCHEDULE_ANCHOR_ID})")
-        # TEMPUS anchors hydrate after Time / home widgets; nudge Time first.
-        page.evaluate(
-            """() => {
-              const t = document.querySelector('[data-test-id="Time-btn"]')
-                || [...document.querySelectorAll('button,a')].find(
-                     e => (e.getAttribute('aria-label')||'') === 'Time'
-                        || /^(Time)$/i.test((e.innerText||'').trim()));
-              if (t) t.click();
-            }"""
-        )
-        # TEMPUS anchors hydrate a beat after Time / home widgets.
-        deadline_ids = time.monotonic() + 20.0
-        while time.monotonic() < deadline_ids:
-            page.wait_for_timeout(500)
-            if page.evaluate(
-                "(id) => !!document.getElementById(id)", sb.TEAM_SCHEDULE_ANCHOR_ID
-            ):
-                break
-        clicked = page.evaluate(
-            "(id) => { const a=document.getElementById(id); if(a){a.click(); return true;} return false; }",
-            sb.TEAM_SCHEDULE_ANCHOR_ID,
-        )
-        if not clicked:
-            _raise_with_evidence(
-                page, store="palmetto",
-                reason=f"Team Schedule anchor #{sb.TEAM_SCHEDULE_ANCHOR_ID} not found on dashboard.",
-            )
+        _click_tempus_anchor(page, sb.TEAM_SCHEDULE_ANCHOR_ID, label="Team Schedule")
 
     # Wait for the grid frame to attach and a footer total to render.
     deadline = time.monotonic() + timeout_ms / 1000.0
@@ -2288,25 +2308,7 @@ def _open_timecards(page, *, timeout_ms: int = 30_000) -> str:
     from skills.adp_run_automation import timecard_ui_backend as tub
 
     print(f"[adp_timecards_ui] step=open-timecards (#{tub.TIMECARDS_ANCHOR_ID})")
-    page.evaluate(
-        """() => {
-          const t = document.querySelector('[data-test-id="Time-btn"]');
-          if (t) t.click();
-        }"""
-    )
-    deadline = time.monotonic() + 20.0
-    while time.monotonic() < deadline:
-        page.wait_for_timeout(500)
-        if page.evaluate(
-            "(id) => { const a=document.getElementById(id); if(a){a.click(); return true;} return false; }",
-            tub.TIMECARDS_ANCHOR_ID,
-        ):
-            break
-    else:
-        _raise_with_evidence(
-            page, store="palmetto",
-            reason=f"Timecards anchor #{tub.TIMECARDS_ANCHOR_ID} not found on dashboard.",
-        )
+    _click_tempus_anchor(page, tub.TIMECARDS_ANCHOR_ID, label="Timecards")
     deadline = time.monotonic() + timeout_ms / 1000.0
     while time.monotonic() < deadline:
         page.wait_for_timeout(700)

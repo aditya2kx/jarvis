@@ -47,6 +47,41 @@ _PEOPLE_SEARCH_PLACEHOLDER_RE = re.compile(
 _RATE_FLOOR_DOLLARS = 7.25    # federal minimum; no Palmetto rate is legitimately below this
 _RATE_CEILING_DOLLARS = 100.0
 
+# New-hire window (Issue #450). ADP's wording on the profile is not calibrated yet, so accept the
+# usual labels; a rehire date wins over the original hire date — the person is new again.
+_US_DATE = r"(\d{1,2}/\d{1,2}/\d{4}|[A-Z][a-z]{2,8}\.? \d{1,2},? \d{4})"
+_REHIRE_RE = re.compile(r"Re-?hire\s+date\s*:?\s*" + _US_DATE, re.IGNORECASE)
+_HIRE_RE = re.compile(r"(?:Hire\s+date|Date\s+of\s+hire|Hired(?:\s+on)?)\s*:?\s*" + _US_DATE, re.IGNORECASE)
+
+
+def parse_us_date(text: str) -> Optional[str]:
+    """``MM/DD/YYYY`` or ``Oct 5, 2026`` → ISO date; None when it isn't a real date."""
+    s = " ".join(str(text or "").replace(".", "").split())
+    for fmt in ("%m/%d/%Y", "%b %d, %Y", "%b %d %Y", "%B %d, %Y", "%B %d %Y"):
+        try:
+            return datetime.datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def parse_hire_date(text: str) -> Optional[str]:
+    """Labelled hire date in ADP page text (rehire date first) → ISO, else None."""
+    for rx in (_REHIRE_RE, _HIRE_RE):
+        for m in rx.finditer(text or ""):
+            iso = parse_us_date(m.group(1))
+            if iso:
+                return iso
+    return None
+
+
+def hire_context(text: str, width: int = 60) -> list[str]:
+    """Snippets around any 'hire' wording — breadcrumb material when no date parses."""
+    return [
+        text[max(0, m.start() - width): m.end() + width]
+        for m in re.finditer(r"hire", text or "", re.IGNORECASE)
+    ][:3]
+
 
 def load_selectors() -> dict:
     if SELECTORS_PATH.exists():
@@ -551,7 +586,10 @@ def _directory_candidates(page) -> list[dict]:
                 const row = n.closest('[data-test-id^="table-row-"]');
                 const cell = row && row.querySelector('[data-test-id$="-col-Status"]');
                 const status = cell ? (cell.innerText || cell.textContent || '').trim() : '';
-                out.push({name: m, status});
+                const hireCell = row && [...row.querySelectorAll('[data-test-id*="-col-"]')]
+                  .find(c => /hire/i.test(c.getAttribute('data-test-id') || ''));
+                const hire = hireCell ? (hireCell.innerText || hireCell.textContent || '').trim() : '';
+                out.push({name: m, status, hire});
               }
               return out;
             }"""
@@ -567,11 +605,11 @@ def directory_roster(page, *, max_scrolls: int = 30) -> list[dict]:
     names stops growing.
     """
     _open_people_home(page)
-    seen: dict[str, str] = {}
+    seen: dict[str, dict] = {}
     for _ in range(max_scrolls):
         before = len(seen)
         for c in _directory_candidates(page):
-            seen[c["name"]] = c.get("status") or ""
+            seen[c["name"]] = c
         if len(seen) == before and before:
             break
         page.evaluate(
@@ -579,8 +617,12 @@ def directory_roster(page, *, max_scrolls: int = 30) -> list[dict]:
                        if (n.length) n[n.length - 1].scrollIntoView({block: 'end'}); }"""
         )
         page.wait_for_timeout(800)
-    rows = [{"name": n, "status": s} for n, s in sorted(seen.items())]
+    rows = [
+        {"name": n, "status": c.get("status") or "", "hire_date": parse_us_date(c.get("hire") or "")}
+        for n, c in sorted(seen.items())
+    ]
     print(f"[pay_info] directory_roster n={len(rows)} "
+          f"with_hire_date={sum(1 for r in rows if r['hire_date'])} "
           f"{json.dumps({r['name']: r['status'] for r in rows})}")
     return rows
 
@@ -663,6 +705,7 @@ def scrape_one_pay_info(
         "employee_name": canonical_name,
         "search_name": profile_name,
         **parsed,
+        "hire_date": parse_hire_date(pane["text"]),
         "body_excerpt": pane["text"][:500],
         "inputs": pane["inputs"][:20],
     }
@@ -784,7 +827,12 @@ def _read_payroll_info(page, *, budget_s: float = _PAYROLL_READY_BUDGET_S) -> di
           return out;
         }"""
     ) or []
-    text = page.evaluate(
+    return {**state, "text": _page_text(page), "inputs": inputs}
+
+
+def _page_text(page) -> str:
+    """All visible text, through shadow roots (ADP's sdf-* components hide theirs)."""
+    return page.evaluate(
         """() => {
           const chunks = [];
           const walk = (node) => {
@@ -801,7 +849,65 @@ def _read_payroll_info(page, *, budget_s: float = _PAYROLL_READY_BUDGET_S) -> di
           return chunks.join(' ').replace(/\\s+/g, ' ').trim();
         }"""
     ) or ""
-    return {**state, "text": text, "inputs": inputs}
+
+
+# Profile tabs (``EMPLOYEE_PAYROLL`` is Payroll info). Read-only: a tab click only switches the pane.
+_PROFILE_TABS_JS = """() => [...document.querySelectorAll('[id^="EMPLOYEE_"]')]
+  .map(e => e.id).filter((id, i, all) => all.indexOf(id) === i)"""
+
+
+def read_profile_hire_date(page) -> tuple[Optional[str], dict]:
+    """Hire date from the open profile: the current pane first, then each other profile tab.
+
+    Returns ``(iso or None, {"tabs", "context"})`` — the second part is the breadcrumb on a miss.
+    """
+    text = _page_text(page)
+    iso = parse_hire_date(text)
+    tabs: list[str] = page.evaluate(_PROFILE_TABS_JS) or []
+    tried: list[str] = []
+    for tab in tabs:
+        if iso:
+            break
+        tried.append(tab)
+        page.evaluate("(id) => { const t = document.getElementById(id); if (t) t.click(); }", tab)
+        page.wait_for_timeout(1500)
+        dismiss_blocking_modals(page)
+        text = _page_text(page)
+        iso = parse_hire_date(text)
+    return iso, {"tabs": tried, "context": hire_context(text)}
+
+
+def scrape_hire_dates(
+    page,
+    names: list[str],
+    *,
+    dashboard_url: str,
+    aliases: Optional[dict] = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Directory name → ISO hire date for each name (backfill). Per-person failures are soft."""
+    found: dict[str, str] = {}
+    errors: dict[str, str] = {}
+    for name in names:
+        try:
+            profile = _open_profile(
+                page, name, dashboard_url=dashboard_url,
+                accepted_names=accepted_directory_names(name, aliases),
+            )
+            iso, where = read_profile_hire_date(page)
+            if iso:
+                found[profile] = iso
+                print(f"[pay_info] hire_date OK {profile} → {iso}")
+            else:
+                errors[name] = "no hire date on the profile"
+                print(
+                    f"[pay_info] BREADCRUMB hire_date_missing name={name!r} "
+                    f"tabs={where['tabs']} context={where['context']}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            errors[name] = f"{type(exc).__name__}: {exc}"
+            print(f"[pay_info] BREADCRUMB hire_date_failed name={name!r} err={errors[name]}")
+            dismiss_blocking_modals(page)
+    return found, errors
 
 
 def _capture_pay_info_failure(page, name: str) -> list[str]:
@@ -833,8 +939,12 @@ def scrape_pay_info_rates(
     dashboard_url: str,
     excluded: Optional[set[str]] = None,
     aliases: Optional[dict] = None,
+    hire_dates: Optional[dict[str, str]] = None,
 ) -> tuple[list[dict], dict[str, str]]:
-    """Scrape Payroll info rates for names. Per-employee failures are soft."""
+    """Scrape Payroll info rates for names. Per-employee failures are soft.
+
+    ``hire_dates`` (Directory name → ISO) collects any hire date the profile shows on the way.
+    """
     excluded = excluded or set()
     out: list[dict] = []
     errors: dict[str, str] = {}
@@ -844,6 +954,8 @@ def scrape_pay_info_rates(
                 page, name, dashboard_url=dashboard_url,
                 accepted_names=accepted_directory_names(name, aliases),
             )
+            if hire_dates is not None and raw.get("hire_date"):
+                hire_dates[raw["search_name"]] = raw["hire_date"]
             out.append(
                 rate_record(
                     name,
@@ -877,6 +989,7 @@ def write_pay_info_json(
     errors: Optional[dict[str, str]] = None,
     attempted: Optional[list[str]] = None,
     directory: Optional[list[dict]] = None,
+    hire_dates: Optional[dict[str, str]] = None,
 ) -> pathlib.Path:
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     path = DOWNLOADS_DIR / f"PayInfoRates-{datetime.date.today().isoformat()}.json"
@@ -889,6 +1002,7 @@ def write_pay_info_json(
                 "errors": errors or {},
                 "attempted": attempted or [r.get("employee_name") for r in rates],
                 "directory": directory or [],
+                "hire_dates": hire_dates or {},
             },
             indent=2,
         )
@@ -1260,6 +1374,67 @@ def write_directory_status_bq(payload: dict) -> int:
     )
 
 
+def hire_date_rows(payload: dict) -> list[dict]:
+    """One ``adp_hire_dates`` row per person: the profile's date over the Directory column's."""
+    store = payload.get("store") or "palmetto"
+    ts = payload.get("scraped_at_utc")
+    if not ts:
+        return []
+    by_name: dict[str, tuple[str, str]] = {}
+    for d in payload.get("directory") or []:
+        if (d.get("name") or "").strip() and d.get("hire_date"):
+            by_name[" ".join(d["name"].split())] = (d["hire_date"], "directory")
+    for name, iso in (payload.get("hire_dates") or {}).items():
+        if name.strip() and iso:
+            by_name[" ".join(name.split())] = (iso, "profile")
+    return [
+        {"store": store, "employee_name": name, "hire_date": iso, "source": source, "scraped_at_utc": ts}
+        for name, (iso, source) in sorted(by_name.items())
+    ]
+
+
+def write_hire_dates_bq(payload: dict) -> int:
+    """MERGE hire dates on (store, employee_name) — a re-read only refreshes them."""
+    os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+    from core.datastore import ensure_schema, load_rows  # noqa: PLC0415
+
+    rows = hire_date_rows(payload)
+    if not rows:
+        print("[pay_info] BREADCRUMB hire_dates_empty — console falls back to first ADP shift")
+        return 0
+    ensure_schema()
+    return load_rows(
+        "adp_hire_dates",
+        rows,
+        merge_keys=["store", "employee_name"],
+        column_bq_types={"scraped_at_utc": "TIMESTAMP", "hire_date": "DATE"},
+    )
+
+
+def backfill_hire_dates(page, *, store: str, aliases: Optional[dict] = None) -> dict:
+    """Every Active Directory person's hire date → ``adp_hire_dates`` (BHAGA_ADP_HIRE_DATES=1).
+
+    The Directory column (when ADP shows one) covers most people in one pass; the rest are
+    read from their profile. Read-only toward ADP.
+    """
+    dashboard_url = page.url
+    directory = directory_roster(page)
+    active = [d for d in directory if (d.get("status") or "").casefold() == "active"]
+    missing = [d["name"] for d in active if not d.get("hire_date")]
+    print(f"[pay_info] hire_dates active={len(active)} from_directory={len(active) - len(missing)} "
+          f"profile_reads={len(missing)}")
+    found, errors = scrape_hire_dates(page, missing, dashboard_url=dashboard_url, aliases=aliases)
+    payload = {
+        "store": store,
+        "scraped_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
+        "directory": directory,
+        "hire_dates": found,
+    }
+    n = write_hire_dates_bq(payload)
+    print(f"[pay_info] hire_dates MERGE {n} rows errors={len(errors)} {sorted(errors)}")
+    return {"rows": n, "errors": errors}
+
+
 def record_pay_info_outcomes(payload: dict) -> int:
     """MERGE tonight's per-name outcomes (re-loading the same JSON is a no-op)."""
     os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
@@ -1396,7 +1571,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--write-bq", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--headed", action="store_true", default=True)
+    ap.add_argument("--headless", action="store_true", help="No visible browser (Cloud Run jobs)")
     ap.add_argument("--assert-gaps", action="store_true", help="Only print remaining gaps")
+    ap.add_argument(
+        "--hire-dates",
+        action="store_true",
+        help="Backfill every Active person's ADP hire date into adp_hire_dates (Issue #450)",
+    )
     args = ap.parse_args(argv)
 
     os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
@@ -1404,6 +1585,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.assert_gaps:
         gaps = assert_no_missing_puncher_rates(days=args.days)
         return 1 if gaps else 0
+
+    if args.hire_dates:
+        from skills.adp_run_automation.runner import adp_session  # noqa: PLC0415
+        from skills.store_profile import load_aliases  # noqa: PLC0415
+
+        with adp_session(store=args.store, headed=not args.headless, slow_mo_ms=50) as (_ctx, page):
+            out = backfill_hire_dates(page, store=args.store, aliases=load_aliases(args.store))
+        return 0 if out["rows"] else 1
 
     names = list(args.names)
     if args.from_bq_punchers:

@@ -12,6 +12,8 @@ import {
   X,
 } from "lucide-react";
 import { saveScheduleRulesAction } from "@/app/labor/actions";
+import { NewHireTrainingRules } from "@/components/labor/NewHireTrainingRules";
+import type { TrainingStatus } from "@/lib/labor/new-hire-training";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +41,7 @@ import {
   type StaffingBasics,
   type StaffRule,
   type StaffRuleKind,
+  type TrainingRules,
 } from "@/lib/labor/schedule-inputs";
 import { cn } from "@/lib/utils";
 
@@ -345,8 +348,13 @@ function clock(min: number): string {
   return `${((h + 11) % 12) + 1}${m ? `:${String(m).padStart(2, "0")}` : ""} ${h < 12 ? "AM" : "PM"}`;
 }
 
+function trainingSummary(t: TrainingRules): string {
+  if (!t.experienced.length) return "";
+  return ` · new hires: ${t.openShifts} openers + ${t.closeShifts} closers beside ${t.experienced.length} experienced`;
+}
+
 function staffingSummary(s: StaffingBasics): string {
-  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}${s.unpaidMealMin ? ` · ${s.unpaidMealMin}m unpaid meal over ${s.mealAfterMin / 60}h` : ""}`;
+  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}${s.unpaidMealMin ? ` · ${s.unpaidMealMin}m unpaid meal over ${s.mealAfterMin / 60}h` : ""}${trainingSummary(s.training)}`;
 }
 
 function rulesSummary(v: RulesVersion): string {
@@ -542,10 +550,13 @@ export function ScheduleInputsPanel({
   savedVersion,
   history,
   forecast = [],
+  trainees = [],
 }: {
   rules: ScheduleRules;
   onChange: (next: ScheduleRules) => void;
   employees: string[];
+  /** Everyone inside the new-hire window and where their supervised shifts stand. */
+  trainees?: TrainingStatus[];
   /** Upcoming frozen deliveries from the Inventory restock schedule (read-only here). */
   deliveryDates: string[];
   goalHoursWeek?: number;
@@ -601,6 +612,11 @@ export function ScheduleInputsPanel({
     });
   const setStaffing = (patch: Partial<StaffingBasics>) =>
     onChange({ ...rules, staffing: { ...rules.staffing, ...patch } });
+  const setTraining = (patch: Partial<TrainingRules>) =>
+    setStaffing({ training: { ...rules.staffing.training, ...patch } });
+  const inTraining = rules.staffing.training.experienced.length
+    ? trainees.filter((t) => !t.cleared).length
+    : 0;
 
   const plural = (n: number, one: string, many = `${one}s`) =>
     `${n} ${n === 1 ? one : many}`;
@@ -608,6 +624,7 @@ export function ScheduleInputsPanel({
     `${rules.staffing.ordersPerPerson} orders/person`,
     goalHoursWeek != null ? `${goalHoursWeek}h/week cap` : null,
     plural(rules.staffRules.length, "staff rule"),
+    inTraining ? plural(inTraining, "new hire in training", "new hires in training") : null,
     plural(rules.dayRules.length, "day rule"),
     plural(deliveryDates.length, "upcoming delivery", "upcoming deliveries"),
   ].filter(Boolean);
@@ -1044,6 +1061,20 @@ export function ScheduleInputsPanel({
                   <Plus /> Add person
                 </Button>
               </div>
+            </Section>
+          </div>
+
+          <div className="md:col-span-2">
+            <Section
+              title="New-hire training"
+              hint="Every new hire is drafted only beside experienced staff until they have done the supervised openers and closers below, once. Until then, a shift no experienced person overlaps stays open. Hire dates come from ADP; without one, the first ADP shift counts."
+            >
+              <NewHireTrainingRules
+                training={rules.staffing.training}
+                employees={employees}
+                trainees={trainees}
+                onChange={setTraining}
+              />
             </Section>
           </div>
 

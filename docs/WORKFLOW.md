@@ -518,7 +518,7 @@ capture, operator setup): [`docs/contributing/dev-anywhere.md`](contributing/dev
 | `operator-console-ci.yml` | PR-time vitest + `next build` for `apps/operator-console` |
 | `operator-console-preview.yml` | per-PR IAP preview service + screenshot comment; pre-PR `preview/**` branch previews (24 h TTL); teardown on close / branch delete, hourly sweep |
 | `prod-read.yml` / `scripts/prod_read.py` | `/prod-read` comment → read-only prod query, result encrypted to the requester |
-| `prod-ops.yml` / `scripts/prod_ops.py` | `/prod-ops` comment → planned prod mutation gated on Environment `prod` approval; `tier()` lets dry runs and additive migrations run unapproved in `prod-auto` |
+| `prod-ops.yml` / `scripts/prod_ops.py` | `/prod-ops` comment → planned prod op, run at once in Environment `prod-auto` (no operator approval; PR approval is the operator's only gate); `tier()` labels it `safe` or `changes-prod` in the PR reply |
 | `pr-cost-gate.yml` + `scripts/cloud_agent.py record-cost` | prices a `Cursor-Agent:` PR's agent usage into BQ |
 | `jarvis-dev-gateway-deploy.yml` | deploys the Siri/Grok gateway from `main`; PR self-test on the runner |
 | `cloud-agent-pr.yml` + `scripts/cloud_git_identity.sh` | Cloud Agents commit/push as `jarvis-agent-bot328` (bot PAT from Secret Manager via Cursor OIDC; `provision_cloud_agent_identity.sh` once); first push of a `cursor/*` branch opens its draft PR as the bot and, when the PR has no `Closes #N`, a phase-tracking issue (`phase_state.py init --kickoff`) |

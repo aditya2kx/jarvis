@@ -1823,6 +1823,19 @@ their own times and hours so far this week — plus **Leave open**. A pick re-dr
 (caps, unavailability and last days still apply; a pick that stops fitting after a rule edit is skipped and
 flagged). Picks live in that browser's local storage per week until the week is saved to ADP, so they don't
 follow you to another device.
+**New-hire training (Issue #450)** is part of the same versioned rules (Schedule inputs › **New-hire
+training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hire from now on) is drafted only beside an experienced person
+(the operator picks the list; empty = gate off) for at least the set overlap (default 3 h) until they've
+done the set number of supervised openers and closers (default 2 + 2). It's one-time, counted over
+every ADP shift (past actuals + upcoming schedule), not per week. It's a hard rule: a slot no trainee
+can take with experienced staff present stays open, and the draft row says why. Pickers tag people
+**Experienced** / **New hire · 1/2 openers · 0/2 closers** and list blocked people (disabled) with the
+reason, so a manual ADP edit is informed. Hire date = `bhaga.adp_hire_dates` (migration 097, from the
+ADP pay_info profile; falls back to the first ADP shift). Every pay_info scrape refreshes it; backfill
+once with `/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1` (locally
+`BHAGA_ADP_HIRE_DATES=1 python3 -m agents.bhaga.scripts.daily_refresh --store palmetto`; one ADP login,
+may send an SMS OTP; reads only). Check:
+`bq query 'SELECT employee_name, hire_date, source, scraped_at_utc FROM bhaga.adp_hire_dates ORDER BY hire_date DESC'`.
 A daytime **Sync ADP** loads Timecard rows only through its target day (never today's in-progress punches).
 
 **Assign ADP open shifts (Issue #412, same flag).** Each future day in Coverage lists that day's ADP open
@@ -2614,8 +2627,9 @@ whose branch starts `<prefix>/<issue>-` deploys its own preview (label `issue`).
 (`git push origin :preview/<name> && git push origin HEAD:preview/<name>`). Never deploy a branch onto `operator-console`
 itself: a revision's env becomes the service template (`/prod-ops` refuses `CONSOLE_PREVIEW`).
 Cloud Agent prod access: `/prod-read` + `/prod-ops`
-([docs/contributing/dev-anywhere.md](docs/contributing/dev-anywhere.md)); dry runs and additive
-migrations run without approval (Environment `prod-auto`, audit trail in its deployments). `/prod-ops run-job-pr
+([docs/contributing/dev-anywhere.md](docs/contributing/dev-anywhere.md)). Every `/prod-ops` op runs at once,
+with no operator approval (Environment `prod-auto`; audit trail in its deployments and the PR reply, which
+labels the op `safe` or `changes-prod`). The operator's only gate is PR approval. `/prod-ops run-job-pr
 bhaga-daily-refresh …` runs a PR's code once on a temporary copy of the job (`bhaga-daily-refresh-pr<N>`,
 deleted after the run; a failed execution prints its status (and logs when the SA can read them) before
 the delete; if `prod-ops` prints `BREADCRUMB prod_ops cleanup failed`, run

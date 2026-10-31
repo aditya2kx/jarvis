@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { assignOpenShiftsAction, openShiftAssignStatusAction } from "@/app/labor/actions";
 import { ShiftPersonPicker } from "@/components/labor/ShiftPersonPicker";
+import { TRAINING_TEXT_CLASS } from "@/components/labor/StaffTag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -141,7 +142,14 @@ export function OpenShiftDayList({
                 {s.fill && who ? (
                   <ShiftPersonPicker shift={s.fill} onPick={(employee) => onPick(s.slot, employee ?? undefined)} />
                 ) : (
-                  <span className="text-xs text-muted-foreground">Nobody fits your rules — assign in ADP</span>
+                  <span className="flex flex-col gap-0.5 text-xs">
+                    <span className="text-muted-foreground">Nobody fits your rules — assign in ADP</span>
+                    {s.fill?.blocked?.map((b) => (
+                      <span key={b.employee} className={TRAINING_TEXT_CLASS}>
+                        {b.employee} · {b.reason}
+                      </span>
+                    ))}
+                  </span>
                 )}
               </span>
             </li>

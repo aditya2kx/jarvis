@@ -1058,6 +1058,21 @@ export function adpDirectoryRoster(store: string): Promise<AdpRosterRow[]> {
   );
 }
 
+export type HireDateRow = { employee: string; hire_date: string };
+
+/** ADP hire dates (migration 097), names resolved like the schedule — the new-hire window (Issue #450). */
+export function adpHireDates(store: string): Promise<HireDateRow[]> {
+  return q<HireDateRow>(
+    `SELECT COALESCE(al.canonical_name, h.employee_name) AS employee,
+            CAST(MAX(h.hire_date) AS STRING) AS hire_date
+     FROM ${fq("adp_hire_dates")} h
+     LEFT JOIN ${fq("employee_aliases")} al ON al.store = @store AND al.raw_name = h.employee_name
+     WHERE h.store = @store AND h.hire_date IS NOT NULL
+     GROUP BY employee`,
+    { store },
+  );
+}
+
 /** ADP unavailability (pending requests + approved blocks), names resolved like the schedule. */
 export function adpUnavailability(store: string): Promise<UnavailabilityRow[]> {
   return q<UnavailabilityRow>(

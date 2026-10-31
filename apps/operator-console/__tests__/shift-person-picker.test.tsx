@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ShiftDraftSummary } from "@/components/labor/ShiftDraftSummary";
+import { StaffTagsContext } from "@/components/labor/StaffTag";
+import type { StaffTag } from "@/lib/labor/new-hire-training";
 import type { DraftShift } from "@/lib/labor/shift-draft";
 
 afterEach(cleanup);
@@ -86,5 +88,51 @@ describe("ShiftDraftSummary person picker", () => {
     setup({ locked: true });
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.getByText("Doe, Alex")).toBeTruthy();
+  });
+});
+
+describe("new-hire training tags (Issue #450)", () => {
+  const tags = new Map<string, StaffTag>([
+    ["Doe, Alex", { kind: "experienced" }],
+    [
+      "New, Kai",
+      { kind: "training", label: "New hire · 1/2 openers · 0/2 closers", detail: "Hired Oct 15.", unsupervised: new Set() },
+    ],
+  ]);
+  const blocked = [{ employee: "New, Kai", reason: "New hire — needs 2 closers with experienced staff first" }];
+  const withTags = (shifts: DraftShift[]) =>
+    render(
+      <StaffTagsContext.Provider value={tags}>
+        <ShiftDraftSummary
+          dayLabel="Tue Oct 27"
+          shifts={shifts}
+          roster={[]}
+          weekStart="2026-10-26"
+          existingHours={100}
+          draftHours={7}
+          draftCount={1}
+          peakLeftHours={0}
+          onPick={vi.fn()}
+        />
+      </StaffTagsContext.Provider>,
+    );
+
+  it("tags people in the picker and lists blocked new hires as unpickable, with why", async () => {
+    withTags([{ ...shift, blocked }]);
+    fireEvent.click(screen.getByRole("combobox"));
+    const list = await screen.findByRole("listbox");
+    const opts = within(list).getAllByRole("option");
+    expect(opts[0]!.textContent).toContain("Experienced");
+    const kai = opts.find((o) => o.textContent?.includes("New, Kai"))!;
+    expect(kai.textContent).toContain("New hire · 1/2 openers · 0/2 closers");
+    expect(kai.textContent).toContain("needs 2 closers with experienced staff first");
+    expect(kai.getAttribute("aria-disabled")).toBe("true");
+    expect(within(list).getByText("Not yet — new-hire training")).toBeTruthy();
+  });
+
+  it("says why a shift is left open when only a new hire could take it", () => {
+    withTags([{ ...shift, employee: null, options: undefined, blocked }]);
+    expect(screen.getByText("Unassigned — posts as an open shift")).toBeTruthy();
+    expect(screen.getByText("New, Kai · New hire — needs 2 closers with experienced staff first")).toBeTruthy();
   });
 });

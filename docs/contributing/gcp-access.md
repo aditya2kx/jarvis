@@ -95,8 +95,8 @@ This is expected, not a broken install.
 4. Put Secret Manager versions from **recipe B** on a laptop/Cloud Shell that already
    has ADC.
 5. Read prod via a `/prod-read` PR comment (result encrypted to the agent's key) and
-   request mutations via `/prod-ops` (runs with CI WIF after operator approval in
-   Environment `prod`; dry runs and additive migrations skip approval) — [dev-anywhere.md](dev-anywhere.md). Both run CI identity, not the VM.
+   request mutations via `/prod-ops` (runs at once with CI WIF in Environment `prod-auto`;
+   no operator approval step) — [dev-anywhere.md](dev-anywhere.md). Both run CI identity, not the VM.
 
 **Do not:**
 
@@ -172,7 +172,7 @@ python3 scripts/cloud_agent_gcp.py id-token            # audience = console IAP 
 python3 scripts/console_preview.py --pr 385 /home /inventory --shots /tmp/shots [--mobile]
 ```
 
-Widen per resource, never project-wide; prod changes stay on `/prod-ops` (operator approval).
+Widen per resource, never project-wide; prod changes stay on `/prod-ops` (CI identity, audited per PR).
 
 ---
 

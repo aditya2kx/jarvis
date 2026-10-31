@@ -35,6 +35,15 @@ class ProdOpsTests(unittest.TestCase):
             with self.assertRaises(RequestError, msg=body):
                 parse_comment(body)
 
+    def test_experienced_staff_takes_first_names_only(self):
+        cmd = commands(parse_comment("/prod-ops experienced-staff Ana Ben"), "451")[0]
+        self.assertEqual(cmd[1:], ["-m", "agents.bhaga.scripts.set_experienced_staff", "--by", "prod-ops PR #451",
+                                   "Ana", "Ben"])
+        self.assertEqual(prod_ops.tier(parse_comment("/prod-ops experienced-staff Ana"), Path("."))[0], "changes-prod")
+        for body in ("/prod-ops experienced-staff", '/prod-ops experienced-staff "Doe, Ana"', "/prod-ops experienced-staff a;b"):
+            with self.assertRaises(RequestError, msg=body):
+                parse_comment(body)
+
     def test_run_job_with_env(self):
         cmd = commands(parse_comment("/prod-ops run-job bhaga-daily-refresh REFRESH_DATE=2026-10-10"))[0]
         self.assertEqual(cmd[:5], ["gcloud", "run", "jobs", "execute", "bhaga-daily-refresh"])

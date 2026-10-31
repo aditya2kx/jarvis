@@ -2870,6 +2870,15 @@ def _run_refresh(run_id: str) -> int:
         print(f"[unavailability-reminder] mode={reminder_mode} argv={argv}")
         return unavailability_reminder.main(argv)
 
+    # New-hire training backfill (Issue #450): every Active person's ADP hire date
+    # into adp_hire_dates. Read-only toward ADP; the nightly pay_info pass keeps it fresh.
+    if _env_skip("BHAGA_ADP_HIRE_DATES"):
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        from skills.adp_run_automation import pay_info_backend  # noqa: PLC0415
+        store = os.environ.get("BHAGA_STORE") or args.store
+        print(f"[adp-hire-dates] store={store} — Directory + profile hire dates → BQ")
+        return pay_info_backend.main(["--store", store, "--hire-dates", "--headless"])
+
     # Console Labor "Save to ADP as drafts" / "Publish week" (Issue #337): ADP
     # Team Schedule writes only, each an operator-confirmed click.
     write_mode = os.environ.get("BHAGA_ADP_SCHEDULE_WRITE", "").strip()

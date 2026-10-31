@@ -55,8 +55,17 @@ import {
   paidHours,
   type DraftPreference,
   type DraftShift,
+  type DraftTraining,
   type MealRule,
 } from "@/lib/labor/shift-draft";
+import {
+  isTraining,
+  staffTags,
+  trainingLeftOf,
+  trainingProgress,
+  type TrainingLeft,
+} from "@/lib/labor/new-hire-training";
+import { StaffTagsContext, TRAINING_TEXT_CLASS, useStaffTag } from "@/components/labor/StaffTag";
 import { savedPlan, type PushRow } from "@/lib/labor/schedule-push";
 import { planShift } from "@/lib/labor/saved-plan-shift";
 import {
@@ -102,6 +111,7 @@ import {
   type RulesVersion,
   type ScheduleRules,
   type StaffingBasics,
+  type TrainingRules,
 } from "@/lib/labor/schedule-inputs";
 import { payPeriodStartFor } from "@/lib/payroll/openPeriod";
 import { AdpScheduleFinalize } from "@/components/labor/AdpScheduleFinalize";
@@ -594,6 +604,27 @@ export function PersonName({
   );
 }
 
+/** New hire still training: their progress, or a warning when ADP has them on without experienced staff. */
+function TrainingLine({ employee, day }: { employee: string; day: string }) {
+  const tag = useStaffTag(employee);
+  if (tag?.kind !== "training") return null;
+  if (tag.unsupervised.has(day)) {
+    return (
+      <span
+        className="block truncate text-xs font-medium text-amber-700 dark:text-amber-400"
+        title={`No experienced person on long enough with them on this ADP shift. ${tag.detail}`}
+      >
+        new hire · no experienced overlap
+      </span>
+    );
+  }
+  return (
+    <span className={cn("block truncate text-xs", TRAINING_TEXT_CLASS)} title={tag.detail}>
+      {tag.label.toLowerCase()}
+    </span>
+  );
+}
+
 function CoverageTimeline({
   people,
   points,
@@ -875,7 +906,7 @@ function CoverageTimeline({
             const takers = open
               ? draftShifts
                   .filter((s) => s.fillsOpen && p.segments.some((g) => g.startMin === s.startMin && g.endMin === s.endMin))
-                  .map((s) => s.employee)
+                  .flatMap((s) => (s.employee ? [s.employee] : []))
               : [];
             return (
               <div key={p.employee} className="flex items-center gap-2">
@@ -891,6 +922,7 @@ function CoverageTimeline({
                       not active in ADP
                     </span>
                   ) : null}
+                  {open ? null : <TrainingLine employee={p.employee} day={activeDay} />}
                   {takers.length ? (
                     <span
                       className="block truncate text-xs"
@@ -1055,6 +1087,7 @@ export function LaborCoveragePanel({
   adpWriteEnabled = false,
   shiftApplyBlock = "off",
   availability,
+  trainingHistory,
 }: {
   /** Scopes the operator's draft picks in local storage. */
   store: string;
@@ -1089,6 +1122,12 @@ export function LaborCoveragePanel({
     events: UnavailabilityEventRow[];
     /** Scheduled ADP shifts from today on — the requests' clash lines. */
     upcoming: ScheduledShift[];
+  };
+  /** New-hire training (Issue #450): ADP hire dates, clocked shifts back past the widest window, ADP schedule ahead. */
+  trainingHistory?: {
+    hireDates: { employee: string; hire_date: string }[];
+    actuals: ActualShiftInput[];
+    upcoming: ScheduledShiftInput[];
   };
 }) {
   const strip = useMemo(
@@ -1235,6 +1274,32 @@ export function LaborCoveragePanel({
     }));
   }, [baseRoster, rules.staffRules, rules.staffing.maxWeekHours]);
 
+  // Every ADP day a new hire could have trained on — clocked before today, scheduled from today —
+  // across all labor types (a salaried manager on shift still counts as experienced staff).
+  const trainingDays = useMemo(() => {
+    const byDate = new Map<string, { a: ActualShiftInput[]; s: ScheduledShiftInput[] }>();
+    const at = (iso: string) => {
+      let g = byDate.get(iso);
+      if (!g) byDate.set(iso, (g = { a: [], s: [] }));
+      return g;
+    };
+    for (const r of trainingHistory?.actuals ?? []) if (r.date.slice(0, 10) < todayIso) at(r.date.slice(0, 10)).a.push(r);
+    for (const r of trainingHistory?.upcoming ?? []) if (r.date.slice(0, 10) >= todayIso) at(r.date.slice(0, 10)).s.push(r);
+    return new Map([...byDate].map(([iso, g]) => [iso, buildPersonDaysForDate(iso, g.a, g.s, null)]));
+  }, [trainingHistory, todayIso]);
+  const hireDates = useMemo(
+    () => new Map((trainingHistory?.hireDates ?? []).map((h) => [h.employee, h.hire_date])),
+    [trainingHistory],
+  );
+  const progressFor = useCallback(
+    (t: TrainingRules) =>
+      trainingProgress({ todayIso, rules: t, employees: baseRoster.map((a) => a.employee), hireDates, days: trainingDays }),
+    [todayIso, baseRoster, hireDates, trainingDays],
+  );
+  const training = rules.staffing.training;
+  const progress = useMemo(() => progressFor(training), [progressFor, training]);
+  const tags = useMemo(() => staffTags(training, progress), [training, progress]);
+
   const { chips, shortHours } = useMemo(() => {
     const short = new Map<string, number>();
     const summaries = strip.map((iso) => {
@@ -1360,12 +1425,18 @@ export function LaborCoveragePanel({
       deliveries: new Set(deliveryDates ?? []),
     };
     const limits = staffLimits(r.staffRules);
+    const experienced = new Set(r.staffing.training.experienced);
     const roster = baseRoster.map((a) => ({
       ...a,
       maxWeekHours: r.staffing.maxWeekHours,
       minWeekShifts: r.staffing.minWeekShifts,
+      experienced: experienced.has(a.employee),
       ...limits.get(a.employee),
     }));
+    // One-time requirement: what a new hire does in one week's draft counts toward the next.
+    const trainingLeft = new Map<string, TrainingLeft>(
+      [...progressFor(r.staffing.training).values()].filter(isTraining).map((t) => [t.employee, trainingLeftOf(t)]),
+    );
     const weekStarts = [
       ...new Set(
         strip
@@ -1393,6 +1464,24 @@ export function LaborCoveragePanel({
       const pins = new Map(Object.entries(weekPicks));
       const days = Array.from({ length: 7 }, (_, i) => shiftCalendarDate(weekStart, "day", i));
       const peopleByDay = new Map(days.map((iso) => [iso, lanesFor(iso)]));
+      // Cleared in an earlier week: no longer a new hire. A saved week's draft is discarded, so it counts nothing.
+      for (const [name, l] of trainingLeft) if (!l.open && !l.close) trainingLeft.delete(name);
+      const left = plans.has(weekStart) ? new Map(trainingLeft) : trainingLeft;
+      const trainingOn = (iso: string, drafted: DraftShift[]): DraftTraining | undefined =>
+        left.size
+          ? {
+              overlapMin: r.staffing.training.overlapMin,
+              left,
+              experiencedOn: [
+                ...buildPersonDaysForDate(iso, actuals, scheduledForCoverage, null)
+                  .filter((p) => experienced.has(p.employee))
+                  .flatMap((p) => p.segments.map((g): [number, number] => [g.startMin, g.endMin])),
+                ...drafted.flatMap((s): [number, number][] =>
+                  s.employee && experienced.has(s.employee) ? [[s.startMin, s.endMin]] : [],
+                ),
+              ],
+            }
+          : undefined;
       const weekHours = new Map<string, number>();
       const weekShifts = new Map<string, number>();
       let existingHours = 0;
@@ -1471,6 +1560,7 @@ export function LaborCoveragePanel({
           handoverOverlapMin: r.staffing.handoverOverlapMin,
           meal,
           maxShifts,
+          training: trainingOn(d.iso, d.shifts),
         });
 
       // ADP open shifts already count as coverage and hours; only suggest who takes them.
@@ -1489,6 +1579,7 @@ export function LaborCoveragePanel({
             unavailable: blocksOn(unavail, d.iso),
             meal,
             pins,
+            training: trainingOn(d.iso, d.shifts),
           });
           if (fill) d.shifts.push(fill);
         }
@@ -1540,6 +1631,7 @@ export function LaborCoveragePanel({
         let placed = false;
         for (const g of gaps) {
           const placedOnDay = peakPlaced.get(g.d.iso) ?? 0;
+          const leftBefore = new Map(left);
           const next = run(g.d, g.d.need, `${g.d.iso}|p${placedOnDay}`, 1, "regulars")[0];
           if (next && next.hours <= budget) {
             add(g.d, [next]);
@@ -1554,6 +1646,8 @@ export function LaborCoveragePanel({
             weekShifts.set(next.employee, (weekShifts.get(next.employee) ?? 1) - 1);
             const counts = shiftsInPeriod(next.date);
             counts.set(next.employee, (counts.get(next.employee) ?? 1) - 1);
+            const undo = leftBefore.get(next.employee);
+            if (undo) left.set(next.employee, undo);
           }
         }
         if (!placed) {
@@ -1610,6 +1704,7 @@ export function LaborCoveragePanel({
     plans,
     picks,
     active,
+    progressFor,
   ]);
   const drafts = useMemo(() => buildDrafts(rules), [buildDrafts, rules]);
   const savedDrafts = useMemo(
@@ -1886,270 +1981,273 @@ export function LaborCoveragePanel({
   const label = chipLabel(activeDay);
 
   return (
-    <Card>
-      <CardHeader className="gap-1">
-        <CardTitle className="text-sm font-semibold text-foreground">
-          Staffing coverage
-        </CardTitle>
-        <CardDescription>
-          Pick a day. Hover or tap the chart for who is on at that time; tap a name to change their shifts. On past days a
-          violet open shift is a slot nobody filled.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-5">
-        {demand?.length ? (
-          <ScheduleInputsPanel
-            rules={rules}
-            onChange={setEditedRules}
-            dirty={editedRules != null}
-            onDiscard={() => setEditedRules(null)}
-            savedVersion={savedVersion}
-            history={rulesHistory}
-            employees={baseRoster.map((a) => a.employee).sort()}
-            deliveryDates={deliveryDates ?? []}
-            goalHoursWeek={goalHoursWeek}
-            forecast={weekForecast}
-          />
-        ) : null}
-
-        <DayStrip
-          chips={chips}
-          selected={activeDay}
-          todayIso={todayIso}
-          shortHours={demand?.length ? shortHours : undefined}
-          draftShifts={showDraft ? drafts?.byDay : undefined}
-          requestCounts={requestCounts}
-          clashCounts={clashCounts}
-          onSelect={(next) => {
-            setDay(next);
-            syncDayInUrl(next);
-          }}
-        />
-
-        {availability ? (
-          <UnavailabilityRequests
-            pending={pending}
-            upcoming={availability.upcoming}
-            queue={unavailQueue}
-            canManage={canManage}
-            lastReadAt={pending[0]?.scraped_at ?? unavailability[0]?.scraped_at ?? null}
-            onStage={onStage}
-            onQueue={setUnavailQueue}
-            onOpen={(r) => {
-              const first = strip.find((iso) => iso >= todayIso && coversDate(r, iso));
-              if (first) {
-                setDay(first);
-                syncDayInUrl(first);
-              } else setTarget({ mode: "entry", row: r, date: r.first_date });
-            }}
-            onAdd={() => setTarget({ mode: "add", employee: null, date: activeDay > todayIso ? activeDay : todayIso })}
-            onHistory={() => setHistoryOpen(true)}
-          />
-        ) : null}
-
-        {showDraft && weekDraft ? (
-          <AdpScheduleFinalize
-            weekStart={weekDraft.weekStart}
-            changes={weekSuggestions}
-            onStage={stageSuggestions}
-            enabled={adpWriteEnabled}
-          />
-        ) : null}
-
-        <div className="flex flex-col gap-1">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-foreground">
-              Coverage — {label.weekday} {label.monthDay}
-            </h3>
-            <label
-              className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"
-              title="Suggested shifts and who could fill open shifts. ADP's own shifts always show."
-            >
-              <Switch checked={showDraft} onCheckedChange={toggleSuggestions} aria-label="Show suggested shifts" />
-              Show suggested shifts
-            </label>
-          </div>
-          {shortLine ? (
-            <p
-              data-testid="coverage-short"
-              className={cn(
-                "text-sm",
-                /short:/i.test(shortLine)
-                  ? "text-rose-600 dark:text-rose-400"
-                  : "text-muted-foreground",
-              )}
-            >
-              {shortLine}
-            </p>
+    <StaffTagsContext.Provider value={tags}>
+      <Card>
+        <CardHeader className="gap-1">
+          <CardTitle className="text-sm font-semibold text-foreground">
+            Staffing coverage
+          </CardTitle>
+          <CardDescription>
+            Pick a day. Hover or tap the chart for who is on at that time; tap a name to change their shifts. On past days a
+            violet open shift is a slot nobody filled.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">
+          {demand?.length ? (
+            <ScheduleInputsPanel
+              rules={rules}
+              onChange={setEditedRules}
+              dirty={editedRules != null}
+              onDiscard={() => setEditedRules(null)}
+              savedVersion={savedVersion}
+              history={rulesHistory}
+              employees={baseRoster.map((a) => a.employee).sort()}
+              trainees={[...progress.values()]}
+              deliveryDates={deliveryDates ?? []}
+              goalHoursWeek={goalHoursWeek}
+              forecast={weekForecast}
+            />
           ) : null}
-        </div>
 
-        {activeDay > todayIso ? (
-          <OpenShiftDayList
-            dayLabel={`${label.weekday} ${label.monthDay}`}
-            shifts={dayOpen}
-            adds={dayAdds}
-            selected={selected}
-            staged={stagedShift}
-            showSuggestions={showDraft}
-            onToggle={toggleOpen}
-            onPick={(slot, employee) => {
-              pickShift(weekOf(slot.slice(0, 10)), slot, employee);
-              if (employee) toggleOpen([slot], true);
+          <DayStrip
+            chips={chips}
+            selected={activeDay}
+            todayIso={todayIso}
+            shortHours={demand?.length ? shortHours : undefined}
+            draftShifts={showDraft ? drafts?.byDay : undefined}
+            requestCounts={requestCounts}
+            clashCounts={clashCounts}
+            onSelect={(next) => {
+              setDay(next);
+              syncDayInUrl(next);
             }}
-            onAdd={() => setTarget({ mode: "open-add", date: activeDay })}
-            onOpen={(x) => setTarget(openShiftTarget(x))}
-            onUndo={(key) => undoChanges([`s:${key}`])}
           />
-        ) : null}
 
-        {showDraft && weekDraft ? (
-          <ShiftDraftSummary
-            dayLabel={`${label.weekday} ${label.monthDay}`}
-            shifts={draftShifts}
-            roster={roster}
-            weekStart={weekDraft.weekStart}
-            existingHours={weekDraft.existingHours}
-            draftHours={weekDraft.draftHours}
-            draftCount={weekDraft.draftCount}
-            peakLeftHours={weekDraft.peakLeftHours}
-            breakdown={weekDraft.breakdown}
-            dayRules={rules.dayRules}
-            goalHoursWeek={goalHoursWeek}
-            locked={weekDraft.locked}
-            pickCount={weekDraft.pickCount}
-            droppedPicks={weekDraft.droppedPicks}
-            onPick={(slot, employee) => pickShift(weekDraft.weekStart, slot, employee)}
-            onResetPicks={() => resetPicks(weekDraft.weekStart)}
-          />
-        ) : null}
-
-        <CoverageTimeline
-          people={people}
-          points={points}
-          axisStart={bounds.startMin}
-          axisEnd={bounds.endMin}
-          scheduled={scheduledForCoverage}
-          activeDay={activeDay}
-          todayIso={todayIso}
-          need={need}
-          draftShifts={draftShifts}
-          off={dayOff}
-          activeStaff={active}
-          onPerson={(employee) => setTarget({ mode: "person", employee })}
-        />
-
-        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block size-2.5 rounded-sm" style={{ backgroundColor: PT }} />
-            Actual PT
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block size-2.5 rounded-sm" style={{ backgroundColor: FT }} />
-            Actual FT
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span
-              className="inline-block size-2.5 rounded-sm border border-dashed"
-              style={{ borderColor: SCHED, backgroundColor: `${SCHED}33` }}
+          {availability ? (
+            <UnavailabilityRequests
+              pending={pending}
+              upcoming={availability.upcoming}
+              queue={unavailQueue}
+              canManage={canManage}
+              lastReadAt={pending[0]?.scraped_at ?? unavailability[0]?.scraped_at ?? null}
+              onStage={onStage}
+              onQueue={setUnavailQueue}
+              onOpen={(r) => {
+                const first = strip.find((iso) => iso >= todayIso && coversDate(r, iso));
+                if (first) {
+                  setDay(first);
+                  syncDayInUrl(first);
+                } else setTarget({ mode: "entry", row: r, date: r.first_date });
+              }}
+              onAdd={() => setTarget({ mode: "add", employee: null, date: activeDay > todayIso ? activeDay : todayIso })}
+              onHistory={() => setHistoryOpen(true)}
             />
-            Scheduled
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span
-              className="inline-block size-2.5 rounded-sm border border-dashed"
-              style={{ borderColor: OPEN, background: OPEN_FILL }}
+          ) : null}
+
+          {showDraft && weekDraft ? (
+            <AdpScheduleFinalize
+              weekStart={weekDraft.weekStart}
+              changes={weekSuggestions}
+              onStage={stageSuggestions}
+              enabled={adpWriteEnabled}
             />
-            Open (unassigned)
-          </span>
-          {need ? (
-            <>
-              <span
-                className="inline-flex items-center gap-1.5"
-                title={`Larger of the minimum (${rules.staffing.minPeople}) and typical (median) orders for this weekday+hour over the last 8 weeks ÷ ${rules.staffing.ordersPerPerson} per person, rounded up, then your day & time rules`}
+          ) : null}
+
+          <div className="flex flex-col gap-1">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-medium text-foreground">
+                Coverage — {label.weekday} {label.monthDay}
+              </h3>
+              <label
+                className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"
+                title="Suggested shifts and who could fill open shifts. ADP's own shifts always show."
               >
-                <span
-                  className="inline-block h-0.5 w-3 rounded-full"
-                  style={{ backgroundColor: NEED }}
-                />
-                Needed
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span
-                  className="inline-block size-2.5 rounded-sm"
-                  style={{ backgroundColor: SHORT_TINT }}
-                />
-                Short
-              </span>
-            </>
+                <Switch checked={showDraft} onCheckedChange={toggleSuggestions} aria-label="Show suggested shifts" />
+                Show suggested shifts
+              </label>
+            </div>
+            {shortLine ? (
+              <p
+                data-testid="coverage-short"
+                className={cn(
+                  "text-sm",
+                  /short:/i.test(shortLine)
+                    ? "text-rose-600 dark:text-rose-400"
+                    : "text-muted-foreground",
+                )}
+              >
+                {shortLine}
+              </p>
+            ) : null}
+          </div>
+
+          {activeDay > todayIso ? (
+            <OpenShiftDayList
+              dayLabel={`${label.weekday} ${label.monthDay}`}
+              shifts={dayOpen}
+              adds={dayAdds}
+              selected={selected}
+              staged={stagedShift}
+              showSuggestions={showDraft}
+              onToggle={toggleOpen}
+              onPick={(slot, employee) => {
+                pickShift(weekOf(slot.slice(0, 10)), slot, employee);
+                if (employee) toggleOpen([slot], true);
+              }}
+              onAdd={() => setTarget({ mode: "open-add", date: activeDay })}
+              onOpen={(x) => setTarget(openShiftTarget(x))}
+              onUndo={(key) => undoChanges([`s:${key}`])}
+            />
           ) : null}
-          {newShifts(draftShifts).length ? (
+
+          {showDraft && weekDraft ? (
+            <ShiftDraftSummary
+              dayLabel={`${label.weekday} ${label.monthDay}`}
+              shifts={draftShifts}
+              roster={roster}
+              weekStart={weekDraft.weekStart}
+              existingHours={weekDraft.existingHours}
+              draftHours={weekDraft.draftHours}
+              draftCount={weekDraft.draftCount}
+              peakLeftHours={weekDraft.peakLeftHours}
+              breakdown={weekDraft.breakdown}
+              dayRules={rules.dayRules}
+              goalHoursWeek={goalHoursWeek}
+              locked={weekDraft.locked}
+              pickCount={weekDraft.pickCount}
+              droppedPicks={weekDraft.droppedPicks}
+              onPick={(slot, employee) => pickShift(weekDraft.weekStart, slot, employee)}
+              onResetPicks={() => resetPicks(weekDraft.weekStart)}
+            />
+          ) : null}
+
+          <CoverageTimeline
+            people={people}
+            points={points}
+            axisStart={bounds.startMin}
+            axisEnd={bounds.endMin}
+            scheduled={scheduledForCoverage}
+            activeDay={activeDay}
+            todayIso={todayIso}
+            need={need}
+            draftShifts={draftShifts}
+            off={dayOff}
+            activeStaff={active}
+            onPerson={(employee) => setTarget({ mode: "person", employee })}
+          />
+
+          <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block size-2.5 rounded-sm" style={{ backgroundColor: PT }} />
+              Actual PT
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block size-2.5 rounded-sm" style={{ backgroundColor: FT }} />
+              Actual FT
+            </span>
             <span className="inline-flex items-center gap-1.5">
               <span
                 className="inline-block size-2.5 rounded-sm border border-dashed"
-                style={{
-                  borderColor: DRAFT_COLOR,
-                  backgroundColor: `${DRAFT_COLOR}26`,
-                }}
+                style={{ borderColor: SCHED, backgroundColor: `${SCHED}33` }}
               />
-              Draft
+              Scheduled
             </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className="inline-block size-2.5 rounded-sm border border-dashed"
+                style={{ borderColor: OPEN, background: OPEN_FILL }}
+              />
+              Open (unassigned)
+            </span>
+            {need ? (
+              <>
+                <span
+                  className="inline-flex items-center gap-1.5"
+                  title={`Larger of the minimum (${rules.staffing.minPeople}) and typical (median) orders for this weekday+hour over the last 8 weeks ÷ ${rules.staffing.ordersPerPerson} per person, rounded up, then your day & time rules`}
+                >
+                  <span
+                    className="inline-block h-0.5 w-3 rounded-full"
+                    style={{ backgroundColor: NEED }}
+                  />
+                  Needed
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className="inline-block size-2.5 rounded-sm"
+                    style={{ backgroundColor: SHORT_TINT }}
+                  />
+                  Short
+                </span>
+              </>
+            ) : null}
+            {newShifts(draftShifts).length ? (
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  className="inline-block size-2.5 rounded-sm border border-dashed"
+                  style={{
+                    borderColor: DRAFT_COLOR,
+                    backgroundColor: `${DRAFT_COLOR}26`,
+                  }}
+                />
+                Draft
+              </span>
+            ) : null}
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block h-2.5 w-5 rounded-sm" style={{ background: OFF_HATCH }} />
+              Unavailable
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className="inline-block h-2.5 w-5 rounded-sm"
+                style={{ background: REQUEST_HATCH }}
+              />
+              Requested
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block size-2.5 rounded-sm ring-2 ring-destructive ring-inset" />
+              Clash
+            </span>
+          </div>
+
+          <AdpChangesTray
+            store={store}
+            changes={trayChanges}
+            blocks={{ shift: shiftApplyBlock, unavailability: availability?.applyBlock ?? "off" }}
+            notice={
+              dropped + stale
+                ? `${dropped + stale} of your changes no longer match ADP (changed there, or the day has passed) and were removed.`
+                : null
+            }
+            onUndo={undoChanges}
+            onDiscard={() => {
+              setQueue(() => []);
+              updateSelected(() => new Set());
+            }}
+            onApplied={onApplied}
+            onDismissNotice={() => {
+              setDropped(0);
+              setStale(0);
+            }}
+          />
+
+          <EntrySheet
+            target={target}
+            roster={baseRoster.map((a) => a.employee).sort()}
+            todayIso={todayIso}
+            offRows={offRows}
+            shifts={availability?.upcoming ?? []}
+            canAvailability={canManage}
+            stagedShift={stagedShift}
+            onTarget={setTarget}
+            onClose={() => setTarget(null)}
+            onStage={onStage}
+            onStageShift={stageShift}
+          />
+          {availability ? (
+            <UnavailabilityHistorySheet open={historyOpen} events={availability.events} onClose={() => setHistoryOpen(false)} />
           ) : null}
-          <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-5 rounded-sm" style={{ background: OFF_HATCH }} />
-            Unavailable
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span
-              className="inline-block h-2.5 w-5 rounded-sm"
-              style={{ background: REQUEST_HATCH }}
-            />
-            Requested
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block size-2.5 rounded-sm ring-2 ring-destructive ring-inset" />
-            Clash
-          </span>
-        </div>
-
-        <AdpChangesTray
-          store={store}
-          changes={trayChanges}
-          blocks={{ shift: shiftApplyBlock, unavailability: availability?.applyBlock ?? "off" }}
-          notice={
-            dropped + stale
-              ? `${dropped + stale} of your changes no longer match ADP (changed there, or the day has passed) and were removed.`
-              : null
-          }
-          onUndo={undoChanges}
-          onDiscard={() => {
-            setQueue(() => []);
-            updateSelected(() => new Set());
-          }}
-          onApplied={onApplied}
-          onDismissNotice={() => {
-            setDropped(0);
-            setStale(0);
-          }}
-        />
-
-        <EntrySheet
-          target={target}
-          roster={baseRoster.map((a) => a.employee).sort()}
-          todayIso={todayIso}
-          offRows={offRows}
-          shifts={availability?.upcoming ?? []}
-          canAvailability={canManage}
-          stagedShift={stagedShift}
-          onTarget={setTarget}
-          onClose={() => setTarget(null)}
-          onStage={onStage}
-          onStageShift={stageShift}
-        />
-        {availability ? (
-          <UnavailabilityHistorySheet open={historyOpen} events={availability.events} onClose={() => setHistoryOpen(false)} />
-        ) : null}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </StaffTagsContext.Provider>
   );
 }

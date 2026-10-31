@@ -3,6 +3,7 @@ import {
   adpUnavailability,
   adpUnavailabilityEvents,
   adpDirectoryRoster,
+  adpHireDates,
   adpScheduleHorizonEnd,
   laborActualShiftDays,
   laborActualsThrough,
@@ -52,7 +53,7 @@ import { scheduleRulesHistory } from "@/lib/labor/schedule-rules-store";
 import type { RulesVersion } from "@/lib/labor/schedule-inputs";
 import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
 import { isConsolePreview } from "@/lib/config/preview";
-import type { ScheduledShift } from "@/lib/labor/unavailability";
+import { TRAINING_HISTORY_FROM } from "@/lib/labor/new-hire-training";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { InfoNote } from "@/components/shell/InfoNote";
 import { FilterSelect } from "@/components/filters/FilterSelect";
@@ -119,6 +120,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/tables/DataTable";
 import type {
   AdpRosterRow,
+  HireDateRow,
   LaborActualShiftDayRow,
   LaborConcurrentRow,
   LaborDailyRow,
@@ -216,8 +218,10 @@ export default async function LaborPage({
   let rulesHistory: RulesVersion[] = [];
   let unavailability: UnavailabilityRow[] = [];
   let unavailabilityEvents: UnavailabilityEventRow[] = [];
-  let upcomingShifts: ScheduledShift[] = [];
+  let upcomingShifts: LaborScheduledShiftDayRow[] = [];
   let adpRosterRows: AdpRosterRow[] = [];
+  let hireDates: HireDateRow[] = [];
+  let trainingActuals: LaborActualShiftDayRow[] = [];
   let wageRates: LaborWageRates = { byName: {}, avgPartTime: null };
   let savedPushRows: PushRow[] = [];
   let fixesNotInHours: PunchFixNotInHoursRow[] = [];
@@ -300,6 +304,8 @@ export default async function LaborPage({
       pushRows,
       notInHours,
       unavailEvents,
+      hires,
+      pastShifts,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -359,7 +365,19 @@ export default async function LaborPage({
       punchFixesNotInHours(DEFAULT_STORE, win.start, win.end).catch(() => []),
       // Table lands with migration 092; until then history is simply empty.
       can("availability") ? adpUnavailabilityEvents(DEFAULT_STORE).catch(() => []) : Promise.resolve([]),
+      // New-hire training (#450): table lands with migration 097; until then the first ADP shift stands in.
+      can("coverage") ? adpHireDates(DEFAULT_STORE).catch(() => []) : Promise.resolve([]),
+      can("coverage")
+        ? laborActualShiftDays({
+            start: TRAINING_HISTORY_FROM,
+            end: todayIso,
+            label: "New-hire history",
+            preset: "custom",
+          }).catch(() => [])
+        : Promise.resolve([]),
     ]);
+    hireDates = hires;
+    trainingActuals = pastShifts;
     unavailabilityEvents = unavailEvents;
     savedPushRows = pushRows;
     adpRosterRows = directoryRoster;
@@ -866,6 +884,7 @@ export default async function LaborPage({
                 events: unavailabilityEvents,
                 upcoming: upcomingShifts,
               }}
+              trainingHistory={{ hireDates, actuals: trainingActuals, upcoming: upcomingShifts }}
             />
             </CollapsibleSection>
           ) : null}

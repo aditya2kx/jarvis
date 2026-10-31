@@ -3003,13 +3003,14 @@ def download_adp_bundle(
                 print(f"[adp_bundle] pay_info refresh for {len(names)}: {names}")
                 page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
                 page.wait_for_timeout(1500)
+                hire_dates: dict[str, str] = {}
                 rates, scrape_errors = pib.scrape_pay_info_rates(
                     page, names, dashboard_url=dashboard_url,
-                    excluded=set(excluded), aliases=aliases,
+                    excluded=set(excluded), aliases=aliases, hire_dates=hire_dates,
                 )
                 path = pib.write_pay_info_json(
                     rates, store=store, errors=scrape_errors, attempted=names,
-                    directory=result.get("directory_roster"),
+                    directory=result.get("directory_roster"), hire_dates=hire_dates,
                 )
                 result["pay_info_json"] = path
                 print(f"[adp_bundle] pay_info OK → {path} ({len(rates)} rates)")

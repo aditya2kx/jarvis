@@ -3,6 +3,7 @@
 import { ChevronRightIcon, PlusIcon, Undo2Icon } from "lucide-react";
 import { ShiftPersonPicker } from "@/components/labor/ShiftPersonPicker";
 import { StagedBadge } from "@/components/labor/StagedBadge";
+import { TRAINING_TEXT_CLASS } from "@/components/labor/StaffTag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
@@ -185,7 +186,14 @@ export function OpenShiftDayList({
                     onPick={(employee) => onPick(s.slot, employee ?? undefined)}
                   />
                 ) : (
-                  <span className="text-xs text-muted-foreground">Nobody fits your rules</span>
+                  <span className="flex flex-col gap-0.5 text-xs">
+                    <span className="text-muted-foreground">Nobody fits your rules</span>
+                    {s.fill?.blocked?.map((b) => (
+                      <span key={b.employee} className={TRAINING_TEXT_CLASS}>
+                        {b.employee} · {b.reason}
+                      </span>
+                    ))}
+                  </span>
                 )}
               </span>
               {change ? null : (

@@ -1060,7 +1060,7 @@ export function adpDirectoryRoster(store: string): Promise<AdpRosterRow[]> {
 
 export type HireDateRow = { employee: string; hire_date: string };
 
-/** ADP hire dates (migration 096), names resolved like the schedule — the new-hire window (Issue #450). */
+/** ADP hire dates (migration 097), names resolved like the schedule — the new-hire window (Issue #450). */
 export function adpHireDates(store: string): Promise<HireDateRow[]> {
   return q<HireDateRow>(
     `SELECT COALESCE(al.canonical_name, h.employee_name) AS employee,

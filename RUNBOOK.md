@@ -1830,7 +1830,7 @@ done the set number of supervised openers and closers (default 2 + 2). It's one-
 every ADP shift (past actuals + upcoming schedule), not per week. It's a hard rule: a slot no trainee
 can take with experienced staff present stays open, and the draft row says why. Pickers tag people
 **Experienced** / **New hire · 1/2 openers · 0/2 closers** and list blocked people (disabled) with the
-reason, so a manual ADP edit is informed. Hire date = `bhaga.adp_hire_dates` (migration 096, from the
+reason, so a manual ADP edit is informed. Hire date = `bhaga.adp_hire_dates` (migration 097, from the
 ADP pay_info profile; falls back to the first ADP shift). Every pay_info scrape refreshes it; backfill
 once with `/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1` (locally
 `BHAGA_ADP_HIRE_DATES=1 python3 -m agents.bhaga.scripts.daily_refresh --store palmetto`; one ADP login,

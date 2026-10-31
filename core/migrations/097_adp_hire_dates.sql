@@ -1,4 +1,4 @@
--- 096_adp_hire_dates.sql
+-- 097_adp_hire_dates.sql
 -- ADP hire date per person, read by the nightly pay_info pass (Directory column or the
 -- employee profile). The Operator Console's shift draft keeps anyone hired in the
 -- new-hire window beside experienced staff until their supervised openers / closers

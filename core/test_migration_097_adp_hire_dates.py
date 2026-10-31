@@ -1,4 +1,4 @@
-"""Tests for core/migrations/096_adp_hire_dates.sql (Issue #450).
+"""Tests for core/migrations/097_adp_hire_dates.sql (Issue #450).
 
 Structural only (no live BQ here): one idempotent CREATE with the columns the pay_info writer MERGEs.
 """
@@ -10,7 +10,7 @@ import unittest
 from core.datastore import _split_statements
 
 _MIGRATION = (
-    pathlib.Path(__file__).parent / "migrations" / "096_adp_hire_dates.sql"
+    pathlib.Path(__file__).parent / "migrations" / "097_adp_hire_dates.sql"
 ).read_text()
 
 

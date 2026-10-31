@@ -369,7 +369,7 @@ export default async function LaborPage({
       punchFixesNotInHours(DEFAULT_STORE, win.start, win.end).catch(() => []),
       // Table lands with migration 092; until then history is simply empty.
       can("availability") ? adpUnavailabilityEvents(DEFAULT_STORE).catch(() => []) : Promise.resolve([]),
-      // New-hire training (#450): table lands with migration 096; until then the first ADP shift stands in.
+      // New-hire training (#450): table lands with migration 097; until then the first ADP shift stands in.
       can("coverage") ? adpHireDates(DEFAULT_STORE).catch(() => []) : Promise.resolve([]),
       can("coverage")
         ? laborActualShiftDays({

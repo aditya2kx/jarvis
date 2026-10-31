@@ -24,7 +24,7 @@ Branch `cursor/450-labor-shift-scheduling-for-new-hires-joined-in-past-3-months-
 
 ### Data — ADP hire date (Python, read-only toward ADP)
 
-Migration `core/migrations/096_adp_hire_dates.sql`:
+Migration `core/migrations/097_adp_hire_dates.sql`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS `jarvis-bhaga-prod.bhaga.adp_hire_dates` (
@@ -120,7 +120,7 @@ runtime through the rules (preference 29). Silent-wrong-number test: no money or
 
 ### M1 — hire-date scrape + migration (Opus)
 
-`pay_info_backend.py`, `backfill_from_downloads.py`, `daily_refresh.py`, migration 096, tests in
+`pay_info_backend.py`, `backfill_from_downloads.py`, `daily_refresh.py`, migration 097, tests in
 `skills/adp_run_automation/test_pay_info_backend.py` (parse formats, missing date, MERGE rows,
 backfill mode wiring).
 

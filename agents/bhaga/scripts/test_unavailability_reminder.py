@@ -66,6 +66,29 @@ class Flags(unittest.TestCase):
         self.assertEqual(ur.mention("Kim, Sam", members), "@Sam Kim")
         self.assertEqual(ur.mention("Nobody, Here", members), "@Here Nobody")
 
+    def test_mention_alias_maps_payroll_name_to_clickup_id(self):
+        members = [
+            {"id": "101332333", "username": "Linhchi Huynh"},
+            {"id": "95375869", "username": "Dolce Johnson"},
+        ]
+        aliases = {"Huynh, Hillary": "101332333"}
+        self.assertEqual(
+            ur.mention("Huynh, Hillary", members, aliases),
+            "[@Linhchi Huynh](#user_mention#101332333)",
+        )
+        # Fuzzy match still wins when it is unique; alias unused.
+        self.assertEqual(
+            ur.mention("Johnson, Dolce", members, aliases),
+            "[@Dolce Johnson](#user_mention#95375869)",
+        )
+        # Alias without a member row still emits a chip with the payroll display name.
+        self.assertEqual(
+            ur.mention("Ghost, Pat", members, {"Ghost, Pat": "999"}),
+            "[@Pat Ghost](#user_mention#999)",
+        )
+        # No alias → plain @.
+        self.assertEqual(ur.mention("Huynh, Hillary", members), "@Hillary Huynh")
+
 
 class Gate(unittest.TestCase):
     def at(self, day, hour, minute=0):

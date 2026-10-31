@@ -96,7 +96,7 @@ This is expected, not a broken install.
    has ADC.
 5. Read prod via a `/prod-read` PR comment (result encrypted to the agent's key) and
    request mutations via `/prod-ops` (runs with CI WIF after operator approval in
-   Environment `prod`) — [dev-anywhere.md](dev-anywhere.md). Both run CI identity, not the VM.
+   Environment `prod`; dry runs and additive migrations skip approval) — [dev-anywhere.md](dev-anywhere.md). Both run CI identity, not the VM.
 
 **Do not:**
 

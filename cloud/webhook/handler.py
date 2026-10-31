@@ -160,6 +160,7 @@ _BQ_DATASET = os.environ.get("BHAGA_BQ_DATASET", "bhaga")
 _BQ_STORE_CONFIG_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.store_config"
 _BQ_TRAINING_SHIFTS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.training_shifts"
 _BQ_EMPLOYEE_ALIASES_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.employee_aliases"
+_BQ_CLICKUP_MENTION_ALIASES_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.clickup_mention_aliases"
 _BQ_RESTOCK_SCHEDULE_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_schedule"
 _BQ_RESTOCK_ORDERS_TABLE = f"{_BQ_PROJECT}.{_BQ_DATASET}.inventory_restock_orders"
 
@@ -815,6 +816,33 @@ def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
             "text": ":hourglass_flowing_sand: alias set — posting result shortly.",
         })
 
+    # clickup-mention set "Last, First" <user_id>
+    mention_set_match = re.match(
+        r'^clickup-mention\s+set\s+"([^"]+)"\s+(\d+)\s*$',
+        command_text, re.IGNORECASE,
+    )
+    if mention_set_match:
+        canonical = mention_set_match.group(1).strip()
+        user_id = mention_set_match.group(2).strip()
+        _dispatch_async(_handle_clickup_mention_set, canonical, user_id, form, response_url)
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": ":hourglass_flowing_sand: clickup-mention set — posting result shortly.",
+        })
+
+    # clickup-mention rm "Last, First"
+    mention_rm_match = re.match(
+        r'^clickup-mention\s+rm\s+"([^"]+)"\s*$',
+        command_text, re.IGNORECASE,
+    )
+    if mention_rm_match:
+        canonical = mention_rm_match.group(1).strip()
+        _dispatch_async(_handle_clickup_mention_rm, canonical, form, response_url)
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": ":hourglass_flowing_sand: clickup-mention rm — posting result shortly.",
+        })
+
     # exclude set "Last, First" [YYYY-MM-DD]
     exclude_set_match = re.match(
         r'^exclude\s+set\s+"([^"]+)"(?:\s+(\d{4}-\d{2}-\d{2}))?$',
@@ -855,6 +883,8 @@ def _handle_slash_command(form: dict, sandbox: bool = False) -> Response:
             "  `/bhaga-cloud training set \"Last, First\" YYYY-MM-DD [note]` — mark a shift as training\n"
             "  `/bhaga-cloud training rm \"Last, First\" YYYY-MM-DD` — remove a training shift mark\n"
             "  `/bhaga-cloud alias set <raw_name> \"Last, First\"` — add employee alias\n"
+            "  `/bhaga-cloud clickup-mention set \"Last, First\" <user_id>` — map payroll name → ClickUp id for reminder chips\n"
+            "  `/bhaga-cloud clickup-mention rm \"Last, First\"` — remove a ClickUp mention alias\n"
             "  `/bhaga-cloud exclude set \"Last, First\" [YYYY-MM-DD]` — mark training exclusion through date\n"
             "  `/bhaga-cloud restock` — open a modal to register a restock delivery date and "
             "upload/reset its actual order CSV (base,quantity)\n"
@@ -1066,6 +1096,76 @@ def _handle_alias_set(raw_name: str, canonical: str, form: dict, response_url: s
         log.error("alias set failed: %s", exc)
         _post_response_url(response_url, {"response_type": "ephemeral",
                                           "text": f":x: alias set failed: {exc}"})
+
+
+def _handle_clickup_mention_set(
+    canonical: str, user_id: str, form: dict, response_url: str = "",
+) -> None:
+    """MERGE payroll canonical → ClickUp user_id for reminder @mentions (#447)."""
+    if _bq is None:
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": ":warning: BigQuery not available."})
+        return
+    store = os.environ.get("BHAGA_STORE", "palmetto")
+    user_name = form.get("user_name") or form.get("user_id") or "slack"
+    try:
+        fq = f"`{_BQ_CLICKUP_MENTION_ALIASES_TABLE}`"
+        _bq.query(  # type: ignore[union-attr]
+            f"MERGE {fq} T"
+            f" USING (SELECT @store AS store, @canonical AS canonical_name) S"
+            f" ON T.store=S.store AND T.canonical_name=S.canonical_name"
+            f" WHEN MATCHED THEN UPDATE SET"
+            f"   clickup_user_id=@uid, updated_at=CURRENT_TIMESTAMP(), updated_by=@by"
+            f" WHEN NOT MATCHED THEN INSERT"
+            f"   (store,canonical_name,clickup_user_id,notes,updated_at,updated_by)"
+            f"   VALUES (@store,@canonical,@uid,'',CURRENT_TIMESTAMP(),@by)",
+            job_config=_bq_param_config([
+                ("store", "STRING", store),
+                ("canonical", "STRING", canonical),
+                ("uid", "STRING", user_id),
+                ("by", "STRING", user_name),
+            ]),
+        ).result()
+        _post_response_url(response_url, {
+            "response_type": "ephemeral",
+            "text": (
+                f":white_check_mark: ClickUp mention alias: *{canonical}* → "
+                f"`{user_id}` (by {user_name})"
+            ),
+        })
+    except Exception as exc:
+        log.error("clickup-mention set failed: %s", exc)
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": f":x: clickup-mention set failed: {exc}"})
+
+
+def _handle_clickup_mention_rm(canonical: str, form: dict, response_url: str = "") -> None:
+    """Delete a clickup_mention_aliases row (#447)."""
+    if _bq is None:
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": ":warning: BigQuery not available."})
+        return
+    store = os.environ.get("BHAGA_STORE", "palmetto")
+    try:
+        fq = f"`{_BQ_CLICKUP_MENTION_ALIASES_TABLE}`"
+        job = _bq.query(  # type: ignore[union-attr]
+            f"DELETE FROM {fq} WHERE store=@store AND canonical_name=@canonical",
+            job_config=_bq_param_config([
+                ("store", "STRING", store),
+                ("canonical", "STRING", canonical),
+            ]),
+        )
+        job.result()
+        n = getattr(job, "num_dml_affected_rows", None)
+        note = f" ({n} row)" if n is not None else ""
+        _post_response_url(response_url, {
+            "response_type": "ephemeral",
+            "text": f":white_check_mark: Removed ClickUp mention alias for *{canonical}*{note}",
+        })
+    except Exception as exc:
+        log.error("clickup-mention rm failed: %s", exc)
+        _post_response_url(response_url, {"response_type": "ephemeral",
+                                          "text": f":x: clickup-mention rm failed: {exc}"})
 
 
 def _handle_exclude_set(name: str, through_date: str, form: dict, response_url: str = "") -> None:

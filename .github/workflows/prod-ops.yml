@@ -1,12 +1,13 @@
 name: Prod ops
 
-# Approval-gated prod mutations for Cursor Cloud Agents (scripts/prod_ops.py).
-# `/prod-ops …` comment (owner/collaborators) → guard plans the exact commands and
-# replies with them → the `run` job waits in GitHub Environment `prod` until the
-# operator approves (web or GitHub mobile) → runs with the CI workload identity.
+# Prod operations for Cursor Cloud Agents (scripts/prod_ops.py).
+# `/prod-ops …` comment (owner/collaborators) → guard plans the exact commands, sorts
+# them with prod_ops.tier() and replies with them → `run` executes with the CI workload
+# identity: auto ops at once in Environment `prod-auto` (no reviewer), everything else
+# after the operator approves in Environment `prod` (web or GitHub mobile).
 #
-# The guard refuses to continue unless `prod` requires a reviewer: GitHub silently
-# auto-creates a referenced environment WITHOUT protection, which would turn this
+# A gated op is refused unless `prod` requires a reviewer: GitHub silently
+# auto-creates a referenced environment WITHOUT protection, which would turn it
 # into an unreviewed prod write.
 #
 # issue_comment resolves from main (post-merge only); the pull_request self-test
@@ -31,22 +32,38 @@ jobs:
     if: >-
       (github.event_name == 'issue_comment' &&
        startsWith(github.event.comment.body, '/prod-ops') &&
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+       (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+        github.event.comment.user.login == 'cursor[bot]')) ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     outputs:
-      head_sha: ${{ steps.plan.outputs.head_sha }}
+      head_sha: ${{ steps.head.outputs.head_sha }}
+      tier: ${{ steps.plan.outputs.tier }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
-      # Creating/protecting an environment needs repo-admin (owner-only), so the
-      # operator sets the reviewer once; until then comments fail closed and PRs warn.
-      - name: Require operator approval on environment `prod`
+      - name: PR head
+        id: head
+        if: github.event_name == 'issue_comment' && github.event.issue.pull_request
         env:
           ISSUE: ${{ github.event.issue.number }}
+        run: echo "head_sha=$(gh pr view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)" >> "$GITHUB_OUTPUT"
+
+      # tier() reads the PR's migrations as data; the guard never runs PR code.
+      - name: Check out PR head
+        if: steps.head.outputs.head_sha != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.head.outputs.head_sha }}
+          path: pr-head
+
+      # Creating/protecting an environment needs repo-admin (owner-only), so the
+      # operator sets the reviewer once; until then gated comments fail closed and PRs warn.
+      - name: Is environment `prod` protected
+        id: protected
         run: |
           protected() {
             curl -fsS "https://api.github.com/repos/$GITHUB_REPOSITORY/environments/prod" 2>/dev/null | python3 -c '
@@ -56,17 +73,8 @@ jobs:
           ' 2>/dev/null || echo missing
           }
           STATE="$(protected)"
-          if [ "$STATE" != "yes" ]; then
-            MSG="prod-ops: GitHub Environment 'prod' is '$STATE' (needs a required reviewer). Settings → Environments → New environment 'prod' → Required reviewers → add the operator."
-            if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-              echo "::warning::$MSG"
-              exit 0
-            fi
-            echo "::error::$MSG Refusing."
-            gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -X POST -f body="\`$MSG\` Refusing." >/dev/null
-            exit 1
-          fi
-          echo "prod-ops: environment prod requires reviewer approval"
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+          [ "$STATE" = "yes" ] || echo "::warning::prod-ops: GitHub Environment 'prod' is '$STATE' — gated ops will be refused"
 
       - name: Plan
         id: plan
@@ -74,6 +82,8 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
           ISSUE: ${{ github.event.issue.number }}
           IS_PR: ${{ github.event.issue.pull_request != null }}
+          PROD_STATE: ${{ steps.protected.outputs.state }}
+          HEAD_SHA: ${{ steps.head.outputs.head_sha }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             for body in "/prod-ops whoami" "/prod-ops console-env set CONSOLE_EXAMPLE_FLAG=1" \
@@ -81,19 +91,31 @@ jobs:
                         "/prod-ops console-env set CONSOLE_PREVIEW=1"; do
               COMMENT_BODY="$body" python3 scripts/prod_ops.py plan || true
             done
+            for body in "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_SCHEDULE_DRY_RUN=1" \
+                        "/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_DRY_RUN=1"; do
+              COMMENT_BODY="$body" IS_PR=true ISSUE=1 python3 scripts/prod_ops.py plan || true
+            done
             exit 0
           fi
+          [ -n "$HEAD_SHA" ] && export PROD_OPS_CODE_ROOT="$GITHUB_WORKSPACE/pr-head"
           set +e
           PLAN="$(python3 scripts/prod_ops.py plan)"; RC=$?
           set -e
           echo "$PLAN"
-          if [ "$IS_PR" = "true" ]; then
-            echo "head_sha=$(gh pr view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)" >> "$GITHUB_OUTPUT"
-          fi
           RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           if [ "$RC" = "0" ]; then
+            read -r TIER WHY < <(printf '%s' "$PLAN" | python3 -c 'import json,sys; p=json.load(sys.stdin); print(p["tier"], p["why"])')
             CMDS="$(printf '%s' "$PLAN" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["commands"]))')"
-            BODY="**prod-ops** awaiting operator approval — [review deployment]($RUN_URL):"$'\n```\n'"$CMDS"$'\n```'
+            echo "tier=$TIER" >> "$GITHUB_OUTPUT"
+            if [ "$TIER" = "auto" ]; then
+              HEAD="**prod-ops** running now, no approval needed ($WHY) — [run]($RUN_URL):"
+            elif [ "$PROD_STATE" = "yes" ]; then
+              HEAD="**prod-ops** awaiting operator approval ($WHY) — [review deployment]($RUN_URL):"
+            else
+              HEAD="\`prod-ops: GitHub Environment 'prod' is '$PROD_STATE' (needs a required reviewer). Settings → Environments → 'prod' → Required reviewers → add the operator.\` Refusing:"
+              RC=1
+            fi
+            BODY="$HEAD"$'\n```\n'"$CMDS"$'\n```'
           else
             BODY="\`$PLAN\`"
           fi
@@ -104,11 +126,13 @@ jobs:
     needs: guard
     if: github.event_name == 'issue_comment'
     runs-on: ubuntu-latest
-    environment: prod
+    # Referencing `prod-auto` creates it on first use, unprotected by design: only tier() "auto" ops land there.
+    environment: ${{ needs.guard.outputs.tier == 'auto' && 'prod-auto' || 'prod' }}
     env:
       GH_TOKEN: ${{ github.token }}
       ISSUE: ${{ github.event.issue.number }}
       HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+      PROD_OPS_TIER: ${{ needs.guard.outputs.tier }}
     steps:
       - uses: actions/checkout@v4
 

@@ -152,28 +152,45 @@ class CreateOpenShiftConfirm(unittest.TestCase):
         with self.assertRaises(wb.UnconfirmedSave):
             self._create("Shift details Eligibility Previous Save draft Publish", counts_match=False)
 
-    def _publish(self, panes):
-        calls, frame = [], mock.MagicMock()
-        frame.evaluate.return_value = ["Previous", "Save draft", "Publish [off]"]
+    WIZARD = "1. SHIFT DETAILS 2. ELIGIBILITY Shift details 5:00 AM Eligibility 4 employees are eligible"
+    CONFIRM = WIZARD + " PreviousSave draftPublish Publish to employees When published, an employee can claim"
+
+    def _publish(self, panes, *, confirm_buttons=("Cancel", "Publish"), marked=1):
+        """``panes``: _pane_text reads in order (the last repeats)."""
+        calls, frame, seq = [], mock.MagicMock(), list(panes)
+        frame.evaluate.side_effect = lambda js, *_a: (
+            list(confirm_buttons) if js == wb.MARK_CONFIRM_JS else ["Previous", "Save draft", "Publish [off]"])
+        frame.locator.return_value.count.return_value = marked
+        frame.locator.return_value.first.click.side_effect = lambda **_k: calls.append("confirm")
         with mock.patch.object(wb, "_open_action"), \
              mock.patch.object(wb, "_fill_times"), \
              mock.patch.object(wb, "_click", side_effect=lambda _f, _p, what: calls.append(what)), \
              mock.patch.object(wb, "_visible_button", return_value=object()), \
-             mock.patch.object(wb, "_pane_text", side_effect=panes), \
+             mock.patch.object(wb, "_pane_text", side_effect=lambda _f: seq.pop(0) if len(seq) > 1 else seq[0]), \
              mock.patch.object(wb, "_wait_for", side_effect=lambda _p, check, *_a: check()), \
              mock.patch.object(wb, "_back_out", side_effect=lambda _f, _p: calls.append("back_out")):
             shown = wb.create_open_shift(frame, mock.Mock(), date_iso="2026-12-14",
                                          start_min=300, end_min=360, publish=True)
         return calls, shown
 
-    def test_publish_returns_what_adp_showed_next(self):
-        calls, shown = self._publish(["Eligibility Publish", "Open shift published", "Open shift published"])
+    def test_publish_presses_the_publish_to_employees_confirmation(self):
+        # 2026-11-01: backing out of this confirmation cancelled both live open-adds.
+        calls, shown = self._publish([self.WIZARD, self.CONFIRM, self.CONFIRM, "Open shift published"])
+        self.assertEqual(calls, ["Next", "Publish", "confirm", "back_out"])
+        self.assertEqual(shown, "Open shift published")
+
+    def test_unrecognised_confirmation_backs_out_and_says_which_buttons(self):
+        with self.assertRaises(wb.ScheduleWriteError) as ctx:
+            self._publish([self.WIZARD, self.CONFIRM], confirm_buttons=("Cancel", "Send"), marked=0)
+        self.assertIn("['Cancel', 'Send']", str(ctx.exception))
+
+    def test_publish_without_a_confirmation_returns_what_adp_showed_next(self):
+        calls, shown = self._publish([self.WIZARD, "Open shift published"])
         self.assertEqual(calls, ["Next", "Publish", "back_out"])
         self.assertEqual(shown, "Open shift published")
 
     def test_publish_that_stays_on_the_wizard_says_which_buttons_were_off(self):
-        wizard = "1. SHIFT DETAILS 2. ELIGIBILITY Shift details 5:00 AM Eligibility 4 employees are eligible"
-        _calls, shown = self._publish([wizard] * 3)
+        _calls, shown = self._publish([self.WIZARD])
         self.assertEqual(
             shown,
             "still on the wizard: Eligibility 4 employees are eligible | buttons: Previous, Save draft, Publish [off]",

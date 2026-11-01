@@ -446,6 +446,16 @@ def create_open_shift(
                 return
             wizard = _pane_text(frame)
             _click(frame, r"^\s*Publish\s*$", what="Publish")
+            # 2026-11-01: Publish opens "Publish to employees" inside the wizard; closing it
+            # (as _back_out does) cancels the shift, so its own Publish must be pressed.
+            if _wait_for(page, lambda: bool(PUBLISH_CONFIRM_RE.search(_pane_text(frame))), 8.0, 500):
+                buttons = frame.evaluate(MARK_CONFIRM_JS, [PUBLISH_CONFIRM_RE.pattern, PUBLISH_YES_RE.pattern])
+                print(f"[schedule_write] publish confirm buttons {buttons}")
+                marked = frame.locator("[data-jarvis-confirm]")
+                if marked.count() != 1:
+                    raise ScheduleWriteError(f"publish confirmation buttons not recognised: {buttons}")
+                wizard = _pane_text(frame)
+                marked.first.click(timeout=5000)
         except Exception:
             _back_out(frame, page)
             raise
@@ -545,6 +555,31 @@ PANE_BUTTONS_JS = r"""
   .map(b => (b.innerText || '').replace(/\s+/g, ' ').trim()
     + (b.disabled || b.hasAttribute('disabled') || b.getAttribute('aria-disabled') === 'true' ? ' [off]' : ''))
   .filter(t => t)
+"""
+
+PUBLISH_CONFIRM_RE = re.compile(r"Publish to employees", re.I)
+PUBLISH_YES_RE = re.compile(r"^(Publish|Yes\b.*|Confirm|OK|Continue)$", re.I)
+
+# The innermost visible element holding the confirmation text and buttons (not a
+# nested focus pane, unlike delete's). Marks its one button matching yesRe with
+# data-jarvis-confirm; returns every button label for the breadcrumb.
+MARK_CONFIRM_JS = r"""
+([textRe, yesRe]) => {
+  const text = new RegExp(textRe, 'i'), yes = new RegExp(yesRe, 'i');
+  const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const norm = e => (e.innerText || e.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+  document.querySelectorAll('[data-jarvis-confirm]').forEach(e => e.removeAttribute('data-jarvis-confirm'));
+  const btnsOf = box => [...box.querySelectorAll('sdf-button, button')]
+    .filter(b => vis(b) && !(b.tagName === 'BUTTON' && b.parentElement && b.parentElement.closest('sdf-button')));
+  const boxes = [...document.querySelectorAll('sdf-focus-pane *')]
+    .filter(e => vis(e) && text.test(e.innerText || '') && btnsOf(e).length);
+  const inner = boxes.filter(b => !boxes.some(o => o !== b && b.contains(o)));
+  if (inner.length !== 1) return ['dialogs: ' + inner.length];
+  const btns = btnsOf(inner[0]);
+  const hits = btns.filter(b => yes.test(norm(b)));
+  if (hits.length === 1) hits[0].setAttribute('data-jarvis-confirm', '1');
+  return btns.map(norm);
+}
 """
 
 DELETE_CONFIRM_RE = re.compile(r"Are you sure you want to delete this (open )?shift", re.I)

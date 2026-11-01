@@ -69,14 +69,14 @@ class BundleScheduleFailure(unittest.TestCase):
             if isinstance(started, dict):
                 self.pib = started
             self.addCleanup(p.stop)
-        self.pib["puncher_names_from_session_files"].return_value = ["Nguyen, Quyen P"]
+        self.pib["puncher_names_from_session_files"].return_value = ["Poe, Alex"]
         self.pib["puncher_names_from_bq"].return_value = []
         self.pib["directory_roster"].return_value = [
-            {"name": "Rodriguez, Eileen", "status": "Active"},
-            {"name": "Phong Vu", "status": ""},
+            {"name": "Doe, Jane", "status": "Active"},
+            {"name": "Sam Roe", "status": ""},
         ]
         self.pib["known_hire_names"].return_value = set()
-        self.pib["scrape_pay_info_rates"].return_value = ([{"employee": "Nguyen, Quyen P"}], {})
+        self.pib["scrape_pay_info_rates"].return_value = ([{"employee": "Poe, Alex"}], {})
         self.pib["scrape_hire_dates"].return_value = ({}, {})
         self.pib["write_pay_info_json"].return_value = root / "PayInfoRates.json"
 
@@ -99,7 +99,7 @@ class BundleScheduleFailure(unittest.TestCase):
         self.stubs["gaps"].assert_called_once()
         self.pib["directory_roster"].assert_called_once()
         self.pib["scrape_pay_info_rates"].assert_called_once()
-        self.assertEqual(result["directory_roster"][0]["name"], "Rodriguez, Eileen")
+        self.assertEqual(result["directory_roster"][0]["name"], "Doe, Jane")
         self.assertIn("pay_info_json", result)
 
     def test_schedule_failure_screenshot_goes_to_gcs(self):

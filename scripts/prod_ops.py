@@ -17,6 +17,8 @@ operator's only gate is PR approval. `tier()` labels each op in the reply:
     /prod-ops apply-migrations                        # core.datastore.ensure_schema() from the PR head
                                                       # (PROD_OPS_CODE_ROOT); safe when every migration
                                                       # new vs main is additive
+    /prod-ops experienced-staff Ana Ben …             # new scheduling-rules version with these as the
+                                                      # new-hire training experienced staff (first names)
     /prod-ops run-job-pr bhaga-daily-refresh [KEY=v …] # PR comments only: build the PR head's image,
                                                       # copy the job as <job>-pr<N> on it, run once, delete the copy.
                                                       # Cloud Agent comments post as cursor[bot]; the guard accepts that login.
@@ -49,6 +51,7 @@ _SYSTEM_ANNOTATIONS = {
 
 _KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _JOB = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+_FIRST_NAME = re.compile(r"^[A-Za-z][A-Za-z'-]{0,30}$")
 # Set by the deploy workflow; changing them here would desync prod from git.
 _DEPLOY_OWNED = {"BQ_PROJECT", "BQ_DATASET", "PLAID_ENV", "PLAID_WEBHOOK_URL", "CONSOLE_PREVIEW"}
 # A safe run-job-pr may set only these, and must be an `apply` dry run: any other key
@@ -87,7 +90,7 @@ def parse_comment(body: str) -> dict:
         raise RequestError("comment must start with /prod-ops")
     argv = shlex.split(first)[1:]
     if not argv:
-        raise RequestError("missing operation: whoami | console-env | run-job | apply-migrations")
+        raise RequestError("missing operation: whoami | console-env | run-job | apply-migrations | experienced-staff")
     op, rest = argv[0], argv[1:]
     if op in ("whoami", "apply-migrations"):
         if rest:
@@ -117,6 +120,10 @@ def parse_comment(body: str) -> dict:
         if not rest or rest[0] not in _PR_IMAGES:
             raise RequestError(f"run-job-pr <job> [KEY=value …]; job is one of {sorted(_PR_IMAGES)}")
         return {"op": op, "job": rest[0], "env": _pairs(rest[1:])}
+    if op == "experienced-staff":
+        if not rest or not all(_FIRST_NAME.match(n) for n in rest):
+            raise RequestError("experienced-staff <FirstName> … (first names only, resolved against the ADP Directory)")
+        return {"op": op, "names": rest}
     raise RequestError(f"unknown operation {op!r}")
 
 
@@ -184,6 +191,9 @@ def commands(req: dict, pr: str | None = None) -> list[list[str]]:
     if op == "apply-migrations":
         return [[sys.executable, "-c",
                  "from core.datastore import ensure_schema; print('applied:', ensure_schema() or 'none')"]]
+    if op == "experienced-staff":
+        by = f"prod-ops PR #{pr}" if pr else "prod-ops"
+        return [[sys.executable, "-m", "agents.bhaga.scripts.set_experienced_staff", "--by", by, *req["names"]]]
     raise RequestError(f"unknown operation {op!r}")
 
 

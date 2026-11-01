@@ -97,7 +97,9 @@ to the Model Google Sheet. Named after the Vedic Aditya whose name means *the ap
    (Team Schedule Create shift / Create open shift → Save as draft) and a separate
    **Publish week** (Publish drafts + a ClickUp DM to the operator with every open shift from
    tomorrow through the published week — Issue #381; Publish only DMs; **Send ClickUp message**
-   can re-DM or post the note from `@everyone` to Shift Coverage after re-reading ADP), plus
+   re-reads ADP, then sends one note for every week picked — open-shift count, one line per person
+   with no unavailability in a picked week — typed through the ClickUp web app, never the API, so
+   mentions stay real: to the operator's `#jarvis-drafts`, or from `@everyone` to Shift Coverage), plus
    Issue #412 **Write to ADP** (same flag): assigns operator-ticked existing ADP open shifts to
    the person chosen, only from ADP's own eligible list, confirmed by a re-read open-shift count
    (`labor_open_shift_assignments`, `BHAGA_ADP_SCHEDULE_WRITE=assign`), and Issue #434 **Apply to ADP**

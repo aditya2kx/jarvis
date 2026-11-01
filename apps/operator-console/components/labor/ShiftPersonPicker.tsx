@@ -45,16 +45,20 @@ function optionMeta(o: ShiftOption, shift: DraftShift): string {
 export function ShiftPersonPicker({
   shift,
   onPick,
+  hideSuggestion = false,
 }: {
   shift: DraftShift;
   /** A person, null = leave open, undefined = back to the suggestion. */
   onPick: (employee: string | null | undefined) => void;
+  /** Suggestions switched off: show "Choose who" until the operator picks someone. */
+  hideSuggestion?: boolean;
 }) {
   const options = shift.options ?? [];
   const people = options.filter((o) => o.employee != null);
   const canLeaveOpen = options.some((o) => o.employee == null);
   const others = options.length - 1;
-  const value = shift.employee ?? OPEN;
+  const hidden = hideSuggestion && !shift.picked;
+  const value = hidden ? null : (shift.employee ?? OPEN);
   const time = `${formatClockMin(shift.startMin)}–${formatClockMin(shift.endMin)}`;
 
   return (
@@ -73,12 +77,12 @@ export function ShiftPersonPicker({
           style={shift.picked ? { borderColor: `${DRAFT_COLOR}99` } : undefined}
         >
           <SelectValue>
-            {(v: string) => (
+            {(v: string | null) => (
               <span className="flex min-w-0 items-center gap-2">
-                <span className={v === OPEN ? "truncate text-muted-foreground" : "truncate font-medium"}>
-                  {v === OPEN ? "Leave open" : v}
+                <span className={v === OPEN || v == null ? "truncate text-muted-foreground" : "truncate font-medium"}>
+                  {v == null ? "Choose who" : v === OPEN ? "Leave open" : v}
                 </span>
-                {!shift.picked && others > 0 ? (
+                {!shift.picked && !hidden && others > 0 ? (
                   <span className="shrink-0 text-xs font-normal text-muted-foreground">
                     <span className="sm:hidden">+{others}</span>
                     <span className="hidden sm:inline">
@@ -102,7 +106,7 @@ export function ShiftPersonPicker({
                 <span className="flex min-w-0 flex-col gap-0.5">
                   <span className="flex items-center gap-1.5">
                     <span className="truncate font-medium">{o.employee}</span>
-                    {i === 0 && !shift.picked ? (
+                    {i === 0 && !shift.picked && !hideSuggestion ? (
                       <Badge variant="secondary" className="h-4 px-1.5 text-[11px] font-normal">
                         Suggested
                       </Badge>

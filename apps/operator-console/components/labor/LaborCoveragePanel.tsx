@@ -80,12 +80,25 @@ import {
   type ScheduledShift,
 } from "@/lib/labor/unavailability";
 import { hoursText } from "@/lib/labor/unavailability-format";
-import { stage, type ApplyBlock, type StagedChange } from "@/lib/labor/availability-changes";
+import type { ApplyBlock, StagedChange } from "@/lib/labor/availability-changes";
+import {
+  adpChangeKey,
+  adpDrafts,
+  pruneQueue,
+  readStoredQueue,
+  stageAdp,
+  stagedShift as stagedShiftIn,
+  suggestedChanges,
+  unstageAdp,
+  type AdpChange,
+  type ShiftChange,
+} from "@/lib/labor/adp-changes";
+import { parseShiftRangesJson } from "@/lib/labor/shift-ranges";
+import { AdpChangesTray } from "@/components/labor/AdpChangesTray";
 import type { UnavailabilityEventRow, UnavailabilityRow } from "@/lib/bq/queries";
 import { EntrySheet, type SheetTarget } from "@/components/labor/availability/EntrySheet";
 import {
   REQUEST_COLOR,
-  UnavailabilityApplyTray,
   UnavailabilityHistorySheet,
   UnavailabilityRequests,
 } from "@/components/labor/availability/UnavailabilityRequests";
@@ -104,7 +117,6 @@ import { payPeriodStartFor } from "@/lib/payroll/openPeriod";
 import { AdpScheduleFinalize } from "@/components/labor/AdpScheduleFinalize";
 import { DRAFT_COLOR, ShiftDraftSummary } from "@/components/labor/ShiftDraftSummary";
 import {
-  OpenShiftAssignBar,
   OpenShiftDayList,
   type AssignSelection,
   type DayOpenShift,
@@ -112,7 +124,7 @@ import {
 import { useSuggestedHours } from "@/components/labor/SuggestedHoursContext";
 import type { OpenShift } from "@/lib/labor/open-shifts-insight";
 import { ScheduleInputsPanel } from "@/components/labor/ScheduleInputsPanel";
-import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { chicagoTodayIso, shiftCalendarDate, type DateWindow } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
 
@@ -466,7 +478,7 @@ function AxisTicks({ axisStart, axisEnd }: { axisStart: number; axisEnd: number 
   );
 }
 
-function PersonLaneTrack({
+export function PersonLaneTrack({
   person,
   axisStart,
   axisSpan,
@@ -554,7 +566,7 @@ function PersonLaneTrack({
   );
 }
 
-function PersonName({
+export function PersonName({
   name,
   italic,
   muted,
@@ -578,11 +590,16 @@ function PersonName({
   return (
     <button
       type="button"
-      title={name}
+      title={`${name}: shifts and unavailability`}
       onClick={() => onPerson(name)}
-      className={cn(cls, "rounded-sm underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring")}
+      className={cn(
+        "flex max-w-full items-center gap-0.5 rounded-sm text-left text-sm font-medium hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        italic && "italic",
+        muted && "text-muted-foreground",
+      )}
     >
-      {name}
+      <span className="truncate underline decoration-muted-foreground/50 decoration-dotted underline-offset-4">{name}</span>
+      <ChevronRightIcon aria-hidden data-affordance="opens" className="size-3.5 shrink-0 text-muted-foreground" />
     </button>
   );
 }
@@ -812,7 +829,11 @@ function CoverageTimeline({
           <p className="text-muted-foreground">Nobody on at this time.</p>
         )}
         {offAt.length ? (
-          <ul className="mt-1.5 flex max-h-40 flex-col gap-1 overflow-y-auto border-t border-border pt-1.5">
+          <ul
+            className="mt-1.5 flex max-h-40 flex-col gap-1 overflow-y-auto border-t border-border pt-1.5"
+            aria-label="Unavailable at this time"
+          >
+            <li className="text-[11px] font-medium text-muted-foreground">Unavailable · their hours that day</li>
             {offAt.map((o) => (
               <li key={o.employee} className="flex items-start justify-between gap-3">
                 <span className="flex min-w-0 items-center gap-1.5">
@@ -826,7 +847,7 @@ function CoverageTimeline({
                   className={cn("shrink-0 tabular-nums", !o.pending && "text-muted-foreground")}
                   style={o.pending ? { color: REQUEST_COLOR } : undefined}
                 >
-                  {o.when}
+                  {o.pending ? `Requested · ${o.when}` : o.when}
                 </span>
               </li>
             ))}
@@ -1024,6 +1045,8 @@ type WeekPicks = Record<string, Record<string, string | null>>;
 const picksKey = (store: string) => `labor-draft-picks:v1:${store}`;
 /** ADP open-shift slots ticked for Write to ADP, across days. */
 const assignKey = (store: string) => `labor-open-assign:v1:${store}`;
+const changesKey = (store: string) => `labor-adp-changes:v1:${store}`;
+const suggestionsKey = (store: string) => `labor-show-suggestions:v1:${store}`;
 
 const weekOf = (iso: string) => shiftCalendarDate(iso, "day", -isoWeekdayMon0(iso));
 
@@ -1062,7 +1085,7 @@ export function LaborCoveragePanel({
   activeStaff,
   savedPushRows = NO_PUSH_ROWS,
   adpWriteEnabled = false,
-  scheduleReadAt = null,
+  shiftApplyBlock = "off",
   availability,
   trainingHistory,
 }: {
@@ -1090,8 +1113,8 @@ export function LaborCoveragePanel({
   savedPushRows?: PushRow[];
   /** FEATURES.adpScheduleWrite, evaluated on the server. */
   adpWriteEnabled?: boolean;
-  /** Last ADP schedule read (adp_scheduled_shifts.scraped_at_utc) — resolves unconfirmed saves. */
-  scheduleReadAt?: string | null;
+  /** Why shift changes can't be applied to ADP here (preview / CONSOLE_ADP_SCHEDULE_WRITE off), or null. */
+  shiftApplyBlock?: ApplyBlock;
   /** Managing ADP unavailability from the chart (Issue #427); omitted = view only. */
   availability?: {
     canManage: boolean;
@@ -1200,11 +1223,47 @@ export function LaborCoveragePanel({
       ),
     [staffUnavailability],
   );
-  const [queue, setQueue] = useState<StagedChange[]>([]);
+  // Staged changes for ADP (shifts + unavailability) survive a reload until applied or discarded.
+  const [queue, setQueueState] = useState<AdpChange[]>([]);
+  const [queueLoaded, setQueueLoaded] = useState(false);
+  const setQueue = useCallback(
+    (fn: (q: AdpChange[]) => AdpChange[]) =>
+      setQueueState((prev) => {
+        const next = fn(prev);
+        try {
+          window.localStorage.setItem(changesKey(store), JSON.stringify(next));
+        } catch {
+          // Storage full or blocked: changes still apply for this visit.
+        }
+        return next;
+      }),
+    [store],
+  );
+  useEffect(() => {
+    try {
+      setQueueState(readStoredQueue(window.localStorage.getItem(changesKey(store))));
+    } catch {
+      setQueueState([]);
+    }
+    setQueueLoaded(true);
+  }, [store]);
+  const unavailQueue = useMemo(
+    () => queue.flatMap((a) => (a.area === "unavailability" ? [a.c] : [])),
+    [queue],
+  );
+  const setUnavailQueue = useCallback(
+    (fn: (q: StagedChange[]) => StagedChange[]) =>
+      setQueue((q) => [
+        ...q.filter((a) => a.area === "shift"),
+        ...fn(q.flatMap((a) => (a.area === "unavailability" ? [a.c] : []))).map((c) => ({ area: "unavailability" as const, c })),
+      ]),
+    [setQueue],
+  );
   const [target, setTarget] = useState<SheetTarget | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const canManage = availability?.canManage ?? false;
-  const onStage = useCallback((c: StagedChange) => setQueue((q) => stage(q, c)), []);
+  const onStage = useCallback((c: StagedChange) => setQueue((q) => stageAdp(q, { area: "unavailability", c })), [setQueue]);
+  const stagedShift = useCallback((key: string) => stagedShiftIn(queue, key), [queue]);
   const roster = useMemo(() => {
     const limits = staffLimits(rules.staffRules);
     return baseRoster.map((a) => ({
@@ -1273,7 +1332,25 @@ export function LaborCoveragePanel({
   );
   const dayOff = useMemo(() => (activeDay ? laneBlocks(offRows, activeDay) : new Map<string, LaneOff[]>()), [offRows, activeDay]);
 
-  const [showDraft, setShowDraft] = useState(true);
+  // "Suggestions" (draft shifts, fill names, Finalize) — on unless the operator turned it off.
+  const [showDraft, setShowDraftState] = useState(true);
+  useEffect(() => {
+    try {
+      setShowDraftState(window.localStorage.getItem(suggestionsKey(store)) !== "0");
+    } catch {
+      setShowDraftState(true);
+    }
+  }, [store]);
+  const toggleSuggestions = useCallback(() => {
+    setShowDraftState((v) => {
+      try {
+        window.localStorage.setItem(suggestionsKey(store), v ? "0" : "1");
+      } catch {
+        // Storage blocked: the switch still applies for this visit.
+      }
+      return !v;
+    });
+  }, [store]);
 
   // Draft each Mon–Sun week from tomorrow through the strip horizon (today's
   // shifts are already under way). Each week
@@ -1680,7 +1757,7 @@ export function LaborCoveragePanel({
       const day = drafts?.byDay.get(iso) ?? [];
       for (const seg of lanesFor(iso).filter(isOpenLane).flatMap((p) => p.segments)) {
         const taker = day.find((s) => s.fillsOpen && s.startMin === seg.startMin && s.endMin === seg.endMin);
-        rows.push({ date: iso, startMin: seg.startMin, endMin: seg.endMin, hours: seg.hours, source: "adp", suggested: taker?.employee ?? null });
+        rows.push({ date: iso, startMin: seg.startMin, endMin: seg.endMin, hours: seg.hours, source: "adp", suggested: showDraft ? (taker?.employee ?? null) : null });
       }
       if (!showDraft) continue;
       for (const s of newShifts(day)) {
@@ -1716,10 +1793,9 @@ export function LaborCoveragePanel({
 
   const openSlots = useMemo(() => {
     const bySlot = new Map<string, DayOpenShift>();
-    if (!drafts) return bySlot;
     for (const iso of strip) {
       if (iso <= todayIso) continue;
-      const day = drafts.byDay.get(iso) ?? [];
+      const day = drafts?.byDay.get(iso) ?? [];
       for (const { seg, slot } of openSlotsOn(iso, lanesFor(iso))) {
         bySlot.set(slot, {
           slot,
@@ -1750,6 +1826,13 @@ export function LaborCoveragePanel({
     () => [...openSlots.values()].filter((s) => s.date === activeDay),
     [openSlots, activeDay],
   );
+  const dayAdds = useMemo(
+    () =>
+      queue.flatMap((a) =>
+        a.area === "shift" && a.c.kind === "open-add" && a.c.date === activeDay ? [a.c] : [],
+      ),
+    [queue, activeDay],
+  );
   const selectedItems = useMemo<AssignSelection[]>(
     () =>
       [...selected].flatMap((slot) => {
@@ -1759,6 +1842,37 @@ export function LaborCoveragePanel({
       }),
     [selected, openSlots],
   );
+  // Ticked open shifts are the tray's Assign lines; an open shift staged to change or go stays unassigned.
+  const trayChanges = useMemo<AdpChange[]>(() => {
+    const staged = new Set(queue.map(adpChangeKey));
+    const assigns = selectedItems
+      .map((s): AdpChange => ({ area: "shift", c: { kind: "open-assign", ...s } }))
+      .filter((a) => !staged.has(adpChangeKey(a)));
+    return [...queue, ...assigns];
+  }, [queue, selectedItems]);
+  // ADP is the source of truth: staged changes it has overtaken (or days now past) are dropped.
+  const [stale, setStale] = useState(0);
+  const upcoming = availability?.upcoming;
+  useEffect(() => {
+    if (!queueLoaded) return;
+    const inStrip = new Set(strip.filter((iso) => iso > todayIso));
+    const adpOpen = new Set(
+      [...openSlots.keys(), ...queue.flatMap((a) => (a.area === "shift" && "slot" in a.c && !inStrip.has(a.c.date) ? [a.c.slot] : []))],
+    );
+    const unavailabilityKeys = new Set(unavailability.map((r) => r.row_key));
+    const hasShift = (employee: string, date: string, t: { startMin: number; endMin: number }) =>
+      !upcoming ||
+      upcoming.some(
+        (x) =>
+          x.employee === employee &&
+          x.date === date &&
+          parseShiftRangesJson(x.shift_ranges_json).some((r) => r.startMin === t.startMin && r.endMin === t.endMin),
+      );
+    const kept = pruneQueue(queue, { todayIso, unavailabilityKeys, openSlots: adpOpen, hasShift });
+    if (kept.length === queue.length) return;
+    setStale((n) => n + queue.length - kept.length);
+    setQueue(() => kept);
+  }, [queueLoaded, queue, strip, todayIso, openSlots, unavailability, upcoming, setQueue]);
   const toggleOpen = useCallback(
     (slots: string[], on: boolean) =>
       updateSelected((prev) => {
@@ -1771,9 +1885,44 @@ export function LaborCoveragePanel({
       }),
     [updateSelected],
   );
-  const onAssigned = useCallback(
-    (slots: string[]) => {
-      const done = new Set(slots);
+  const stageShift = useCallback(
+    (c: ShiftChange) => {
+      // An open shift's assignment is the week's pick plus a tick, so the list and the tray stay in step.
+      if (c.kind === "open-assign") {
+        pickShift(weekOf(c.slot.slice(0, 10)), c.slot, c.employee);
+        toggleOpen([c.slot], true);
+        return;
+      }
+      setQueue((q) => stageAdp(q, { area: "shift", c }));
+      if (c.kind === "open-edit" || c.kind === "open-delete") toggleOpen([c.slot], false);
+    },
+    [setQueue, toggleOpen, pickShift],
+  );
+  const openShiftTarget = useCallback(
+    (s: DayOpenShift): SheetTarget => ({
+      mode: "open-shift",
+      slot: s.slot,
+      date: s.date,
+      startMin: s.startMin,
+      endMin: s.endMin,
+      options: s.fill?.options?.flatMap((o) => (o.employee ? [o.employee] : [])) ?? [],
+      suggested: s.fill?.employee && (showDraft || s.fill.picked || selected.has(s.slot)) ? s.fill.employee : null,
+    }),
+    [showDraft, selected],
+  );
+  const undoChanges = useCallback(
+    (keys: string[]) => {
+      setQueue((q) => unstageAdp(q, keys));
+      const slots = keys.flatMap((k) => (k.startsWith("s:open|") ? [k.slice("s:open|".length)] : []));
+      if (slots.length) toggleOpen(slots, false);
+    },
+    [setQueue, toggleOpen],
+  );
+
+  const onApplied = useCallback(
+    (keys: string[]) => {
+      setQueue((q) => unstageAdp(q, keys));
+      const done = new Set(keys.flatMap((k) => (k.startsWith("s:open|") ? [k.slice("s:open|".length)] : [])));
       updateSelected((prev) => new Set([...prev].filter((slot) => !done.has(slot))));
       updatePicks((prev) =>
         Object.fromEntries(
@@ -1781,7 +1930,7 @@ export function LaborCoveragePanel({
         ),
       );
     },
-    [updateSelected, updatePicks],
+    [setQueue, updateSelected, updatePicks],
   );
 
   const weekDraft =
@@ -1800,6 +1949,18 @@ export function LaborCoveragePanel({
         .filter((s) => !s.fillsOpen)
         .map(({ date, employee, startMin, endMin, inAdp }) => ({ date, employee, startMin, endMin, inAdp })),
     [weekDraft],
+  );
+  const weekSuggestions = useMemo(() => {
+    if (!weekDraft) return [];
+    const staged = new Set(trayChanges.map(adpChangeKey));
+    const drafts = adpDrafts(upcoming ?? [], todayIso, shiftCalendarDate(weekDraft.weekStart, "day", 6));
+    return suggestedChanges(weekShifts, drafts.filter((d) => d.date >= weekDraft.weekStart), todayIso).filter(
+      (c) => !staged.has(adpChangeKey({ area: "shift", c })),
+    );
+  }, [weekDraft, weekShifts, upcoming, todayIso, trayChanges]);
+  const stageSuggestions = useCallback(
+    (changes: ShiftChange[]) => setQueue((q) => changes.reduce((acc, c) => stageAdp(acc, { area: "shift", c }), q)),
+    [setQueue],
   );
 
   const shortLine = useMemo(() => {
@@ -1827,12 +1988,8 @@ export function LaborCoveragePanel({
             Staffing coverage
           </CardTitle>
           <CardDescription>
-            Day chips follow the Period (and, when today is in range, through the latest
-            ADP schedule — same horizon as the charts above). Scheduled swimlanes always
-            render when ADP has shifts in that window — Aggregation does not filter them.
-            Scroll for more days; chips update this panel in place. Hover the timeline for
-            headcount + who is on (start–end). Solid = clocked; slate hatch = scheduled;
-            violet dashed = open (unassigned) ADP shift — on past days, a slot nobody filled.
+            Pick a day. Hover or tap the chart for who is on at that time; tap a name to change their shifts. On past days a
+            violet open shift is a slot nobody filled.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
@@ -1870,11 +2027,11 @@ export function LaborCoveragePanel({
             <UnavailabilityRequests
               pending={pending}
               upcoming={availability.upcoming}
-              queue={queue}
+              queue={unavailQueue}
               canManage={canManage}
               lastReadAt={pending[0]?.scraped_at ?? unavailability[0]?.scraped_at ?? null}
               onStage={onStage}
-              onQueue={setQueue}
+              onQueue={setUnavailQueue}
               onOpen={(r) => {
                 const first = strip.find((iso) => iso >= todayIso && coversDate(r, iso));
                 if (first) {
@@ -1887,12 +2044,12 @@ export function LaborCoveragePanel({
             />
           ) : null}
 
-          {weekDraft ? (
+          {showDraft && weekDraft ? (
             <AdpScheduleFinalize
               weekStart={weekDraft.weekStart}
-              shifts={weekShifts}
+              changes={weekSuggestions}
+              onStage={stageSuggestions}
               enabled={adpWriteEnabled}
-              scheduleReadAt={scheduleReadAt}
             />
           ) : null}
 
@@ -1901,16 +2058,13 @@ export function LaborCoveragePanel({
               <h3 className="text-sm font-medium text-foreground">
                 Coverage — {label.weekday} {label.monthDay}
               </h3>
-              {weekDraft ? (
-                <Button
-                  size="sm"
-                  variant={showDraft ? "default" : "outline"}
-                  aria-pressed={showDraft}
-                  onClick={() => setShowDraft((v) => !v)}
-                >
-                  {showDraft ? "Hide draft shifts" : "Draft shifts"}
-                </Button>
-              ) : null}
+              <label
+                className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"
+                title="Suggested shifts and who could fill open shifts. ADP's own shifts always show."
+              >
+                <Switch checked={showDraft} onCheckedChange={toggleSuggestions} aria-label="Show suggested shifts" />
+                Show suggested shifts
+              </label>
             </div>
             {shortLine ? (
               <p
@@ -1927,14 +2081,22 @@ export function LaborCoveragePanel({
             ) : null}
           </div>
 
-          {dayOpen.length ? (
+          {activeDay > todayIso ? (
             <OpenShiftDayList
               dayLabel={`${label.weekday} ${label.monthDay}`}
               shifts={dayOpen}
+              adds={dayAdds}
               selected={selected}
-              enabled={adpWriteEnabled}
+              staged={stagedShift}
+              showSuggestions={showDraft}
               onToggle={toggleOpen}
-              onPick={(slot, employee) => pickShift(weekOf(slot.slice(0, 10)), slot, employee)}
+              onPick={(slot, employee) => {
+                pickShift(weekOf(slot.slice(0, 10)), slot, employee);
+                if (employee) toggleOpen([slot], true);
+              }}
+              onAdd={() => setTarget({ mode: "open-add", date: activeDay })}
+              onOpen={(x) => setTarget(openShiftTarget(x))}
+              onUndo={(key) => undoChanges([`s:${key}`])}
             />
           ) : null}
 
@@ -1971,7 +2133,7 @@ export function LaborCoveragePanel({
             draftShifts={draftShifts}
             off={dayOff}
             activeStaff={active}
-            onPerson={canManage ? (employee) => setTarget({ mode: "person", employee }) : undefined}
+            onPerson={(employee) => setTarget({ mode: "person", employee })}
           />
 
           <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
@@ -2045,35 +2207,44 @@ export function LaborCoveragePanel({
               <span className="inline-block size-2.5 rounded-sm ring-2 ring-destructive ring-inset" />
               Clash
             </span>
-            {canManage ? <span>· Tap a name for their unavailability</span> : null}
           </div>
 
-          <OpenShiftAssignBar
-            items={selectedItems}
-            dropped={dropped}
-            enabled={adpWriteEnabled}
-            onClear={() => {
+          <AdpChangesTray
+            store={store}
+            changes={trayChanges}
+            blocks={{ shift: shiftApplyBlock, unavailability: availability?.applyBlock ?? "off" }}
+            notice={
+              dropped + stale
+                ? `${dropped + stale} of your changes no longer match ADP (changed there, or the day has passed) and were removed.`
+                : null
+            }
+            onUndo={undoChanges}
+            onDiscard={() => {
+              setQueue(() => []);
               updateSelected(() => new Set());
-              setDropped(0);
             }}
-            onAssigned={onAssigned}
+            onApplied={onApplied}
+            onDismissNotice={() => {
+              setDropped(0);
+              setStale(0);
+            }}
           />
 
+          <EntrySheet
+            target={target}
+            roster={baseRoster.map((a) => a.employee).sort()}
+            todayIso={todayIso}
+            offRows={offRows}
+            shifts={availability?.upcoming ?? []}
+            canAvailability={canManage}
+            stagedShift={stagedShift}
+            onTarget={setTarget}
+            onClose={() => setTarget(null)}
+            onStage={onStage}
+            onStageShift={stageShift}
+          />
           {availability ? (
-            <>
-              <UnavailabilityApplyTray queue={queue} applyBlock={availability.applyBlock} onQueue={setQueue} />
-              <EntrySheet
-                target={target}
-                roster={baseRoster.map((a) => a.employee).sort()}
-                todayIso={todayIso}
-                offRows={offRows}
-                shifts={availability.upcoming}
-                onTarget={setTarget}
-                onClose={() => setTarget(null)}
-                onStage={onStage}
-              />
-              <UnavailabilityHistorySheet open={historyOpen} events={availability.events} onClose={() => setHistoryOpen(false)} />
-            </>
+            <UnavailabilityHistorySheet open={historyOpen} events={availability.events} onClose={() => setHistoryOpen(false)} />
           ) : null}
         </CardContent>
       </Card>

@@ -189,6 +189,21 @@ class CreateOpenShiftConfirm(unittest.TestCase):
         self.assertEqual(calls, ["Next", "Publish", "back_out"])
         self.assertEqual(shown, "Open shift published")
 
+    def test_edit_presses_the_publish_confirmation_before_backing_out(self):
+        calls = []
+        commit = mock.Mock()
+        commit.click.side_effect = lambda **_k: calls.append("Publish")
+        with mock.patch.object(wb, "_click"), \
+             mock.patch.object(wb, "_fill_times"), \
+             mock.patch.object(wb, "_visible_button", return_value=commit), \
+             mock.patch.object(wb, "_wait_for", side_effect=lambda _p, check, *_a: check()), \
+             mock.patch.object(wb, "_pane_text", return_value="Open shift updated"), \
+             mock.patch.object(wb, "_press_publish_confirmation",
+                               side_effect=lambda _f, _p: calls.append("confirm") or "Publish to employees"), \
+             mock.patch.object(wb, "_back_out", side_effect=lambda _f, _p: calls.append("back_out")):
+            self.assertTrue(wb._edit_times(mock.MagicMock(), mock.Mock(), start_min=360, end_min=420, dry_run=False))
+        self.assertEqual(calls, ["Publish", "confirm", "back_out"])
+
     def test_publish_that_stays_on_the_wizard_says_which_buttons_were_off(self):
         _calls, shown = self._publish([self.WIZARD])
         self.assertEqual(

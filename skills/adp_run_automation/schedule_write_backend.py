@@ -283,6 +283,25 @@ def _wait_for(page, check, timeout_s: float, step_ms: int = 250) -> bool:
         page.wait_for_timeout(step_ms)
 
 
+def _press_publish_confirmation(frame, page, timeout_s: float = 5.0) -> str | None:
+    """After a Publish click: press the "Publish to employees" confirmation's own Publish.
+
+    2026-11-01: an open shift's Publish opens this inside the pane; closing it (as
+    _back_out does) cancelled both live open-adds. Returns the pane text from just
+    before the press (None when ADP asked nothing); raises when its buttons are unknown.
+    """
+    if not _wait_for(page, lambda: bool(PUBLISH_CONFIRM_RE.search(_pane_text(frame))), timeout_s, 500):
+        return None
+    buttons = frame.evaluate(MARK_CONFIRM_JS, [PUBLISH_CONFIRM_RE.pattern, PUBLISH_YES_RE.pattern])
+    print(f"[schedule_write] publish confirm buttons {buttons}")
+    marked = frame.locator("[data-jarvis-confirm]")
+    if marked.count() != 1:
+        raise ScheduleWriteError(f"publish confirmation buttons not recognised: {buttons}")
+    shown = _pane_text(frame)
+    marked.first.click(timeout=5000)
+    return shown
+
+
 def _open_action(frame, page, item: str) -> None:
     _back_out(frame, page)
     _click(frame, r"^\s*Actions\b", what="Actions")
@@ -446,16 +465,7 @@ def create_open_shift(
                 return
             wizard = _pane_text(frame)
             _click(frame, r"^\s*Publish\s*$", what="Publish")
-            # 2026-11-01: Publish opens "Publish to employees" inside the wizard; closing it
-            # (as _back_out does) cancels the shift, so its own Publish must be pressed.
-            if _wait_for(page, lambda: bool(PUBLISH_CONFIRM_RE.search(_pane_text(frame))), 8.0, 500):
-                buttons = frame.evaluate(MARK_CONFIRM_JS, [PUBLISH_CONFIRM_RE.pattern, PUBLISH_YES_RE.pattern])
-                print(f"[schedule_write] publish confirm buttons {buttons}")
-                marked = frame.locator("[data-jarvis-confirm]")
-                if marked.count() != 1:
-                    raise ScheduleWriteError(f"publish confirmation buttons not recognised: {buttons}")
-                wizard = _pane_text(frame)
-                marked.first.click(timeout=5000)
+            wizard = _press_publish_confirmation(frame, page) or wizard
         except Exception:
             _back_out(frame, page)
             raise
@@ -696,9 +706,12 @@ def _edit_times(frame, page, *, start_min: int, end_min: int, dry_run: bool) -> 
             _back_out(frame, page)
             return False
         commit.click(timeout=8000)
+        confirmed = _press_publish_confirmation(frame, page)
     except Exception:
         _back_out(frame, page)
         raise
+    if confirmed:
+        _wait_for(page, lambda: _pane_text(frame) != confirmed, 15.0, 500)
     page.wait_for_timeout(1500)
     _back_out(frame, page)
     return True

@@ -69,7 +69,7 @@ const opens = (el: Element) => el.querySelector('[data-affordance="opens"]') != 
 describe("D2: one way to send shifts to ADP — the Changes to ADP tray's Apply", () => {
   it("the suggested week only adds to the tray; it has no save, publish or apply of its own", () => {
     const add = { kind: "shift-add" as const, date: "2026-10-30", employee: "Lee, Ana", startMin: 420, endMin: 780 };
-    render(<AdpScheduleFinalize weekStart="2026-10-26" changes={[add]} onStage={vi.fn()} enabled />);
+    render(<AdpScheduleFinalize weekStart="2026-10-26" weeks={[{ weekStart: "2026-10-26", changes: [add] }]} onStage={vi.fn()} enabled />);
     const writes = screen.getAllByRole("button").filter((b) => /save|publish|apply|draft/i.test(b.textContent ?? ""));
     expect(writes.map((b) => b.textContent)).toEqual([]);
   });

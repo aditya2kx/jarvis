@@ -1,3 +1,7 @@
+## 2026-11-01 — Hotfix: prod-ops wait-deploy empty job image path (#471)
+
+**Incident:** after #468 every `/prod-ops run-job` failed with `could not read image for job 'bhaga-daily-refresh': ''`. **Fix:** use the nested Cloud Run Jobs path `spec.template.spec.template.spec.containers[0].image` (same as `deploy.yml` verify), not the shallow `spec.template.spec.containers[0].image`.
+
 ## 2026-11-01 — Retro #450/#465: deploy wait + fq()/Actions gates (Issue #467)
 
 **Scope:** `/prod-ops run-job` waits for the Cloud Run job image tag to match `main` HEAD before execute (no more post-merge race with `deploy.yml`; escape `PROD_OPS_SKIP_DEPLOY_WAIT=1`). Hire-date skip-all logs `nothing_new` instead of false `hire_dates_empty`. New verify gates: `check_fq_no_double_backticks.py` (the #465 bug) and `check_no_public_job_logs.py` (no `gcloud logging read` / `textPayload` in `prod_ops` or workflows). Unit tests cover wait timeout, skip-all breadcrumb, and planted gate failures.

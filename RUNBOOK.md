@@ -1955,7 +1955,7 @@ sends the same text — the draft as a DM to team_pulse's DM user — with
 untagged (`BREADCRUMB adp_publish_tags`). A stale ADP read is sent as a draft with the "as of" note,
 but never posted to the team (`BREADCRUMB adp_publish_channel … not posted to the team`; the job
 exits 1). Laptop equivalent: `BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.adp_schedule_write
---publish-dm --weeks <Mon,Mon,…> [--to channel]`. **Publishing
+--publish-dm --weeks <Mon,Mon,…> [--to channel]` (`+` also separates weeks — `/prod-ops` values can't hold commas). **Publishing
 in ADP directly also works:** every Team Schedule load (nightly, Sync ADP, after any console write)
 reads each shift's `DRAFT` tag and each day's open-shift `Drafts: N` and flips matching `drafted` rows
 to `published` (`reconcile_published`, `[schedule_write] reconcile … newly_published=N`,

@@ -116,7 +116,7 @@ export async function schedulePushStatusAction(): Promise<ActionAck<{ running: S
       hit?.env.BHAGA_ADP_SCHEDULE_WRITE === "dm"
         ? {
             mode: "dm",
-            weekStarts: weeks.split(",").filter(Boolean),
+            weekStarts: weeks.split(/[,+\s]+/).filter(Boolean),
             to: hit.env.BHAGA_SCHEDULE_MESSAGE_TO === "channel" ? "channel" : "dm",
           }
         : null;

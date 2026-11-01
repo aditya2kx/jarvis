@@ -1153,6 +1153,9 @@ class RunPublishDm(unittest.TestCase):
             self.assertEqual(w.main(["--publish-dm", "--weeks", "2026-11-16,2026-11-09", "--to", "channel"]), 0)
         run.assert_called_once_with("palmetto", [datetime.date(2026, 11, 9), datetime.date(2026, 11, 16)],
                                     headless=False, to="channel")
+        with mock.patch.object(w, "run_publish_dm", return_value=0) as run:
+            w.main(["--publish-dm", "--weeks", "2026-11-09+2026-11-16"])
+        self.assertEqual(run.call_args[0][1], [datetime.date(2026, 11, 9), datetime.date(2026, 11, 16)])
         with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
             w.main(["--publish-dm", "--weeks", "2026-11-10"])
 

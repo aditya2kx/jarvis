@@ -1459,7 +1459,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--publish", action="store_true")
     p.add_argument("--publish-dm", action="store_true",
                    help="re-read ADP's open shifts, then send one schedule note for --weeks (or --week-start)")
-    p.add_argument("--weeks", help="with --publish-dm: comma-separated Mondays the note covers")
+    p.add_argument("--weeks", help="with --publish-dm: the Mondays the note covers, comma- or plus-separated")
     p.add_argument("--to", choices=("dm", "channel"), default="dm", help="with --publish-dm: DM the operator, or post to Shift Coverage")
     p.add_argument("--inspect", action="store_true", help="read-only: draft count + open shifts for --week-start")
     p.add_argument("--refresh-schedule", action="store_true", help="read-only: reload --week-start's ADP schedule into BQ")
@@ -1523,7 +1523,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_delete(a.store, a.week_start, keys, headless=a.headless, dry_run=a.dry_run)
     if a.publish_dm:
         try:
-            weeks = sorted({dt.date.fromisoformat(w.strip()) for w in (a.weeks or "").split(",") if w.strip()})
+            # "+" too: `/prod-ops` env values can't hold commas.
+            weeks = sorted({dt.date.fromisoformat(w) for w in re.split(r"[,+\s]+", a.weeks or "") if w})
         except ValueError:
             p.error("--weeks are YYYY-MM-DD Mondays, comma-separated")
         weeks = weeks or ([a.week_start] if a.week_start else [])

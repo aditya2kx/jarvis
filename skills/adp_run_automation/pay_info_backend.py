@@ -867,15 +867,35 @@ def _page_text(page) -> str:
 # Profile tabs (``EMPLOYEE_PAYROLL`` is Payroll info). Read-only: a tab click only switches the pane.
 _PROFILE_TABS_JS = """() => [...document.querySelectorAll('[id^="EMPLOYEE_"]')]
   .map(e => e.id).filter((id, i, all) => all.indexOf(id) === i)"""
-# EMPLOYEE_LIST* are the Directory's own nav: clicking one leaves the profile, so every later
-# tab click is a no-op on the list page (live 2026-10-31: 13/13 profiles read no hire date).
-_HIRE_TABS_FIRST = ("EMPLOYEE_EMPLOYMENT", "EMPLOYEE_STATUS", "EMPLOYEE_DETAILS")
+# These ids leave the profile (Directory list, company Health & Benefits, HR handbook), so every
+# later tab click is a no-op on the wrong page (live 2026-10-31/11-01: 13/13 read no hire date).
+_OFF_PROFILE_TABS = ("EMPLOYEE_LIST", "EMPLOYEE_BENEFITS", "EMPLOYEE_RELATED_DOCS")
+_HIRE_TABS_FIRST = ("EMPLOYEE_STATUS", "EMPLOYEE_EMPLOYMENT", "EMPLOYEE_DETAILS")
+# Employee status holds the hire date in <sdf-date-picker-v2 property="employment.hireDate">,
+# whose value is an attribute the text walk never sees.
+_HIRE_FIELD_JS = """() => {
+  const f = document.querySelector('[property="employment.hireDate"], [data-test-id="hireDate"]');
+  return f ? (f.getAttribute('value') || f.value || '') : '';
+}"""
+_HIRE_FIELD_WAIT_S = 6.0
 
 
 def hire_tab_order(tabs: list[str]) -> list[str]:
-    """Profile tabs to try for a hire date: likeliest first, never the Directory list nav."""
-    tabs = [t for t in tabs if not t.startswith("EMPLOYEE_LIST")]
+    """Profile tabs to try for a hire date: likeliest first, never one that leaves the profile."""
+    tabs = [t for t in tabs if not t.startswith(_OFF_PROFILE_TABS)]
     return [t for t in _HIRE_TABS_FIRST if t in tabs] + [t for t in tabs if t not in _HIRE_TABS_FIRST]
+
+
+def _hire_pane_text(page, wait_s: float = 0) -> str:
+    """Pane text plus the Hire date field's value, polled up to ``wait_s`` while the pane renders."""
+    deadline = time.time() + wait_s
+    while True:
+        field = page.evaluate(_HIRE_FIELD_JS)
+        if field or time.time() >= deadline:
+            break
+        page.wait_for_timeout(500)
+    text = _page_text(page)
+    return f"{text} Hire date {field}" if field else text
 
 
 def read_profile_hire_date(page) -> tuple[Optional[str], dict]:
@@ -883,7 +903,7 @@ def read_profile_hire_date(page) -> tuple[Optional[str], dict]:
 
     Returns ``(iso or None, {"tabs", "context"})`` — the second part is the breadcrumb on a miss.
     """
-    text = _page_text(page)
+    text = _hire_pane_text(page)
     iso = parse_hire_date(text)
     tabs = hire_tab_order(page.evaluate(_PROFILE_TABS_JS) or [])
     tried: list[str] = []
@@ -895,7 +915,7 @@ def read_profile_hire_date(page) -> tuple[Optional[str], dict]:
         page.evaluate("(id) => { const t = document.getElementById(id); if (t) t.click(); }", tab)
         page.wait_for_timeout(1500)
         dismiss_blocking_modals(page)
-        text = _page_text(page)
+        text = _hire_pane_text(page, _HIRE_FIELD_WAIT_S if tab == "EMPLOYEE_STATUS" else 0)
         iso = parse_hire_date(text)
         dated[tab] = dated_labels(text)
     return iso, {"tabs": tried, "context": hire_context(text), "dated": dated}

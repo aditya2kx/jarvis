@@ -696,11 +696,25 @@ class TestHireDates(unittest.TestCase):
 
     def test_hire_tabs_skip_the_directory_list_nav_and_try_employment_first(self):
         live = ["EMPLOYEE_LIST", "EMPLOYEE_LIST_LEVEL2", "EMPLOYEE_EI9", "EMPLOYEE_DETAILS",
-                "EMPLOYEE_EMPLOYMENT", "EMPLOYEE_STATUS", "EMPLOYEE_PAYROLL"]
+                "EMPLOYEE_EMPLOYMENT", "EMPLOYEE_STATUS", "EMPLOYEE_BENEFITS", "EMPLOYEE_PAYROLL",
+                "EMPLOYEE_RELATED_DOCS"]
         self.assertEqual(
             pib.hire_tab_order(live),
-            ["EMPLOYEE_EMPLOYMENT", "EMPLOYEE_STATUS", "EMPLOYEE_DETAILS", "EMPLOYEE_EI9", "EMPLOYEE_PAYROLL"],
+            ["EMPLOYEE_STATUS", "EMPLOYEE_EMPLOYMENT", "EMPLOYEE_DETAILS", "EMPLOYEE_EI9", "EMPLOYEE_PAYROLL"],
         )
+
+    def test_profile_read_takes_the_hire_date_picker_on_employee_status(self):
+        page = mock.Mock()
+        fields = iter(["", "", "02/16/2026"])
+        page.evaluate.side_effect = lambda js, *a: (
+            ["EMPLOYEE_EMPLOYMENT", "EMPLOYEE_STATUS"] if js is pib._PROFILE_TABS_JS
+            else next(fields) if js is pib._HIRE_FIELD_JS else None
+        )
+        with mock.patch.object(pib, "_page_text", return_value="Employee status Hire date*"), \
+                mock.patch.object(pib, "dismiss_blocking_modals", return_value=False):
+            iso, where = pib.read_profile_hire_date(page)
+        self.assertEqual(iso, "2026-02-16")
+        self.assertEqual(where["tabs"], ["EMPLOYEE_STATUS"])
 
     def test_dated_labels_show_the_wording_beside_each_date(self):
         text = "Employment Position start 08/04/2026 Status Active Seniority  Aug 4, 2026 Pay"

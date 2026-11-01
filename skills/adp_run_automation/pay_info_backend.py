@@ -877,7 +877,10 @@ _HIRE_FIELD_JS = """() => {
   const f = document.querySelector('[property="employment.hireDate"], [data-test-id="hireDate"]');
   return f ? (f.getAttribute('value') || f.value || '') : '';
 }"""
-_HIRE_FIELD_WAIT_S = 6.0
+# A profile opens as an empty shell, and a tab click made before it loads is dropped
+# (live 2026-11-01: 7/13 misses), so the reader polls for the tabs and re-clicks Employee status.
+_HIRE_POLLS = 20
+_TAB_CLICK_JS = "(id) => { const t = document.getElementById(id); if (t) t.click(); }"
 
 
 def hire_tab_order(tabs: list[str]) -> list[str]:
@@ -886,14 +889,25 @@ def hire_tab_order(tabs: list[str]) -> list[str]:
     return [t for t in _HIRE_TABS_FIRST if t in tabs] + [t for t in tabs if t not in _HIRE_TABS_FIRST]
 
 
-def _hire_pane_text(page, wait_s: float = 0) -> str:
-    """Pane text plus the Hire date field's value, polled up to ``wait_s`` while the pane renders."""
-    deadline = time.time() + wait_s
-    while True:
-        field = page.evaluate(_HIRE_FIELD_JS)
-        if field or time.time() >= deadline:
+def _profile_tabs(page) -> list[str]:
+    """The open profile's tab ids, once Employee status has rendered (or the polls run out)."""
+    for _ in range(_HIRE_POLLS):
+        tabs = page.evaluate(_PROFILE_TABS_JS) or []
+        if "EMPLOYEE_STATUS" in tabs:
             break
         page.wait_for_timeout(500)
+    return tabs
+
+
+def _hire_pane_text(page, tab: Optional[str] = None) -> str:
+    """Pane text plus the Hire date field's value; with ``tab``, re-click it until the field shows."""
+    for _ in range(_HIRE_POLLS if tab else 1):
+        field = page.evaluate(_HIRE_FIELD_JS)
+        if field:
+            break
+        if tab:
+            page.evaluate(_TAB_CLICK_JS, tab)
+            page.wait_for_timeout(500)
     text = _page_text(page)
     return f"{text} Hire date {field}" if field else text
 
@@ -905,17 +919,17 @@ def read_profile_hire_date(page) -> tuple[Optional[str], dict]:
     """
     text = _hire_pane_text(page)
     iso = parse_hire_date(text)
-    tabs = hire_tab_order(page.evaluate(_PROFILE_TABS_JS) or [])
+    tabs = hire_tab_order(_profile_tabs(page))
     tried: list[str] = []
     dated: dict[str, list[str]] = {"open": dated_labels(text)}
     for tab in tabs:
         if iso:
             break
         tried.append(tab)
-        page.evaluate("(id) => { const t = document.getElementById(id); if (t) t.click(); }", tab)
+        page.evaluate(_TAB_CLICK_JS, tab)
         page.wait_for_timeout(1500)
         dismiss_blocking_modals(page)
-        text = _hire_pane_text(page, _HIRE_FIELD_WAIT_S if tab == "EMPLOYEE_STATUS" else 0)
+        text = _hire_pane_text(page, tab if tab == "EMPLOYEE_STATUS" else None)
         iso = parse_hire_date(text)
         dated[tab] = dated_labels(text)
     return iso, {"tabs": tried, "context": hire_context(text), "dated": dated}

@@ -716,6 +716,21 @@ class TestHireDates(unittest.TestCase):
         self.assertEqual(iso, "2026-02-16")
         self.assertEqual(where["tabs"], ["EMPLOYEE_STATUS"])
 
+    def test_profile_read_waits_out_a_profile_still_loading(self):
+        page = mock.Mock()
+        tabs = iter([[], [], ["EMPLOYEE_STATUS"]])
+        fields = iter(["", "", "", "08/04/2026"])
+        page.evaluate.side_effect = lambda js, *a: (
+            next(tabs) if js is pib._PROFILE_TABS_JS
+            else next(fields) if js is pib._HIRE_FIELD_JS else None
+        )
+        with mock.patch.object(pib, "_page_text", return_value="Employee profile"), \
+                mock.patch.object(pib, "dismiss_blocking_modals", return_value=False):
+            iso, _ = pib.read_profile_hire_date(page)
+        self.assertEqual(iso, "2026-08-04")
+        clicks = [c for c in page.evaluate.call_args_list if c.args[0] is pib._TAB_CLICK_JS]
+        self.assertEqual(len(clicks), 3)
+
     def test_dated_labels_show_the_wording_beside_each_date(self):
         text = "Employment Position start 08/04/2026 Status Active Seniority  Aug 4, 2026 Pay"
         self.assertEqual(

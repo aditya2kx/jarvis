@@ -118,8 +118,10 @@ entries; nothing here affects pay or tips.
 Employee status → Hire date field (a rehire date wins), else the People directory column;
 `source` says which. Nightly pay_info fills any Active person still missing a row. **New hire** = hired on or after 2026-08-01 (the rule's start; every hire since) and
 not yet through the supervised openers/closers set in the versioned schedule rules: until then
-the shift draft only places them beside experienced staff (overlap ≥ the set hours) and leaves
-the slot open otherwise. Scheduling only — no pay or tip effect.
+the shift draft places them beside experienced staff (overlap ≥ the set hours) and leaves the slot
+open otherwise. Each kind clears on its own (done closers → closes alone; likewise openers); mids
+stay supervised until both are done. The operator can mark someone trained (`training.trained`).
+Scheduling only — no pay or tip effect.
 
 **Needed headcount** (Labor → Staffing coverage, Issue #337): ⌈median Payment orders for that
 weekday + hour over the last 8 weeks ÷ orders one person handles per hour⌉, never below the

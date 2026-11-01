@@ -1,3 +1,7 @@
+## 2026-11-01 — New-hire training: per-kind clearance, Mark trained, draft moves experienced staff (#450 follow-up)
+
+**Finding (Nov 9 draft, prod data):** two closes stayed open with 7 of 13 Active staff off all day; the four people left were new hires — three had already done both supervised closers but still owed an opener, which blocked every close, and the draft never moved an experienced person later to supervise. **Change:** openers and closers clear separately (done closers → close alone); supervised mids are allowed; operator can **Mark trained** (rules `training.trained`); progress rows show shifts worked. The draft's lookahead adds a "reserve experienced staff" rollout and keeps the person that rollout chose, so on the Nov 9 shape it puts a trainee on the mid beside the opener and the second experienced person on the close (0 open shifts).
+
 ## 2026-11-01 — Hotfix: prod-ops wait-deploy empty job image path (#471)
 
 **Incident:** after #468 every `/prod-ops run-job` failed with `could not read image for job 'bhaga-daily-refresh': ''`. **Fix:** use the nested Cloud Run Jobs path `spec.template.spec.template.spec.containers[0].image` (same as `deploy.yml` verify), not the shallow `spec.template.spec.containers[0].image`.

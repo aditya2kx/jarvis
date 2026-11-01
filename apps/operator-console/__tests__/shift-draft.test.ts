@@ -561,7 +561,7 @@ describe("new-hire training gate (Issue #450)", () => {
     expect(trainingBlock(training([1, 1]), "Sam", "open", 390, 840)).toBeNull();
   });
 
-  describe("moves experienced staff to where new hires need them (Nov 9, 2026)", () => {
+  describe("moves experienced staff to where new hires need them (a Nov 9-shaped day)", () => {
     // Need 1 from 6:30, 2 from 8:30 to 8:30 PM. Two experienced (9 h max, 40 h target); the rest new.
     const need = mins.map((t) => (t < 390 ? 0 : t < 510 ? 1 : t < 1230 ? 2 : 0));
     const exp = (employee: string): Availability => ({
@@ -577,7 +577,7 @@ describe("new-hire training gate (Issue #450)", () => {
       });
     const supervised = (out: ReturnType<typeof run>, who: string) => {
       const s = out.find((x) => x.employee === who)!;
-      const pros = out.filter((x) => x.employee === "Dolce" || x.employee === "Hillary").map((x): [number, number] => [x.startMin, x.endMin]);
+      const pros = out.filter((x) => x.employee === "ProA" || x.employee === "ProB").map((x): [number, number] => [x.startMin, x.endMin]);
       let together = 0;
       for (let t = s.startMin; t < s.endMin; t += 15) if (pros.some(([a, b]) => t >= a && t < b)) together += 15;
       return together;
@@ -585,20 +585,20 @@ describe("new-hire training gate (Issue #450)", () => {
 
     it("lets new hires who've done their closers take the closes", () => {
       const out = run(
-        [exp("Dolce"), exp("Hillary"), newbie("Quyen"), newbie("Eileen"), newbie("Huy", 850)],
-        [["Quyen", 1, 0], ["Eileen", 2, 2], ["Huy", 1, 0]],
+        [exp("ProA"), exp("ProB"), newbie("NewA"), newbie("NewB"), newbie("NewC", 850)],
+        [["NewA", 1, 0], ["NewB", 2, 2], ["NewC", 1, 0]],
       );
       expect(out.filter((s) => s.employee === null)).toEqual([]);
     });
 
     it("with only untrained new hires, puts an experienced person late so they can train beside them", () => {
       const out = run(
-        [exp("Dolce"), exp("Hillary"), newbie("Quyen"), newbie("Eileen")],
-        [["Quyen", 2, 2], ["Eileen", 2, 2]],
+        [exp("ProA"), exp("ProB"), newbie("NewA"), newbie("NewB")],
+        [["NewA", 2, 2], ["NewB", 2, 2]],
       );
       expect(out.filter((s) => s.employee === null)).toEqual([]);
-      for (const who of ["Quyen", "Eileen"]) expect(supervised(out, who)).toBeGreaterThanOrEqual(180);
-      expect(Math.max(...out.filter((s) => s.employee === "Dolce" || s.employee === "Hillary").map((s) => s.endMin))).toBe(1230);
+      for (const who of ["NewA", "NewB"]) expect(supervised(out, who)).toBeGreaterThanOrEqual(180);
+      expect(Math.max(...out.filter((s) => s.employee === "ProA" || s.employee === "ProB").map((s) => s.endMin))).toBe(1230);
     });
   });
 

@@ -76,19 +76,19 @@ describe("trainingProgress", () => {
 
   it("counts shifts worked, and only flags upcoming unsupervised shifts of a kind not yet cleared", () => {
     const days = new Map<string, CoveragePersonDay[]>([
-      ["2026-10-20", [closer("Pro, Dolce"), closer("New, Wing")]],
-      ["2026-10-22", [closer("Pro, Dolce"), closer("New, Wing")]],
-      ["2026-10-24", [closer("New, Wing")]], // alone, but closers are already done
-      ["2026-11-02", [closer("New, Wing")]], // upcoming close alone: fine
-      ["2026-11-03", [opener("New, Wing")]], // upcoming opener alone: still needs supervision
+      ["2026-10-20", [closer("Pro, Dolce"), closer("New, Lee")]],
+      ["2026-10-22", [closer("Pro, Dolce"), closer("New, Lee")]],
+      ["2026-10-24", [closer("New, Lee")]], // alone, but closers are already done
+      ["2026-11-02", [closer("New, Lee")]], // upcoming close alone: fine
+      ["2026-11-03", [opener("New, Lee")]], // upcoming opener alone: still needs supervision
     ]);
     const wing = trainingProgress({
       todayIso: today,
       rules,
-      employees: ["New, Wing"],
-      hireDates: new Map([["New, Wing", "2026-09-26"]]),
+      employees: ["New, Lee"],
+      hireDates: new Map([["New, Lee", "2026-09-26"]]),
       days,
-    }).get("New, Wing")!;
+    }).get("New, Lee")!;
     expect(wing).toMatchObject({ worked: 3, open: 0, close: 2, cleared: false, marked: false });
     expect(wing.unsupervised).toEqual(["2026-11-03"]);
     expect(trainingLeftOf(wing)).toEqual({ open: 2, close: 0 });
@@ -96,18 +96,18 @@ describe("trainingProgress", () => {
 
   it("treats someone the operator marked trained as cleared, still counting their shifts", () => {
     const days = new Map<string, CoveragePersonDay[]>([
-      ["2026-10-20", [closer("New, Wing")]],
-      ["2026-11-03", [opener("New, Wing")]],
+      ["2026-10-20", [closer("New, Lee")]],
+      ["2026-11-03", [opener("New, Lee")]],
     ]);
     const out = trainingProgress({
       todayIso: today,
-      rules: { ...rules, trained: ["New, Wing"] },
-      employees: ["New, Wing"],
-      hireDates: new Map([["New, Wing", "2026-09-26"]]),
+      rules: { ...rules, trained: ["New, Lee"] },
+      employees: ["New, Lee"],
+      hireDates: new Map([["New, Lee", "2026-09-26"]]),
       days,
     });
-    expect(out.get("New, Wing")).toMatchObject({ cleared: true, marked: true, worked: 1, unsupervised: [] });
-    expect(staffTags(rules, out).has("New, Wing")).toBe(false);
+    expect(out.get("New, Lee")).toMatchObject({ cleared: true, marked: true, worked: 1, unsupervised: [] });
+    expect(staffTags(rules, out).has("New, Lee")).toBe(false);
   });
 
   it("falls back to the first ADP shift without a hire date, and skips long-timers and an empty experienced list", () => {

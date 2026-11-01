@@ -412,8 +412,8 @@ describe("new-hire training rules (Issue #450)", () => {
   });
 
   it("keeps the marked-trained list; versions saved before it load an empty one", () => {
-    const t = parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, trained: ["Huang, Wing ", "Huang, Wing"] })).staffing.training;
-    expect(t.trained).toEqual(["Huang, Wing"]);
+    const t = parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, trained: ["Hire, Sam ", "Hire, Sam"] })).staffing.training;
+    expect(t.trained).toEqual(["Hire, Sam"]);
     const { trained: _, ...before } = DEFAULT_TRAINING;
     expect(parseScheduleRules(withTraining(before)).staffing.training.trained).toEqual([]);
   });

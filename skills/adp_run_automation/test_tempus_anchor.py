@@ -75,6 +75,19 @@ class RaiseWithEvidence(unittest.TestCase):
         self.assertTrue(shots[0].startswith(d))
         self.assertIn("Screenshot: gs://b/2026-10-30/evidence/a.png", str(ctx.exception))
 
+    def test_failed_upload_keeps_typed_exception_and_local_path(self):
+        class Throttled(Exception):
+            pass
+
+        page = mock.MagicMock(url="https://x")
+        page.screenshot.side_effect = lambda path, full_page: pathlib.Path(path).write_bytes(b"png")
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(r, "EVIDENCE_DIR", pathlib.Path(d)), \
+                mock.patch.object(r, "_upload_evidence_to_gcs", side_effect=OSError("gcs down")):
+            with self.assertRaises(Throttled) as ctx:
+                r._raise_with_evidence(page, store="palmetto", reason="sorry.adp.com", exc_factory=Throttled)
+        self.assertIn(f"Screenshot: {d}", str(ctx.exception))
+
     def test_failed_screenshot_still_raises_and_says_so(self):
         page = mock.MagicMock(url="https://x")
         page.screenshot.side_effect = OSError("closed")

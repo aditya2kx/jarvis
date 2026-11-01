@@ -1071,7 +1071,10 @@ def _save_evidence(page, label: str, *, html: bool = False) -> str:
         page.screenshot(path=str(snap), full_page=True)
     except Exception as exc:  # noqa: BLE001
         return f"none ({type(exc).__name__})"
-    where = _upload_evidence_to_gcs(snap) or str(snap)
+    try:
+        where = _upload_evidence_to_gcs(snap) or str(snap)
+    except Exception:  # noqa: BLE001 — a typed raise (AdpLoginThrottled) must survive
+        where = str(snap)
     if html:
         try:
             dom = snap.with_suffix(".html")

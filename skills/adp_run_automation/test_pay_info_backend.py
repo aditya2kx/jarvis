@@ -759,6 +759,22 @@ class TestHireDates(unittest.TestCase):
         self.assertEqual((found, errors), ({"Doe, Alex": "2026-08-04"}, {}))
         self.assertEqual(op.call_count, 2)
 
+    def test_hire_date_search_timeout_is_retried_once(self):
+        opens = iter([TimeoutError("Locator.wait_for"), "Doe, Alex"])
+
+        def open_profile(*_a, **_k):
+            nxt = next(opens)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+        with mock.patch.object(pib, "_open_profile", side_effect=open_profile), \
+                mock.patch.object(pib, "read_profile_hire_date", return_value=("2026-08-04", {})), \
+                mock.patch.object(pib, "dismiss_blocking_modals", return_value=False), \
+                mock.patch("builtins.print"):
+            found, errors = pib.scrape_hire_dates(mock.Mock(), ["Doe, Alex"], dashboard_url="u")
+        self.assertEqual((found, errors), ({"Doe, Alex": "2026-08-04"}, {}))
+
     def test_backfill_reads_profiles_only_for_active_people_without_a_directory_date(self):
         directory = [
             {"name": "Doe, Alex", "status": "Active", "hire_date": "2026-09-01"},

@@ -950,14 +950,21 @@ def scrape_hire_dates(
     errors: dict[str, str] = {}
     for name in names:
         try:
-            # A profile occasionally opens on the wrong pane (pay statements) or never loads;
-            # opening it again is cheap next to a missing hire date.
-            for _ in range(2):
-                profile = _open_profile(
-                    page, name, dashboard_url=dashboard_url,
-                    accepted_names=accepted_directory_names(name, aliases),
-                )
-                iso, where = read_profile_hire_date(page)
+            # A profile occasionally opens on the wrong pane (pay statements), never loads, or
+            # the Directory search times out; opening it again is cheap next to a missing date.
+            for attempt in (1, 2):
+                try:
+                    profile = _open_profile(
+                        page, name, dashboard_url=dashboard_url,
+                        accepted_names=accepted_directory_names(name, aliases),
+                    )
+                    iso, where = read_profile_hire_date(page)
+                except Exception as exc:  # noqa: BLE001
+                    if attempt == 2:
+                        raise
+                    print(f"[pay_info] hire_date retry name={name!r} err={type(exc).__name__}")
+                    dismiss_blocking_modals(page)
+                    continue
                 if iso:
                     break
             if iso:

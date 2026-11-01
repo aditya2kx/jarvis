@@ -145,6 +145,18 @@ GATES: list[Gate] = [
         modes={"fast", "full"},
     ),
     Gate(
+        name="fq-no-double-backticks",
+        argv=["python3", "scripts/check_fq_no_double_backticks.py"],
+        hard=True,
+        modes={"fast", "full"},
+    ),
+    Gate(
+        name="no-public-job-logs",
+        argv=["python3", "scripts/check_no_public_job_logs.py"],
+        hard=True,
+        modes={"fast", "full"},
+    ),
+    Gate(
         name="progress-push-guard",
         argv=["python3", "scripts/check_no_main_progress_push.py", "--gate"],
         hard=True,

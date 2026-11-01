@@ -113,8 +113,13 @@ Selector/flow knowledge is codified in `schedule_backend.py` (constants +
 Team Schedule and Timecards open through hidden home-page TEMPUS anchors that
 sometimes never hydrate on the first dashboard render; `_click_tempus_anchor`
 reopens the dashboard and tries once more (breadcrumb `[adp_tempus]
-BREADCRUMB anchor_missing`) before failing. `_raise_with_evidence` screenshots
-go to the runtime evidence dir and GCS; the error carries the `gs://` path.
+BREADCRUMB anchor_missing`) before failing. Every runner screenshot (`_raise_with_evidence`,
+the bundle's per-step `adp-bundle-*-fail`, the earnings snapshots) goes through
+`_save_evidence`: runtime evidence dir + GCS, logged as `[adp_evidence] BREADCRUMB
+evidence label=… shot=gs://…`, and the error carries the `gs://` path. In the read
+bundle a Team Schedule failure is recorded as `errors["adp_schedule"]` and the
+timecard-gap, liability and pay_info/directory steps still run
+(`test_bundle_schedule_nonfatal.py`).
 
 **Publishing open shifts** (Issue #434, verified live 2026-11-01): an open shift's
 Publish (Create open shift or Edit) opens a "Publish to employees" question inside

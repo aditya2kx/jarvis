@@ -811,12 +811,26 @@ class TestHireDates(unittest.TestCase):
     def test_pay_info_skips_hire_date_when_already_known(self):
         page = mock.Mock()
         with mock.patch.object(pib, "scrape_one_pay_info", return_value={
-            "employee_name": "Roe, Sam", "search_name": "Roe, Sam",
+            "employee_name": "Roe Sam", "search_name": "Roe, Sam",
             "wage_rate_dollars": 15.0, "hire_date": None, "added_on": None,
             "rate_layout": "text",
         }) as one:
+            # BQ stores Directory "Last, First"; punchers are Timecard "Last First".
             rates, _ = pib.scrape_pay_info_rates(
-                page, ["Roe, Sam"], dashboard_url="u", known_hires={"Roe, Sam"},
+                page, ["Roe Sam"], dashboard_url="u", known_hires={"Roe, Sam"},
             )
         self.assertEqual(one.call_args.kwargs["read_hire_date"], False)
         self.assertEqual(rates[0]["wage_rate_dollars"], 15.0)
+
+    def test_hire_date_soft_fail_does_not_block_the_wage_rate(self):
+        pane = {**TestPayrollPaneRetry.READY, "text": "Hourly pay rate $15.25"}
+        with mock.patch.object(pib, "_open_profile", return_value="Roe, Sam"), \
+                mock.patch.object(
+                    pib, "read_profile_hire_date", side_effect=RuntimeError("pane boom"),
+                ), \
+                mock.patch.object(pib, "_read_payroll_info", return_value=pane), \
+                mock.patch("builtins.print") as out:
+            raw = pib.scrape_one_pay_info(mock.Mock(), "Roe Sam", dashboard_url="u")
+        self.assertEqual(raw["wage_rate_dollars"], 15.25)
+        self.assertIsNone(raw["hire_date"])
+        self.assertTrue(any("hire_date_soft_fail" in c.args[0] for c in out.call_args_list))

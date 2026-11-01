@@ -3022,10 +3022,12 @@ def download_adp_bundle(
                 print("[adp_bundle] pay_info: no punchers to refresh")
             # Active people not yet in adp_hire_dates (new hire, no punches yet).
             roster = result.get("directory_roster") or []
-            have = known_hires | set(hire_dates)
+            have_keys = pib.known_hire_keys(known_hires | set(hire_dates))
             gap = [
-                r["name"] for r in roster
-                if (r.get("status") or "").casefold() == "active" and r["name"] not in have
+                r.get("name") for r in roster
+                if (r.get("status") or "").casefold() == "active"
+                and r.get("name")
+                and not (pib.hire_name_keys(r["name"]) & have_keys)
             ]
             if gap:
                 print(f"[adp_bundle] hire_dates gap fill n={len(gap)}")

@@ -115,6 +115,21 @@ def directory_search_name(canonical: str) -> str:
     return name
 
 
+def hire_name_keys(name: str) -> set[str]:
+    """Match keys for Timecard ``Last First`` and Directory ``Last, First`` spellings."""
+    raw = " ".join(str(name or "").split())
+    if not raw:
+        return set()
+    return {_name_key(raw), _name_key(directory_search_name(raw))}
+
+
+def known_hire_keys(names: Iterable[str]) -> set[str]:
+    keys: set[str] = set()
+    for n in names:
+        keys |= hire_name_keys(n)
+    return keys
+
+
 def accepted_directory_names(canonical: str, aliases: Optional[dict] = None) -> list[str]:
     """Directory spellings of every alias key that resolves to ``canonical``."""
     search = directory_search_name(canonical)
@@ -701,8 +716,15 @@ def scrape_one_pay_info(
             page, canonical_name, dashboard_url=dashboard_url, accepted_names=accepted_names,
         )
         # Hire date lives on Employee status; Payroll info is a different pane.
+        # Soft: a Status-pane flake must not take down tonight's wage rate.
         if read_hire_date and not hire_iso:
-            hire_iso, _ = read_profile_hire_date(page)
+            try:
+                hire_iso, _ = read_profile_hire_date(page)
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[pay_info] BREADCRUMB hire_date_soft_fail "
+                    f"name={canonical_name!r} err={type(exc).__name__}: {exc}"
+                )
         pane = _read_payroll_info(page)
         parsed = parse_payroll_info(pane["cards"], pane["text"], pane["inputs"])
         if parsed:
@@ -1035,7 +1057,7 @@ def scrape_pay_info_rates(
     People already in ``known_hires`` skip the Employee status click (dates rarely change).
     """
     excluded = excluded or set()
-    known_hires = known_hires or set()
+    known_keys = known_hire_keys(known_hires or ())
     out: list[dict] = []
     errors: dict[str, str] = {}
     for name in names:
@@ -1043,7 +1065,7 @@ def scrape_pay_info_rates(
             raw = scrape_one_pay_info(
                 page, name, dashboard_url=dashboard_url,
                 accepted_names=accepted_directory_names(name, aliases),
-                read_hire_date=name not in known_hires,
+                read_hire_date=not (hire_name_keys(name) & known_keys),
             )
             if hire_dates is not None and raw.get("hire_date"):
                 hire_dates[raw["search_name"]] = raw["hire_date"]
@@ -1532,14 +1554,14 @@ def backfill_hire_dates(
     dashboard_url = page.url
     directory = directory_roster(page)
     active = [d for d in directory if (d.get("status") or "").casefold() == "active"]
-    have = set() if force else known_hire_names(store=store)
+    have_keys = set() if force else known_hire_keys(known_hire_names(store=store))
     from_dir = {d["name"]: d["hire_date"] for d in active if d.get("hire_date")}
     need = [
         d["name"] for d in active
-        if d["name"] not in have and d["name"] not in from_dir
+        if not (hire_name_keys(d["name"]) & have_keys) and d["name"] not in from_dir
     ]
     print(
-        f"[pay_info] hire_dates active={len(active)} known={len(have)} "
+        f"[pay_info] hire_dates active={len(active)} known={len(have_keys)} "
         f"from_directory={len(from_dir)} profile_reads={len(need)} force={force}"
     )
     found, errors = scrape_hire_dates(page, need, dashboard_url=dashboard_url, aliases=aliases)

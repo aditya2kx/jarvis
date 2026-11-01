@@ -797,6 +797,17 @@ class TestHireDates(unittest.TestCase):
         self.assertEqual(out["rows"], 1)
 
     def test_known_hire_names_query_uses_fq_without_extra_backticks(self):
+        # Shared gate helper so a mocked client still fails on bad SQL text
+        # (BigQuery dry-run needs ADC — unavailable on Cloud Agents; Issue #467 R3).
+        import importlib.util
+        from pathlib import Path as _Path
+
+        gate_path = _Path(__file__).resolve().parents[2] / "scripts" / "check_fq_no_double_backticks.py"
+        spec = importlib.util.spec_from_file_location("check_fq_no_double_backticks", gate_path)
+        fqgate = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(fqgate)
+
         client = mock.Mock()
         client.query.return_value.result.return_value = [{"employee_name": "Roe, Sam"}]
         with mock.patch("core.datastore.get_client", return_value=client), \
@@ -804,6 +815,7 @@ class TestHireDates(unittest.TestCase):
             names = pib.known_hire_names(store="palmetto")
         sql = client.query.call_args.args[0]
         self.assertEqual(sql.count("`"), 2)  # only the pair from fq(), not a second wrap
+        fqgate.assert_no_double_wrapped_fq(sql, where="known_hire_names")
         self.assertEqual(names, {"Roe, Sam"})
 
     def test_backfill_skips_everyone_already_in_bq(self):
@@ -812,11 +824,14 @@ class TestHireDates(unittest.TestCase):
                 mock.patch.object(pib, "known_hire_names", return_value={"Roe, Sam"}), \
                 mock.patch.object(pib, "scrape_hire_dates", return_value=({}, {})) as sh, \
                 mock.patch.object(pib, "write_hire_dates_bq", return_value=0) as w, \
-                mock.patch("builtins.print"):
-            out = pib.backfill_hire_dates(mock.Mock(url="u"), store="palmetto")
+                mock.patch("builtins.print") as out:
+            out_result = pib.backfill_hire_dates(mock.Mock(url="u"), store="palmetto")
         self.assertEqual(sh.call_args.args[1], [])
-        self.assertEqual(out["rows"], 0)
-        w.assert_called_once()
+        self.assertEqual(out_result["rows"], 0)
+        w.assert_not_called()  # skip-all must not look like an empty scrape
+        printed = " ".join(c.args[0] for c in out.call_args_list if c.args)
+        self.assertIn("nothing_new", printed)
+        self.assertNotIn("hire_dates_empty", printed)
 
     def test_pay_info_skips_hire_date_when_already_known(self):
         page = mock.Mock()

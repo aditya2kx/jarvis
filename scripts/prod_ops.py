@@ -206,7 +206,11 @@ def cleanup(req: dict, pr: str | None) -> list[list[str]]:
 
 
 def dump_failed_job(name: str) -> None:
-    """Print the copy's last execution status (and logs when the SA can read them) before cleanup deletes it."""
+    """Print the copy's last execution status before cleanup deletes it.
+
+    Never the job's log lines: this output is a public Actions log and job logs carry
+    employee names and wages. Read them encrypted with `/prod-read logs --job <name>`.
+    """
     loc = [f"--region={REGION}", f"--project={PROJECT}"]
     listed = subprocess.run(
         ["gcloud", "run", "jobs", "executions", "list", f"--job={name}", *loc,
@@ -214,17 +218,7 @@ def dump_failed_job(name: str) -> None:
         capture_output=True, text=True,
     )
     print(f"prod-ops: last execution: {(listed.stdout or listed.stderr).strip()}", flush=True)
-    logs = subprocess.run(
-        ["gcloud", "logging", "read",
-         f'resource.type="cloud_run_job" AND resource.labels.job_name="{name}"',
-         f"--project={PROJECT}", "--freshness=1h", "--limit=80", "--format=value(textPayload)"],
-        capture_output=True, text=True,
-    )
-    if logs.returncode == 0:
-        print(logs.stdout or "(no log lines)", flush=True)
-    else:
-        err = " ".join((logs.stderr or "").split())[:240]
-        print(f"prod-ops: could not read job logs — {err}", flush=True)
+    print(f"prod-ops: job logs → `/prod-read logs --job {name} --since 2h`", flush=True)
 
 
 def _changed_vs_main(code_root: Path, pattern: str) -> list[Path]:

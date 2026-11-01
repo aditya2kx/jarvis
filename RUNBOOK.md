@@ -2631,8 +2631,8 @@ Cloud Agent prod access: `/prod-read` + `/prod-ops`
 with no operator approval (Environment `prod-auto`; audit trail in its deployments and the PR reply, which
 labels the op `safe` or `changes-prod`). The operator's only gate is PR approval. `/prod-ops run-job-pr
 bhaga-daily-refresh …` runs a PR's code once on a temporary copy of the job (`bhaga-daily-refresh-pr<N>`,
-deleted after the run; a failed execution prints its status (and logs when the SA can read them) before
-the delete; if `prod-ops` prints `BREADCRUMB prod_ops cleanup failed`, run
+deleted after the run; a failed execution prints its status before the delete — never its log lines,
+which carry names and wages; read those with `/prod-read logs --job bhaga-daily-refresh-pr<N>`; if `prod-ops` prints `BREADCRUMB prod_ops cleanup failed`, run
 `gcloud run jobs delete bhaga-daily-refresh-pr<N> --region us-central1`).
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)

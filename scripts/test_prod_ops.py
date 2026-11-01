@@ -85,9 +85,10 @@ class ProdOpsTests(unittest.TestCase):
     def test_run_deletes_the_copy_even_when_its_execution_fails(self):
         # A=1 is changes-prod: it runs with no approval step.
         self.assertEqual(self._run_main(None), (0, ["configure-docker", "build", "push", "clone-job", "execute", "delete"]))
-        # On execute failure, dump_failed_job lists the execution (and tries logging read) before delete.
+        # On execute failure, dump_failed_job lists the execution before delete — never a
+        # `logging read`: this output is a public Actions log.
         self.assertEqual(self._run_main("execute"),
-                         (1, ["configure-docker", "build", "push", "clone-job", "execute", "list", "read", "delete"]))
+                         (1, ["configure-docker", "build", "push", "clone-job", "execute", "list", "delete"]))
 
     def test_run_skips_the_delete_when_no_copy_was_started(self):
         self.assertEqual(self._run_main("build"), (1, ["configure-docker", "build"]))

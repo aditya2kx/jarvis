@@ -423,6 +423,31 @@ class ConsoleShiftChanges(unittest.TestCase):
         with self.assertRaises(wb.UnconfirmedSave):
             wb.edit_shift(mock.MagicMock(), mock.Mock(), **self.T, to_start_min=600, to_end_min=960)
 
+    def _inline_delete(self, marked, dry_run=False):
+        frame, clicks = mock.MagicMock(), []
+        loc = frame.locator.return_value
+        loc.count.return_value = 1
+        loc.first.click.side_effect = lambda **_k: clicks.append("click")
+        loc.filter.return_value.last.wait_for.side_effect = TimeoutError("no nested pane")
+        frame.evaluate.side_effect = lambda js, *_a: ["Cancel", "Delete"] if js == wb.MARK_CONFIRM_JS else ["Delete"]
+        confirm = mock.MagicMock()
+        confirm.count.return_value = marked
+        confirm.first.click.side_effect = lambda **_k: clicks.append("confirm")
+        frame.locator.side_effect = lambda sel, *_a, **_k: confirm if sel == "[data-jarvis-confirm]" else loc
+        with mock.patch.object(wb, "_back_out"), mock.patch.object(wb, "_pane_text", return_value="Delete this shift?"):
+            return wb._press_delete(frame, mock.Mock(), dry_run=dry_run), clicks
+
+    def test_inline_delete_confirmation_is_pressed(self):
+        self.assertEqual(self._inline_delete(1), (True, ["click", "confirm"]))
+
+    def test_inline_delete_dry_run_never_confirms(self):
+        self.assertEqual(self._inline_delete(1, dry_run=True), (False, ["click"]))
+
+    def test_unrecognised_inline_delete_says_what_adp_showed(self):
+        with self.assertRaises(wb.ScheduleWriteError) as ctx:
+            self._inline_delete(0)
+        self.assertIn("inline: ['Cancel', 'Delete']", str(ctx.exception))
+
     def test_published_open_shift_delete_looks_under_edit(self):
         clicked = []
         self._patch(_delete_shown=mock.MagicMock(side_effect=[False, True]),

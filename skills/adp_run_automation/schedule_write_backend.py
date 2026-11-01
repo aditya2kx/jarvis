@@ -595,6 +595,7 @@ MARK_CONFIRM_JS = r"""
 
 DELETE_CONFIRM_RE = re.compile(r"Are you sure you want to delete this (open )?shift", re.I)
 CONFIRM_RE = re.compile(r"^(Yes\b.*|Delete|Confirm|OK)$", re.I)
+INLINE_DELETE_RE = re.compile(r"\bdelete\b[^?]*\?", re.I)
 CANCEL_RE = re.compile(r"^(No\b.*|Cancel|Keep\b.*)$", re.I)
 
 
@@ -665,8 +666,20 @@ def _press_delete(frame, page, *, dry_run: bool) -> bool:
     try:
         confirm_pane.wait_for(state="visible", timeout=8000)
     except Exception:
+        # A published open shift's Edit view asks inline, not in a nested pane.
+        inline = frame.evaluate(MARK_CONFIRM_JS, [INLINE_DELETE_RE.pattern, CONFIRM_RE.pattern])
+        marked = frame.locator("[data-jarvis-confirm]")
+        if not dry_run and marked.count() == 1:
+            print(f"[schedule_write] inline delete confirm buttons {inline}")
+            marked.first.click(timeout=5000)
+            page.wait_for_timeout(1000)
+            _back_out(frame, page)
+            return True
+        seen = f"inline: {inline}; buttons: {', '.join(frame.evaluate(PANE_BUTTONS_JS))}; pane: {_pane_text(frame)[-150:]}"
         _back_out(frame, page)
-        raise ScheduleWriteError("delete confirmation did not appear")
+        if dry_run and marked.count() == 1:
+            return False
+        raise ScheduleWriteError(f"delete confirmation did not appear ({seen})")
     buttons = confirm_pane.get_by_role("button")
     names = [buttons.nth(i).get_attribute("aria-label") or buttons.nth(i).inner_text() for i in range(buttons.count())]
     names = [" ".join((n or "").split()) for n in names]

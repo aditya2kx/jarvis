@@ -157,6 +157,12 @@ GATES: list[Gate] = [
         modes={"fast", "full"},
     ),
     Gate(
+        name="workflow-yaml",
+        argv=["python3", "scripts/check_workflow_yaml.py"],
+        hard=True,
+        modes={"fast", "full"},
+    ),
+    Gate(
         name="main-worktree",
         argv=["python3", "scripts/check_main_worktree.py"],
         hard=True,

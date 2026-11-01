@@ -544,18 +544,62 @@ describe("new-hire training gate (Issue #450)", () => {
     expect(reasons.map((b) => b.reason)).toContain("New hire — no experienced person on for 3h of it");
   });
 
-  it("keeps a new hire to the openers / closers they still need", () => {
-    expect(trainingBlock(training([0, 2], [[390, 1230]]), "Kai", "open", 450, 840)).toBe(
-      "New hire — needs 2 closers with experienced staff first",
-    );
-    expect(trainingBlock(training([1, 0], [[390, 1230]]), "Kai", "mid", 600, 1020)).toBe(
-      "New hire — needs 1 opener with experienced staff first",
-    );
-    expect(trainingBlock(training([0, 1], [[600, 1020]]), "Kai", "close", 810, 1230)).toBeNull();
-    // Requirement met earlier this week: any shift, still beside experienced staff.
-    expect(trainingBlock(training([0, 0], [[600, 1020]]), "Kai", "mid", 600, 1020)).toBeNull();
-    expect(trainingBlock(training([0, 0]), "Kai", "mid", 600, 1020)).toMatch(/no experienced person/);
+  it("clears openers and closers separately; mids stay supervised until both are done", () => {
+    const alone = "New hire — no experienced person on for 3h of it";
+    // Closers done: closes with anyone or alone, but openers and mids still need experienced staff.
+    expect(trainingBlock(training([1, 0]), "Kai", "close", 810, 1230)).toBeNull();
+    expect(trainingBlock(training([1, 0]), "Kai", "open", 390, 840)).toBe(alone);
+    expect(trainingBlock(training([1, 0]), "Kai", "mid", 600, 1020)).toBe(alone);
+    // Openers done: the mirror image.
+    expect(trainingBlock(training([0, 2]), "Kai", "open", 390, 840)).toBeNull();
+    expect(trainingBlock(training([0, 2]), "Kai", "close", 810, 1230)).toBe(alone);
+    // Any kind is fine beside experienced staff — including a mid, or a kind they've already done.
+    expect(trainingBlock(training([0, 2], [[390, 1230]]), "Kai", "open", 450, 840)).toBeNull();
+    expect(trainingBlock(training([1, 1], [[600, 1020]]), "Kai", "mid", 600, 1020)).toBeNull();
+    // Both done (earlier this week): no longer gated.
+    expect(trainingBlock(training([0, 0]), "Kai", "mid", 600, 1020)).toBeNull();
     expect(trainingBlock(training([1, 1]), "Sam", "open", 390, 840)).toBeNull();
+  });
+
+  describe("moves experienced staff to where new hires need them (Nov 9, 2026)", () => {
+    // Need 1 from 6:30, 2 from 8:30 to 8:30 PM. Two experienced (9 h max, 40 h target); the rest new.
+    const need = mins.map((t) => (t < 390 ? 0 : t < 510 ? 1 : t < 1230 ? 2 : 0));
+    const exp = (employee: string): Availability => ({
+      employee, maxWeekHours: 30, targetWeekHours: 40, maxShiftMin: 540, experienced: true, windows: all([390, 1230]),
+    });
+    const newbie = (employee: string, from = 390): Availability => ({ employee, maxWeekHours: 30, windows: all([from, 1230]) });
+    const run = (roster: Availability[], left: [string, number, number][]) =>
+      draftDay({
+        iso: "2026-11-09", mins, onFloor: zeros, need, roster, weekHours: new Map(), busy: new Set(),
+        shiftTimes: "need", minShiftMin: 240, maxShiftMin: 450, handoverOverlapMin: 30,
+        meal: { afterMin: 360, unpaidMin: 30 },
+        training: { overlapMin: 180, left: new Map(left.map(([n, o, c]) => [n, { open: o, close: c }])), experiencedOn: [] },
+      });
+    const supervised = (out: ReturnType<typeof run>, who: string) => {
+      const s = out.find((x) => x.employee === who)!;
+      const pros = out.filter((x) => x.employee === "Dolce" || x.employee === "Hillary").map((x): [number, number] => [x.startMin, x.endMin]);
+      let together = 0;
+      for (let t = s.startMin; t < s.endMin; t += 15) if (pros.some(([a, b]) => t >= a && t < b)) together += 15;
+      return together;
+    };
+
+    it("lets new hires who've done their closers take the closes", () => {
+      const out = run(
+        [exp("Dolce"), exp("Hillary"), newbie("Quyen"), newbie("Eileen"), newbie("Huy", 850)],
+        [["Quyen", 1, 0], ["Eileen", 2, 2], ["Huy", 1, 0]],
+      );
+      expect(out.filter((s) => s.employee === null)).toEqual([]);
+    });
+
+    it("with only untrained new hires, puts an experienced person late so they can train beside them", () => {
+      const out = run(
+        [exp("Dolce"), exp("Hillary"), newbie("Quyen"), newbie("Eileen")],
+        [["Quyen", 2, 2], ["Eileen", 2, 2]],
+      );
+      expect(out.filter((s) => s.employee === null)).toEqual([]);
+      for (const who of ["Quyen", "Eileen"]) expect(supervised(out, who)).toBeGreaterThanOrEqual(180);
+      expect(Math.max(...out.filter((s) => s.employee === "Dolce" || s.employee === "Hillary").map((s) => s.endMin))).toBe(1230);
+    });
   });
 
   it("drafts exactly as before when nobody is in training", () => {

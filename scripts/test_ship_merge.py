@@ -185,5 +185,17 @@ class TestOnlyEvidenceConfidenceBlocking(unittest.TestCase):
         self.assertIn("pr-cost-gate", result.reason)
 
 
+class TestParseConfidence(unittest.TestCase):
+    def test_bold_heading(self):
+        self.assertEqual(SM.parse_confidence("### Evidence confidence rating: **72%**"), 72)
+
+    def test_plain_heading(self):
+        self.assertEqual(SM.parse_confidence("### Evidence confidence: 88%\n**Proves:**"), 88)
+
+    def test_absent(self):
+        self.assertIsNone(SM.parse_confidence("**Verdict: APPROVE**"))
+        self.assertIsNone(SM.parse_confidence(""))
+
+
 if __name__ == "__main__":
     unittest.main()

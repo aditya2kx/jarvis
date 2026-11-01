@@ -451,6 +451,7 @@ GH Action (check_suite / issue_comment / pr-merged-lifecycle)
 | `scripts/check_no_main_progress_push.py` | Mechanical guard: block PROGRESS.md direct push to main |
 | `scripts/check_worktree_path_length.py` | Hard `verify.py` gate: a worktree path `default_worktree_path()` would create must stay ≤ 200 bytes, and the directory name ≤ 60 bytes, including when the current folder is already a linked worktree. Does not scan existing on-disk worktrees. |
 | `scripts/check_main_worktree.py` | Hard `verify.py` gate: the operator's `~/Documents/build-workspace/jarvis` checkout must not have `core.bare=true`, uncommitted tracked changes, or a `main` that is behind `origin/main`. A missing directory (CI, Cloud Agent) is a skip. |
+| `scripts/check_workflow_yaml.py` | Hard `verify.py` gate: every `.github/workflows/*.yml` must parse as YAML. GitHub never runs a workflow it cannot parse and only logs a failed run on each push, which no PR check surfaces (`ship-emoji-force-merge.yml` sat broken from #85 until 2026-11-01). |
 | `scripts/audit_stranded_issues.py` | Issue #123: `--report` (read-only) finds open issues whose implementing PR already merged, matched strictly by branch-slug `iNNN` or a `Closes/Fixes/Resolves #N` keyword (never a bare `#N`/`Refs #N` mention, to avoid false-positiving follow-up issues that merely reference their spawning PR). `--reconcile` posts a link comment + closes each stranded issue. |
 
 ### Signal format

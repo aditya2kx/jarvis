@@ -408,5 +408,13 @@ describe("new-hire training rules (Issue #450)", () => {
     expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, openShifts: 1.5 }))).toThrow(/openers and closers/);
     expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, overlapMin: 100 }))).toThrow(/overlap/);
     expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, experienced: [""] }))).toThrow(/Experienced/);
+    expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, trained: [" "] }))).toThrow(/Trained/);
+  });
+
+  it("keeps the marked-trained list; versions saved before it load an empty one", () => {
+    const t = parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, trained: ["Huang, Wing ", "Huang, Wing"] })).staffing.training;
+    expect(t.trained).toEqual(["Huang, Wing"]);
+    const { trained: _, ...before } = DEFAULT_TRAINING;
+    expect(parseScheduleRules(withTraining(before)).staffing.training.trained).toEqual([]);
   });
 });

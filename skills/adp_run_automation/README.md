@@ -110,6 +110,20 @@ non-fatal to the nightly run), and lands in BQ `adp_scheduled_daily` via
 `backfill_from_downloads.py` → Grafana panel "Scheduled Hours vs Goal Hours".
 Selector/flow knowledge is codified in `schedule_backend.py` (constants +
 `SCHEDULE_EXTRACT_JS`); parser is unit-tested in `test_schedule_backend.py`.
+Team Schedule and Timecards open through hidden home-page TEMPUS anchors that
+sometimes never hydrate on the first dashboard render; `_click_tempus_anchor`
+reopens the dashboard and tries once more (breadcrumb `[adp_tempus]
+BREADCRUMB anchor_missing`) before failing. `_raise_with_evidence` screenshots
+go to the runtime evidence dir and GCS; the error carries the `gs://` path.
+
+**Publishing open shifts** (Issue #434, verified live 2026-11-01): an open shift's
+Publish (Create open shift or Edit) opens a "Publish to employees" question inside
+the same pane; closing it cancels the shift, so `_press_publish_confirmation`
+presses its own Publish. Editing an open shift reopens the create wizard (times,
+Next, then the eligibility step). A published open shift's details pane has no
+Delete (only Edit and a disabled icon); Delete is under Edit and asks inline.
+Any of these that can't be confirmed records ADP's pane text and buttons in the
+change's `error`.
 
 **Open shifts** (Issue #342): the grid's first `.calendar-row` (no `.worker-name`,
 label "Open Shifts N Shifts, HH:MM HRS") shows only a per-day `.open-shift-count`.

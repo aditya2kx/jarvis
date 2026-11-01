@@ -1,6 +1,7 @@
 """ADP Team Schedule write helpers (Issue #337)."""
 from __future__ import annotations
 
+import contextlib
 import datetime
 import unittest
 from unittest import mock
@@ -151,6 +152,98 @@ class CreateOpenShiftConfirm(unittest.TestCase):
         with self.assertRaises(wb.UnconfirmedSave):
             self._create("Shift details Eligibility Previous Save draft Publish", counts_match=False)
 
+    WIZARD = "1. SHIFT DETAILS 2. ELIGIBILITY Shift details 5:00 AM Eligibility 4 employees are eligible"
+    CONFIRM = WIZARD + " PreviousSave draftPublish Publish to employees When published, an employee can claim"
+
+    def _publish(self, panes, *, confirm_buttons=("Cancel", "Publish"), marked=1):
+        """``panes``: _pane_text reads in order (the last repeats)."""
+        calls, frame, seq = [], mock.MagicMock(), list(panes)
+        frame.evaluate.side_effect = lambda js, *_a: (
+            list(confirm_buttons) if js == wb.MARK_CONFIRM_JS else ["Previous", "Save draft", "Publish [off]"])
+        frame.locator.return_value.count.return_value = marked
+        frame.locator.return_value.first.click.side_effect = lambda **_k: calls.append("confirm")
+        with mock.patch.object(wb, "_open_action"), \
+             mock.patch.object(wb, "_fill_times"), \
+             mock.patch.object(wb, "_click", side_effect=lambda _f, _p, what: calls.append(what)), \
+             mock.patch.object(wb, "_visible_button", return_value=object()), \
+             mock.patch.object(wb, "_pane_text", side_effect=lambda _f: seq.pop(0) if len(seq) > 1 else seq[0]), \
+             mock.patch.object(wb, "_wait_for", side_effect=lambda _p, check, *_a: check()), \
+             mock.patch.object(wb, "_back_out", side_effect=lambda _f, _p: calls.append("back_out")):
+            shown = wb.create_open_shift(frame, mock.Mock(), date_iso="2026-12-14",
+                                         start_min=300, end_min=360, publish=True)
+        return calls, shown
+
+    def test_publish_presses_the_publish_to_employees_confirmation(self):
+        # 2026-11-01: backing out of this confirmation cancelled both live open-adds.
+        calls, shown = self._publish([self.WIZARD, self.CONFIRM, self.CONFIRM, "Open shift published"])
+        self.assertEqual(calls, ["Next", "Publish", "confirm", "back_out"])
+        self.assertEqual(shown, "Open shift published")
+
+    def test_unrecognised_confirmation_backs_out_and_says_which_buttons(self):
+        with self.assertRaises(wb.ScheduleWriteError) as ctx:
+            self._publish([self.WIZARD, self.CONFIRM], confirm_buttons=("Cancel", "Send"), marked=0)
+        self.assertIn("['Cancel', 'Send']", str(ctx.exception))
+
+    def test_publish_without_a_confirmation_returns_what_adp_showed_next(self):
+        calls, shown = self._publish([self.WIZARD, "Open shift published"])
+        self.assertEqual(calls, ["Next", "Publish", "back_out"])
+        self.assertEqual(shown, "Open shift published")
+
+    def test_edit_presses_the_publish_confirmation_before_backing_out(self):
+        calls = []
+        commit = mock.Mock()
+        commit.click.side_effect = lambda **_k: calls.append("Publish")
+        with mock.patch.object(wb, "_click"), \
+             mock.patch.object(wb, "_fill_times"), \
+             mock.patch.object(wb, "_visible_button", return_value=commit), \
+             mock.patch.object(wb, "_wait_for", side_effect=lambda _p, check, *_a: check()), \
+             mock.patch.object(wb, "_pane_text", return_value="Open shift updated"), \
+             mock.patch.object(wb, "_press_publish_confirmation",
+                               side_effect=lambda _f, _p: calls.append("confirm") or "Publish to employees"), \
+             mock.patch.object(wb, "_back_out", side_effect=lambda _f, _p: calls.append("back_out")):
+            self.assertTrue(wb._edit_times(mock.MagicMock(), mock.Mock(), start_min=360, end_min=420, dry_run=False))
+        self.assertEqual(calls, ["Publish", "confirm", "back_out"])
+
+    def _edit_open(self, after_next):
+        """Edit whose times step offers only Next; ``after_next``: the commit button shown after it."""
+        calls, nexted = [], []
+        frame = mock.MagicMock()
+        frame.evaluate.return_value = ["Previous", "Save draft"]
+
+        def visible(_f, pattern):
+            if "Next" in pattern:
+                return object()
+            return after_next if nexted else None
+
+        with mock.patch.object(wb, "_click", side_effect=lambda _f, _p, what: calls.append(what) or (
+                 what == "Next" and nexted.append(1))), \
+             mock.patch.object(wb, "_fill_times"), \
+             mock.patch.object(wb, "_visible_button", side_effect=visible), \
+             mock.patch.object(wb, "_wait_for", side_effect=lambda _p, check, *_a: check()), \
+             mock.patch.object(wb, "_pane_text", return_value="Eligibility 4 employees are eligible"), \
+             mock.patch.object(wb, "_press_publish_confirmation", return_value=None), \
+             mock.patch.object(wb, "_back_out"):
+            return calls, wb._edit_times(frame, mock.Mock(), start_min=360, end_min=420, dry_run=False)
+
+    def test_open_shift_edit_goes_through_next_to_publish(self):
+        commit = mock.Mock()
+        calls, ok = self._edit_open(commit)
+        self.assertTrue(ok)
+        self.assertEqual(calls, ["Edit", "Next"])
+        commit.click.assert_called_once()
+
+    def test_edit_without_a_commit_button_says_what_adp_showed(self):
+        with self.assertRaises(wb.ScheduleWriteError) as ctx:
+            self._edit_open(None)
+        self.assertIn("buttons: Previous, Save draft; pane: Eligibility 4 employees are eligible", str(ctx.exception))
+
+    def test_publish_that_stays_on_the_wizard_says_which_buttons_were_off(self):
+        _calls, shown = self._publish([self.WIZARD])
+        self.assertEqual(
+            shown,
+            "still on the wizard: Eligibility 4 employees are eligible | buttons: Previous, Save draft, Publish [off]",
+        )
+
 
 class FakeAssignFrame:
     """The Assign Open Shift pane as read live 2026-10-19: one checkbox per eligible employee."""
@@ -273,3 +366,109 @@ class PublishDraftsLag(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConsoleShiftChanges(unittest.TestCase):
+    """Issue #434: delete / edit any shift, open-shift edit / delete, publish-mode creates."""
+
+    T = {"date_iso": "2026-11-03", "employee": "Lee, Kim", "start_min": 540, "end_min": 900}
+
+    def _patch(self, **over):
+        self.calls = []
+        grid = over.pop("grid", [True])
+        base = {
+            "_open_assigned_shift": mock.MagicMock(side_effect=lambda *_a, **k: self.calls.append(("open", k["state"]))),
+            "_press_delete": mock.MagicMock(side_effect=lambda *_a, dry_run: self.calls.append(("delete", dry_run)) or not dry_run),
+            "_edit_times": mock.MagicMock(side_effect=lambda *_a, dry_run, **_k: self.calls.append(("edit", dry_run)) or not dry_run),
+            "shift_in_grid": mock.MagicMock(side_effect=lambda *_a, **k: self.calls.append(("grid", k.get("state", "any"), k["start_min"])) or grid.pop(0)),
+            "_wait_for": mock.MagicMock(side_effect=lambda _p, check, *_a: check()),
+            "_open_shift_details": mock.MagicMock(side_effect=lambda *_a, **_k: self.calls.append(("open-details",))),
+            "_visible_button": mock.MagicMock(return_value=object()),
+            **over,
+        }
+        stack = contextlib.ExitStack()
+        for name, fake in base.items():
+            stack.enter_context(mock.patch.object(wb, name, fake))
+        self.addCleanup(stack.close)
+
+    def test_confirm_texts_and_never_delete_all(self):
+        self.assertTrue(wb.DELETE_CONFIRM_RE.search("Are you sure you want to delete this shift?"))
+        self.assertTrue(wb.DELETE_CONFIRM_RE.search("Are you sure you want to delete this open shift?"))
+        self.assertTrue(wb.CONFIRM_RE.match("Yes, delete"))
+        self.assertIsNone(wb.CONFIRM_RE.match("Delete all schedules"))
+        self.assertFalse(wb.CANCEL_RE.match("Delete"))
+
+    def test_delete_any_shift_opens_any_state_and_confirms_on_the_grid(self):
+        self._patch(grid=[False])
+        wb.delete_any_shift(mock.MagicMock(), mock.Mock(), **self.T)
+        self.assertEqual(self.calls, [("open", "any"), ("delete", False), ("grid", "any", 540)])
+
+    def test_delete_any_shift_still_on_the_grid_is_unconfirmed(self):
+        self._patch(grid=[True])
+        with self.assertRaises(wb.UnconfirmedSave):
+            wb.delete_any_shift(mock.MagicMock(), mock.Mock(), **self.T)
+
+    def test_delete_any_shift_dry_run_cancels_and_skips_the_read_back(self):
+        self._patch()
+        wb.delete_any_shift(mock.MagicMock(), mock.Mock(), **self.T, dry_run=True)
+        self.assertEqual(self.calls, [("open", "any"), ("delete", True)])
+
+    def test_edit_shift_is_confirmed_live_at_the_new_times(self):
+        self._patch(grid=[True])
+        wb.edit_shift(mock.MagicMock(), mock.Mock(), **self.T, to_start_min=600, to_end_min=960)
+        self.assertEqual(self.calls, [("open", "any"), ("edit", False), ("grid", "published", 600)])
+
+    def test_edit_shift_not_shown_at_the_new_times_is_unconfirmed(self):
+        self._patch(grid=[False])
+        with self.assertRaises(wb.UnconfirmedSave):
+            wb.edit_shift(mock.MagicMock(), mock.Mock(), **self.T, to_start_min=600, to_end_min=960)
+
+    def _inline_delete(self, marked, dry_run=False):
+        frame, clicks = mock.MagicMock(), []
+        loc = frame.locator.return_value
+        loc.count.return_value = 1
+        loc.first.click.side_effect = lambda **_k: clicks.append("click")
+        loc.filter.return_value.last.wait_for.side_effect = TimeoutError("no nested pane")
+        frame.evaluate.side_effect = lambda js, *_a: ["Cancel", "Delete"] if js == wb.MARK_CONFIRM_JS else ["Delete"]
+        confirm = mock.MagicMock()
+        confirm.count.return_value = marked
+        confirm.first.click.side_effect = lambda **_k: clicks.append("confirm")
+        frame.locator.side_effect = lambda sel, *_a, **_k: confirm if sel == "[data-jarvis-confirm]" else loc
+        with mock.patch.object(wb, "_back_out"), mock.patch.object(wb, "_pane_text", return_value="Delete this shift?"):
+            return wb._press_delete(frame, mock.Mock(), dry_run=dry_run), clicks
+
+    def test_inline_delete_confirmation_is_pressed(self):
+        self.assertEqual(self._inline_delete(1), (True, ["click", "confirm"]))
+
+    def test_inline_delete_dry_run_never_confirms(self):
+        self.assertEqual(self._inline_delete(1, dry_run=True), (False, ["click"]))
+
+    def test_unrecognised_inline_delete_says_what_adp_showed(self):
+        with self.assertRaises(wb.ScheduleWriteError) as ctx:
+            self._inline_delete(0)
+        self.assertIn("inline: ['Cancel', 'Delete']", str(ctx.exception))
+
+    def test_published_open_shift_delete_looks_under_edit(self):
+        clicked = []
+        self._patch(_delete_shown=mock.MagicMock(side_effect=[False, True]),
+                    _click=mock.MagicMock(side_effect=lambda _f, _p, what: clicked.append(what)))
+        wb.delete_open_shift(mock.MagicMock(), mock.Mock(), date_iso="2026-12-15", start_min=300, end_min=360)
+        self.assertEqual(clicked, ["Edit"])
+        self.assertEqual(self.calls, [("open-details",), ("delete", False)])
+
+    def test_open_shift_edit_and_delete_go_through_its_details_pane(self):
+        self._patch(_delete_shown=mock.MagicMock(return_value=True))
+        times = {"date_iso": "2026-11-03", "start_min": 540, "end_min": 900}
+        wb.edit_open_shift(mock.MagicMock(), mock.Mock(), **times, to_start_min=600, to_end_min=900, dry_run=True)
+        wb.delete_open_shift(mock.MagicMock(), mock.Mock(), **times)
+        self.assertEqual(self.calls, [("open-details",), ("edit", True), ("open-details",), ("delete", False)])
+
+    def test_published_create_presses_publish_never_save_as_draft_and_checks_the_grid(self):
+        clicked = []
+        self._patch(grid=[True], _open_action=mock.MagicMock(), _fill_times=mock.MagicMock(),
+                    _settled_picker=mock.MagicMock(return_value=[{"name": "Lee, Kim", "value": "7"}]),
+                    _click=mock.MagicMock(side_effect=lambda _f, _p, what: clicked.append(what)),
+                    _back_out=mock.MagicMock(), drafts_pending=mock.MagicMock(side_effect=AssertionError("no count")))
+        name = wb.create_shift(mock.MagicMock(), mock.Mock(), **self.T, publish=True)
+        self.assertEqual((name, clicked), ("Lee, Kim", ["Next", "Publish"]))
+        self.assertEqual(self.calls[-1], ("grid", "published", 540))

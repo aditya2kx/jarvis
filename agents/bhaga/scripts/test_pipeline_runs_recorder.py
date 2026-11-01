@@ -247,6 +247,29 @@ class TestGating:
 
         mock_load.assert_not_called()
 
+    def test_side_job_never_records(self, monkeypatch, capsys):
+        """ADP schedule writes / reminders share the job but are not the day's nightly."""
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False,
+                       side_job="adp-schedule-write:apply")
+        monkeypatch.setenv("CLOUD_RUN_JOB", "bhaga-daily-refresh-pr436")
+
+        mock_load = MagicMock()
+        with patch("core.datastore.load_rows", mock_load):
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=1, run_id="testrun123")
+
+        mock_load.assert_not_called()
+        assert "skip: side_job=adp-schedule-write:apply" in capsys.readouterr().err
+
+    def test_schedule_write_mode_marks_side_job(self, monkeypatch):
+        _reset_summary()
+        monkeypatch.setenv("BHAGA_ADP_SCHEDULE_WRITE", "apply")
+        monkeypatch.setenv("BHAGA_SCHEDULE_DRY_RUN", "1")
+        monkeypatch.setenv("BHAGA_SCHEDULE_CHANGES", "open-add 2099-01-05 10:00-14:00")
+        monkeypatch.setattr(sys, "argv", ["daily_refresh.py"])
+        with patch("agents.bhaga.scripts.adp_schedule_write.main", return_value=1):
+            assert dr._run_refresh("r") == 1
+        assert dr._RUN_SUMMARY["side_job"] == "adp-schedule-write:apply"
+
     def test_no_refresh_date(self, monkeypatch):
         _reset_summary()  # empty — no refresh_date
         monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")

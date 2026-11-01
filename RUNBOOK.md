@@ -1816,8 +1816,8 @@ shortest draft shift (4.5 h — ADP's shortest regular shift). The **Needed** li
 minimum, then day & time rules replace it in their window (e.g. closing duties: 2 people 7:30–8:30 PM).
 The weekly hours goal is a ceiling for order-driven draft shifts, not a target. Drafts start tomorrow.
 ADP open shifts count once (as coverage and hours); the draft only suggests who should take each one
-(free for the whole slot, within hour/shift caps). **Save to ADP as drafts** leaves them out, since it
-can only create new shifts; they're assigned with **Write to ADP** (below).
+(free for the whole slot, within hour/shift caps). The suggested-week card never re-creates them;
+they're assigned from the **Changes to ADP** tray (below).
 Each draft row's **Who** picker (Issue #412) lists everyone who fits that shift — the suggestion first, each with
 their own times and hours so far this week — plus **Leave open**. A pick re-drafts the rest of the week around it
 (caps, unavailability and last days still apply; a pick that stops fitting after a rule edit is skipped and
@@ -1838,31 +1838,49 @@ may send an SMS OTP; reads only). Check:
 `bq query 'SELECT employee_name, hire_date, source, scraped_at_utc FROM bhaga.adp_hire_dates ORDER BY hire_date DESC'`.
 A daytime **Sync ADP** loads Timecard rows only through its target day (never today's in-progress punches).
 
-**Assign ADP open shifts (Issue #412, same flag).** Each future day in Coverage lists that day's ADP open
-shifts — saved/locked weeks too — with a checkbox and the same **Who** picker (only people the draft rules
-allow; "Nobody fits your rules" can't be ticked). Ticks carry across days and reloads (local storage
-`labor-open-assign:v1:<store>`); a ticked shift ADP no longer lists as open is dropped with a note. The
-sticky bar's **Write to ADP** opens a review drawer; its confirm inserts one `labor_open_shift_assignments`
-row per shift (migration 089, status `queued`, one `assign_id`; never `labor_schedule_pushes`, so a week
-never locks) and starts `BHAGA_ADP_SCHEDULE_WRITE=assign BHAGA_SCHEDULE_ASSIGN_ID=<id>` (refused while
-any schedule-write run is going). Per row: the day's open-shift cell → **Select open shift <range>** →
-Shift details **Assign** → tick the person in ADP's eligible list → **Assign**; then the week's open
-shifts are re-read and the row is `assigned` only if that slot's count dropped. A person ADP doesn't list
-as eligible fails with ADP's list (`… is not eligible for this open shift in ADP (eligible: …)`); a slot
-no longer open fails without touching ADP (`skipped` instead when an earlier Write to ADP assigned that
-row_key — one undone in ADP is open again and is assigned again); a crash marks the
-rest `not attempted: job stopped (…)`. The job ends by re-reading the touched weeks
-(`refresh_schedule`) and the page reloads. On a saved (locked) week, a saved open shift ADP now shows
-on someone reads "<name> took this open shift in ADP" and counts as in ADP — Save never re-offers it. `BREADCRUMB adp_open_shift_assign assign_id=… row_key=…
-error=…` on each failure. Queue the same rows from the command line (refuses while any schedule-write
-execution is still running; `--execute` starts the job with per-run env overrides and does not change the job's own env):
-`python3 -m agents.bhaga.scripts.adp_schedule_write --queue-assign shifts.json [--execute]`.
-Dry run (ticks the person in ADP's eligible list, never presses the final Assign, backs out):
-`BHAGA_ADP_CDP_URL=http://127.0.0.1:9333 python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --assign-id <id> --dry-run`.
-Check: `bq query 'SELECT date, employee, start_min, end_min, status, error, adp_name FROM bhaga.labor_open_shift_assignments ORDER BY requested_at DESC LIMIT 40'`.
+**Changes to ADP (Issue #434, same flag; replaces #412's Write to ADP bar and #427's unavailability tray).**
+Every change made from Coverage waits in one sticky **Changes to ADP** tray (local storage
+`labor-adp-changes:v1:<store>`; a change ADP has overtaken, or a past day, is dropped with a note):
+- Each future day lists its ADP open shifts with a checkbox + **Who** picker (assign), per-row **Edit** /
+  **Delete**, and **Add open shift** (several days at once, N per day). Staged adds show in the day's list.
+- Tap a name → the person drawer's **Upcoming shifts** (next 14 days): tap one to open it on one screen —
+  change its times and/or person (ADP can't hand an assigned shift to someone else, so a reassign deletes it
+  and adds the same hours for the new person) or **Delete**; **Add shift** at the bottom.
+- The **Suggested schedule for <week>** card (Suggestions on) has no ADP button of its own: **Review & add
+  to changes** stages the week's suggested shifts ADP doesn't have (`shift-add`; open shifts as one
+  `open-add` per day and hours, with a count) and the week's assigned ADP drafts (`shift-publish`). Its
+  **Send ClickUp message** is the only other action. (Issue #434 retired the card's Save-as-drafts and
+  Publish-week buttons.)
+- Unavailability changes (#427) stage into the same tray (`CONSOLE_ADP_UNAVAIL_WRITE`, off until its ADP
+  writes are proven live; only **approve** is wired in the job today — other kinds fail without a click).
+- **Suggestions** switch (per browser, `labor-show-suggestions:v1:<store>`): off hides draft lanes, `+N draft`
+  chip counts, the Finalize card, the shift-draft table and suggested names. ADP's own shifts always show.
 
-**Draft shifts → ADP (Issue #337, flag `CONSOLE_ADP_SCHEDULE_WRITE=1` on the console service).** The
-draft card's **Save to ADP as drafts** opens a drawer listing the week's shifts not yet in ADP; its
+**Apply to ADP** inserts one `queued` row per change under one `batch_id` — shifts in `adp_shift_changes`
+(migration 096), unavailability in `adp_unavailability_changes` (092) — and starts
+`BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_BATCH_ID=<id>` (refused while any schedule write runs). Without the console, `BHAGA_SCHEDULE_CHANGES="open-add 2027-01-12 10:00-14:00 count=2; …"`
+queues and applies command-line changes (a PR's code runs live via `/prod-ops run-job-pr bhaga-daily-refresh …`).
+Per week the job applies deletes, then edits, reassigns, adds (and publishes), assigns. Each shift is **published on its own**
+(wizard / Edit **Publish**); the week's **Publish drafts** and **Delete all schedules** are never pressed.
+Every row ends `applied` (ADP re-read shows it: the grid for assigned shifts, the week's open-shift counts for
+open shifts), `skipped` (ADP already showed it — nothing clicked) or `failed` with the reason; nothing is
+retried and a crash marks the rest `not attempted: job stopped (…)`. A reassign whose add fails says
+`removed <name>'s shift but could not add it for <name> … — add it again`. A `shift-publish` (or a
+`shift-add` whose exact shift ADP shows as a draft) deletes that draft and adds the same shift published;
+already live → `skipped`; its add failing says `removed <name>'s draft but could not add it published`. Applied rows append to
+`adp_shift_events` / `adp_unavailability_events` (append-only). The job ends by re-reading the touched weeks
+(`refresh_schedule`); the tray polls the batch and keeps any change that didn't land.
+`BREADCRUMB adp_apply batch_id=… change_id=… kind=… error=…` on each failure.
+Dry run (walks each wizard / pane to its commit button and backs out; BQ untouched):
+`BHAGA_ADP_CDP_URL=http://127.0.0.1:9333 python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --apply-batch <id> --dry-run`.
+Check: `bq query 'SELECT kind, date, employee, to_employee, summary, status, error FROM bhaga.adp_shift_changes ORDER BY requested_at DESC LIMIT 40'`.
+The #412 command-line assign path still works (`labor_open_shift_assignments`, migration 089):
+`python3 -m agents.bhaga.scripts.adp_schedule_write --queue-assign shifts.json [--execute]`, job mode `assign`.
+
+**Draft shifts → ADP (Issue #337, flag `CONSOLE_ADP_SCHEDULE_WRITE=1` on the console service).** Since
+Issue #434 the console no longer offers Save as drafts / Publish week (the suggested week goes through the
+Changes to ADP tray); the job's `drafts` / `publish` modes below remain for the command line, and weeks
+saved that way keep their locked plan. The draft card's **Save to ADP as drafts** opened a drawer listing the week's shifts not yet in ADP; its
 confirm inserts one `labor_schedule_pushes` row per shift (migration 078, status `queued`, one
 `push_id`) and starts `BHAGA_ADP_SCHEDULE_WRITE=drafts` (laptop: `adp_schedule_write.py` directly).
 Each shift goes through Actions › Create shift (employee picked from ADP's "Unscheduled employees" list
@@ -1902,7 +1920,7 @@ ready-to-post Shift Coverage & Trades note (Issue #381): `@everyone` + the publi
 ADP open shift from **tomorrow** through that week's Sunday, numbered by date with the slots nested.
 Publish itself never posts to the team (`BREADCRUMB adp_publish_dm` if the DM fails). If the re-read fails the
 DM still goes out from the last sync and says "open shifts are as of <time>". To send it again, use
-**Send ClickUp message** (shown once a week has `published` rows). The drawer offers **Send me a DM**
+**Send ClickUp message** (on the suggested-week card). The drawer offers **Send me a DM**
 (`BHAGA_ADP_SCHEDULE_WRITE=dm`) or **Post to Shift Coverage** (`BHAGA_SCHEDULE_MESSAGE_TO=channel`):
 both re-read open shifts from ADP first. The channel post is `team_post` only — it starts at `@everyone`
 and drops the draft header — and goes to `clickup.shift_coverage_channel` in the store profile. A stale
@@ -2119,7 +2137,7 @@ The top "0. Pipeline Health" row on the BHAGA Analytics dashboard shows two side
 
 **Attempt-only semantics:** only sources that actually ran a scrape appear in `source_pulls`. Sources skipped because their step marker was already present (`step_already_done`) or suppressed via `--skip-*` flags never enter the phase-1 results dict and are not recorded. Both tables are empty until the first nightly run after migration 017 is applied.
 
-**How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, skipped on `--dry-run`, never raises) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). **Prod-only gate (CLOUD_RUN_JOB):** records ONLY when the `CLOUD_RUN_JOB` env var is set (present in all real Cloud Run job/execution environments) OR when `BHAGA_RECORD_PIPELINE_RUN=1` is explicitly set (opt-in for intentional cloud-shell backfills). Laptop and GitHub CI runs never set `CLOUD_RUN_JOB` and therefore never write to `pipeline_runs` — this prevents Pipeline Health from showing non-prod rows. Greppable log lines: `[pipeline_runs] skip: <reason>` or `[pipeline_runs] recorded run_id=…`. Sandbox staging runs write only to `BHAGA_BQ_DATASET` (default prod `bhaga` blocked by `datastore._assert_sandbox_write_isolation`). Using MERGE means a re-run of the recorder converges to the same row rather than duplicating. Possible run statuses:
+**How run outcomes are recorded:** `daily_refresh.main()` generates a `run_id` (UUID4 hex, 32 chars) at startup, then calls `_run_refresh()`. In its `finally` block it calls `_record_pipeline_run(run_id=…)`, which (best-effort, skipped on `--dry-run`, never raises) MERGEs one row into `pipeline_runs` (merge key: `run_id`) and one row per attempted source into `source_pulls` (merge keys: `run_id` + `source`). **Prod-only gate (CLOUD_RUN_JOB):** records ONLY when the `CLOUD_RUN_JOB` env var is set (present in all real Cloud Run job/execution environments) OR when `BHAGA_RECORD_PIPELINE_RUN=1` is explicitly set (opt-in for intentional cloud-shell backfills). Laptop and GitHub CI runs never set `CLOUD_RUN_JOB` and therefore never write to `pipeline_runs` — this prevents Pipeline Health from showing non-prod rows. **Side jobs never record:** the ADP schedule-write modes (`BHAGA_ADP_SCHEDULE_WRITE`, incl. `/prod-ops run-job-pr` dry runs) and the unavailability reminder share the job image but are not the day's nightly, so they skip with `[pipeline_runs] skip: side_job=…` — otherwise a failed noon Apply would read as that date's failed nightly and drive `_last_pipeline_run_failed` recovery. Greppable log lines: `[pipeline_runs] skip: <reason>` or `[pipeline_runs] recorded run_id=…`. Sandbox staging runs write only to `BHAGA_BQ_DATASET` (default prod `bhaga` blocked by `datastore._assert_sandbox_write_isolation`). Using MERGE means a re-run of the recorder converges to the same row rather than duplicating. Possible run statuses:
 
 - `success` — `_run_refresh()` returned 0 and every step, including the non-fatal ones, worked
 - `partial` — returned 0, but a non-fatal step failed: one recorded by `run_step` (`ingest_inventory`,

@@ -1831,11 +1831,15 @@ every ADP shift (past actuals + upcoming schedule), not per week. It's a hard ru
 can take with experienced staff present stays open, and the draft row says why. Pickers tag people
 **Experienced** / **New hire · 1/2 openers · 0/2 closers** and list blocked people (disabled) with the
 reason, so a manual ADP edit is informed. Hire date = `bhaga.adp_hire_dates` (migration 097, from the
-ADP profile's **Employee status → Hire date** field; falls back to the first ADP shift). Every pay_info scrape refreshes it; backfill
-once with `/prod-ops run-job-pr bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1` (locally
-`BHAGA_ADP_HIRE_DATES=1 python3 -m agents.bhaga.scripts.daily_refresh --store palmetto`; one ADP login,
-may send an SMS OTP; reads only). Check:
+ADP profile's **Employee status → Hire date** field; falls back to the first ADP shift). The
+**nightly** pay_info pass keeps it fresh: punchers missing a row get the field read on the same
+profile open as their wage rate; any other Active person still missing a row (new hire, no punches
+yet) is filled in the same login. Re-reading everyone is `BHAGA_ADP_HIRE_DATES=1` with
+`--force-hire-dates` (or `/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1` after a
+schema rebuild). Reads only; may send an ADP SMS OTP. Check:
 `bq query 'SELECT employee_name, hire_date, source, scraped_at_utc FROM bhaga.adp_hire_dates ORDER BY hire_date DESC'`.
+To delete a public Actions run that leaked names: `python3 scripts/delete_actions_run.py <run_id>`
+(bot PAT `workflow` scope — Cloud Agent uses Secret Manager `github-bot-pat`).
 A daytime **Sync ADP** loads Timecard rows only through its target day (never today's in-progress punches).
 
 **Changes to ADP (Issue #434, same flag; replaces #412's Write to ADP bar and #427's unavailability tray).**

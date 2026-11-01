@@ -87,6 +87,8 @@ page error (paths and timings only in the log).
 2026-10-31 (Cloud Shell, Issue #450):
 `gcloud projects add-iam-policy-binding jarvis-bhaga-prod --member serviceAccount:bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com --role roles/logging.viewer`.
 
+A public Actions run that printed names (or other PII) is deleted with `python3 scripts/delete_actions_run.py <run_id>` — the bot PAT's `workflow` scope, read from Secret Manager `github-bot-pat` on a Cloud Agent (the injected `gh` token is read-only and cannot delete runs).
+
 Optional: repo variable `CLOUD_AGENT_MODEL` picks the Cloud Agent model (account default otherwise).
 
 ## Still Mac-only

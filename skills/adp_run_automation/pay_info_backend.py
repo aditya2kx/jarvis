@@ -682,6 +682,7 @@ def scrape_one_pay_info(
     *,
     dashboard_url: str,
     accepted_names: Iterable[str] = (),
+    read_hire_date: bool = True,
 ) -> dict:
     """Directory → profile → Payroll info; return rate fields.
 
@@ -690,11 +691,18 @@ def scrape_one_pay_info(
     reloading all failed to recover it — the profile URL is the SPA root, so a
     reload lands on the dashboard — while reopening the profile from the
     Directory recovered it every time. So each attempt starts from the Directory.
+
+    When ``read_hire_date`` is true, Employee status is read before Payroll info
+    on the same open profile (only for people not yet in ``adp_hire_dates``).
     """
+    hire_iso: Optional[str] = None
     for attempt in range(1, PAYROLL_INFO_ATTEMPTS + 1):
         profile_name = _open_profile(
             page, canonical_name, dashboard_url=dashboard_url, accepted_names=accepted_names,
         )
+        # Hire date lives on Employee status; Payroll info is a different pane.
+        if read_hire_date and not hire_iso:
+            hire_iso, _ = read_profile_hire_date(page)
         pane = _read_payroll_info(page)
         parsed = parse_payroll_info(pane["cards"], pane["text"], pane["inputs"])
         if parsed:
@@ -718,7 +726,7 @@ def scrape_one_pay_info(
         "employee_name": canonical_name,
         "search_name": profile_name,
         **parsed,
-        "hire_date": parse_hire_date(pane["text"]),
+        "hire_date": hire_iso or parse_hire_date(pane["text"]),
         "body_excerpt": pane["text"][:500],
         "inputs": pane["inputs"][:20],
     }
@@ -887,15 +895,20 @@ _TAB_CLICK_JS = "(id) => { const t = document.getElementById(id); if (t) t.click
 
 
 def hire_tab_order(tabs: list[str]) -> list[str]:
-    """Profile tabs to try for a hire date: likeliest first, never one that leaves the profile."""
+    """Only the hire-date panes, in order — never the rest of the profile nav.
+
+    Live ADP keeps the date on Employee status; Employment / Details are fallbacks.
+    Walking Tax / Payroll / I-9 on a miss cost ~20 s and never helped (2026-11-01).
+    """
     tabs = [t for t in tabs if not t.startswith(_OFF_PROFILE_TABS)]
-    return [t for t in _HIRE_TABS_FIRST if t in tabs] + [t for t in tabs if t not in _HIRE_TABS_FIRST]
+    return [t for t in _HIRE_TABS_FIRST if t in tabs]
 
 
 def _profile_tabs(page) -> list[str]:
     """The open profile's tab ids, once Employee status has rendered (or the polls run out)."""
     for _ in range(_HIRE_POLLS):
-        tabs = page.evaluate(_PROFILE_TABS_JS) or []
+        tabs = page.evaluate(_PROFILE_TABS_JS)
+        tabs = tabs if isinstance(tabs, list) else []
         if "EMPLOYEE_STATUS" in tabs:
             break
         page.wait_for_timeout(500)
@@ -1014,12 +1027,15 @@ def scrape_pay_info_rates(
     excluded: Optional[set[str]] = None,
     aliases: Optional[dict] = None,
     hire_dates: Optional[dict[str, str]] = None,
+    known_hires: Optional[set[str]] = None,
 ) -> tuple[list[dict], dict[str, str]]:
     """Scrape Payroll info rates for names. Per-employee failures are soft.
 
     ``hire_dates`` (Directory name → ISO) collects any hire date the profile shows on the way.
+    People already in ``known_hires`` skip the Employee status click (dates rarely change).
     """
     excluded = excluded or set()
+    known_hires = known_hires or set()
     out: list[dict] = []
     errors: dict[str, str] = {}
     for name in names:
@@ -1027,6 +1043,7 @@ def scrape_pay_info_rates(
             raw = scrape_one_pay_info(
                 page, name, dashboard_url=dashboard_url,
                 accepted_names=accepted_directory_names(name, aliases),
+                read_hire_date=name not in known_hires,
             )
             if hire_dates is not None and raw.get("hire_date"):
                 hire_dates[raw["search_name"]] = raw["hire_date"]
@@ -1485,19 +1502,48 @@ def write_hire_dates_bq(payload: dict) -> int:
     )
 
 
-def backfill_hire_dates(page, *, store: str, aliases: Optional[dict] = None) -> dict:
-    """Every Active Directory person's hire date → ``adp_hire_dates`` (BHAGA_ADP_HIRE_DATES=1).
+def known_hire_names(*, store: str) -> set[str]:
+    """Directory names already in ``adp_hire_dates`` — skip them on an incremental fill."""
+    try:
+        from google.cloud import bigquery  # noqa: PLC0415
 
-    The Directory column (when ADP shows one) covers most people in one pass; the rest are
-    read from their profile. Read-only toward ADP.
+        from core.datastore import fq, get_client  # noqa: PLC0415
+
+        rows = get_client().query(
+            f"SELECT employee_name FROM `{fq('adp_hire_dates')}` WHERE store = @store",
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("store", "STRING", store)]
+            ),
+        ).result()
+        return {r["employee_name"] for r in rows}
+    except Exception as exc:  # noqa: BLE001 — first run / schema missing: treat as empty
+        print(f"[pay_info] BREADCRUMB known_hire_names_failed err={type(exc).__name__}: {exc}")
+        return set()
+
+
+def backfill_hire_dates(
+    page, *, store: str, aliases: Optional[dict] = None, force: bool = False,
+) -> dict:
+    """Active Directory hire dates → ``adp_hire_dates`` (``BHAGA_ADP_HIRE_DATES=1``).
+
+    Incremental by default: people already in BQ are skipped (a new hire is one Directory
+    row that isn't there yet). ``force=True`` re-reads everyone. Read-only toward ADP.
     """
     dashboard_url = page.url
     directory = directory_roster(page)
     active = [d for d in directory if (d.get("status") or "").casefold() == "active"]
-    missing = [d["name"] for d in active if not d.get("hire_date")]
-    print(f"[pay_info] hire_dates active={len(active)} from_directory={len(active) - len(missing)} "
-          f"profile_reads={len(missing)}")
-    found, errors = scrape_hire_dates(page, missing, dashboard_url=dashboard_url, aliases=aliases)
+    have = set() if force else known_hire_names(store=store)
+    from_dir = {d["name"]: d["hire_date"] for d in active if d.get("hire_date")}
+    need = [
+        d["name"] for d in active
+        if d["name"] not in have and d["name"] not in from_dir
+    ]
+    print(
+        f"[pay_info] hire_dates active={len(active)} known={len(have)} "
+        f"from_directory={len(from_dir)} profile_reads={len(need)} force={force}"
+    )
+    found, errors = scrape_hire_dates(page, need, dashboard_url=dashboard_url, aliases=aliases)
+    found = {**from_dir, **found}
     payload = {
         "store": store,
         "scraped_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
@@ -1650,7 +1696,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument(
         "--hire-dates",
         action="store_true",
-        help="Backfill every Active person's ADP hire date into adp_hire_dates (Issue #450)",
+        help="Fill Active people missing from adp_hire_dates (Issue #450); nightly does this too",
+    )
+    ap.add_argument(
+        "--force-hire-dates",
+        action="store_true",
+        help="With --hire-dates, re-read every Active profile even when BQ already has them",
     )
     args = ap.parse_args(argv)
 
@@ -1660,13 +1711,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         gaps = assert_no_missing_puncher_rates(days=args.days)
         return 1 if gaps else 0
 
-    if args.hire_dates:
+    if args.hire_dates or args.force_hire_dates:
         from skills.adp_run_automation.runner import adp_session  # noqa: PLC0415
         from skills.store_profile import load_aliases  # noqa: PLC0415
 
         with adp_session(store=args.store, headed=not args.headless, slow_mo_ms=50) as (_ctx, page):
-            out = backfill_hire_dates(page, store=args.store, aliases=load_aliases(args.store))
-        return 0 if out["rows"] else 1
+            out = backfill_hire_dates(
+                page, store=args.store, aliases=load_aliases(args.store),
+                force=args.force_hire_dates,
+            )
+        return 0 if out["rows"] or not out["errors"] else 1
 
     names = list(args.names)
     if args.from_bq_punchers:

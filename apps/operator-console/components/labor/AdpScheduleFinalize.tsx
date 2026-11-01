@@ -58,9 +58,9 @@ function ChangeList({ changes }: { changes: ShiftChange[] }) {
             </span>
           </p>
           <ul className="flex flex-col divide-y rounded-md border">
-            {list.map((c) => (
+            {list.map((c, i) => (
               <li
-                key={`${c.kind}-${"employee" in c ? c.employee : "open"}-${c.startMin}-${c.endMin}`}
+                key={`${c.kind}-${"employee" in c ? c.employee : "open"}-${c.startMin}-${c.endMin}-${i}`}
                 className="flex items-center justify-between gap-3 px-3 py-1.5 text-sm"
               >
                 <span className="tabular-nums">{timeText(c)}</span>

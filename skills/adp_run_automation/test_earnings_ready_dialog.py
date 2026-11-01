@@ -22,14 +22,17 @@ Run:
 from __future__ import annotations
 
 import os
+import pathlib
 import re
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
+from skills.adp_run_automation import runner
 from skills.adp_run_automation.runner import _wait_for_earnings_ready_button
 
 
@@ -104,6 +107,11 @@ _SPECS = [
 
 class TestWaitForEarningsReadyButton(unittest.TestCase):
 
+    def setUp(self):
+        p = mock.patch.object(runner, "_upload_evidence_to_gcs", return_value=None)
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_primary_visible_immediately_returns_btn(self):
         """Primary locator visible at first check → function returns immediately."""
         primary = _FakeLocator(visible=True)
@@ -161,20 +169,12 @@ class TestWaitForEarningsReadyButton(unittest.TestCase):
     def test_timeout_attempts_diagnostic_snapshot(self):
         """On timeout a screenshot + HTML source are attempted."""
         page = _FakePage(locators={})
-        with tempfile.TemporaryDirectory() as td:
-            # Patch HOME so the snapshot lands in a temp dir instead of ~/.bhaga.
-            old_home = os.environ.get("HOME")
-            os.environ["HOME"] = td
-            try:
-                with self.assertRaises(RuntimeError):
-                    _wait_for_earnings_ready_button(
-                        page, timeout_ms=200, locator_specs=_SPECS
-                    )
-            finally:
-                if old_home is None:
-                    os.environ.pop("HOME", None)
-                else:
-                    os.environ["HOME"] = old_home
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(runner, "EVIDENCE_DIR", pathlib.Path(td)):
+            with self.assertRaises(RuntimeError):
+                _wait_for_earnings_ready_button(
+                    page, timeout_ms=200, locator_specs=_SPECS
+                )
         # At least one screenshot was attempted.
         self.assertGreater(len(page.screenshot_calls), 0)
         self.assertGreater(page.content_calls, 0)

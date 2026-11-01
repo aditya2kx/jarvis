@@ -1053,15 +1053,37 @@ def _raise_with_evidence(page, *, store: str, reason: str, exc_factory=RuntimeEr
     ``AdpLoginThrottled`` for a sorry.adp.com / maintenance redirect) while
     reusing the same screenshot-capture path; defaults to ``RuntimeError``.
     """
-    try:
-        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
-        snap = EVIDENCE_DIR / f"adp-{store}-authfail-{ts}.png"
-        page.screenshot(path=str(snap), full_page=True)
-        reason += f"\nScreenshot: {_upload_evidence_to_gcs(snap) or snap}"
-    except Exception as exc:  # noqa: BLE001
-        reason += f"\nScreenshot: none ({type(exc).__name__})"
+    reason += f"\nScreenshot: {_save_evidence(page, f'adp-{store}-authfail')}"
     raise exc_factory(reason)
+
+
+def _save_evidence(page, label: str, *, html: bool = False) -> str:
+    """Screenshot (and optionally the DOM) into EVIDENCE_DIR + GCS; never raises.
+
+    Cloud Run's filesystem dies with the execution, so a path under ``~`` is lost
+    the moment the job exits; the returned ``gs://`` URI (or local path on a Mac
+    without GCS) is what goes in the log line and the error message.
+    """
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    try:
+        EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+        snap = EVIDENCE_DIR / f"{label}-{ts}.png"
+        page.screenshot(path=str(snap), full_page=True)
+    except Exception as exc:  # noqa: BLE001
+        return f"none ({type(exc).__name__})"
+    try:
+        where = _upload_evidence_to_gcs(snap) or str(snap)
+    except Exception:  # noqa: BLE001 — a typed raise (AdpLoginThrottled) must survive
+        where = str(snap)
+    if html:
+        try:
+            dom = snap.with_suffix(".html")
+            dom.write_text(page.content())
+            _upload_evidence_to_gcs(dom)
+        except Exception:  # noqa: BLE001
+            pass
+    print(f"[adp_evidence] BREADCRUMB evidence label={label} url={getattr(page, 'url', '?')} shot={where}")
+    return where
 
 
 # ── Shared Reports navigation ─────────────────────────────────────
@@ -1457,27 +1479,13 @@ def _wait_for_earnings_ready_button(page, *, timeout_ms: int, locator_specs: lis
         _time.sleep(poll_interval_s)
 
     # Total timeout — save diagnostic snapshot then raise.
-    try:
-        import datetime as _dt
-        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-        shot_dir = pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
-        shot_dir.mkdir(parents=True, exist_ok=True)
-        page.screenshot(
-            path=str(shot_dir / f"adp-earnings-ready-dialog-missing-{ts}.png"),
-            full_page=True,
-        )
-        (shot_dir / f"adp-earnings-ready-dialog-missing-{ts}.html").write_text(page.content())
-        print(f"[earnings] saved diagnostic snapshot: "
-              f"adp-earnings-ready-dialog-missing-{ts}.{{png,html}}")
-    except Exception as snap_exc:  # noqa: BLE001
-        print(f"[earnings] could not save diagnostic snapshot: {snap_exc}")
-
+    shot = _save_evidence(page, "adp-earnings-ready-dialog-missing", html=True)
     raise RuntimeError(
         f"[earnings] ready-dialog button never appeared after {timeout_ms}ms "
         f"(URL={page.url}). Selectors tried: {tried}. "
         f"This is likely ADP async report generation taking longer than expected "
         f"or a selector change on the 'Your report is ready to download' modal. "
-        f"Check the diagnostic snapshot in ~/.bhaga/state/screenshots/ for the DOM state."
+        f"Screenshot: {shot}"
     )
 
 
@@ -1541,17 +1549,7 @@ def _set_earnings_employment_all(page) -> None:
         f"[earnings] WARN: Employment-status=All not set ({last_exc}); "
         f"filter data-test-ids={interesting[:40]!r}"
     )
-    try:
-        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        shot_dir = pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
-        shot_dir.mkdir(parents=True, exist_ok=True)
-        page.screenshot(
-            path=str(shot_dir / f"adp-earnings-employment-filter-{ts}.png"),
-            full_page=True,
-        )
-        print(f"[earnings] saved employment-filter snapshot adp-earnings-employment-filter-{ts}.png")
-    except Exception:  # noqa: BLE001
-        pass
+    _save_evidence(page, "adp-earnings-employment-filter")
 
 
 def _earnings_within_session(
@@ -1641,19 +1639,7 @@ def _earnings_within_session(
     except Exception as exc:  # noqa: BLE001
         print(f"[earnings] tile STILL not visible after expanding Custom "
               f"section ({type(exc).__name__}); saving diagnostic snapshot")
-        try:
-            ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            shot_dir = pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
-            shot_dir.mkdir(parents=True, exist_ok=True)
-            page.screenshot(
-                path=str(shot_dir / f"adp-earnings-tile-missing-{ts}.png"),
-                full_page=True,
-            )
-            (shot_dir / f"adp-earnings-tile-missing-{ts}.html").write_text(page.content())
-            print(f"[earnings] saved diagnostic snapshot: "
-                  f"adp-earnings-tile-missing-{ts}.{{png,html}}")
-        except Exception as exc3:  # noqa: BLE001
-            print(f"[earnings] could not save diagnostic snapshot: {exc3}")
+        _save_evidence(page, "adp-earnings-tile-missing", html=True)
         raise exc
 
     report_tile.scroll_into_view_if_needed(timeout=5_000)
@@ -2790,15 +2776,7 @@ def download_adp_bundle(
                 # Per-component evidence — the launch_persistent global capture
                 # only fires if the whole context with-block raises; here we
                 # swallow to allow earnings to attempt.
-                try:
-                    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-                    page.screenshot(
-                        path=str(pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
-                                 / f"adp-bundle-timecard-fail-{ts}.png"),
-                        full_page=True,
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
+                _save_evidence(page, "adp-bundle-timecard-fail")
 
         if needs_earnings:
             try:
@@ -2855,15 +2833,7 @@ def download_adp_bundle(
             except Exception as exc:  # noqa: BLE001
                 result["errors"]["adp_earnings"] = f"{type(exc).__name__}: {exc}"
                 print(f"[adp_bundle] earnings FAILED: {type(exc).__name__}: {exc}")
-                try:
-                    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-                    page.screenshot(
-                        path=str(pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
-                                 / f"adp-bundle-earnings-fail-{ts}.png"),
-                        full_page=True,
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
+                _save_evidence(page, "adp-bundle-earnings-fail")
 
         if needs_schedule:
             try:
@@ -2893,15 +2863,7 @@ def download_adp_bundle(
             except Exception as exc:  # noqa: BLE001
                 result["errors"]["adp_schedule"] = f"{type(exc).__name__}: {exc}"
                 print(f"[adp_bundle] schedule FAILED: {type(exc).__name__}: {exc}")
-                try:
-                    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-                    page.screenshot(
-                        path=str(pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
-                                 / f"adp-bundle-schedule-fail-{ts}.png"),
-                        full_page=True,
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
+                _save_evidence(page, "adp-bundle-schedule-fail")
 
         if needs_gaps:
             try:
@@ -3058,15 +3020,7 @@ def download_adp_bundle(
                 )
             except Exception:  # noqa: BLE001
                 pass
-            try:
-                ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-                page.screenshot(
-                    path=str(pathlib.Path.home() / ".bhaga" / "state" / "screenshots"
-                             / f"adp-bundle-pay-info-fail-{ts}.png"),
-                    full_page=True,
-                )
-            except Exception:  # noqa: BLE001
-                pass
+            _save_evidence(page, "adp-bundle-pay-info-fail")
             # Do NOT put this on result["errors"] — tips/timecard must still succeed.
 
         return result

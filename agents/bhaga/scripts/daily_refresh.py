@@ -2583,6 +2583,7 @@ def _handle_partial_raw_load(
 
 
 _RUN_SUMMARY: dict = {}  # populated by _run_refresh(); read by main()'s recorder
+_PR_JOB_COPY_RE = re.compile(r"-pr\d+$")
 
 
 def _should_record_pipeline_run() -> bool:
@@ -2593,7 +2594,9 @@ def _should_record_pipeline_run() -> bool:
     BHAGA_RECORD_PIPELINE_RUN=1 is an explicit opt-in so an intentional
     cloud-shell backfill can still be recorded. A bare BHAGA_SECRETS_BACKEND=gcp
     laptop run (e.g. a local e2e against prod BQ) must NOT record — that was the
-    bug that polluted Pipeline Health with non-prod rows.
+    bug that polluted Pipeline Health with non-prod rows. A ``/prod-ops run-job-pr``
+    copy (``bhaga-daily-refresh-pr<N>``) runs unmerged code, so it does not record
+    either: its failures read as failed prod runs (2026-10-30/11-01).
     """
     if _RUN_SUMMARY.get("dry_run") or _RUN_SUMMARY.get("side_job"):
         return False
@@ -2601,7 +2604,8 @@ def _should_record_pipeline_run() -> bool:
         return False
     if os.environ.get("BHAGA_RECORD_PIPELINE_RUN", "").strip() == "1":
         return True
-    return bool(os.environ.get("CLOUD_RUN_JOB"))
+    job = os.environ.get("CLOUD_RUN_JOB", "")
+    return bool(job) and not _PR_JOB_COPY_RE.search(job)
 
 
 def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> None:
@@ -2613,6 +2617,8 @@ def _record_pipeline_run(*, started_at_utc, exit_code, run_id, error=None) -> No
             "dry_run" if _RUN_SUMMARY.get("dry_run")
             else f"side_job={_RUN_SUMMARY['side_job']}" if _RUN_SUMMARY.get("side_job")
             else "no_refresh_date" if _RUN_SUMMARY.get("refresh_date") is None
+            else f"pr_job_copy={os.environ['CLOUD_RUN_JOB']}"
+            if _PR_JOB_COPY_RE.search(os.environ.get("CLOUD_RUN_JOB", ""))
             else "not_cloud_run"
         )
         print(f"[pipeline_runs] skip: {reason}", file=sys.stderr)
@@ -2873,6 +2879,7 @@ def _run_refresh(run_id: str) -> int:
     # New-hire training backfill (Issue #450): every Active person's ADP hire date
     # into adp_hire_dates (force re-read). Read-only; nightly pay_info already fills gaps.
     if _env_skip("BHAGA_ADP_HIRE_DATES"):
+        _RUN_SUMMARY["side_job"] = "adp-hire-dates"
         os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
         from skills.adp_run_automation import pay_info_backend  # noqa: PLC0415
         store = os.environ.get("BHAGA_STORE") or args.store

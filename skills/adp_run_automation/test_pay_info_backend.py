@@ -705,7 +705,7 @@ class TestHireDates(unittest.TestCase):
 
     def test_profile_read_takes_the_hire_date_picker_on_employee_status(self):
         page = mock.Mock()
-        fields = iter(["", "", "02/16/2026"])
+        fields = iter(["", "", "Hire date 02/16/2026"])
         page.evaluate.side_effect = lambda js, *a: (
             ["EMPLOYEE_EMPLOYMENT", "EMPLOYEE_STATUS"] if js is pib._PROFILE_TABS_JS
             else next(fields) if js is pib._HIRE_FIELD_JS else None
@@ -719,7 +719,7 @@ class TestHireDates(unittest.TestCase):
     def test_profile_read_waits_out_a_profile_still_loading(self):
         page = mock.Mock()
         tabs = iter([[], [], ["EMPLOYEE_STATUS"]])
-        fields = iter(["", "", "", "08/04/2026"])
+        fields = iter(["", "", "", "Rehire date 08/04/2026"])
         page.evaluate.side_effect = lambda js, *a: (
             next(tabs) if js is pib._PROFILE_TABS_JS
             else next(fields) if js is pib._HIRE_FIELD_JS else None
@@ -749,6 +749,15 @@ class TestHireDates(unittest.TestCase):
         self.assertIn("Doe, Alex", errors)
         crumb = next(c.args[0] for c in out.call_args_list if "hire_date_missing" in c.args[0])
         self.assertIn("Hire info", crumb)
+
+    def test_hire_date_miss_reopens_the_profile_once(self):
+        reads = iter([(None, {"tabs": [], "context": [], "dated": {}}), ("2026-08-04", {})])
+        with mock.patch.object(pib, "_open_profile", return_value="Doe, Alex") as op, \
+                mock.patch.object(pib, "read_profile_hire_date", side_effect=lambda _p: next(reads)), \
+                mock.patch("builtins.print"):
+            found, errors = pib.scrape_hire_dates(mock.Mock(), ["Doe, Alex"], dashboard_url="u")
+        self.assertEqual((found, errors), ({"Doe, Alex": "2026-08-04"}, {}))
+        self.assertEqual(op.call_count, 2)
 
     def test_backfill_reads_profiles_only_for_active_people_without_a_directory_date(self):
         directory = [

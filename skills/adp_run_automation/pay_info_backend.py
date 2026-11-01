@@ -871,11 +871,14 @@ _PROFILE_TABS_JS = """() => [...document.querySelectorAll('[id^="EMPLOYEE_"]')]
 # later tab click is a no-op on the wrong page (live 2026-10-31/11-01: 13/13 read no hire date).
 _OFF_PROFILE_TABS = ("EMPLOYEE_LIST", "EMPLOYEE_BENEFITS", "EMPLOYEE_RELATED_DOCS")
 _HIRE_TABS_FIRST = ("EMPLOYEE_STATUS", "EMPLOYEE_EMPLOYMENT", "EMPLOYEE_DETAILS")
-# Employee status holds the hire date in <sdf-date-picker-v2 property="employment.hireDate">,
-# whose value is an attribute the text walk never sees.
+# Employee status holds the hire date in <sdf-date-picker-v2 property="employment.hireDate"
+# label="Hire date" value="…">: an attribute the text walk never sees. Any *hire* field counts,
+# so a rehire date reaches parse_hire_date with its label.
 _HIRE_FIELD_JS = """() => {
-  const f = document.querySelector('[property="employment.hireDate"], [data-test-id="hireDate"]');
-  return f ? (f.getAttribute('value') || f.value || '') : '';
+  return [...document.querySelectorAll('[property], [data-test-id]')]
+    .filter(e => /hire/i.test(e.getAttribute('property') || e.getAttribute('data-test-id') || ''))
+    .map(e => [e.getAttribute('label') || 'Hire date', e.getAttribute('value') || e.value || ''])
+    .filter(([, v]) => v).map(p => p.join(' ')).join(' ');
 }"""
 # A profile opens as an empty shell, and a tab click made before it loads is dropped
 # (live 2026-11-01: 7/13 misses), so the reader polls for the tabs and re-clicks Employee status.
@@ -909,7 +912,7 @@ def _hire_pane_text(page, tab: Optional[str] = None) -> str:
             page.evaluate(_TAB_CLICK_JS, tab)
             page.wait_for_timeout(500)
     text = _page_text(page)
-    return f"{text} Hire date {field}" if field else text
+    return f"{text} {field}" if field else text
 
 
 def read_profile_hire_date(page) -> tuple[Optional[str], dict]:
@@ -947,11 +950,16 @@ def scrape_hire_dates(
     errors: dict[str, str] = {}
     for name in names:
         try:
-            profile = _open_profile(
-                page, name, dashboard_url=dashboard_url,
-                accepted_names=accepted_directory_names(name, aliases),
-            )
-            iso, where = read_profile_hire_date(page)
+            # A profile occasionally opens on the wrong pane (pay statements) or never loads;
+            # opening it again is cheap next to a missing hire date.
+            for _ in range(2):
+                profile = _open_profile(
+                    page, name, dashboard_url=dashboard_url,
+                    accepted_names=accepted_directory_names(name, aliases),
+                )
+                iso, where = read_profile_hire_date(page)
+                if iso:
+                    break
             if iso:
                 found[profile] = iso
                 print(f"[pay_info] hire_date OK {profile} → {iso}")

@@ -58,6 +58,11 @@ class ProdOpsTests(unittest.TestCase):
         self.assertEqual(len(cmds), 1)
         self.assertEqual(cmds[0][:5], ["gcloud", "run", "jobs", "execute", "bhaga-daily-refresh"])
 
+    def test_job_image_format_matches_deploy_yml(self):
+        # Guard against the #471 empty-image regression: deploy.yml is the known-good path.
+        deploy = (Path(__file__).resolve().parent.parent / ".github/workflows/deploy.yml").read_text()
+        self.assertIn(prod_ops._JOB_IMAGE_FORMAT, deploy)
+
     def test_wait_deploy_matches_then_returns(self):
         with mock.patch.dict(os.environ, {"PROD_OPS_EXPECT_SHA": "abc123"}), \
                 mock.patch.object(prod_ops, "job_image_tag", return_value="abc123"), \

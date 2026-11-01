@@ -645,11 +645,12 @@ def _apply_open(frame, page, row: dict, open_now: Counter, *, dry_run: bool) -> 
     slot = (d, row["start_min"], row["end_min"])
     times = {"date_iso": d, "start_min": row["start_min"], "end_min": row["end_min"]}
     name = None
+    shown = None
     if kind == "open-add":
         made = 0
         try:
             for _ in range(1 if dry_run else row["count"] or 1):
-                wb.create_open_shift(frame, page, **times, publish=True, dry_run=dry_run)
+                shown = wb.create_open_shift(frame, page, **times, publish=True, dry_run=dry_run)
                 made += 1
         finally:
             if made and not dry_run:
@@ -677,7 +678,11 @@ def _apply_open(frame, page, row: dict, open_now: Counter, *, dry_run: bool) -> 
     if kind == "open-add":
         added = after[slot] - open_now[slot]
         if added < (row["count"] or 1):
-            raise wb.UnconfirmedSave(f"ADP shows {max(added, 0)} of {row['count']} new open shifts")
+            listed = sorted(f"{wb.fmt_time(s)}-{wb.fmt_time(e)}" for (day, s, e), n in after.items() if day == d for _ in range(n))
+            raise wb.UnconfirmedSave(
+                f"ADP shows {max(added, 0)} of {row['count']} new open shifts"
+                f" (ADP lists {d}: {', '.join(listed) or 'none'}; after Publish ADP said: {(shown or '')[:200]!r})"
+            )
     elif kind == "open-edit":
         new = (d, row["to_start_min"], row["to_end_min"])
         if not (after[slot] < open_now[slot] and after[new] > open_now[new]):

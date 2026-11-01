@@ -424,8 +424,9 @@ class FakeApplyAdp:
             return
         if self.lose_open_adds:
             self.lose_open_adds -= 1
-            return
+            return "Create open shift | Publish"
         self.open[(date_iso, start_min, end_min)] += 1
+        return "An open shift has been published"
 
     def assign_open_shift(self, _f, _p, *, date_iso, employee, start_min, end_min, dry_run=False):
         self._step("assign_open_shift", employee, date_iso)
@@ -567,7 +568,11 @@ class RunApply(unittest.TestCase):
     def test_open_add_adp_only_partly_shows_is_failed_with_the_count(self):
         fq = FakeApplyQuery([_change("oadd", "open-add", count=2)])
         self.assertEqual(self._run(fq, FakeApplyAdp(lose_open_adds=1)), 1)
-        self.assertEqual(fq.updates[0][2:], ("failed", "UnconfirmedSave: ADP shows 1 of 2 new open shifts"))
+        self.assertEqual(fq.updates[0][2:], (
+            "failed",
+            "UnconfirmedSave: ADP shows 1 of 2 new open shifts (ADP lists 2026-11-03: 9:00 AM-3:00 PM;"
+            " after Publish ADP said: 'An open shift has been published')",
+        ))
         self.assertEqual(fq.events, [])
 
     def test_unavailability_approve_is_applied_and_other_kinds_fail_without_a_click(self):

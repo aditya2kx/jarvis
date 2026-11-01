@@ -423,11 +423,12 @@ def create_shift(
 def create_open_shift(
     frame, page, *, date_iso: str, start_min: int, end_min: int,
     before: int | None = None, dry_run: bool = False, publish: bool = False,
-) -> None:
+) -> str | None:
     """Create one unassigned draft open shift (default eligibility). ``before`` as in create_shift.
 
     ``publish=True`` presses the eligibility step's Publish instead; the caller
-    confirms from the week's open-shift counts.
+    confirms from the week's open-shift counts. Returns the dialog text ADP showed
+    after Publish, so an unconfirmed publish says what ADP said.
     """
     if publish:
         _open_action(frame, page, "Create open shift")
@@ -448,8 +449,10 @@ def create_open_shift(
             _back_out(frame, page)
             raise
         page.wait_for_timeout(2000)
+        shown = _pane_text(frame)
+        print(f"[schedule_write] open shift {date_iso} after Publish: {shown[:300]!r}")
         _back_out(frame, page)
-        return
+        return shown
     if before is None:
         before = drafts_pending(frame)
     _open_action(frame, page, "Create open shift")

@@ -444,13 +444,18 @@ def create_open_shift(
             if dry_run:
                 _back_out(frame, page)
                 return
+            wizard = _pane_text(frame)
             _click(frame, r"^\s*Publish\s*$", what="Publish")
         except Exception:
             _back_out(frame, page)
             raise
-        page.wait_for_timeout(2000)
+        # Closing the wizard discards it, so give ADP time to leave the eligibility step.
+        _wait_for(page, lambda: _pane_text(frame) != wizard, 15.0, 500)
         shown = _pane_text(frame)
-        print(f"[schedule_write] open shift {date_iso} after Publish: {shown[:300]!r}")
+        if shown == wizard:
+            step = shown[shown.lower().rfind("eligibility"):] if "eligibility" in shown.lower() else shown
+            shown = f"still on the wizard: {step[:160]} | buttons: {', '.join(frame.evaluate(PANE_BUTTONS_JS))}"
+        print(f"[schedule_write] open shift {date_iso} after Publish: {shown[:500]!r}")
         _back_out(frame, page)
         return shown
     if before is None:
@@ -529,6 +534,17 @@ PANE_TEXT_JS = r"""
 () => [...document.querySelectorAll('sdf-focus-pane')]
   .filter(p => { const b = p.getBoundingClientRect(); return b.width > 0 && b.height > 0; })
   .map(p => (p.innerText || '').replace(/\s+/g, ' ').trim()).join(' | ')
+"""
+
+# Visible buttons of the open pane, "[off]" when disabled: why a click did nothing.
+PANE_BUTTONS_JS = r"""
+() => [...document.querySelectorAll('sdf-focus-pane')]
+  .filter(p => { const b = p.getBoundingClientRect(); return b.width > 0 && b.height > 0; })
+  .flatMap(p => [...p.querySelectorAll('sdf-button, button')])
+  .filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; })
+  .map(b => (b.innerText || '').replace(/\s+/g, ' ').trim()
+    + (b.disabled || b.hasAttribute('disabled') || b.getAttribute('aria-disabled') === 'true' ? ' [off]' : ''))
+  .filter(t => t)
 """
 
 DELETE_CONFIRM_RE = re.compile(r"Are you sure you want to delete this (open )?shift", re.I)

@@ -681,7 +681,7 @@ def _apply_open(frame, page, row: dict, open_now: Counter, *, dry_run: bool) -> 
             listed = sorted(f"{wb.fmt_time(s)}-{wb.fmt_time(e)}" for (day, s, e), n in after.items() if day == d for _ in range(n))
             raise wb.UnconfirmedSave(
                 f"ADP shows {max(added, 0)} of {row['count']} new open shifts"
-                f" (ADP lists {d}: {', '.join(listed) or 'none'}; after Publish ADP said: {(shown or '')[:200]!r})"
+                f" (ADP lists {d}: {', '.join(listed) or 'none'}; after Publish ADP said: {(shown or '')[:290]!r})"
             )
     elif kind == "open-edit":
         new = (d, row["to_start_min"], row["to_end_min"])

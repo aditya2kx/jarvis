@@ -152,6 +152,33 @@ class CreateOpenShiftConfirm(unittest.TestCase):
         with self.assertRaises(wb.UnconfirmedSave):
             self._create("Shift details Eligibility Previous Save draft Publish", counts_match=False)
 
+    def _publish(self, panes):
+        calls, frame = [], mock.MagicMock()
+        frame.evaluate.return_value = ["Previous", "Save draft", "Publish [off]"]
+        with mock.patch.object(wb, "_open_action"), \
+             mock.patch.object(wb, "_fill_times"), \
+             mock.patch.object(wb, "_click", side_effect=lambda _f, _p, what: calls.append(what)), \
+             mock.patch.object(wb, "_visible_button", return_value=object()), \
+             mock.patch.object(wb, "_pane_text", side_effect=panes), \
+             mock.patch.object(wb, "_wait_for", side_effect=lambda _p, check, *_a: check()), \
+             mock.patch.object(wb, "_back_out", side_effect=lambda _f, _p: calls.append("back_out")):
+            shown = wb.create_open_shift(frame, mock.Mock(), date_iso="2026-12-14",
+                                         start_min=300, end_min=360, publish=True)
+        return calls, shown
+
+    def test_publish_returns_what_adp_showed_next(self):
+        calls, shown = self._publish(["Eligibility Publish", "Open shift published", "Open shift published"])
+        self.assertEqual(calls, ["Next", "Publish", "back_out"])
+        self.assertEqual(shown, "Open shift published")
+
+    def test_publish_that_stays_on_the_wizard_says_which_buttons_were_off(self):
+        wizard = "1. SHIFT DETAILS 2. ELIGIBILITY Shift details 5:00 AM Eligibility 4 employees are eligible"
+        _calls, shown = self._publish([wizard] * 3)
+        self.assertEqual(
+            shown,
+            "still on the wizard: Eligibility 4 employees are eligible | buttons: Previous, Save draft, Publish [off]",
+        )
+
 
 class FakeAssignFrame:
     """The Assign Open Shift pane as read live 2026-10-19: one checkbox per eligible employee."""

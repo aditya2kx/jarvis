@@ -423,8 +423,16 @@ class ConsoleShiftChanges(unittest.TestCase):
         with self.assertRaises(wb.UnconfirmedSave):
             wb.edit_shift(mock.MagicMock(), mock.Mock(), **self.T, to_start_min=600, to_end_min=960)
 
+    def test_published_open_shift_delete_looks_under_edit(self):
+        clicked = []
+        self._patch(_delete_shown=mock.MagicMock(side_effect=[False, True]),
+                    _click=mock.MagicMock(side_effect=lambda _f, _p, what: clicked.append(what)))
+        wb.delete_open_shift(mock.MagicMock(), mock.Mock(), date_iso="2026-12-15", start_min=300, end_min=360)
+        self.assertEqual(clicked, ["Edit"])
+        self.assertEqual(self.calls, [("open-details",), ("delete", False)])
+
     def test_open_shift_edit_and_delete_go_through_its_details_pane(self):
-        self._patch()
+        self._patch(_delete_shown=mock.MagicMock(return_value=True))
         times = {"date_iso": "2026-11-03", "start_min": 540, "end_min": 900}
         wb.edit_open_shift(mock.MagicMock(), mock.Mock(), **times, to_start_min=600, to_end_min=900, dry_run=True)
         wb.delete_open_shift(mock.MagicMock(), mock.Mock(), **times)

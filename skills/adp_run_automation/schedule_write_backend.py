@@ -562,7 +562,8 @@ PANE_BUTTONS_JS = r"""
   .filter(p => { const b = p.getBoundingClientRect(); return b.width > 0 && b.height > 0; })
   .flatMap(p => [...p.querySelectorAll('sdf-button, button')])
   .filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; })
-  .map(b => (b.innerText || '').replace(/\s+/g, ' ').trim()
+  .map(b => (b.innerText || b.getAttribute('aria-label') || b.getAttribute('title') || b.getAttribute('icon') || '?')
+    .replace(/\s+/g, ' ').trim()
     + (b.disabled || b.hasAttribute('disabled') || b.getAttribute('aria-disabled') === 'true' ? ' [off]' : ''))
   .filter(t => t)
 """
@@ -770,7 +771,18 @@ def delete_open_shift(frame, page, *, date_iso: str, start_min: int, end_min: in
     """Delete one open shift. The caller confirms from the week's open-shift counts."""
     _open_shift_details(frame, page, date_iso=date_iso, start_min=start_min, end_min=end_min)
     _wait_for(page, lambda: _visible_button(frame, r"^\s*(Edit|Assign)\s*$") is not None, 8.0)
+    # 2026-11-01: a published open shift's pane has only Edit and a disabled icon; look for Delete under Edit.
+    if not _delete_shown(frame):
+        _click(frame, r"^\s*Edit\s*$", what="Edit")
+        _wait_for(page, lambda: _delete_shown(frame), 8.0)
     _press_delete(frame, page, dry_run=dry_run)
+
+
+def _delete_shown(frame) -> bool:
+    if frame.locator("sdf-focus-pane sdf-button[aria-label=' Delete ']").count() == 1:
+        return True
+    alt = frame.locator("sdf-focus-pane").get_by_role("button", name=re.compile(r"^\s*Delete\s*$", re.I))
+    return sum(1 for i in range(alt.count()) if alt.nth(i).is_visible()) == 1
 
 
 # The Assign Open Shift pane is nested in the Shift details pane, so the last visible

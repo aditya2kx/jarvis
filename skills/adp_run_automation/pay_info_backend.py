@@ -1566,6 +1566,13 @@ def backfill_hire_dates(
     )
     found, errors = scrape_hire_dates(page, need, dashboard_url=dashboard_url, aliases=aliases)
     found = {**from_dir, **found}
+    # Intentional skip-all (everyone already in BQ) must not look like an empty scrape —
+    # that breadcrumb trains the operator to ignore real empty-roster failures.
+    if not found and have_keys and not force:
+        print(
+            f"[pay_info] hire_dates nothing_new known={len(have_keys)} — BQ already complete"
+        )
+        return {"rows": 0, "errors": errors}
     payload = {
         "store": store,
         "scraped_at_utc": datetime.datetime.utcnow().isoformat() + "Z",

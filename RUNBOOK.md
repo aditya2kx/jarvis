@@ -1836,7 +1836,9 @@ ADP profile's **Employee status → Hire date** field; falls back to the first A
 profile open as their wage rate; any other Active person still missing a row (new hire, no punches
 yet) is filled in the same login. Re-reading everyone is `BHAGA_ADP_HIRE_DATES=1` with
 `--force-hire-dates` (or `/prod-ops run-job bhaga-daily-refresh BHAGA_ADP_HIRE_DATES=1` after a
-schema rebuild). Reads only; may send an ADP SMS OTP. Check:
+schema rebuild). Reads only; may send an ADP SMS OTP. When every Active person already has a
+row, the job logs `hire_dates nothing_new known=N — BQ already complete` (not `hire_dates_empty`,
+which means a true empty scrape). Check:
 `bq query 'SELECT employee_name, hire_date, source, scraped_at_utc FROM bhaga.adp_hire_dates ORDER BY hire_date DESC'`.
 To delete a public Actions run that leaked names: `python3 scripts/delete_actions_run.py <run_id>`
 (bot PAT `workflow` scope — Cloud Agent uses Secret Manager `github-bot-pat`).
@@ -2651,11 +2653,16 @@ itself: a revision's env becomes the service template (`/prod-ops` refuses `CONS
 Cloud Agent prod access: `/prod-read` + `/prod-ops`
 ([docs/contributing/dev-anywhere.md](docs/contributing/dev-anywhere.md)). Every `/prod-ops` op runs at once,
 with no operator approval (Environment `prod-auto`; audit trail in its deployments and the PR reply, which
-labels the op `safe` or `changes-prod`). The operator's only gate is PR approval. `/prod-ops run-job-pr
+labels the op `safe` or `changes-prod`). The operator's only gate is PR approval.
+`/prod-ops run-job` waits until the Cloud Run job's image tag matches `main` HEAD (polls deploy.yml;
+escape hatch `PROD_OPS_SKIP_DEPLOY_WAIT=1`) so a post-merge comment cannot race and run yesterday's
+container. `/prod-ops run-job-pr
 bhaga-daily-refresh …` runs a PR's code once on a temporary copy of the job (`bhaga-daily-refresh-pr<N>`,
 deleted after the run; a failed execution prints its status before the delete — never its log lines,
 which carry names and wages; read those with `/prod-read logs --job bhaga-daily-refresh-pr<N>`; if `prod-ops` prints `BREADCRUMB prod_ops cleanup failed`, run
-`gcloud run jobs delete bhaga-daily-refresh-pr<N> --region us-central1`).
+`gcloud run jobs delete bhaga-daily-refresh-pr<N> --region us-central1`). CI also gates
+`` `{fq(...)}` `` double-wraps (`check_fq_no_double_backticks.py`) and any `gcloud logging read` /
+`textPayload` dump in `prod_ops` or workflows (`check_no_public_job_logs.py`).
 
 ### One-time IAP provisioning (Console-only, cannot be scripted)
 

@@ -12,6 +12,8 @@ operator's only gate is PR approval. `tier()` labels each op in the reply:
     /prod-ops console-env set CONSOLE_FOO=1 BAR=x     # operator-console runtime flags
     /prod-ops console-env unset CONSOLE_FOO
     /prod-ops run-job bhaga-daily-refresh [REFRESH_DATE=2026-10-10 …]
+                                                      # waits until the job image tag == main HEAD
+                                                      # (PROD_OPS_SKIP_DEPLOY_WAIT=1 to skip).
                                                       # safe when it is one ADP read sync, e.g.
                                                       # BHAGA_ADP_HIRE_DATES=1 (also on run-job-pr)
     /prod-ops apply-migrations                        # core.datastore.ensure_schema() from the PR head
@@ -34,6 +36,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 PROJECT = "jarvis-bhaga-prod"
@@ -164,6 +167,74 @@ def clone_job(source: str, name: str, image: str) -> int:
     return subprocess.run(["gcloud", "run", "jobs", "replace", str(path), *loc, "--quiet"]).returncode
 
 
+def expected_deploy_sha(*, repo_root: Path | None = None) -> str:
+    """SHA the Cloud Run job image tag must match (main tip after merge).
+
+    Prefer ``PROD_OPS_EXPECT_SHA`` (tests / explicit pin). Otherwise the Actions
+    checkout of ``main`` (``GITHUB_SHA``). Last resort: ``git rev-parse HEAD``.
+    """
+    pinned = (os.environ.get("PROD_OPS_EXPECT_SHA") or "").strip()
+    if pinned:
+        return pinned
+    sha = (os.environ.get("GITHUB_SHA") or "").strip()
+    if sha:
+        return sha
+    root = repo_root or REPO_ROOT
+    out = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    )
+    return out.stdout.strip()
+
+
+def job_image_tag(job: str) -> str:
+    """Image tag currently configured on a Cloud Run Job (after the final ':')."""
+    loc = [f"--region={REGION}", f"--project={PROJECT}"]
+    out = subprocess.run(
+        ["gcloud", "run", "jobs", "describe", job, *loc,
+         "--format=value(spec.template.spec.containers[0].image)"],
+        capture_output=True, text=True, check=True,
+    )
+    image = (out.stdout or "").strip()
+    if not image or ":" not in image:
+        raise RequestError(f"could not read image for job {job!r}: {image!r}")
+    return image.rsplit(":", 1)[-1]
+
+
+def wait_for_deployed_job(
+    job: str,
+    expect_sha: str,
+    *,
+    timeout_s: int | None = None,
+    poll_s: int | None = None,
+) -> None:
+    """Block until ``job``'s image tag equals ``expect_sha`` (post-merge deploy catch-up).
+
+    Prevents `/prod-ops run-job` from racing ``deploy.yml`` and executing yesterday's
+    container. Escape hatch: ``PROD_OPS_SKIP_DEPLOY_WAIT=1`` (ops only).
+    """
+    timeout_s = int(os.environ.get("PROD_OPS_DEPLOY_WAIT_S", "1200")) if timeout_s is None else timeout_s
+    poll_s = int(os.environ.get("PROD_OPS_DEPLOY_POLL_S", "15")) if poll_s is None else poll_s
+    deadline = time.monotonic() + timeout_s
+    while True:
+        tag = job_image_tag(job)
+        if tag == expect_sha:
+            print(f"prod-ops: deployed {job} image tag={tag} matches expect={expect_sha}", flush=True)
+            return
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            raise RequestError(
+                f"{job} still on image tag={tag}, want {expect_sha} "
+                f"(deploy.yml not finished? waited {timeout_s}s)"
+            )
+        print(
+            f"prod-ops: waiting for deploy — {job} tag={tag}, want {expect_sha} "
+            f"({remaining}s left)",
+            flush=True,
+        )
+        time.sleep(poll_s)
+
+
 def commands(req: dict, pr: str | None = None) -> list[list[str]]:
     loc = [f"--region={REGION}", f"--project={PROJECT}"]
     op = req["op"]
@@ -187,7 +258,15 @@ def commands(req: dict, pr: str | None = None) -> list[list[str]]:
             flag = "--remove-env-vars=" + ",".join(req["keys"])
         return [["gcloud", "run", "services", "update", CONSOLE_SERVICE, *loc, flag, "--quiet"]]
     if op == "run-job":
-        return [["gcloud", "run", "jobs", "execute", req["job"], *loc, "--async", *_env_flag(req["env"])]]
+        # Wait for deploy.yml to pin the job image to main HEAD before execute —
+        # otherwise a post-merge /prod-ops races and runs the previous container.
+        cmds: list[list[str]] = []
+        if os.environ.get("PROD_OPS_SKIP_DEPLOY_WAIT") != "1":
+            cmds.append([sys.executable, str(Path(__file__).resolve()), "wait-deploy", req["job"]])
+        cmds.append(
+            ["gcloud", "run", "jobs", "execute", req["job"], *loc, "--async", *_env_flag(req["env"])]
+        )
+        return cmds
     if op == "apply-migrations":
         return [[sys.executable, "-c",
                  "from core.datastore import ensure_schema; print('applied:', ensure_schema() or 'none')"]]
@@ -274,11 +353,24 @@ def _pr_number() -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("mode", choices=["plan", "run", "clone-job"])
-    ap.add_argument("args", nargs="*", help="clone-job: <source job> <new name> <image>")
+    ap.add_argument("mode", choices=["plan", "run", "clone-job", "wait-deploy"])
+    ap.add_argument(
+        "args", nargs="*",
+        help="clone-job: <source job> <new name> <image>; wait-deploy: <job>",
+    )
     a = ap.parse_args(argv)
     if a.mode == "clone-job":
         return clone_job(*a.args)
+    if a.mode == "wait-deploy":
+        if len(a.args) != 1 or not _JOB.match(a.args[0]):
+            print("prod-ops: rejected — wait-deploy <job-name>")
+            return 2
+        try:
+            wait_for_deployed_job(a.args[0], expected_deploy_sha())
+        except RequestError as e:
+            print(f"prod-ops: rejected — {e}")
+            return 2
+        return 0
     pr = _pr_number()
     cwd = Path(os.environ.get("PROD_OPS_CODE_ROOT") or REPO_ROOT)
     try:

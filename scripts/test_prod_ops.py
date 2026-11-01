@@ -45,10 +45,35 @@ class ProdOpsTests(unittest.TestCase):
                 parse_comment(body)
 
     def test_run_job_with_env(self):
-        cmd = commands(parse_comment("/prod-ops run-job bhaga-daily-refresh REFRESH_DATE=2026-10-10"))[0]
+        cmds = commands(parse_comment("/prod-ops run-job bhaga-daily-refresh REFRESH_DATE=2026-10-10"))
+        self.assertEqual(cmds[0][-2:], ["wait-deploy", "bhaga-daily-refresh"])
+        cmd = cmds[1]
         self.assertEqual(cmd[:5], ["gcloud", "run", "jobs", "execute", "bhaga-daily-refresh"])
         self.assertIn("--async", cmd)
         self.assertEqual(cmd[-1], "--update-env-vars=REFRESH_DATE=2026-10-10")
+
+    def test_run_job_skips_deploy_wait_when_flagged(self):
+        with mock.patch.dict(os.environ, {"PROD_OPS_SKIP_DEPLOY_WAIT": "1"}):
+            cmds = commands(parse_comment("/prod-ops run-job bhaga-daily-refresh"))
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0][:5], ["gcloud", "run", "jobs", "execute", "bhaga-daily-refresh"])
+
+    def test_wait_deploy_matches_then_returns(self):
+        with mock.patch.dict(os.environ, {"PROD_OPS_EXPECT_SHA": "abc123"}), \
+                mock.patch.object(prod_ops, "job_image_tag", return_value="abc123"), \
+                mock.patch.object(prod_ops.time, "sleep") as sleep:
+            self.assertEqual(prod_ops.main(["wait-deploy", "bhaga-daily-refresh"]), 0)
+        sleep.assert_not_called()
+
+    def test_wait_deploy_times_out_when_tag_stale(self):
+        with mock.patch.dict(os.environ, {
+            "PROD_OPS_EXPECT_SHA": "newsha",
+            "PROD_OPS_DEPLOY_WAIT_S": "1",
+            "PROD_OPS_DEPLOY_POLL_S": "1",
+        }), mock.patch.object(prod_ops, "job_image_tag", return_value="oldsha"), \
+                mock.patch.object(prod_ops.time, "sleep"), \
+                mock.patch.object(prod_ops.time, "monotonic", side_effect=[0, 0, 2]):
+            self.assertEqual(prod_ops.main(["wait-deploy", "bhaga-daily-refresh"]), 2)
 
     def test_run_job_pr_builds_copies_runs_then_deletes(self):
         req = parse_comment('/prod-ops run-job-pr bhaga-daily-refresh "BHAGA_SCHEDULE_CHANGES=open-add 2027-01-12 10:00-14:00"')

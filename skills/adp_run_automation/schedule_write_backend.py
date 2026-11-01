@@ -699,9 +699,16 @@ def _edit_times(frame, page, *, start_min: int, end_min: int, dry_run: bool) -> 
         frame.locator(f"sdf-focus-pane {TIME_INPUT}").first.wait_for(state="visible", timeout=8000)
         _fill_times(frame, page, start_min, end_min)
         _wait_for(page, lambda: _visible_button(frame, EDIT_COMMIT_RE) is not None, 8.0)
+        # An open shift's Edit reopens the create wizard: times, then Next to the eligibility step.
+        if _visible_button(frame, EDIT_COMMIT_RE) is None and _visible_button(frame, r"^\s*Next\b") is not None:
+            _click(frame, r"^\s*Next\b", what="Next")
+            _wait_for(page, lambda: _visible_button(frame, EDIT_COMMIT_RE) is not None, 8.0)
         commit = _visible_button(frame, r"^\s*Publish\s*$") or _visible_button(frame, EDIT_COMMIT_RE)
         if commit is None:
-            raise ScheduleWriteError("no Publish / Save button after editing the times")
+            raise ScheduleWriteError(
+                f"no Publish / Save button after editing the times (buttons: {', '.join(frame.evaluate(PANE_BUTTONS_JS))};"
+                f" pane: {_pane_text(frame)[-150:]})"
+            )
         if dry_run:
             _back_out(frame, page)
             return False

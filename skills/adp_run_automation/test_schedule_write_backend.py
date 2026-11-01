@@ -204,6 +204,39 @@ class CreateOpenShiftConfirm(unittest.TestCase):
             self.assertTrue(wb._edit_times(mock.MagicMock(), mock.Mock(), start_min=360, end_min=420, dry_run=False))
         self.assertEqual(calls, ["Publish", "confirm", "back_out"])
 
+    def _edit_open(self, after_next):
+        """Edit whose times step offers only Next; ``after_next``: the commit button shown after it."""
+        calls, nexted = [], []
+        frame = mock.MagicMock()
+        frame.evaluate.return_value = ["Previous", "Save draft"]
+
+        def visible(_f, pattern):
+            if "Next" in pattern:
+                return object()
+            return after_next if nexted else None
+
+        with mock.patch.object(wb, "_click", side_effect=lambda _f, _p, what: calls.append(what) or (
+                 what == "Next" and nexted.append(1))), \
+             mock.patch.object(wb, "_fill_times"), \
+             mock.patch.object(wb, "_visible_button", side_effect=visible), \
+             mock.patch.object(wb, "_wait_for", side_effect=lambda _p, check, *_a: check()), \
+             mock.patch.object(wb, "_pane_text", return_value="Eligibility 4 employees are eligible"), \
+             mock.patch.object(wb, "_press_publish_confirmation", return_value=None), \
+             mock.patch.object(wb, "_back_out"):
+            return calls, wb._edit_times(frame, mock.Mock(), start_min=360, end_min=420, dry_run=False)
+
+    def test_open_shift_edit_goes_through_next_to_publish(self):
+        commit = mock.Mock()
+        calls, ok = self._edit_open(commit)
+        self.assertTrue(ok)
+        self.assertEqual(calls, ["Edit", "Next"])
+        commit.click.assert_called_once()
+
+    def test_edit_without_a_commit_button_says_what_adp_showed(self):
+        with self.assertRaises(wb.ScheduleWriteError) as ctx:
+            self._edit_open(None)
+        self.assertIn("buttons: Previous, Save draft; pane: Eligibility 4 employees are eligible", str(ctx.exception))
+
     def test_publish_that_stays_on_the_wizard_says_which_buttons_were_off(self):
         _calls, shown = self._publish([self.WIZARD])
         self.assertEqual(

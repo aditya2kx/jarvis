@@ -649,8 +649,11 @@ def _press_delete(frame, page, *, dry_run: bool) -> bool:
         alt = frame.locator("sdf-focus-pane").get_by_role("button", name=re.compile(r"^\s*Delete\s*$", re.I))
         visible = [alt.nth(i) for i in range(alt.count()) if alt.nth(i).is_visible()]
         if len(visible) != 1:
+            seen = f"buttons: {', '.join(frame.evaluate(PANE_BUTTONS_JS))}; pane: {_pane_text(frame)[-150:]}"
             _back_out(frame, page)
-            raise ScheduleWriteError(f"expected one per-shift Delete in the pane, found {dels.count()} / {len(visible)}")
+            raise ScheduleWriteError(
+                f"expected one per-shift Delete in the pane, found {dels.count()} / {len(visible)} ({seen})"
+            )
         visible[0].click(timeout=5000)
     else:
         dels.first.click(timeout=5000)

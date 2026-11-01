@@ -63,34 +63,47 @@ function requireScheduleWrite(): void {
   }
 }
 
-/** Re-read the week's open shifts from ADP, then DM the operator or post to Shift Coverage. */
+/** Most weeks one schedule message covers (a 4-week rolling schedule, plus slack). */
+const MAX_MESSAGE_WEEKS = 6;
+
+/** Re-read ADP's open shifts through the last week, then send one note for every week (draft or Shift Coverage). */
 export async function sendPublishMessageAction(
-  weekStart: string,
+  weekStarts: string[],
   to: "dm" | "channel" = "dm",
-): Promise<ActionAck<{ weekStart: string }>> {
+): Promise<ActionAck<{ weekStarts: string[] }>> {
   const denied = await actionDenied("sendPublishMessageAction");
   if (denied) return denied;
   try {
     requireScheduleWrite();
     if (to !== "dm" && to !== "channel") {
-      throw new Error("Choose a DM or Shift Coverage.");
+      throw new Error("Choose your drafts or Shift Coverage.");
     }
-    await startScheduleWrite(DEFAULT_STORE, { mode: "dm", weekStart, to });
+    const weeks = [...new Set(Array.isArray(weekStarts) ? weekStarts : [])].sort();
+    if (!weeks.length || weeks.length > MAX_MESSAGE_WEEKS || !weeks.every(isMonday)) {
+      throw new Error(`Pick 1 to ${MAX_MESSAGE_WEEKS} weeks.`);
+    }
+    await startScheduleWrite(DEFAULT_STORE, { mode: "dm", weekStarts: weeks, to });
     return okAck({
-      data: { weekStart },
+      data: { weekStarts: weeks },
       queued: ["adp-schedule-write"],
       message:
         to === "channel"
           ? "Re-reading open shifts from ADP, then posting to Shift Coverage (about 3 min)."
-          : "Re-reading open shifts from ADP, then sending you the ClickUp DM (about 3 min).",
+          : "Re-reading open shifts from ADP, then sending your draft to #jarvis-drafts (about 3 min).",
     });
   } catch (e) {
     return failAck(e);
   }
 }
 
+function isMonday(iso: unknown): boolean {
+  if (typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  const d = new Date(`${iso}T12:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso && d.getUTCDay() === 1;
+}
+
 /** A running "Send ClickUp message" job, if any (survives a reload). */
-export type ScheduleWriteRun = { mode: "dm"; weekStart?: string; to: "dm" | "channel" };
+export type ScheduleWriteRun = { mode: "dm"; weekStarts: string[]; to: "dm" | "channel" };
 
 /** The ADP schedule-write message job still running, if any (poll target for Send ClickUp message). */
 export async function schedulePushStatusAction(): Promise<ActionAck<{ running: ScheduleWriteRun | null }>> {
@@ -98,11 +111,12 @@ export async function schedulePushStatusAction(): Promise<ActionAck<{ running: S
   if (denied) return denied;
   try {
     const hit = await runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE");
+    const weeks = hit?.env.BHAGA_SCHEDULE_WEEKS || hit?.env.BHAGA_SCHEDULE_WEEK_START || "";
     const running: ScheduleWriteRun | null =
       hit?.env.BHAGA_ADP_SCHEDULE_WRITE === "dm"
         ? {
             mode: "dm",
-            weekStart: hit.env.BHAGA_SCHEDULE_WEEK_START,
+            weekStarts: weeks.split(/[,+\s]+/).filter(Boolean),
             to: hit.env.BHAGA_SCHEDULE_MESSAGE_TO === "channel" ? "channel" : "dm",
           }
         : null;

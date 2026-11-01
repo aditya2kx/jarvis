@@ -3,6 +3,7 @@
 import { X } from "lucide-react";
 import { StaffTagBadge } from "@/components/labor/StaffTag";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { progressLabel, TRAINING_FROM, type TrainingStatus } from "@/lib/labor/new-hire-training";
@@ -153,13 +154,14 @@ export function NewHireTrainingRules({
                 <span className="text-sm font-medium text-foreground">{p.employee}</span>
                 {p.cleared ? (
                   <Badge variant="outline" className="h-4 px-1.5 text-[11px] font-normal text-muted-foreground">
-                    Trained · {progressLabel(p)}
+                    {p.marked ? "Marked trained" : `Trained · ${progressLabel(p)}`}
                   </Badge>
                 ) : (
                   <StaffTagBadge employee={p.employee} />
                 )}
                 <span className="text-muted-foreground">
                   {p.hireDate ? `hired ${shortDate(p.hireDate)}` : `first ADP shift ${shortDate(p.since)} (no hire date yet)`}
+                  {` · ${p.worked} ${p.worked === 1 ? "shift" : "shifts"} worked`}
                 </span>
                 {p.unsupervised.length ? (
                   <Badge
@@ -170,6 +172,23 @@ export function NewHireTrainingRules({
                     {p.unsupervised.length} ADP {p.unsupervised.length === 1 ? "shift" : "shifts"} ahead without experienced
                     staff
                   </Badge>
+                ) : null}
+                {p.marked || !p.cleared ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="ml-auto text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() =>
+                      onChange({
+                        trained: p.marked
+                          ? t.trained.filter((n) => n !== p.employee)
+                          : [...t.trained, p.employee].sort((a, b) => a.localeCompare(b)),
+                      })
+                    }
+                  >
+                    {p.marked ? "Undo" : "Mark trained"}
+                  </Button>
                 ) : null}
               </li>
             ))}

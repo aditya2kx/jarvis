@@ -1,8 +1,10 @@
 /**
- * New-hire training (Issue #450): someone hired on or after `TRAINING_FROM` works only beside an
- * experienced person until they have done `openShifts` openers and `closeShifts` closers that each
- * overlap an experienced person by `overlapMin`. A one-time requirement, counted over every ADP shift
- * since they started — clocked and scheduled.
+ * New-hire training (Issue #450): someone hired on or after `TRAINING_FROM` works beside an
+ * experienced person (overlapping by `overlapMin`) until trained. Each kind clears on its own:
+ * after `closeShifts` supervised closers they close with anyone or alone, after `openShifts`
+ * supervised openers likewise; mids stay supervised until both are done. A one-time requirement,
+ * counted over every ADP shift since they started — clocked and scheduled. The operator can mark
+ * someone trained outright.
  */
 
 import { isOpenLane, type CoveragePersonDay } from "@/lib/labor/coverage-model";
@@ -59,7 +61,11 @@ export type TrainingStatus = {
   needOpen: number;
   needClose: number;
   cleared: boolean;
-  /** Upcoming ADP shifts before they're cleared with no experienced person on long enough. */
+  /** The operator marked them trained (rules `trained`). */
+  marked: boolean;
+  /** ADP shifts worked so far (before today). */
+  worked: number;
+  /** Upcoming ADP shifts that still need an experienced person on long enough and don't have one. */
   unsupervised: string[];
 };
 
@@ -102,10 +108,14 @@ export function staffTags(rules: TrainingRules, progress: ReadonlyMap<string, Tr
   for (const t of progress.values()) {
     if (t.cleared) continue;
     const started = t.hireDate ? `Hired ${monthDay(t.hireDate)}` : `First ADP shift ${monthDay(t.since)}`;
+    const alone = [t.open >= t.needOpen ? "opens" : "", t.close >= t.needClose ? "closes" : ""].filter(Boolean);
     out.set(t.employee, {
       kind: "training",
       label: `New hire · ${progressLabel(t)}`,
-      detail: `${started}. Drafted only beside experienced staff (${overlap}+ together) until they've done ${goal(t)}.`,
+      detail:
+        `${started}. Drafted beside experienced staff (${overlap}+ together) until they've done ${goal(t)}` +
+        ` — each kind on its own once done.` +
+        (alone.length ? ` Already ${alone.join(" and ")} without them.` : ""),
       unsupervised: new Set(t.unsupervised),
     });
   }
@@ -140,11 +150,13 @@ export function trainingProgress(args: {
       if (!isOpenLane(p) && !firstShift.has(p.employee)) firstShift.set(p.employee, iso);
     }
   }
+  const trained = new Set(rules.trained);
   for (const employee of args.employees) {
     if (experienced.has(employee)) continue;
     const hireDate = args.hireDates.get(employee) ?? null;
     const since = hireDate ?? firstShift.get(employee);
     if (!since || since < TRAINING_FROM) continue;
+    const marked = trained.has(employee);
     const t: TrainingStatus = {
       employee,
       hireDate,
@@ -153,26 +165,28 @@ export function trainingProgress(args: {
       close: 0,
       needOpen: rules.openShifts,
       needClose: rules.closeShifts,
-      cleared: rules.openShifts <= 0 && rules.closeShifts <= 0,
+      cleared: marked || (rules.openShifts <= 0 && rules.closeShifts <= 0),
+      marked,
+      worked: 0,
       unsupervised: [],
     };
     for (const iso of dates) {
-      if (t.cleared) break;
       const lanes = args.days.get(iso)!;
       const mine = lanes.find((p) => p.employee === employee && !isOpenLane(p));
       if (!mine) continue;
+      if (iso < todayIso) t.worked += 1;
+      if (t.cleared) continue;
       const spans = spansOf(mine);
-      const start = Math.min(...spans.map(([s]) => s));
-      const end = Math.max(...spans.map(([, e]) => e));
+      const kind = shiftKindOf(Math.min(...spans.map(([s]) => s)), Math.max(...spans.map(([, e]) => e)));
       const withExperienced = lanes
         .filter((p) => !isOpenLane(p) && experienced.has(p.employee))
         .flatMap(spansOf);
       const together = spans.reduce((acc, [s, e]) => acc + overlapMinutes(s, e, withExperienced), 0);
       if (together < rules.overlapMin) {
-        if (iso >= todayIso) t.unsupervised.push(iso);
+        const kindDone = (kind === "open" && t.open >= t.needOpen) || (kind === "close" && t.close >= t.needClose);
+        if (iso >= todayIso && !kindDone) t.unsupervised.push(iso);
         continue;
       }
-      const kind = shiftKindOf(start, end);
       if (kind === "open") t.open += 1;
       if (kind === "close") t.close += 1;
       t.cleared = t.open >= t.needOpen && t.close >= t.needClose;

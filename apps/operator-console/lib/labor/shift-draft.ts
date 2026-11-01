@@ -39,8 +39,9 @@ export type Availability = {
 };
 
 /**
- * New-hire gate for one day (Issue #450): someone in `left` takes only an opener / closer they
- * still need, and only when experienced staff overlap it by `overlapMin`.
+ * New-hire gate for one day (Issue #450): someone in `left` works an opener / closer alone once
+ * they've done that kind's supervised shifts; anything else needs experienced staff overlapping
+ * it by `overlapMin`.
  */
 export type DraftTraining = {
   overlapMin: number;
@@ -50,14 +51,7 @@ export type DraftTraining = {
   experiencedOn: [number, number][];
 };
 
-const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 const hoursLabel = (min: number) => `${Number((min / 60).toFixed(2))}h`;
-
-function stillNeeds(left: TrainingLeft): string {
-  return [left.open ? plural(left.open, "opener") : "", left.close ? plural(left.close, "closer") : ""]
-    .filter(Boolean)
-    .join(" and ");
-}
 
 /** Why a new hire can't take [s, e) of `kind`, or null when they can. */
 export function trainingBlock(
@@ -70,9 +64,8 @@ export function trainingBlock(
 ): string | null {
   const left = training?.left.get(employee);
   if (!training || !left) return null;
-  if ((left.open > 0 || left.close > 0) && (kind === "mid" || left[kind] <= 0)) {
-    return `New hire — needs ${stillNeeds(left)} with experienced staff first`;
-  }
+  if (left.open <= 0 && left.close <= 0) return null;
+  if (kind !== "mid" && left[kind] <= 0) return null;
   if (overlapMinutes(s, e, [...training.experiencedOn, ...alsoOn]) < training.overlapMin) {
     return `New hire — no experienced person on for ${hoursLabel(training.overlapMin)} of it`;
   }
@@ -276,7 +269,14 @@ export function draftDay(args: DraftDayArgs): DraftShift[] {
 
 function draftCore(
   args: DraftDayArgs,
-  opts: { lookahead: boolean; force?: DraftChoice; seed?: DraftShift[]; rolloutLong?: boolean },
+  opts: {
+    lookahead: boolean;
+    force?: DraftChoice;
+    seed?: DraftShift[];
+    rolloutLong?: boolean;
+    /** Rollout: give each step to anyone else before experienced staff, keeping them for the shifts new hires can't take alone. */
+    rolloutReserve?: boolean;
+  },
 ): DraftShift[] | null {
   const dow = isoWeekdayMon0(args.iso);
   const templates = args.templates ?? HISTORICAL_TEMPLATES[dow]!;
@@ -370,7 +370,7 @@ function draftCore(
   };
 
   const maxShifts = args.maxShifts ?? 8;
-  const bestChoice = (n: number): DraftChoice => {
+  const bestChoice = (n: number, slot: string): DraftChoice => {
     const free = args.roster
       .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
       .map((a) => a.employee);
@@ -382,7 +382,14 @@ function draftCore(
     ];
     let best: DraftChoice = {};
     let bestScore: number[] | null = null;
-    for (const force of choices) for (const rolloutLong of [false, true]) {
+    const training = free.some((p) => {
+      const l = args.training?.left.get(p);
+      return !!l && (l.open > 0 || l.close > 0);
+    });
+    const rollouts = [false, true].flatMap((rolloutLong) =>
+      (training ? [false, true] : [false]).map((rolloutReserve) => ({ rolloutLong, rolloutReserve })),
+    );
+    for (const force of choices) for (const rollout of rollouts) {
       const plan = draftCore(
         {
           ...args,
@@ -394,7 +401,7 @@ function draftCore(
           training: copyTraining(args.training),
           maxShifts: maxShifts - n,
         },
-        { lookahead: false, force, seed: out, rolloutLong },
+        { lookahead: false, force, seed: out, ...rollout },
       );
       if (!plan) continue;
       const shortH =
@@ -408,7 +415,9 @@ function draftCore(
       const score = [shortH + openH, totalH];
       const k = bestScore ? score.findIndex((v, i) => Math.abs(v - bestScore![i]!) > 1e-9) : -1;
       if (!bestScore || (k >= 0 && score[k]! < bestScore[k]!)) {
-        best = force;
+        // The rollout may rank this step differently (reserve) — keep the person it actually chose.
+        const taken = plan.find((p) => p.slot === slot);
+        best = force.person === undefined && taken ? { ...force, person: taken.employee } : force;
         bestScore = score;
       }
     }
@@ -502,13 +511,14 @@ function draftCore(
         return reason ? [{ employee: a.employee, reason }] : [];
       });
       const eligible = fits.filter((x) => !blocked.some((b) => b.employee === x.a.employee));
+      const reserve = (x: (typeof eligible)[number]) => (opts.rolloutReserve && x.a.experienced ? 1 : 0);
       const starts = eligible
         .filter(({ s, e }) => mustCover == null || (s <= mustCover && mustCover < e))
-        .sort((x, y) => priority(x.a, y.a));
+        .sort((x, y) => reserve(x) - reserve(y) || priority(x.a, y.a));
       // Nobody can start the gap: whoever covers the most of it takes their part.
       const rest = eligible
         .filter((x) => !starts.includes(x))
-        .sort((x, y) => y.gain - x.gain || priority(x.a, y.a));
+        .sort((x, y) => reserve(x) - reserve(y) || y.gain - x.gain || priority(x.a, y.a));
       return { kind: block.kind, blockStart, blockEnd, ranked: [...starts, ...rest], blocked };
     };
 
@@ -518,7 +528,7 @@ function draftCore(
     const pinned = c != null;
     let choice: DraftChoice = { person: pin };
     if (!c) {
-      choice = (n === 0 ? opts.force : undefined) ?? (opts.lookahead ? bestChoice(n) : { long: opts.rolloutLong });
+      choice = (n === 0 ? opts.force : undefined) ?? (opts.lookahead ? bestChoice(n, slot) : { long: opts.rolloutLong });
       c = candidates(choice);
     }
     if (!c) break;

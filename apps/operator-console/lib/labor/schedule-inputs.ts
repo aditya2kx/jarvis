@@ -93,6 +93,8 @@ export type TrainingRules = {
   overlapMin: number;
   /** Canonical names of the people new hires train with. */
   experienced: string[];
+  /** New hires the operator marked as already trained — no supervision needed. */
+  trained: string[];
 };
 
 export type ShiftTimes = "history" | "need";
@@ -115,6 +117,7 @@ export const DEFAULT_TRAINING: TrainingRules = {
   closeShifts: 2,
   overlapMin: 180,
   experienced: [],
+  trained: [],
 };
 
 /** ADP's shortest regular shift is 4.5 h (4:00–8:30 PM closer). */
@@ -417,14 +420,18 @@ function parseTraining(raw: unknown): TrainingRules {
   if (!whole(t.overlapMin, 15, 12 * 60) || t.overlapMin! % 15) {
     throw new Error("Training overlap must be 15 min–12 hours in 15-minute steps");
   }
-  if (!Array.isArray(t.experienced) || t.experienced.some((n) => typeof n !== "string" || !n.trim())) {
-    throw new Error("Experienced staff must be a list of names");
-  }
+  const names = (v: unknown, what: string): string[] => {
+    if (!Array.isArray(v) || v.some((n) => typeof n !== "string" || !n.trim())) {
+      throw new Error(`${what} must be a list of names`);
+    }
+    return [...new Set(v.map((n: string) => n.trim()))].sort((a, b) => a.localeCompare(b));
+  };
   return {
     openShifts: t.openShifts!,
     closeShifts: t.closeShifts!,
     overlapMin: t.overlapMin!,
-    experienced: [...new Set(t.experienced.map((n) => n.trim()))].sort((a, b) => a.localeCompare(b)),
+    experienced: names(t.experienced, "Experienced staff"),
+    trained: names(t.trained ?? [], "Trained new hires"),
   };
 }
 

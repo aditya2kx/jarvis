@@ -8,6 +8,11 @@ const PROJECT = process.env.BQ_PROJECT ?? "jarvis-bhaga-prod";
 const REGION = process.env.BHAGA_REGION ?? "us-central1";
 const JOB = process.env.CLOUD_RUN_JOB_NAME_SHORT ?? "bhaga-daily-refresh";
 const JOB_RESOURCE = `projects/${PROJECT}/locations/${REGION}/jobs/${JOB}`;
+/**
+ * An Apply of four suggested weeks (~160 changes at ~20 s each, plus sign-in and the
+ * re-read) runs past the job's 1h task timeout; only Apply executions get 2h.
+ */
+const APPLY_TIMEOUT = "7200s";
 /** Timecards sync + punch write-back; BHAGA_ADP_PREVIEW_JOB points them at a branch-built job before merge. */
 function adpJobResource(): string {
   const preview = process.env.BHAGA_ADP_PREVIEW_JOB?.trim();
@@ -18,6 +23,8 @@ async function runJob(
   env: { name: string; value: string }[],
   label: string,
   jobResource: string = JOB_RESOURCE,
+  /** Per-execution task timeout (e.g. "7200s"); the job's own 1h applies otherwise. */
+  timeout?: string,
 ): Promise<{ executionName: string }> {
   const auth = new GoogleAuth({
     scopes: ["https://www.googleapis.com/auth/cloud-platform"],
@@ -32,6 +39,7 @@ async function runJob(
   const body = {
     overrides: {
       containerOverrides: [{ env }],
+      ...(timeout ? { timeout } : {}),
     },
   };
   const res = await fetch(url, {
@@ -253,7 +261,7 @@ export async function triggerAdpScheduleWrite(
   job:
     | { mode: "drafts"; pushId: string }
     | { mode: "publish"; weekStart: string }
-    | { mode: "dm"; weekStart: string; to?: "dm" | "channel" }
+    | { mode: "dm"; weekStarts: string[]; to?: "dm" | "channel" }
     | { mode: "assign"; assignId: string }
     | { mode: "apply"; batchId: string },
 ): Promise<{ executionName: string }> {
@@ -268,12 +276,19 @@ export async function triggerAdpScheduleWrite(
         ? { name: "BHAGA_SCHEDULE_ASSIGN_ID", value: job.assignId }
         : job.mode === "apply"
           ? { name: "BHAGA_SCHEDULE_BATCH_ID", value: job.batchId }
-          : { name: "BHAGA_SCHEDULE_WEEK_START", value: job.weekStart },
+          : job.mode === "dm"
+            ? { name: "BHAGA_SCHEDULE_WEEKS", value: job.weekStarts.join(",") }
+            : { name: "BHAGA_SCHEDULE_WEEK_START", value: job.weekStart },
   ];
   if (job.mode === "dm" && job.to === "channel") {
     env.push({ name: "BHAGA_SCHEDULE_MESSAGE_TO", value: "channel" });
   }
-  return runJob(env, `triggerAdpScheduleWrite(store=${store} mode=${job.mode})`, adpJobResource());
+  return runJob(
+    env,
+    `triggerAdpScheduleWrite(store=${store} mode=${job.mode})`,
+    adpJobResource(),
+    job.mode === "apply" ? APPLY_TIMEOUT : undefined,
+  );
 }
 
 /**

@@ -29,7 +29,7 @@ export type ShiftChange =
 
 export type AdpChange = { area: "shift"; c: ShiftChange } | { area: "unavailability"; c: StagedChange };
 
-export const MAX_CHANGES = 80;
+export const MAX_CHANGES = 160;
 const MAX_SHIFT_MIN = 16 * 60;
 const MAX_OPEN_COUNT = 10;
 const ISO = /^\d{4}-\d{2}-\d{2}$/;

@@ -10,9 +10,12 @@ Two operator-confirmed modes, each started by one console click:
            Clicks ADP "Publish drafts" for that week and flips the week's 'drafted'
            rows to 'published', re-reads ADP from tomorrow through that week, then
            DMs the operator a Shift Coverage draft listing every open shift left.
-  dm       ... --publish-dm --week-start 2026-10-19 [--to channel]
-           Re-reads ADP's open shifts, then re-sends the DM. ``--to channel`` posts the
-           team note (from ``@everyone``, no draft header) to the store's Shift Coverage channel.
+  dm       ... --publish-dm --weeks 2026-11-09,2026-11-16,2026-11-23 [--to channel]
+           Re-reads ADP's open shifts through the last week, then sends one note for
+           all the weeks — open-shift count, and one line tagging each active person
+           with a week and no unavailability marked — typed into the operator's
+           drafts channel through the ClickUp web app. ``--to channel`` posts the team
+           note (from ``@everyone``, no draft header) to the store's Shift Coverage channel.
   assign   ... --assign-id <id>
            Assigns each queued ``labor_open_shift_assignments`` row's existing ADP open
            shift to its person (Issue #412), then re-reads the changed weeks.
@@ -544,7 +547,8 @@ def apply_plan(rows: list[dict]) -> list[tuple[dt.date, list[dict]]]:
     ]
 
 
-_MAX_CHANGES = 80
+_MAX_CHANGES = 160  # four suggested weeks (~40 shifts each) in one Apply
+_MAX_MESSAGE_WEEKS = 6
 _MAX_OPEN_COUNT = 10
 _SPAN = re.compile(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})")
 _NEEDS_EMPLOYEE = {"open-assign", "shift-add", "shift-delete", "shift-edit", "shift-reassign", "shift-publish"}
@@ -780,39 +784,14 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
         return 0
     settled: set[str] = set()
     failed = 0
+    # Two DML statements per change take seconds; off the browser's path, a multi-week
+    # Apply (~100 changes) fits the job's time budget. One ordered writer keeps the order.
+    writer = ThreadPoolExecutor(max_workers=1)
 
     def set_status(row: dict, table: str, status: str, error: str | None = None, adp_name: str | None = None) -> None:
         settled.add(row["change_id"])
-        if dry_run:
-            return
-        name_sql = ", adp_name = @name" if table == SHIFT_TABLE else ""
-        _query(
-            f"UPDATE {{T}} SET status = @status, error = @error{name_sql}, updated_at = CURRENT_TIMESTAMP()"
-            " WHERE batch_id = @batch AND change_id = @cid",
-            [("status", "STRING", status), ("error", "STRING", error), ("batch", "STRING", batch_id),
-             ("cid", "STRING", row["change_id"])] + ([("name", "STRING", adp_name)] if name_sql else []),
-            table=table,
-        )
-        if status != "applied":
-            return
-        if table == SHIFT_TABLE:
-            _query(
-                "INSERT INTO {T} (store, event_at_utc, date, kind, summary, actor, batch_id, change_id)"
-                " VALUES (@store, CURRENT_TIMESTAMP(), @date, @kind, @summary, @actor, @batch, @cid)",
-                [("store", "STRING", store), ("date", "DATE", row["date"]), ("kind", "STRING", row["kind"]),
-                 ("summary", "STRING", row.get("summary") or row["kind"]), ("actor", "STRING", row.get("requested_by")),
-                 ("batch", "STRING", batch_id), ("cid", "STRING", row["change_id"])],
-                table="adp_shift_events",
-            )
-        else:
-            _query(
-                "INSERT INTO {T} (store, event_at_utc, employee, event, summary, source, actor, change_id, row_key)"
-                " VALUES (@store, CURRENT_TIMESTAMP(), @emp, @event, @summary, 'console', @actor, @cid, @key)",
-                [("store", "STRING", store), ("emp", "STRING", row["employee"]), ("event", "STRING", row["kind"]),
-                 ("summary", "STRING", row.get("summary") or row["kind"]), ("actor", "STRING", row.get("requested_by")),
-                 ("cid", "STRING", row["change_id"]), ("key", "STRING", row.get("row_key"))],
-                table="adp_unavailability_events",
-            )
+        if not dry_run:
+            writer.submit(_record_change, store, batch_id, row, table, status, error, adp_name)
 
     def fail(row: dict, table: str, msg: str) -> None:
         nonlocal failed
@@ -875,6 +854,8 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
                         changed.add(week_start_of(_today_ct()))
             finally:
                 if changed and not dry_run:
+                    # Statuses land first: the console trusts a schedule read newer than a row's updated_at.
+                    writer.submit(lambda: None).result()
                     lo, hi = min(changed), max(changed)
                     try:
                         wb.goto_week(r._open_team_schedule(page), page, lo)
@@ -889,8 +870,47 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
             if row["change_id"] not in settled:
                 fail(row, UNAVAIL_TABLE, f"not attempted: job stopped ({type(exc).__name__}: {exc})")
         raise
+    finally:
+        writer.shutdown(wait=True)
     print(f"[schedule_write] apply batch_id={batch_id} done failed={failed}")
     return 1 if failed else 0
+
+
+def _record_change(store: str, batch_id: str, row: dict, table: str, status: str,
+                   error: str | None, adp_name: str | None) -> None:
+    """One Apply row's status, plus its history event when applied. Never raises (background writer)."""
+    try:
+        name_sql = ", adp_name = @name" if table == SHIFT_TABLE else ""
+        _query(
+            f"UPDATE {{T}} SET status = @status, error = @error{name_sql}, updated_at = CURRENT_TIMESTAMP()"
+            " WHERE batch_id = @batch AND change_id = @cid",
+            [("status", "STRING", status), ("error", "STRING", error), ("batch", "STRING", batch_id),
+             ("cid", "STRING", row["change_id"])] + ([("name", "STRING", adp_name)] if name_sql else []),
+            table=table,
+        )
+        if status != "applied":
+            return
+        if table == SHIFT_TABLE:
+            _query(
+                "INSERT INTO {T} (store, event_at_utc, date, kind, summary, actor, batch_id, change_id)"
+                " VALUES (@store, CURRENT_TIMESTAMP(), @date, @kind, @summary, @actor, @batch, @cid)",
+                [("store", "STRING", store), ("date", "DATE", row["date"]), ("kind", "STRING", row["kind"]),
+                 ("summary", "STRING", row.get("summary") or row["kind"]), ("actor", "STRING", row.get("requested_by")),
+                 ("batch", "STRING", batch_id), ("cid", "STRING", row["change_id"])],
+                table="adp_shift_events",
+            )
+        else:
+            _query(
+                "INSERT INTO {T} (store, event_at_utc, employee, event, summary, source, actor, change_id, row_key)"
+                " VALUES (@store, CURRENT_TIMESTAMP(), @emp, @event, @summary, 'console', @actor, @cid, @key)",
+                [("store", "STRING", store), ("emp", "STRING", row["employee"]), ("event", "STRING", row["kind"]),
+                 ("summary", "STRING", row.get("summary") or row["kind"]), ("actor", "STRING", row.get("requested_by")),
+                 ("cid", "STRING", row["change_id"]), ("key", "STRING", row.get("row_key"))],
+                table="adp_unavailability_events",
+            )
+    except Exception as exc:  # noqa: BLE001 — the ADP change happened; the row keeps its prior status
+        print(f"BREADCRUMB adp_apply_record batch_id={batch_id} change_id={row['change_id']} status={status}"
+              f" error={type(exc).__name__}: {exc}"[:500])
 
 
 def _approve_unavailability(page, frame, row: dict, *, dry_run: bool) -> bool:
@@ -910,59 +930,95 @@ def _clock(m: int) -> str:
     return f"{(h - 1) % 12 + 1}:{mm:02d} {'AM' if h < 12 else 'PM'}"
 
 
+def _span_label(start: dt.date, end: dt.date) -> str:
+    tail = f"{end.day}" if end.month == start.month else f"{end:%b} {end.day}"
+    return f"{start:%b} {start.day}–{tail}"
+
+
 def _week_label(week_start: dt.date) -> str:
-    end = week_start + dt.timedelta(days=6)
-    tail = f"{end.day}" if end.month == week_start.month else f"{end:%b} {end.day}"
-    return f"{week_start:%b} {week_start.day}–{tail}"
+    return _span_label(week_start, week_start + dt.timedelta(days=6))
+
+
+def _weeks_label(weeks: list[dt.date]) -> str:
+    """"Nov 9–15"; consecutive weeks as one span ("Nov 9–29"); else "Nov 9–15 and Nov 23–29"."""
+    weeks = sorted(weeks)
+    if all((b - a).days == 7 for a, b in zip(weeks, weeks[1:])):
+        return _span_label(weeks[0], weeks[-1] + dt.timedelta(days=6))
+    labels = [_week_label(w) for w in weeks]
+    return f"{', '.join(labels[:-1])} and {labels[-1]}"
 
 
 def _today_ct() -> dt.date:
     return dt.datetime.now(ZoneInfo("America/Chicago")).date()
 
 
-def open_shift_window(week_start: dt.date, today: dt.date) -> tuple[dt.date, dt.date]:
-    """Dates the publish post lists open shifts for: tomorrow through the published week's Sunday."""
-    return today + dt.timedelta(days=1), week_start + dt.timedelta(days=6)
+def open_shift_window(last_week: dt.date, today: dt.date) -> tuple[dt.date, dt.date]:
+    """Dates the publish post lists open shifts for: tomorrow through the last published week's Sunday."""
+    return today + dt.timedelta(days=1), last_week + dt.timedelta(days=6)
 
 
-def team_post(week_start: dt.date, open_shifts: list[dict]) -> str:
-    """The note the team sees, starting at ``@everyone``. No draft header."""
-    week = _week_label(week_start)
+def _open_shift_lines(weeks: list[dt.date], open_shifts: list[dict]) -> list[str]:
+    """The open-shift count — per week when the post spans several — then each day's open shifts."""
+    if not open_shifts:
+        return ["**Open shifts: none** — every shift is covered 🎉"]
+    per_week = Counter(week_start_of(o["date"]) for o in open_shifts)
+    shown = sorted(set(weeks) | set(per_week))
+    split = " (" + " · ".join(f"{_week_label(w)}: {per_week[w] or 'none'}" for w in shown) + ")" if len(shown) > 1 else ""
     lines = [
-        f"@everyone 🗞️ Hi team! The schedule for **{week}** is now published in ADP. "
+        f"**Open shifts: {len(open_shifts)}**{split} — we really need folks for these, please let us know "
+        "if someone can pick these up. We are flexible around below times. 🙏🏽",
+        "",
+    ]
+    by_day: dict[dt.date, list[dict]] = defaultdict(list)
+    for o in open_shifts:
+        by_day[o["date"]].append(o)
+    for i, d in enumerate(sorted(by_day), 1):
+        lines.append(f"{i}. {d:%b} {d.day} ({d:%A})")
+        for j, o in enumerate(sorted(by_day[d], key=lambda x: (x["start_min"], x["end_min"])), 1):
+            lines.append(f"    {j}. {_clock(o['start_min'])} → {_clock(o['end_min'])}")
+    return lines
+
+
+def team_post(
+    weeks: list[dt.date],
+    open_shifts: list[dict],
+    unmarked: list[tuple[str, list[dt.date]]] = (),
+) -> str:
+    """The note the team sees, starting at ``@everyone``. No draft header.
+
+    ``unmarked``: (mention, published weeks with no unavailability marked) — one line each.
+    """
+    lines = [
+        f"@everyone 🗞️ Hi team! The schedule for **{_weeks_label(weeks)}** is now published in ADP. "
         "Please take a moment to look over your shifts and make sure they work with your availability. "
         "If anything doesn't look right, just let me know in this thread and we'll sort it out together.",
+        "",
+        *_open_shift_lines(weeks, open_shifts),
     ]
-    if open_shifts:
-        lines += [
-            "",
-            "Additionally, sharing the Open Shifts for the coming days where we really need folks, please let "
-            "us know if someone can pick these up. We are flexible around below times. 🙏🏽",
-            "",
-        ]
-        by_day: dict[dt.date, list[dict]] = defaultdict(list)
-        for o in open_shifts:
-            by_day[o["date"]].append(o)
-        for i, d in enumerate(sorted(by_day), 1):
-            lines.append(f"{i}. {d:%b} {d.day} ({d:%A})")
-            for j, o in enumerate(sorted(by_day[d], key=lambda x: (x["start_min"], x["end_min"])), 1):
-                lines.append(f"    {j}. {_clock(o['start_min'])} → {_clock(o['end_min'])}")
+    if unmarked:
+        lines += ["", "No unavailability marked in ADP — please double-check your shifts:"]
+        lines += [f"{who} {', '.join(_week_label(w) for w in sorted(empty))}" for who, empty in unmarked]
     return "\n".join(lines)
 
 
-def publish_message(week_start: dt.date, open_shifts: list[dict], *, stale_as_of: str | None = None) -> str:
-    """ClickUp DM to the operator: a ready-to-post Shift Coverage note for the team.
+def publish_message(
+    weeks: list[dt.date],
+    open_shifts: list[dict],
+    unmarked: list[tuple[str, list[dt.date]]] = (),
+    *,
+    stale_as_of: str | None = None,
+) -> str:
+    """The operator's draft: a ready-to-post Shift Coverage note for the team.
 
     ``open_shifts``: ``{"date": date, "start_min": int, "end_min": int}`` rows, already
     limited to ``open_shift_window``. ``stale_as_of`` notes that ADP could not be
     re-read, so claimed shifts may still be listed. The part after the ``---`` is
     ``team_post`` — what gets posted to the channel.
     """
-    week = _week_label(week_start)
-    header = f"Published **{week}** in ADP. Here's a draft for Shift Coverage & Trades — copy and post:"
+    header = f"Published **{_weeks_label(weeks)}** in ADP. Here's a draft for Shift Coverage & Trades — copy and post:"
     if stale_as_of:
         header += f"\n\n_ADP re-read failed — open shifts are as of {stale_as_of}; check before posting._"
-    return f"{header}\n\n---\n\n{team_post(week_start, open_shifts)}"
+    return f"{header}\n\n---\n\n{team_post(weeks, open_shifts, unmarked)}"
 
 
 def shift_coverage_target(store: str) -> tuple[str, str]:
@@ -1003,43 +1059,56 @@ def open_shifts_between(lo: dt.date, hi: dt.date) -> tuple[list[dict], str | Non
     return out, f"{when:%b} {when.day} {_clock(when.hour * 60 + when.minute)} CT"
 
 
-def notify_published(store: str, week_start: dt.date, *, fresh: bool = True, to: str = "dm") -> bool:
-    """Send the schedule note. ``dm`` (the publish default) or ``channel`` (Shift Coverage).
+def notify_published(store: str, weeks: list[dt.date], *, fresh: bool = True, to: str = "dm") -> bool:
+    """Send one schedule note covering ``weeks``. ``dm`` (the operator's draft) or ``channel`` (Shift Coverage).
 
-    A channel post is the team note only, and only after a fresh ADP read — a stale
-    list of open shifts is never posted to the team.
+    Both are typed through the ClickUp web app so @everyone and people are real
+    mentions (the API stores them as text); a browser failure falls back to the API.
+    The draft goes to the operator's private drafts channel, like the unavailability
+    reminder. A channel post is the team note only, and only after a fresh ADP read —
+    a stale list of open shifts is never posted to the team.
     """
     from agents.bhaga.scripts.team_pulse import DEFAULT_DM_USER_ID, DEFAULT_WORKSPACE_ID
-    from agents.bhaga.scripts.unavailability_reminder import browser_send
+    from agents.bhaga.scripts.unavailability_reminder import DRAFTS_CHANNEL_ID, browser_send, unmarked_mentions
     from skills.clickup_chat import ensure_dm_channel, post_message
 
+    weeks = sorted(weeks)
+    label = ",".join(w.isoformat() for w in weeks)
     if to == "channel" and not fresh:
         print(
-            f"BREADCRUMB adp_publish_channel store={store} week_start={week_start}"
+            f"BREADCRUMB adp_publish_channel store={store} weeks={label}"
             " error=stale ADP read; not posted to the team"
         )
         return False
     try:
-        open_shifts, as_of = open_shifts_between(*open_shift_window(week_start, _today_ct()))
+        open_shifts, as_of = open_shifts_between(*open_shift_window(weeks[-1], _today_ct()))
         if to == "channel":
-            content = team_post(week_start, open_shifts)
             team_id, channel_id = shift_coverage_target(store)
-            # The API stores @everyone as plain text; the web app makes it a real mention.
-            try:
-                browser_send(store, channel_id, content, team_id)
-            except Exception as exc:  # noqa: BLE001 — still post, as plain text
-                print(f"BREADCRUMB adp_publish_browser store={store} week_start={week_start}"
-                      f" error={type(exc).__name__}: {exc} — posted by the API instead"[:500])
-                post_message(channel_id, content, team_id=team_id)
         else:
-            content = publish_message(week_start, open_shifts, stale_as_of=None if fresh else (as_of or "unknown"))
-            channel = ensure_dm_channel([DEFAULT_DM_USER_ID], team_id=DEFAULT_WORKSPACE_ID)
-            post_message(str(channel["id"]), content, team_id=DEFAULT_WORKSPACE_ID)
+            team_id, channel_id = DEFAULT_WORKSPACE_ID, DRAFTS_CHANNEL_ID
+        try:
+            unmarked = unmarked_mentions(store, weeks, team_id)
+        except Exception as exc:  # noqa: BLE001 — the note still goes out, untagged
+            unmarked = []
+            print(f"BREADCRUMB adp_publish_tags store={store} weeks={label} error={type(exc).__name__}: {exc}"[:500])
+        if to == "channel":
+            content = team_post(weeks, open_shifts, unmarked)
+        else:
+            content = publish_message(weeks, open_shifts, unmarked, stale_as_of=None if fresh else (as_of or "unknown"))
+        try:
+            browser_send(store, channel_id, content, team_id)
+        except Exception as exc:  # noqa: BLE001 — still send, mentions as plain text
+            print(f"BREADCRUMB adp_publish_browser store={store} weeks={label} to={to}"
+                  f" error={type(exc).__name__}: {exc} — sent by the API instead"[:500])
+            if to != "channel":
+                channel_id = str(ensure_dm_channel([DEFAULT_DM_USER_ID], team_id=team_id)["id"])
+            post_message(channel_id, content, team_id=team_id)
     except Exception as exc:  # noqa: BLE001
-        print(f"BREADCRUMB adp_publish_dm store={store} week_start={week_start} to={to} error={type(exc).__name__}: {exc}"[:500])
+        print(f"BREADCRUMB adp_publish_dm store={store} weeks={label} to={to} error={type(exc).__name__}: {exc}"[:500])
         return False
-    where = "Shift Coverage" if to == "channel" else "DM"
-    print(f"[schedule_write] publish {where} sent week_start={week_start} open_shifts={len(open_shifts)} fresh={fresh}")
+    where = "Shift Coverage" if to == "channel" else "draft"
+    print(f"[schedule_write] publish {where} sent weeks={label} open_shifts={len(open_shifts)}"
+          f" untagged_unavailability={len(unmarked)} fresh={fresh}")
     return True
 
 
@@ -1127,24 +1196,26 @@ def run_publish(store: str, week_start: dt.date, *, headless: bool, dry_run: boo
         [("store", "STRING", store), ("week", "DATE", week_start)],
     )
     if pending or had_drafted:
-        notify_published(store, week_start, fresh=fresh)
+        notify_published(store, [week_start], fresh=fresh)
     return 0
 
 
-def run_publish_dm(store: str, week_start: dt.date, *, headless: bool, to: str = "dm") -> int:
-    """Console "Send ClickUp message": re-read ADP's open shifts, then DM or post to Shift Coverage."""
+def run_publish_dm(store: str, weeks: list[dt.date], *, headless: bool, to: str = "dm") -> int:
+    """Console "Send ClickUp message": re-read ADP's open shifts through the last week, then send one note."""
     from skills.adp_run_automation import runner as r
 
+    weeks = sorted(weeks)
     fresh = False
     try:
         with r.adp_session(store=store, headed=not headless) as (_ctx, page):
             frame = r._open_team_schedule(page)
             page.wait_for_timeout(2500)
-            wb.goto_week(frame, page, week_start)
-            fresh = refresh_open_shift_window(page, store, week_start)
-    except Exception as exc:  # noqa: BLE001 — still DM, flagged as not freshly read
-        print(f"BREADCRUMB adp_publish_dm_reread store={store} week_start={week_start} error={type(exc).__name__}: {exc}"[:500])
-    return 0 if notify_published(store, week_start, fresh=fresh, to=to) else 1
+            wb.goto_week(frame, page, weeks[-1])
+            fresh = refresh_open_shift_window(page, store, weeks[-1])
+    except Exception as exc:  # noqa: BLE001 — still sends the draft, flagged as not freshly read
+        print(f"BREADCRUMB adp_publish_dm_reread store={store} weeks={','.join(map(str, weeks))}"
+              f" error={type(exc).__name__}: {exc}"[:500])
+    return 0 if notify_published(store, weeks, fresh=fresh, to=to) else 1
 
 
 def run_delete(store: str, week_start: dt.date, row_keys: list[str], *, headless: bool, dry_run: bool) -> int:
@@ -1386,7 +1457,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--store", default="palmetto")
     p.add_argument("--push-id")
     p.add_argument("--publish", action="store_true")
-    p.add_argument("--publish-dm", action="store_true", help="re-read ADP's open shifts, then send the schedule note for --week-start")
+    p.add_argument("--publish-dm", action="store_true",
+                   help="re-read ADP's open shifts, then send one schedule note for --weeks (or --week-start)")
+    p.add_argument("--weeks", help="with --publish-dm: the Mondays the note covers, comma- or plus-separated")
     p.add_argument("--to", choices=("dm", "channel"), default="dm", help="with --publish-dm: DM the operator, or post to Shift Coverage")
     p.add_argument("--inspect", action="store_true", help="read-only: draft count + open shifts for --week-start")
     p.add_argument("--refresh-schedule", action="store_true", help="read-only: reload --week-start's ADP schedule into BQ")
@@ -1449,9 +1522,15 @@ def main(argv: list[str] | None = None) -> int:
         keys = [k.strip() for k in a.delete.split(";") if k.strip()]
         return run_delete(a.store, a.week_start, keys, headless=a.headless, dry_run=a.dry_run)
     if a.publish_dm:
-        if not a.week_start or a.week_start.weekday() != 0:
-            p.error("--publish-dm needs --week-start on a Monday")
-        return run_publish_dm(a.store, a.week_start, headless=a.headless, to=a.to)
+        try:
+            # "+" too: `/prod-ops` env values can't hold commas.
+            weeks = sorted({dt.date.fromisoformat(w) for w in re.split(r"[,+\s]+", a.weeks or "") if w})
+        except ValueError:
+            p.error("--weeks are YYYY-MM-DD Mondays, comma-separated")
+        weeks = weeks or ([a.week_start] if a.week_start else [])
+        if not weeks or len(weeks) > _MAX_MESSAGE_WEEKS or any(w.weekday() != 0 for w in weeks):
+            p.error(f"--publish-dm needs 1 to {_MAX_MESSAGE_WEEKS} Mondays (--weeks or --week-start)")
+        return run_publish_dm(a.store, weeks, headless=a.headless, to=a.to)
     if a.inspect:
         if not a.week_start or a.week_start.weekday() != 0:
             p.error("--inspect needs --week-start on a Monday")

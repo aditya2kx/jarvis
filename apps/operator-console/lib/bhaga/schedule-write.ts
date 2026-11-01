@@ -4,7 +4,7 @@ import { triggerAdpScheduleWrite } from "@/lib/bhaga/recompute";
 export type ScheduleWriteJob =
   | { mode: "drafts"; pushId: string }
   | { mode: "publish"; weekStart: string }
-  | { mode: "dm"; weekStart: string; to?: "dm" | "channel" }
+  | { mode: "dm"; weekStarts: string[]; to?: "dm" | "channel" }
   | { mode: "assign"; assignId: string }
   | { mode: "apply"; batchId: string };
 

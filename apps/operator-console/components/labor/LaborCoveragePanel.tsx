@@ -1942,22 +1942,25 @@ export function LaborCoveragePanel({
     () => (showDraft && activeDay ? (weekDraft?.byDay.get(activeDay) ?? []) : []),
     [showDraft, activeDay, weekDraft],
   );
-  const weekShifts = useMemo(
-    () =>
-      [...(weekDraft?.byDay.values() ?? [])]
-        .flat()
-        .filter((s) => !s.fillsOpen)
-        .map(({ date, employee, startMin, endMin, inAdp }) => ({ date, employee, startMin, endMin, inAdp })),
-    [weekDraft],
-  );
-  const weekSuggestions = useMemo(() => {
-    if (!weekDraft) return [];
+  // Every upcoming week's suggestions, so several weeks can be added (and announced) in one go.
+  const suggestedWeeks = useMemo(() => {
+    if (!drafts) return [];
     const staged = new Set(trayChanges.map(adpChangeKey));
-    const drafts = adpDrafts(upcoming ?? [], todayIso, shiftCalendarDate(weekDraft.weekStart, "day", 6));
-    return suggestedChanges(weekShifts, drafts.filter((d) => d.date >= weekDraft.weekStart), todayIso).filter(
-      (c) => !staged.has(adpChangeKey({ area: "shift", c })),
-    );
-  }, [weekDraft, weekShifts, upcoming, todayIso, trayChanges]);
+    return [...drafts.weeks.values()]
+      .filter((w) => shiftCalendarDate(w.weekStart, "day", 6) > todayIso)
+      .sort((a, b) => a.weekStart.localeCompare(b.weekStart))
+      .map((w) => {
+        const shifts = [...w.byDay.values()]
+          .flat()
+          .filter((s) => !s.fillsOpen)
+          .map(({ date, employee, startMin, endMin, inAdp }) => ({ date, employee, startMin, endMin, inAdp }));
+        const adp = adpDrafts(upcoming ?? [], todayIso, shiftCalendarDate(w.weekStart, "day", 6));
+        const changes = suggestedChanges(shifts, adp.filter((d) => d.date >= w.weekStart), todayIso).filter(
+          (c) => !staged.has(adpChangeKey({ area: "shift", c })),
+        );
+        return { weekStart: w.weekStart, changes };
+      });
+  }, [drafts, upcoming, todayIso, trayChanges]);
   const stageSuggestions = useCallback(
     (changes: ShiftChange[]) => setQueue((q) => changes.reduce((acc, c) => stageAdp(acc, { area: "shift", c }), q)),
     [setQueue],
@@ -2047,7 +2050,7 @@ export function LaborCoveragePanel({
           {showDraft && weekDraft ? (
             <AdpScheduleFinalize
               weekStart={weekDraft.weekStart}
-              changes={weekSuggestions}
+              weeks={suggestedWeeks}
               onStage={stageSuggestions}
               enabled={adpWriteEnabled}
             />

@@ -1826,9 +1826,14 @@ follow you to another device.
 **New-hire training (Issue #450)** is part of the same versioned rules (Schedule inputs › **New-hire
 training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hire from now on) is drafted only beside an experienced person
 (the operator picks the list in the console, or an agent saves it with `/prod-ops experienced-staff <FirstName> …` — a new rules version, first names resolved against Active ADP Directory staff; empty = gate off) for at least the set overlap (default 3 h) until they've
-done the set number of supervised openers and closers (default 2 + 2). It's one-time, counted over
-every ADP shift (past actuals + upcoming schedule), not per week. It's a hard rule: a slot no trainee
-can take with experienced staff present stays open, and the draft row says why. Pickers tag people
+done the set number of supervised openers and closers (default 2 + 2). Each kind clears on its own:
+after their supervised closers they close with anyone or alone (likewise openers); mids stay
+supervised until both are done. **Mark trained** on a person's progress row (saved in the rules as
+`training.trained`) skips the rule for someone already up to speed; each row shows shifts worked.
+It's one-time, counted over every ADP shift (past actuals + upcoming schedule), not per week. It's a
+hard rule: a slot no trainee can take stays open, and the draft row says why. The draft searches
+for where experienced staff unlock the most coverage — e.g. a trainee on the morning mid beside the
+opener while the second experienced person moves to the close. Pickers tag people
 **Experienced** / **New hire · 1/2 openers · 0/2 closers** and list blocked people (disabled) with the
 reason, so a manual ADP edit is informed. Hire date = `bhaga.adp_hire_dates` (migration 097, from the
 ADP profile's **Employee status → Hire date** field; falls back to the first ADP shift). The
@@ -1853,9 +1858,11 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
   change its times and/or person (ADP can't hand an assigned shift to someone else, so a reassign deletes it
   and adds the same hours for the new person) or **Delete**; **Add shift** at the bottom.
 - The **Suggested schedule for <week>** card (Suggestions on) has no ADP button of its own: **Review & add
-  to changes** stages the week's suggested shifts ADP doesn't have (`shift-add`; open shifts as one
-  `open-add` per day and hours, with a count) and the week's assigned ADP drafts (`shift-publish`). Its
-  **Send ClickUp message** is the only other action. (Issue #434 retired the card's Save-as-drafts and
+  to changes** stages the suggested shifts ADP doesn't have (`shift-add`; open shifts as one
+  `open-add` per day and hours, with a count) and the assigned ADP drafts (`shift-publish`) of every
+  week ticked in the sheet's week list (this week by default; the card says when later weeks have
+  suggestions too), so 3–4 weeks go out in one Apply. Its **Send ClickUp message** is the only other
+  action. (Issue #434 retired the card's Save-as-drafts and
   Publish-week buttons.)
 - Unavailability changes (#427) stage into the same tray (`CONSOLE_ADP_UNAVAIL_WRITE`, off until its ADP
   writes are proven live; only **approve** is wired in the job today — other kinds fail without a click).
@@ -1864,7 +1871,11 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
 
 **Apply to ADP** inserts one `queued` row per change under one `batch_id` — shifts in `adp_shift_changes`
 (migration 096), unavailability in `adp_unavailability_changes` (092) — and starts
-`BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_BATCH_ID=<id>` (refused while any schedule write runs). Without the console, `BHAGA_SCHEDULE_CHANGES="open-add 2027-01-12 10:00-14:00 count=2; …"`
+`BHAGA_ADP_SCHEDULE_WRITE=apply BHAGA_SCHEDULE_BATCH_ID=<id>` (refused while any schedule write runs) with a
+per-execution **2h** task timeout (`APPLY_TIMEOUT` in `lib/bhaga/recompute.ts`; the job's own 1h covers every
+other run). One Apply takes up to 160 changes — four suggested weeks — at ~7–20 s each after a ~2 min sign-in;
+row statuses and `adp_shift_events` are written by a background writer so BigQuery never holds up the browser
+(`BREADCRUMB adp_apply_record` if one fails; the ADP change stands). Without the console, `BHAGA_SCHEDULE_CHANGES="open-add 2027-01-12 10:00-14:00 count=2; …"`
 queues and applies command-line changes (a PR's code runs live via `/prod-ops run-job-pr bhaga-daily-refresh …`).
 Per week the job applies deletes, then edits, reassigns, adds (and publishes), assigns. Each shift is **published on its own**
 (wizard / Edit **Publish**); the week's **Publish drafts** and **Delete all schedules** are never pressed.
@@ -1925,19 +1936,26 @@ sync drop off) and DMs the operator in ClickUp (`notify_published`, team_pulse's
 ready-to-post Shift Coverage & Trades note (Issue #381): `@everyone` + the published week, then every
 ADP open shift from **tomorrow** through that week's Sunday, numbered by date with the slots nested.
 Publish itself never posts to the team (`BREADCRUMB adp_publish_dm` if the DM fails). If the re-read fails the
-DM still goes out from the last sync and says "open shifts are as of <time>". To send it again, use
-**Send ClickUp message** (on the suggested-week card). The drawer offers **Send me a DM**
-(`BHAGA_ADP_SCHEDULE_WRITE=dm`) or **Post to Shift Coverage** (`BHAGA_SCHEDULE_MESSAGE_TO=channel`):
-both re-read open shifts from ADP first. The channel post is `team_post` only — it starts at `@everyone`
-and drops the draft header — and goes to `clickup.shift_coverage_channel` in the store profile. A stale
-ADP read is DMed with the "as of" note, but never posted to the team
-(`BREADCRUMB adp_publish_channel … not posted to the team`; the job exits 1). The channel post is
-typed through the ClickUp web app (`skills/clickup_browser`, the unavailability reminder's stored
-session) so `@everyone` is a real mention (Issue #435); if that fails the API posts it with `@everyone`
-as plain text (`BREADCRUMB adp_publish_browser … posted by the API instead`). The DM stays on the API
-(ClickUp offers no Everyone mention in a DM). Laptop equivalent:
-`BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.adp_schedule_write --publish-dm
---week-start <Mon> [--to channel]`. **Publishing
+DM still goes out from the last sync and says "open shifts are as of <time>". **Send ClickUp message** (suggested-week card, Issue #450) sends **one** note for every week
+ticked in its week list — by default the weeks just added from the same card, so a 3-week batch
+is announced in one thread (`BHAGA_ADP_SCHEDULE_WRITE=dm`, `BHAGA_SCHEDULE_WEEKS=<Mon,Mon,…>`, at
+most 6). It re-reads ADP from this week through the last picked week, then writes: the weeks
+(consecutive ones as one span, "Nov 9–29"); **Open shifts: none — every shift is covered 🎉** or
+**Open shifts: N** with a per-week split when it spans several weeks, then each open shift from
+**tomorrow** on; and "No unavailability marked in ADP — please double-check your shifts:" with one
+line per active hourly person (`unavailability_reminder.unmarked_mentions`, pending + approved ADP
+unavailability) naming the picked weeks they left empty. **Send me a draft** types it, with a
+"copy and post" header, into the operator's private `#jarvis-drafts` channel (the reminder's
+`DRAFTS_CHANNEL_ID`); **Post to Shift Coverage** (`BHAGA_SCHEDULE_MESSAGE_TO=channel`) types
+`team_post` only — from `@everyone`, no header — into `clickup.shift_coverage_channel`. Both go
+through the ClickUp web app (`skills/clickup_browser`, the reminder's stored session) so `@everyone`
+and people are real mentions (the API stores them as text, Issue #435); if the browser fails the API
+sends the same text — the draft as a DM to team_pulse's DM user — with
+`BREADCRUMB adp_publish_browser … sent by the API instead`. A failed tag lookup still sends the note
+untagged (`BREADCRUMB adp_publish_tags`). A stale ADP read is sent as a draft with the "as of" note,
+but never posted to the team (`BREADCRUMB adp_publish_channel … not posted to the team`; the job
+exits 1). Laptop equivalent: `BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.adp_schedule_write
+--publish-dm --weeks <Mon,Mon,…> [--to channel]` (`+` also separates weeks — `/prod-ops` values can't hold commas). **Publishing
 in ADP directly also works:** every Team Schedule load (nightly, Sync ADP, after any console write)
 reads each shift's `DRAFT` tag and each day's open-shift `Drafts: N` and flips matching `drafted` rows
 to `published` (`reconcile_published`, `[schedule_write] reconcile … newly_published=N`,

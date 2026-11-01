@@ -187,17 +187,27 @@ def expected_deploy_sha(*, repo_root: Path | None = None) -> str:
     return out.stdout.strip()
 
 
+# Cloud Run Jobs nest the container under template.spec.template.spec (task template).
+# Same path as deploy.yml "Verify deployed units". The shallower
+# spec.template.spec.containers[0].image returns empty and broke every /prod-ops run-job
+# after #468 (#471).
+_JOB_IMAGE_FORMAT = "value(spec.template.spec.template.spec.containers[0].image)"
+
+
 def job_image_tag(job: str) -> str:
     """Image tag currently configured on a Cloud Run Job (after the final ':')."""
     loc = [f"--region={REGION}", f"--project={PROJECT}"]
     out = subprocess.run(
-        ["gcloud", "run", "jobs", "describe", job, *loc,
-         "--format=value(spec.template.spec.containers[0].image)"],
+        ["gcloud", "run", "jobs", "describe", job, *loc, f"--format={_JOB_IMAGE_FORMAT}"],
         capture_output=True, text=True, check=True,
     )
     image = (out.stdout or "").strip()
     if not image or ":" not in image:
-        raise RequestError(f"could not read image for job {job!r}: {image!r}")
+        err = (out.stderr or "").strip()
+        raise RequestError(
+            f"could not read image for job {job!r}: {image!r}"
+            + (f" stderr={err[:300]!r}" if err else "")
+        )
     return image.rsplit(":", 1)[-1]
 
 

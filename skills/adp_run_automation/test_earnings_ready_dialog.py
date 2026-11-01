@@ -27,9 +27,11 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
+from skills.adp_run_automation import runner
 from skills.adp_run_automation.runner import _wait_for_earnings_ready_button
 
 
@@ -103,6 +105,11 @@ _SPECS = [
 
 
 class TestWaitForEarningsReadyButton(unittest.TestCase):
+
+    def setUp(self):
+        p = mock.patch.object(runner, "_upload_evidence_to_gcs", return_value=None)
+        p.start()
+        self.addCleanup(p.stop)
 
     def test_primary_visible_immediately_returns_btn(self):
         """Primary locator visible at first check → function returns immediately."""

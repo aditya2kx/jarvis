@@ -83,6 +83,19 @@ def hire_context(text: str, width: int = 60) -> list[str]:
     ][:3]
 
 
+def dated_labels(text: str, limit: int = 8) -> list[str]:
+    """Up to ``limit`` labels sitting before a date on a pane — ADP's real wording on a miss.
+
+    The date itself becomes its shape: job log tails reach public Actions logs, and a
+    profile pane can carry a birth date.
+    """
+    rx = re.compile(r"([A-Za-z][A-Za-z ]{0,30}?)\s*:?\s*" + _US_DATE)
+    return [
+        " ".join(m.group(1).split()) + (" <MM/DD/YYYY>" if "/" in m.group(2) else " <Mon D, YYYY>")
+        for m in rx.finditer(text or "")
+    ][:limit]
+
+
 def load_selectors() -> dict:
     if SELECTORS_PATH.exists():
         return json.loads(SELECTORS_PATH.read_text())
@@ -874,6 +887,7 @@ def read_profile_hire_date(page) -> tuple[Optional[str], dict]:
     iso = parse_hire_date(text)
     tabs = hire_tab_order(page.evaluate(_PROFILE_TABS_JS) or [])
     tried: list[str] = []
+    dated: dict[str, list[str]] = {"open": dated_labels(text)}
     for tab in tabs:
         if iso:
             break
@@ -883,7 +897,8 @@ def read_profile_hire_date(page) -> tuple[Optional[str], dict]:
         dismiss_blocking_modals(page)
         text = _page_text(page)
         iso = parse_hire_date(text)
-    return iso, {"tabs": tried, "context": hire_context(text)}
+        dated[tab] = dated_labels(text)
+    return iso, {"tabs": tried, "context": hire_context(text), "dated": dated}
 
 
 def scrape_hire_dates(
@@ -910,7 +925,8 @@ def scrape_hire_dates(
                 errors[name] = "no hire date on the profile"
                 print(
                     f"[pay_info] BREADCRUMB hire_date_missing name={name!r} "
-                    f"tabs={where['tabs']} context={where['context']}"
+                    f"tabs={where['tabs']} context={where['context']} "
+                    f"dated={ {t: d for t, d in where.get('dated', {}).items() if d} }"
                 )
         except Exception as exc:  # noqa: BLE001
             errors[name] = f"{type(exc).__name__}: {exc}"

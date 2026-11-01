@@ -702,6 +702,13 @@ class TestHireDates(unittest.TestCase):
             ["EMPLOYEE_EMPLOYMENT", "EMPLOYEE_STATUS", "EMPLOYEE_DETAILS", "EMPLOYEE_EI9", "EMPLOYEE_PAYROLL"],
         )
 
+    def test_dated_labels_show_the_wording_beside_each_date(self):
+        text = "Employment Position start 08/04/2026 Status Active Seniority  Aug 4, 2026 Pay"
+        self.assertEqual(
+            pib.dated_labels(text),
+            ["Employment Position start <MM/DD/YYYY>", "Status Active Seniority <Mon D, YYYY>"],
+        )
+
     def test_profile_read_breadcrumbs_a_miss(self):
         page = mock.Mock()
         page.evaluate.side_effect = lambda js, *a: [] if js is pib._PROFILE_TABS_JS else None

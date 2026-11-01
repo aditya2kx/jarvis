@@ -96,13 +96,7 @@ jobs:
           echo "verdict_header=$VERDICT_HEADER" >> "$GITHUB_OUTPUT"
 
           # Parse evidence confidence score.
-          CONFIDENCE="$(echo "$CLAUDE_BODY" | \
-            python3 -c "
-import re, sys
-body = sys.stdin.read()
-m = re.search(r'Evidence confidence(?:\s+rating)?\s*[:*\s]+\*{0,2}(\d+)\s*%', body, re.IGNORECASE)
-print(m.group(1) if m else '')
-" 2>/dev/null || echo '')"
+          CONFIDENCE="$(echo "$CLAUDE_BODY" | python3 scripts/ship_merge.py parse-confidence 2>/dev/null || echo '')"
           echo "confidence=${CONFIDENCE}" >> "$GITHUB_OUTPUT"
 
       - name: Check if only evidence-confidence is blocking
@@ -143,12 +137,8 @@ print(m.group(1) if m else '')
             --verdict-header '${{ steps.checks.outputs.verdict_header }}' \
             $([[ -n "${{ steps.checks.outputs.confidence }}" ]] && echo "--confidence ${{ steps.checks.outputs.confidence }}") \
             2>&1 | grep -v '^blocked=' || true)"
-          gh pr comment "$PR" --repo "$REPO" \
-            --body "🚢 **Ship-emoji received** but the PR has blocking issues that must be resolved first:
-
-${REASON}
-
-Fix the above, then post 🚀 again."
+          BODY="$(printf '🚢 **Ship-emoji received** but the PR has blocking issues that must be resolved first:\n\n%s\n\nFix the above, then post 🚀 again.' "$REASON")"
+          gh pr comment "$PR" --repo "$REPO" --body "$BODY"
 
       - name: Log skip (not ship intent or not authorized)
         if: steps.intent.outputs.ship_intent != '0' || steps.auth.outputs.authorized != '0'

@@ -170,6 +170,15 @@ def only_evidence_confidence_blocking(
     return MergeBlockReason(False, "")
 
 
+_CONFIDENCE_RE = re.compile(r"Evidence confidence(?:\s+rating)?\s*[:*\s]+\*{0,2}(\d+)\s*%", re.IGNORECASE)
+
+
+def parse_confidence(body: str) -> int | None:
+    """Evidence-confidence score from a claude[bot] review comment, or None."""
+    m = _CONFIDENCE_RE.search(body or "")
+    return int(m.group(1)) if m else None
+
+
 # ---------------------------------------------------------------------------
 # CLI entry points (called by the workflow via bash)
 # ---------------------------------------------------------------------------
@@ -216,10 +225,18 @@ def _cmd_check_blocking(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_parse_confidence(argv: list[str]) -> int:
+    """Print the confidence score parsed from stdin (empty line when absent)."""
+    score = parse_confidence(sys.stdin.read())
+    print("" if score is None else score)
+    return 0
+
+
 _COMMANDS = {
     "is-ship-intent": _cmd_is_ship_intent,
     "is-authorized": _cmd_is_authorized,
     "check-blocking": _cmd_check_blocking,
+    "parse-confidence": _cmd_parse_confidence,
 }
 
 

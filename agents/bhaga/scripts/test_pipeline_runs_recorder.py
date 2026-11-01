@@ -270,6 +270,15 @@ class TestGating:
             assert dr._run_refresh("r") == 1
         assert dr._RUN_SUMMARY["side_job"] == "adp-schedule-write:apply"
 
+    def test_hire_dates_mode_marks_side_job(self, monkeypatch):
+        """A hire-dates fill is not the day's nightly; its exit 1 must not read as a failed run."""
+        _reset_summary()
+        monkeypatch.setenv("BHAGA_ADP_HIRE_DATES", "1")
+        monkeypatch.setattr(sys, "argv", ["daily_refresh.py"])
+        with patch("skills.adp_run_automation.pay_info_backend.main", return_value=1):
+            assert dr._run_refresh("r") == 1
+        assert dr._RUN_SUMMARY["side_job"] == "adp-hire-dates"
+
     def test_no_refresh_date(self, monkeypatch):
         _reset_summary()  # empty — no refresh_date
         monkeypatch.setenv("BHAGA_DATASTORE", "bigquery")
@@ -312,6 +321,30 @@ class TestCloudRecorderGate:
 
         mock_load.assert_not_called()
         assert "skip: not_cloud_run" in capsys.readouterr().err
+
+    def test_pr_job_copy_skips(self, monkeypatch, capsys):
+        """`/prod-ops run-job-pr` copies run unmerged code; their failures are not prod's."""
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
+        monkeypatch.setenv("CLOUD_RUN_JOB", "bhaga-daily-refresh-pr451")
+        monkeypatch.delenv("BHAGA_RECORD_PIPELINE_RUN", raising=False)
+
+        mock_load = MagicMock()
+        with patch("core.datastore.load_rows", mock_load):
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=1, run_id="testrun123")
+
+        mock_load.assert_not_called()
+        assert "skip: pr_job_copy=bhaga-daily-refresh-pr451" in capsys.readouterr().err
+
+    def test_pr_job_copy_explicit_opt_in_records(self, monkeypatch):
+        _reset_summary(refresh_date=_REF_DATE, store="palmetto", dry_run=False)
+        monkeypatch.setenv("CLOUD_RUN_JOB", "bhaga-daily-refresh-pr451")
+        monkeypatch.setenv("BHAGA_RECORD_PIPELINE_RUN", "1")
+
+        mock_load = MagicMock(return_value=1)
+        with patch("core.datastore.load_rows", mock_load):
+            dr._record_pipeline_run(started_at_utc=_make_started(), exit_code=0, run_id="testrun123")
+
+        assert mock_load.call_args[0][0] == "pipeline_runs"
 
     def test_cloud_with_source_pulls(self, monkeypatch):
         _reset_summary(

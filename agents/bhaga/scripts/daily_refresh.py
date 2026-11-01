@@ -2900,7 +2900,10 @@ def _run_refresh(run_id: str) -> int:
         if write_mode == "publish":
             argv += ["--publish", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
         elif write_mode == "dm":
-            argv += ["--publish-dm", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]
+            # BHAGA_SCHEDULE_WEEKS: every Monday the one note covers (multi-week publish).
+            weeks = os.environ.get("BHAGA_SCHEDULE_WEEKS", "").strip()
+            argv += (["--publish-dm", "--weeks", weeks] if weeks
+                     else ["--publish-dm", "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")])
             if os.environ.get("BHAGA_SCHEDULE_MESSAGE_TO", "").strip() == "channel":
                 argv += ["--to", "channel"]
         elif write_mode == "inspect":

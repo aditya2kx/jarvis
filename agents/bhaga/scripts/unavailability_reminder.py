@@ -141,19 +141,23 @@ def covers(row: dict, day: dt.date) -> bool:
     return weekday is not None and day > first and (until is None or day <= until) and day.weekday() == int(weekday)
 
 
-def unmarked(roster: list[str], rows: list[dict], weeks: list[dt.date]) -> list[str]:
-    """People on ``roster`` with at least one of ``weeks`` that has no unavailability on any day."""
+def unmarked_weeks(roster: list[str], rows: list[dict], weeks: list[dt.date]) -> dict[str, list[dt.date]]:
+    """Each person on ``roster`` → the ``weeks`` (Mondays) with no unavailability on any day; only people with one."""
     by_person: dict[str, list[dict]] = {}
     for r in rows:
         by_person.setdefault(r["employee"], []).append(r)
-    out = []
+    out: dict[str, list[dt.date]] = {}
     for person in sorted(set(roster)):
         mine = by_person.get(person, [])
-        for monday in weeks:
-            if not any(covers(r, monday + dt.timedelta(days=i)) for r in mine for i in range(7)):
-                out.append(person)
-                break
+        empty = [m for m in weeks if not any(covers(r, m + dt.timedelta(days=i)) for r in mine for i in range(7))]
+        if empty:
+            out[person] = empty
     return out
+
+
+def unmarked(roster: list[str], rows: list[dict], weeks: list[dt.date]) -> list[str]:
+    """People on ``roster`` with at least one of ``weeks`` that has no unavailability on any day."""
+    return list(unmarked_weeks(roster, rows, weeks))
 
 
 def _name_parts(canonical: str) -> tuple[str, str]:
@@ -287,19 +291,24 @@ def _as_date(v: Any) -> dt.date | None:
     return dt.date.fromisoformat(str(v)[:10])
 
 
-def flagged_mentions(store: str, today: dt.date, lead_weeks: int, workspace_id: str) -> list[str]:
+def unmarked_mentions(store: str, weeks: list[dt.date], workspace_id: str) -> list[tuple[str, list[dt.date]]]:
+    """(mention token, weeks with no unavailability) for each active person who has such a week."""
     from skills.clickup_chat import list_members
 
-    weeks = check_weeks(today, lead_weeks)
     if not weeks:
         return []
+    weeks = sorted(weeks)
     rows = load_unavailability(store, weeks[0], weeks[-1] + dt.timedelta(days=6))
-    names = unmarked(load_roster(store), rows, weeks)
+    names = unmarked_weeks(load_roster(store), rows, weeks)
     members = list_members(workspace_id)
     aliases = load_mention_aliases(store)
     logger.info("unavailability_reminder: flagged %d of the roster for weeks %s",
                 len(names), [w.isoformat() for w in weeks])
-    return [mention(n, members, aliases) for n in names]
+    return [(mention(n, members, aliases), empty) for n, empty in names.items()]
+
+
+def flagged_mentions(store: str, today: dt.date, lead_weeks: int, workspace_id: str) -> list[str]:
+    return [m for m, _weeks in unmarked_mentions(store, check_weeks(today, lead_weeks), workspace_id)]
 
 
 def ensure_default_config(store: str, *, updated_by: str) -> dict:

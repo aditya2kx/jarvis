@@ -52,6 +52,17 @@ class Flags(unittest.TestCase):
                         for r in case["rows"]]
                 self.assertEqual(ur.unmarked(case["roster"], rows, weeks), case["flagged"])
 
+    def test_unmarked_weeks_lists_each_empty_week(self):
+        weeks = [D("2026-11-09"), D("2026-11-16"), D("2026-11-23")]
+        rows = [
+            {"employee": "Lee, Dana", "first_date": D("2026-11-17"), "repeat_weekday": None, "repeat_until": None},
+            {"employee": "Ng, Sam", "first_date": D("2026-11-02"), "repeat_weekday": 2, "repeat_until": None},
+        ]
+        self.assertEqual(
+            ur.unmarked_weeks(["Lee, Dana", "Ng, Sam", "Roe, Bo"], rows, weeks),
+            {"Lee, Dana": [D("2026-11-09"), D("2026-11-23")], "Roe, Bo": weeks},
+        )
+
     def test_member_match(self):
         members = [
             {"id": "1", "username": "Dana Lee"},

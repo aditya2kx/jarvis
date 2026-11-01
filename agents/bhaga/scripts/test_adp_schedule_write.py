@@ -863,16 +863,16 @@ class PublishMessage(unittest.TestCase):
         _slot(D(2026, 10, 16), 900, 1230),
     ]
 
-    def test_matches_the_operator_post(self):
-        msg = w.publish_message(D(2026, 10, 19), self.OCT_9_SHIFTS)
+    def test_matches_the_operator_post_plus_the_count(self):
+        msg = w.publish_message([D(2026, 10, 19)], self.OCT_9_SHIFTS)
         post = msg.split("---\n\n", 1)[1]
         self.assertEqual(post, "\n".join([
             "@everyone 🗞️ Hi team! The schedule for **Oct 19–25** is now published in ADP. Please take a "
             "moment to look over your shifts and make sure they work with your availability. If anything "
             "doesn't look right, just let me know in this thread and we'll sort it out together.",
             "",
-            "Additionally, sharing the Open Shifts for the coming days where we really need folks, please "
-            "let us know if someone can pick these up. We are flexible around below times. 🙏🏽",
+            "**Open shifts: 5** (Oct 12–18: 5 · Oct 19–25: none) — we really need folks for these, please let "
+            "us know if someone can pick these up. We are flexible around below times. 🙏🏽",
             "",
             "1. Oct 13 (Tuesday)",
             "    1. 3:00 PM → 8:30 PM",
@@ -887,124 +887,144 @@ class PublishMessage(unittest.TestCase):
         self.assertTrue(msg.startswith("Published **Oct 19–25** in ADP."))
         self.assertNotIn("re-read failed", msg)
 
-    def test_no_open_shifts_and_month_boundary(self):
-        msg = w.publish_message(D(2026, 10, 26), [])
+    def test_no_open_shifts_says_so_and_month_boundary(self):
+        msg = w.publish_message([D(2026, 10, 26)], [])
         self.assertIn("Oct 26–Nov 1", msg)
-        self.assertNotIn("Open Shifts", msg)
-        self.assertTrue(msg.endswith("sort it out together."))
+        self.assertTrue(msg.endswith("**Open shifts: none** — every shift is covered 🎉"))
+
+    def test_three_weeks_in_one_note_with_per_week_counts(self):
+        weeks = [D(2026, 11, 23), D(2026, 11, 9), D(2026, 11, 16)]
+        post = w.team_post(weeks, [_slot(D(2026, 11, 18), 900, 1230), _slot(D(2026, 11, 19), 900, 1230)])
+        self.assertIn("The schedule for **Nov 9–29** is now published", post)
+        self.assertIn("**Open shifts: 2** (Nov 9–15: none · Nov 16–22: 2 · Nov 23–29: none)", post)
+
+    def test_weeks_with_a_gap_are_listed(self):
+        self.assertIn("**Nov 9–15 and Nov 23–29**", w.team_post([D(2026, 11, 9), D(2026, 11, 23)], []))
+        self.assertIn("**Nov 23–Dec 6**", w.team_post([D(2026, 11, 23), D(2026, 11, 30)], []))
+
+    def test_one_brief_line_per_person_without_unavailability(self):
+        tags = [("[@Dana Lee](#user_mention#11)", [D(2026, 11, 16), D(2026, 11, 9)]), ("@Sam Ng", [D(2026, 11, 23)])]
+        post = w.team_post([D(2026, 11, 9), D(2026, 11, 16), D(2026, 11, 23)], [], tags)
+        self.assertTrue(post.endswith("\n".join([
+            "No unavailability marked in ADP — please double-check your shifts:",
+            "[@Dana Lee](#user_mention#11) Nov 9–15, Nov 16–22",
+            "@Sam Ng Nov 23–29",
+        ])))
 
     def test_stale_data_is_flagged_in_the_header_only(self):
-        msg = w.publish_message(D(2026, 10, 19), self.OCT_9_SHIFTS, stale_as_of="Oct 9 12:58 PM CT")
+        msg = w.publish_message([D(2026, 10, 19)], self.OCT_9_SHIFTS, stale_as_of="Oct 9 12:58 PM CT")
         head, post = msg.split("---\n\n", 1)
         self.assertIn("as of Oct 9 12:58 PM CT", head)
         self.assertNotIn("re-read failed", post)
 
-    def test_window_starts_tomorrow_and_ends_on_the_published_sunday(self):
+    def test_window_starts_tomorrow_and_ends_on_the_last_published_sunday(self):
         self.assertEqual(w.open_shift_window(D(2026, 10, 19), D(2026, 10, 9)), (D(2026, 10, 10), D(2026, 10, 25)))
 
 
 BROWSER_SEND = "agents.bhaga.scripts.unavailability_reminder.browser_send"
+UNMARKED = "agents.bhaga.scripts.unavailability_reminder.unmarked_mentions"
+SHIFT_ROWS = [{"date": D(2026, 10, 13), "shift_range": "3:00 PM - 8:30 PM", "scraped_at_utc": "2026-10-09T17:58:30+00:00"}]
 
 
 class NotifyPublished(unittest.TestCase):
     def setUp(self):
-        # The REST path is the default under test; the browser path has its own tests below.
-        p = mock.patch(BROWSER_SEND, side_effect=RuntimeError("no ClickUp session"))
-        self.browser = p.start()
+        self.browser = self._patch(BROWSER_SEND)
+        self.unmarked = self._patch(UNMARKED, return_value=[("[@Dana Lee](#user_mention#11)", [D(2026, 10, 19)])])
+        self.dm = self._patch("skills.clickup_chat.ensure_dm_channel", return_value={"id": "dm1"})
+        self.post = self._patch("skills.clickup_chat.post_message")
+        self._patch("core.datastore.fq", lambda t: t)
+        p = mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9))
+        p.start()
         self.addCleanup(p.stop)
 
-    def _notify(self, fresh=True, scraped="2026-10-09T17:58:30+00:00"):
+    def _patch(self, target, *args, **kw):
+        p = mock.patch(target, *args, **kw)
+        m = p.start()
+        self.addCleanup(p.stop)
+        return m
+
+    def _notify(self, weeks=(D(2026, 10, 19),), **kw):
         calls = []
 
         def fq(sql, params):
             calls.append(dict((n, v) for n, _t, v in params))
-            return [{"date": D(2026, 10, 13), "shift_range": "3:00 PM - 8:30 PM", "scraped_at_utc": scraped}]
+            return SHIFT_ROWS
 
-        posted = []
-        with mock.patch.object(w, "_query", fq), \
-             mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
-             mock.patch("core.datastore.fq", lambda t: t), \
-             mock.patch("skills.clickup_chat.ensure_dm_channel", return_value={"id": "dm1"}), \
-             mock.patch("skills.clickup_chat.post_message", lambda ch, content, team_id: posted.append(content)):
-            w.notify_published("palmetto", D(2026, 10, 19), fresh=fresh)
-        return calls, posted
+        with mock.patch.object(w, "_query", fq):
+            ok = w.notify_published("palmetto", list(weeks), **kw)
+        return ok, calls
 
-    def test_reads_the_whole_window_and_posts_once(self):
-        calls, posted = self._notify()
+    def test_draft_is_typed_into_the_drafts_channel_with_tags(self):
+        from agents.bhaga.scripts.unavailability_reminder import DRAFTS_CHANNEL_ID
+
+        ok, calls = self._notify()
+        self.assertTrue(ok)
         self.assertEqual(calls, [{"lo": D(2026, 10, 10), "hi": D(2026, 10, 25)}])
-        self.assertEqual(len(posted), 1)
-        self.assertIn("1. Oct 13 (Tuesday)\n    1. 3:00 PM → 8:30 PM", posted[0])
+        store, ch, content, _team = self.browser.call_args[0]
+        self.assertEqual((store, ch), ("palmetto", DRAFTS_CHANNEL_ID))
+        self.assertTrue(content.startswith("Published **Oct 19–25** in ADP."))
+        self.assertIn("1. Oct 13 (Tuesday)\n    1. 3:00 PM → 8:30 PM", content)
+        self.assertIn("[@Dana Lee](#user_mention#11) Oct 19–25", content)
+        self.post.assert_not_called()
+
+    def test_several_weeks_read_through_the_last_and_send_once(self):
+        weeks = (D(2026, 11, 23), D(2026, 11, 9), D(2026, 11, 16))
+        _ok, calls = self._notify(weeks)
+        self.assertEqual(calls, [{"lo": D(2026, 10, 10), "hi": D(2026, 11, 29)}])
+        self.assertEqual(self.unmarked.call_args[0][1], sorted(weeks))
+        self.assertEqual(self.browser.call_count, 1)
+        self.assertIn("**Nov 9–29**", self.browser.call_args[0][2])
 
     def test_failed_re_read_says_when_the_data_is_from(self):
-        _calls, posted = self._notify(fresh=False)
-        self.assertIn("as of Oct 9 12:58 PM CT", posted[0])
+        self._notify(fresh=False)
+        self.assertIn("as of Oct 9 12:58 PM CT", self.browser.call_args[0][2])
 
-    def test_dm_failure_leaves_a_breadcrumb(self):
+    def test_tag_lookup_failure_still_sends_untagged(self):
+        self.unmarked.side_effect = RuntimeError("bq down")
+        with mock.patch("builtins.print") as out:
+            ok, _calls = self._notify()
+        self.assertTrue(ok)
+        self.assertNotIn("No unavailability marked", self.browser.call_args[0][2])
+        self.assertIn("BREADCRUMB adp_publish_tags", out.call_args_list[0][0][0])
+
+    def test_browser_failure_falls_back_to_the_api_dm(self):
+        self.browser.side_effect = RuntimeError("no ClickUp session")
+        with mock.patch("builtins.print") as out:
+            self.assertTrue(self._notify()[0])
+        self.assertEqual(self.post.call_args[0][0], "dm1")
+        self.assertIn("BREADCRUMB adp_publish_browser", out.call_args_list[0][0][0])
+
+    def test_failure_leaves_a_breadcrumb(self):
         with mock.patch.object(w, "_query", side_effect=RuntimeError("bq down")), \
              mock.patch("builtins.print") as out:
-            w.notify_published("palmetto", D(2026, 10, 19))
+            self.assertFalse(w.notify_published("palmetto", [D(2026, 10, 19)]))
         self.assertIn("BREADCRUMB adp_publish_dm", out.call_args[0][0])
 
-    def test_channel_post_starts_at_everyone_in_shift_coverage(self):
-        posted = []
-        with mock.patch.object(w, "_query", return_value=[
-                 {"date": D(2026, 10, 13), "shift_range": "3:00 PM - 8:30 PM", "scraped_at_utc": "2026-10-09T17:58:30+00:00"},
-             ]), \
-             mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
-             mock.patch("core.datastore.fq", lambda t: t), \
-             mock.patch("skills.clickup_chat.post_message", lambda ch, content, team_id: posted.append((ch, team_id, content))):
-            self.assertTrue(w.notify_published("palmetto", D(2026, 10, 19), to="channel"))
-        team_id, channel_id = w.shift_coverage_target("palmetto")
-        ch, team, content = posted[0]
-        self.assertEqual((ch, team), (channel_id, team_id))
-        self.assertTrue(content.startswith("@everyone"))
-        self.assertNotIn("copy and post", content)
-        self.assertNotIn("---", content)
-
-    def test_stale_read_is_not_posted_to_the_team(self):
-        with mock.patch("skills.clickup_chat.post_message") as post, \
-             mock.patch("builtins.print") as out:
-            self.assertFalse(w.notify_published("palmetto", D(2026, 10, 19), fresh=False, to="channel"))
-        post.assert_not_called()
-        self.assertIn("not posted to the team", out.call_args[0][0])
-
-    def _shift_rows(self):
-        return [{"date": D(2026, 10, 13), "shift_range": "3:00 PM - 8:30 PM", "scraped_at_utc": "2026-10-09T17:58:30+00:00"}]
-
-    def test_channel_post_is_typed_in_the_web_app(self):
-        self.browser.side_effect = None
-        with mock.patch.object(w, "_query", return_value=self._shift_rows()), \
-             mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
-             mock.patch("core.datastore.fq", lambda t: t), \
-             mock.patch("skills.clickup_chat.post_message") as post:
-            self.assertTrue(w.notify_published("palmetto", D(2026, 10, 19), to="channel"))
+    def test_channel_post_is_typed_in_shift_coverage_from_everyone(self):
+        ok, _calls = self._notify(to="channel")
+        self.assertTrue(ok)
         team_id, channel_id = w.shift_coverage_target("palmetto")
         store, ch, content, team = self.browser.call_args[0]
         self.assertEqual((store, ch, team), ("palmetto", channel_id, team_id))
         self.assertTrue(content.startswith("@everyone"))
-        post.assert_not_called()
+        self.assertNotIn("copy and post", content)
+        self.assertIn("[@Dana Lee](#user_mention#11)", content)
+        self.post.assert_not_called()
 
-    def test_browser_failure_falls_back_to_the_api_with_a_breadcrumb(self):
-        posted = []
-        with mock.patch.object(w, "_query", return_value=self._shift_rows()), \
-             mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
-             mock.patch("core.datastore.fq", lambda t: t), \
-             mock.patch("skills.clickup_chat.post_message", lambda ch, content, team_id: posted.append(ch)), \
-             mock.patch("builtins.print") as out:
-            self.assertTrue(w.notify_published("palmetto", D(2026, 10, 19), to="channel"))
+    def test_channel_browser_failure_posts_by_the_api(self):
+        self.browser.side_effect = RuntimeError("no ClickUp session")
+        with mock.patch("builtins.print"):
+            self.assertTrue(self._notify(to="channel")[0])
         _team_id, channel_id = w.shift_coverage_target("palmetto")
-        self.assertEqual(posted, [channel_id])
-        self.assertIn("BREADCRUMB adp_publish_browser", out.call_args_list[0][0][0])
+        self.assertEqual(self.post.call_args[0][0], channel_id)
+        self.dm.assert_not_called()
 
-    def test_dm_draft_stays_on_the_api(self):
-        with mock.patch.object(w, "_query", return_value=self._shift_rows()), \
-             mock.patch.object(w, "_today_ct", return_value=D(2026, 10, 9)), \
-             mock.patch("core.datastore.fq", lambda t: t), \
-             mock.patch("skills.clickup_chat.ensure_dm_channel", return_value={"id": "dm1"}), \
-             mock.patch("skills.clickup_chat.post_message") as post:
-            self.assertTrue(w.notify_published("palmetto", D(2026, 10, 19)))
+    def test_stale_read_is_not_posted_to_the_team(self):
+        with mock.patch("builtins.print") as out:
+            self.assertFalse(w.notify_published("palmetto", [D(2026, 10, 19)], fresh=False, to="channel"))
         self.browser.assert_not_called()
-        self.assertEqual(post.call_args[0][0], "dm1")
+        self.post.assert_not_called()
+        self.assertIn("not posted to the team", out.call_args[0][0])
 
 
 class RefreshWindow(unittest.TestCase):
@@ -1056,7 +1076,7 @@ class RunPublish(unittest.TestCase):
     def test_publish_marks_rows_and_sends_the_dm(self):
         rc, notify, published = self._run(mock.MagicMock(return_value=33))
         self.assertEqual((rc, published), (0, True))
-        notify.assert_called_once_with("palmetto", self.W, fresh=True)
+        notify.assert_called_once_with("palmetto", [self.W], fresh=True)
 
     def test_lagging_open_shift_drafts_but_reload_shows_zero_succeeds(self):
         # Oct 26 week: 26 assigned published, open-shift cells still said "Drafts: N", reload showed 0.
@@ -1081,7 +1101,7 @@ class RunPublish(unittest.TestCase):
     def test_already_published_in_adp_but_drafted_in_bq_marks_and_sends_the_dm(self):
         rc, notify, published = self._run(mock.MagicMock(return_value=0), drafted_before=7)
         self.assertEqual((rc, published), (0, True))
-        notify.assert_called_once_with("palmetto", self.W, fresh=True)
+        notify.assert_called_once_with("palmetto", [self.W], fresh=True)
 
     def test_nothing_to_publish_sends_no_dm(self):
         rc, notify, _published = self._run(mock.MagicMock(return_value=0), drafted_before=0)
@@ -1092,40 +1112,49 @@ class RunPublish(unittest.TestCase):
 class RunPublishDm(unittest.TestCase):
     W = datetime.date(2026, 10, 26)
 
-    def _run(self, *, session=fake_session, refreshed=True, sent=True):
+    def _run(self, *, session=fake_session, refreshed=True, sent=True, weeks=None, to="dm"):
         with mock.patch("skills.adp_run_automation.runner.adp_session", session), \
              mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
-             mock.patch.object(wb, "goto_week"), \
-             mock.patch.object(w, "refresh_open_shift_window", return_value=refreshed), \
+             mock.patch.object(wb, "goto_week") as goto, \
+             mock.patch.object(w, "refresh_open_shift_window", return_value=refreshed) as refresh, \
              mock.patch.object(w, "notify_published", return_value=sent) as notify:
-            rc = w.run_publish_dm("palmetto", self.W, headless=True)
-        return rc, notify
+            rc = w.run_publish_dm("palmetto", weeks or [self.W], headless=True, to=to)
+        return rc, notify, goto, refresh
 
     def test_re_reads_adp_then_sends(self):
-        rc, notify = self._run()
+        rc, notify, _goto, _refresh = self._run()
         self.assertEqual(rc, 0)
-        notify.assert_called_once_with("palmetto", self.W, fresh=True, to="dm")
+        notify.assert_called_once_with("palmetto", [self.W], fresh=True, to="dm")
+
+    def test_several_weeks_re_read_through_the_last_once(self):
+        weeks = [datetime.date(2026, 11, 23), datetime.date(2026, 11, 9)]
+        _rc, notify, goto, refresh = self._run(weeks=weeks)
+        self.assertEqual(goto.call_args[0][2], datetime.date(2026, 11, 23))
+        self.assertEqual(refresh.call_args[0][2], datetime.date(2026, 11, 23))
+        notify.assert_called_once_with("palmetto", sorted(weeks), fresh=True, to="dm")
 
     def test_channel_choice_is_passed_through(self):
-        with mock.patch("skills.adp_run_automation.runner.adp_session", fake_session), \
-             mock.patch("skills.adp_run_automation.runner._open_team_schedule"), \
-             mock.patch.object(wb, "goto_week"), \
-             mock.patch.object(w, "refresh_open_shift_window", return_value=True), \
-             mock.patch.object(w, "notify_published", return_value=True) as notify:
-            w.run_publish_dm("palmetto", self.W, headless=True, to="channel")
-        notify.assert_called_once_with("palmetto", self.W, fresh=True, to="channel")
+        _rc, notify, _goto, _refresh = self._run(to="channel")
+        notify.assert_called_once_with("palmetto", [self.W], fresh=True, to="channel")
 
     def test_adp_sign_in_failure_still_sends_flagged_stale(self):
         def broken(**_kw):
             raise RuntimeError("login")
 
-        rc, notify = self._run(session=broken)
+        rc, notify, _goto, _refresh = self._run(session=broken)
         self.assertEqual(rc, 0)
-        notify.assert_called_once_with("palmetto", self.W, fresh=False, to="dm")
+        notify.assert_called_once_with("palmetto", [self.W], fresh=False, to="dm")
 
     def test_dm_failure_fails_the_job(self):
-        rc, _notify = self._run(sent=False)
-        self.assertEqual(rc, 1)
+        self.assertEqual(self._run(sent=False)[0], 1)
+
+    def test_cli_takes_a_week_list_and_refuses_non_mondays(self):
+        with mock.patch.object(w, "run_publish_dm", return_value=0) as run:
+            self.assertEqual(w.main(["--publish-dm", "--weeks", "2026-11-16,2026-11-09", "--to", "channel"]), 0)
+        run.assert_called_once_with("palmetto", [datetime.date(2026, 11, 9), datetime.date(2026, 11, 16)],
+                                    headless=False, to="channel")
+        with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
+            w.main(["--publish-dm", "--weeks", "2026-11-10"])
 
 
 class QueueAssign(unittest.TestCase):

@@ -2871,7 +2871,7 @@ def _run_refresh(run_id: str) -> int:
         return unavailability_reminder.main(argv)
 
     # New-hire training backfill (Issue #450): every Active person's ADP hire date
-    # into adp_hire_dates. Read-only toward ADP; the nightly pay_info pass keeps it fresh.
+    # into adp_hire_dates (force re-read). Read-only; nightly pay_info already fills gaps.
     if _env_skip("BHAGA_ADP_HIRE_DATES"):
         os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
         from skills.adp_run_automation import pay_info_backend  # noqa: PLC0415

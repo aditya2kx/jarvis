@@ -2999,21 +2999,20 @@ def download_adp_bundle(
                 print(f"[adp_bundle] BREADCRUMB directory_roster failed: "
                       f"{type(exc).__name__}: {exc}")
 
+            hire_dates: dict[str, str] = {}
+            known_hires = pib.known_hire_names(store=store)
+            rates: list = []
+            scrape_errors: dict = {}
             if names:
                 print(f"[adp_bundle] pay_info refresh for {len(names)}: {names}")
                 page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
                 page.wait_for_timeout(1500)
-                hire_dates: dict[str, str] = {}
                 rates, scrape_errors = pib.scrape_pay_info_rates(
                     page, names, dashboard_url=dashboard_url,
                     excluded=set(excluded), aliases=aliases, hire_dates=hire_dates,
+                    known_hires=known_hires,
                 )
-                path = pib.write_pay_info_json(
-                    rates, store=store, errors=scrape_errors, attempted=names,
-                    directory=result.get("directory_roster"), hire_dates=hire_dates,
-                )
-                result["pay_info_json"] = path
-                print(f"[adp_bundle] pay_info OK → {path} ({len(rates)} rates)")
+                print(f"[adp_bundle] pay_info OK ({len(rates)} rates)")
                 if scrape_errors:
                     print(
                         f"[adp_bundle] pay_info scrape errors "
@@ -3021,6 +3020,33 @@ def download_adp_bundle(
                     )
             else:
                 print("[adp_bundle] pay_info: no punchers to refresh")
+            # Active people not yet in adp_hire_dates (new hire, no punches yet).
+            roster = result.get("directory_roster") or []
+            have_keys = pib.known_hire_keys(known_hires | set(hire_dates))
+            gap = [
+                r.get("name") for r in roster
+                if (r.get("status") or "").casefold() == "active"
+                and r.get("name")
+                and not (pib.hire_name_keys(r["name"]) & have_keys)
+            ]
+            if gap:
+                print(f"[adp_bundle] hire_dates gap fill n={len(gap)}")
+                page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
+                page.wait_for_timeout(1500)
+                found, hire_errs = pib.scrape_hire_dates(
+                    page, gap, dashboard_url=dashboard_url, aliases=aliases,
+                )
+                hire_dates.update(found)
+                if hire_errs:
+                    print(f"[adp_bundle] hire_dates gap errors: {hire_errs}")
+            if rates or hire_dates or scrape_errors:
+                path = pib.write_pay_info_json(
+                    rates, store=store, errors=scrape_errors, attempted=names,
+                    directory=result.get("directory_roster"), hire_dates=hire_dates,
+                )
+                result["pay_info_json"] = path
+                print(f"[adp_bundle] pay_info wrote {path} "
+                      f"(rates={len(rates)} hire_dates={len(hire_dates)})")
         except Exception as exc:  # noqa: BLE001
             print(f"[adp_bundle] pay_info FAILED: {type(exc).__name__}: {exc}")
             try:

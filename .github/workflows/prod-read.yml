@@ -1,7 +1,8 @@
 name: Prod read
 
 # Read-only prod access for Cursor Cloud Agents (no GCP identity on their VMs).
-# A `/prod-read …` comment from the repo owner/collaborators runs
+# A `/prod-read …` comment from the repo owner/collaborators or cursor[bot] (the Cloud Agent
+# PR-comment tool, same as prod-ops.yml) runs
 # scripts/prod_read.py with the CI workload identity; the result is encrypted to
 # the public key in the comment and uploaded as an artifact. This repo is public:
 # nothing but a one-line summary is ever printed or commented.
@@ -28,7 +29,8 @@ jobs:
     if: >-
       github.event_name == 'issue_comment' &&
       startsWith(github.event.comment.body, '/prod-read') &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+       github.event.comment.user.login == 'cursor[bot]')
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}

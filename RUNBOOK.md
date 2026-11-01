@@ -1825,7 +1825,7 @@ flagged). Picks live in that browser's local storage per week until the week is 
 follow you to another device.
 **New-hire training (Issue #450)** is part of the same versioned rules (Schedule inputs › **New-hire
 training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hire from now on) is drafted only beside an experienced person
-(the operator picks the list; empty = gate off) for at least the set overlap (default 3 h) until they've
+(the operator picks the list in the console, or an agent saves it with `/prod-ops experienced-staff <FirstName> …` — a new rules version, first names resolved against Active ADP Directory staff; empty = gate off) for at least the set overlap (default 3 h) until they've
 done the set number of supervised openers and closers (default 2 + 2). It's one-time, counted over
 every ADP shift (past actuals + upcoming schedule), not per week. It's a hard rule: a slot no trainee
 can take with experienced staff present stays open, and the draft row says why. Pickers tag people

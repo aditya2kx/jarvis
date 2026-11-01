@@ -854,6 +854,15 @@ def _page_text(page) -> str:
 # Profile tabs (``EMPLOYEE_PAYROLL`` is Payroll info). Read-only: a tab click only switches the pane.
 _PROFILE_TABS_JS = """() => [...document.querySelectorAll('[id^="EMPLOYEE_"]')]
   .map(e => e.id).filter((id, i, all) => all.indexOf(id) === i)"""
+# EMPLOYEE_LIST* are the Directory's own nav: clicking one leaves the profile, so every later
+# tab click is a no-op on the list page (live 2026-10-31: 13/13 profiles read no hire date).
+_HIRE_TABS_FIRST = ("EMPLOYEE_EMPLOYMENT", "EMPLOYEE_STATUS", "EMPLOYEE_DETAILS")
+
+
+def hire_tab_order(tabs: list[str]) -> list[str]:
+    """Profile tabs to try for a hire date: likeliest first, never the Directory list nav."""
+    tabs = [t for t in tabs if not t.startswith("EMPLOYEE_LIST")]
+    return [t for t in _HIRE_TABS_FIRST if t in tabs] + [t for t in tabs if t not in _HIRE_TABS_FIRST]
 
 
 def read_profile_hire_date(page) -> tuple[Optional[str], dict]:
@@ -863,7 +872,7 @@ def read_profile_hire_date(page) -> tuple[Optional[str], dict]:
     """
     text = _page_text(page)
     iso = parse_hire_date(text)
-    tabs: list[str] = page.evaluate(_PROFILE_TABS_JS) or []
+    tabs = hire_tab_order(page.evaluate(_PROFILE_TABS_JS) or [])
     tried: list[str] = []
     for tab in tabs:
         if iso:

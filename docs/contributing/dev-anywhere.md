@@ -83,8 +83,9 @@ page error (paths and timings only in the log).
 | Save the proposed environment config | Cursor dashboard → Cloud Agents → Environment | new agents boot with deps installed |
 | Copy `jarvis-dev-gateway-token` into Siri Shortcut / Grok | Cloud Console → Secret Manager | voice / Grok entry |
 
-`/prod-read logs` also needs `roles/logging.viewer` for the CI deploy identity (it has none today):
-`gcloud projects add-iam-policy-binding jarvis-bhaga-prod --member serviceAccount:<WIF_SERVICE_ACCOUNT> --role roles/logging.viewer`.
+`/prod-read logs` runs as the CI identity `bhaga-orchestrator`, granted `roles/logging.viewer` on
+2026-10-31 (Cloud Shell, Issue #450):
+`gcloud projects add-iam-policy-binding jarvis-bhaga-prod --member serviceAccount:bhaga-orchestrator@jarvis-bhaga-prod.iam.gserviceaccount.com --role roles/logging.viewer`.
 
 Optional: repo variable `CLOUD_AGENT_MODEL` picks the Cloud Agent model (account default otherwise).
 

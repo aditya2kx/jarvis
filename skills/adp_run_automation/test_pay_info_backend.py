@@ -694,6 +694,14 @@ class TestHireDates(unittest.TestCase):
         self.assertEqual(iso, "2026-10-02")
         self.assertEqual(where["tabs"], ["EMPLOYEE_PAYROLL", "EMPLOYEE_PERSONAL"])
 
+    def test_hire_tabs_skip_the_directory_list_nav_and_try_employment_first(self):
+        live = ["EMPLOYEE_LIST", "EMPLOYEE_LIST_LEVEL2", "EMPLOYEE_EI9", "EMPLOYEE_DETAILS",
+                "EMPLOYEE_EMPLOYMENT", "EMPLOYEE_STATUS", "EMPLOYEE_PAYROLL"]
+        self.assertEqual(
+            pib.hire_tab_order(live),
+            ["EMPLOYEE_EMPLOYMENT", "EMPLOYEE_STATUS", "EMPLOYEE_DETAILS", "EMPLOYEE_EI9", "EMPLOYEE_PAYROLL"],
+        )
+
     def test_profile_read_breadcrumbs_a_miss(self):
         page = mock.Mock()
         page.evaluate.side_effect = lambda js, *a: [] if js is pib._PROFILE_TABS_JS else None

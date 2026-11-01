@@ -1532,7 +1532,7 @@ def known_hire_names(*, store: str) -> set[str]:
         from core.datastore import fq, get_client  # noqa: PLC0415
 
         rows = get_client().query(
-            f"SELECT employee_name FROM `{fq('adp_hire_dates')}` WHERE store = @store",
+            f"SELECT employee_name FROM {fq('adp_hire_dates')} WHERE store = @store",
             job_config=bigquery.QueryJobConfig(
                 query_parameters=[bigquery.ScalarQueryParameter("store", "STRING", store)]
             ),

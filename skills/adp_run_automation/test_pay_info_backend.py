@@ -796,6 +796,16 @@ class TestHireDates(unittest.TestCase):
         )
         self.assertEqual(out["rows"], 1)
 
+    def test_known_hire_names_query_uses_fq_without_extra_backticks(self):
+        client = mock.Mock()
+        client.query.return_value.result.return_value = [{"employee_name": "Roe, Sam"}]
+        with mock.patch("core.datastore.get_client", return_value=client), \
+                mock.patch("core.datastore.fq", return_value="`jarvis-bhaga-prod.bhaga.adp_hire_dates`"):
+            names = pib.known_hire_names(store="palmetto")
+        sql = client.query.call_args.args[0]
+        self.assertEqual(sql.count("`"), 2)  # only the pair from fq(), not a second wrap
+        self.assertEqual(names, {"Roe, Sam"})
+
     def test_backfill_skips_everyone_already_in_bq(self):
         directory = [{"name": "Roe, Sam", "status": "Active", "hire_date": None}]
         with mock.patch.object(pib, "directory_roster", return_value=directory), \

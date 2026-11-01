@@ -88,8 +88,9 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           # Fetch latest claude[bot] comment for verdict + confidence.
-          CLAUDE_BODY="$(gh api "repos/$REPO/issues/$PR/comments" \
-            --jq '[.[] | select(.user.login == "claude[bot]" or (.user.login | startswith("claude")))] | last | .body' \
+          # gh pr view returns every comment; the REST list stops at the first page (30).
+          CLAUDE_BODY="$(gh pr view "$PR" --repo "$REPO" --json comments \
+            --jq '[.comments[] | select(.author.login | startswith("claude"))] | last | .body' \
             2>/dev/null || echo '')"
 
           VERDICT_HEADER="$(echo "$CLAUDE_BODY" | head -3 | tr '[:lower:]' '[:upper:]')"

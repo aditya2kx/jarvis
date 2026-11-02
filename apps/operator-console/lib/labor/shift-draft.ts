@@ -715,8 +715,8 @@ export function fillOpenShift(args: {
 }
 
 /**
- * After the training pass: a shift left open only because new hires were still training goes to
- * whoever can take it now that `training.left` (as of this day) counts the training drafted on
+ * Before each day's training pass: a shift left open only because new hires were still training goes
+ * to whoever can take it now that `training.left` (as of this day) counts the training drafted on
  * earlier days — a new hire works a kind toward need from the day after its last training shift.
  * An operator's "leave open" pick stands.
  */

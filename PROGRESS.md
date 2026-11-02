@@ -1,6 +1,6 @@
 ## 2026-11-02 — ADP Apply: open Shift details beside unavailability (Issue #485)
 
-**Bug:** Clear weeks deletes in cells that also hold unavailability often opened the person's pane or the unavailability's instead of Shift details — 31 of 95 Nov 9–29 deletes failed that way. **Fix:** centre the shift and wait until it settles; on a wrong pane (closed untouched) DOM-click the shift host at a jittered point (up to 12 tries). `BHAGA_SCHEDULE_RETRY_FAILED=1` re-walks a batch's failed deletes. Live retry on the PR image cut the batch to 2 failures; remaining clears + draft verify still in flight on #484.
+**Bug:** Clear weeks deletes in cells that also hold unavailability often opened the person's pane or the unavailability's instead of Shift details — 31 of 95 Nov 9–29 deletes failed that way. **Fix:** centre the shift and wait until it settles; on a wrong pane (closed untouched) DOM-click the shift host at a jittered point (up to 12 tries). `BHAGA_SCHEDULE_RETRY_FAILED=1` re-walks a batch's failed deletes. Live retries on the PR image: batch fully applied (95 shift-deletes + 1 open-delete); BQ `left_assigned=0` / `left_open=0` for Nov 9–29. Drafts on preview ~202–203.5h/week of 210; Danielle inside evening windows; one Nov 28 open mid left by the training gate (#484).
 
 ## 2026-11-01 — `/prod-ops clear-weeks`: agents run Clear weeks → Apply (#481 follow-up)
 

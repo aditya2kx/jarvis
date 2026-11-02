@@ -71,6 +71,8 @@ const insideSpan = (spans: [number, number][], s: number, e: number) => spans.so
  */
 export type DraftTraining = {
   overlapMin: number;
+  /** New hires who may shadow one experienced shift at once (default 1). */
+  perTrainer?: number;
   /** Supervised openers / closers still to do, per new hire (mutated as the draft gives them some). */
   left: Map<string, TrainingLeft>;
   /** Experienced people already on this day (ADP or an earlier draft pass). */
@@ -753,8 +755,8 @@ export function fillClearedTrainees(args: {
 
 /**
  * New hires' training shifts for one day (Issue #450), on top of need: each new hire with openers /
- * closers left shadows an experienced opener / closer already on that day (ADP or drafted), one new
- * hire per experienced shift, within their own availability, longest shift and weekly cap. Called
+ * closers left shadows an experienced opener / closer already on that day (ADP or drafted), up to
+ * `perTrainer` new hires per experienced shift, within their own availability, longest shift and weekly cap. Called
  * day by day from the earliest, so new hires clear as soon as trainers are on.
  */
 export function draftTrainingDay(args: {
@@ -779,7 +781,8 @@ export function draftTrainingDay(args: {
   const dow = isoWeekdayMon0(args.iso);
   const minLen = args.minShiftMin ?? 240;
   const trainers = [...training.experiencedOn].sort((x, y) => x[0] - y[0]);
-  const used = new Set<number>();
+  const used = new Map<number, number>();
+  const full = (i: number) => (used.get(i) ?? 0) >= (training.perTrainer ?? 1);
   const out: DraftShift[] = [];
   const trainees = args.roster
     .filter((a) => {
@@ -808,7 +811,7 @@ export function draftTrainingDay(args: {
     const room = snapDown((weekCap(a) - (args.weekHours.get(a.employee) ?? 0)) * 60);
     const fit = kinds.flatMap((kind) =>
       trainers.flatMap(([ts, te], i) => {
-        if (used.has(i) || shiftKindOf(ts, te) !== kind) return [];
+        if (full(i) || shiftKindOf(ts, te) !== kind) return [];
         return shiftSpans(a, dow).flatMap(([ws, we]) => {
           const [fs, fe] = freeSegment(Math.max(ts, ws), Math.min(te, we), args.unavailable?.get(a.employee));
           let s = snapUp(fs);
@@ -827,7 +830,7 @@ export function draftTrainingDay(args: {
       }),
     )[0];
     if (!fit) continue;
-    used.add(fit.i);
+    used.set(fit.i, (used.get(fit.i) ?? 0) + 1);
     args.busy.add(a.employee);
     args.weekHours.set(a.employee, (args.weekHours.get(a.employee) ?? 0) + fit.hours);
     args.weekShifts?.set(a.employee, (args.weekShifts.get(a.employee) ?? 0) + 1);

@@ -1499,6 +1499,7 @@ export function LaborCoveragePanel({
         left.size
           ? {
               overlapMin: r.staffing.training.overlapMin,
+              perTrainer: r.staffing.training.traineesPerTrainer,
               left,
               experiencedOn: [
                 ...buildPersonDaysForDate(iso, actuals, scheduledForCoverage, null)

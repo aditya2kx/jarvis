@@ -103,6 +103,14 @@ export function NewHireTrainingRules({
           step={0.25}
           onChange={(v) => onChange({ overlapMin: Math.round((v * 60) / 15) * 15 })}
         />
+        <Field
+          label="New hires per trainer"
+          unit="at once"
+          value={t.traineesPerTrainer}
+          min={1}
+          max={5}
+          onChange={(v) => onChange({ traineesPerTrainer: Math.round(v) })}
+        />
       </div>
 
       <div className="flex flex-col gap-1.5">

@@ -102,6 +102,8 @@ export type TrainingRules = {
   closeShifts: number;
   /** Minutes an experienced person must overlap each training shift. */
   overlapMin: number;
+  /** New hires who may shadow the same experienced shift at once. */
+  traineesPerTrainer: number;
   /** Canonical names of the people new hires train with. */
   experienced: string[];
   /** New hires the operator marked as already trained — no supervision needed. */
@@ -127,6 +129,7 @@ export const DEFAULT_TRAINING: TrainingRules = {
   openShifts: 2,
   closeShifts: 2,
   overlapMin: 180,
+  traineesPerTrainer: 2,
   experienced: [],
   trained: [],
 };
@@ -451,6 +454,10 @@ function parseTraining(raw: unknown): TrainingRules {
   if (!whole(t.overlapMin, 15, 12 * 60) || t.overlapMin! % 15) {
     throw new Error("Training overlap must be 15 min–12 hours in 15-minute steps");
   }
+  const perTrainer = t.traineesPerTrainer ?? DEFAULT_TRAINING.traineesPerTrainer;
+  if (!whole(perTrainer, 1, 5)) {
+    throw new Error("New hires per trainer must be a whole number 1–5");
+  }
   const names = (v: unknown, what: string): string[] => {
     if (!Array.isArray(v) || v.some((n) => typeof n !== "string" || !n.trim())) {
       throw new Error(`${what} must be a list of names`);
@@ -461,6 +468,7 @@ function parseTraining(raw: unknown): TrainingRules {
     openShifts: t.openShifts!,
     closeShifts: t.closeShifts!,
     overlapMin: t.overlapMin!,
+    traineesPerTrainer: perTrainer,
     experienced: names(t.experienced, "Experienced staff"),
     trained: names(t.trained ?? [], "Trained new hires"),
   };

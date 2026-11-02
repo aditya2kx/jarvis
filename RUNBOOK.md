@@ -1836,7 +1836,7 @@ It's one-time, counted over every ADP shift (past actuals + upcoming schedule), 
 with the reason) and their training shifts already in ADP are left out of draft coverage; the
 trainer's shift counts as usual. After the need passes, the draft walks the week from the earliest
 day and gives each new hire with openers / closers left one experienced opener or closer to shadow
-(one new hire per experienced shift, within their availability, longest shift and weekly cap), so
+(up to **New hires per trainer** — default 2 — per experienced shift, within their availability, longest shift and weekly cap), so
 new hires clear as soon as trainers are on. Those rows read **training · on top of need** and the
 hours breakdown shows them as **New-hire training**. From the day after a new hire's last training
 shift of a kind, a shift the need passes left open only for training goes to whoever can take it now,

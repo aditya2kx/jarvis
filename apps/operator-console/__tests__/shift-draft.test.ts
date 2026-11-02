@@ -604,6 +604,16 @@ describe("new-hire training (Issue #450)", () => {
       ]);
     });
 
+    it("lets several new hires shadow one experienced shift up to perTrainer", () => {
+      const opener = (): DraftTraining => training({ Kai: [1, 0], Lee: [1, 0] }, [[390, 840]]);
+      expect(run([kai, lee], opener()).map((s) => s.employee)).toEqual(["Kai"]);
+      const two = run([kai, lee], { ...opener(), perTrainer: 2 });
+      expect(two.map((s) => [s.employee, s.kind, s.startMin])).toEqual([
+        ["Kai", "open", 390],
+        ["Lee", "open", 390],
+      ]);
+    });
+
     it("adds nothing without an experienced opener or closer, or past the weekly cap", () => {
       expect(run([kai], training({ Kai: [1, 1] }, [[600, 1020]]))).toEqual([]);
       expect(run([kai], training({ Kai: [1, 1] }))).toEqual([]);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   adpChangeKey,
   adpDrafts,
+  clearDraftChanges,
   changePeople,
   paidHoursOfChanges,
   personShifts,
@@ -218,6 +219,33 @@ describe("the suggested week as tray changes", () => {
     const keep = (has: boolean) =>
       pruneQueue([shift(pub)], { todayIso: TODAY, unavailabilityKeys: new Set(), openSlots: new Set(), hasShift: () => has });
     expect([keep(true).length, keep(false).length]).toEqual([1, 0]);
+  });
+});
+
+describe("clearDraftChanges (Clear ADP drafts)", () => {
+  const drafts = [
+    { date: TODAY, employee: "Lee, Ana", ...T },
+    { date: "2026-10-30", employee: "Saldana, Daniel", startMin: 840, endMin: 1230 },
+    { date: "2026-10-30", employee: "Lee, Ana", ...T },
+  ];
+
+  it("deletes each ADP draft from tomorrow on, earliest first, and the result validates", () => {
+    const out = clearDraftChanges(drafts, TODAY);
+    expect(out).toEqual([
+      { kind: "shift-delete", date: "2026-10-30", employee: "Lee, Ana", ...T },
+      { kind: "shift-delete", date: "2026-10-30", employee: "Saldana, Daniel", startMin: 840, endMin: 1230 },
+    ]);
+    expect(validateAdpChanges(out.map(shift), TODAY)).toHaveLength(2);
+  });
+
+  it("leaves out deletes already in the tray; a staged publish of the same draft is replaced, not kept", () => {
+    const staged = [
+      shift({ kind: "shift-delete", date: "2026-10-30", employee: "Lee, Ana", ...T }),
+      shift({ kind: "shift-publish", date: "2026-10-30", employee: "Saldana, Daniel", startMin: 840, endMin: 1230 }),
+    ];
+    const out = clearDraftChanges(drafts, TODAY, staged);
+    expect(out.map((c) => "employee" in c && c.employee)).toEqual(["Saldana, Daniel"]);
+    expect(out.reduce((q, c) => stageAdp(q, shift(c)), staged).map((a) => a.c.kind)).toEqual(["shift-delete", "shift-delete"]);
   });
 });
 

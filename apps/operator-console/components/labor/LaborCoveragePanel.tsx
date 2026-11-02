@@ -84,6 +84,7 @@ import type { ApplyBlock, StagedChange } from "@/lib/labor/availability-changes"
 import {
   adpChangeKey,
   adpDrafts,
+  clearDraftChanges,
   pruneQueue,
   readStoredQueue,
   stageAdp,
@@ -1965,6 +1966,15 @@ export function LaborCoveragePanel({
     (changes: ShiftChange[]) => setQueue((q) => changes.reduce((acc, c) => stageAdp(acc, { area: "shift", c }), q)),
     [setQueue],
   );
+  // Each upcoming week's ADP drafts (assigned, unpublished), as the deletes that clear them.
+  const clearWeeks = useMemo(
+    () =>
+      suggestedWeeks.map(({ weekStart }) => {
+        const drafts = adpDrafts(upcoming ?? [], todayIso, shiftCalendarDate(weekStart, "day", 6));
+        return { weekStart, changes: clearDraftChanges(drafts.filter((d) => d.date >= weekStart), todayIso, trayChanges) };
+      }),
+    [suggestedWeeks, upcoming, todayIso, trayChanges],
+  );
 
   const shortLine = useMemo(() => {
     if (!need) return null;
@@ -2052,6 +2062,8 @@ export function LaborCoveragePanel({
               weekStart={weekDraft.weekStart}
               weeks={suggestedWeeks}
               onStage={stageSuggestions}
+              clearWeeks={clearWeeks}
+              onClear={stageSuggestions}
               enabled={adpWriteEnabled}
               meal={{ afterMin: rules.staffing.mealAfterMin, unpaidMin: rules.staffing.unpaidMealMin }}
             />

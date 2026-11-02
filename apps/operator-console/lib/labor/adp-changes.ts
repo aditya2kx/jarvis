@@ -485,6 +485,19 @@ export function suggestedChanges(
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin);
 }
 
+/**
+ * Deletes that clear ADP's draft shifts (assigned, not yet published) from tomorrow on, so the
+ * suggestions start fresh. Published and open shifts are never touched; deletes already staged are left out.
+ */
+export function clearDraftChanges(drafts: readonly WeekShift[], todayIso: string, staged: readonly AdpChange[] = []): ShiftChange[] {
+  const have = new Set(staged.flatMap((a) => (a.area === "shift" && a.c.kind === "shift-delete" ? [shiftKey(a.c)] : [])));
+  return drafts
+    .filter((d) => d.date > todayIso)
+    .map((d): ShiftChange => ({ kind: "shift-delete", date: d.date, employee: d.employee, startMin: d.startMin, endMin: d.endMin }))
+    .filter((c) => !have.has(shiftKey(c)))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin);
+}
+
 /** "HH:MM" ↔ minutes for the drawers' time inputs. */
 export const toMin = (hhmm: string) => (/^\d{2}:\d{2}/.test(hhmm) ? Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5)) : NaN);
 export const toHhmm = (min: number) => `${String(Math.floor(min / 60) % 24).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;

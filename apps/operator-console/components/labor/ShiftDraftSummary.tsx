@@ -276,15 +276,6 @@ export function ShiftDraftSummary({
                           now an open shift in ADP
                         </Badge>
                       ) : null}
-                      {s.replaces ? (
-                        <Badge
-                          variant="outline"
-                          className="h-4 border-destructive/50 px-1.5 text-[11px] font-normal text-destructive"
-                          title="This shift is in ADP for someone now unavailable then. Add the suggested schedule to your changes to move it."
-                        >
-                          instead of {s.replaces}
-                        </Badge>
-                      ) : null}
                     </span>
                     <span className="mt-1 block text-xs tabular-nums text-muted-foreground sm:hidden">
                       {formatClockMin(s.startMin)}–{formatClockMin(s.endMin)} · {s.hours.toFixed(1)}h

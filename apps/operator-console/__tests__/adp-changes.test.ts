@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   adpChangeKey,
   adpDrafts,
-  isClashFix,
   changePeople,
   paidHoursOfChanges,
   personShifts,
@@ -209,24 +208,6 @@ describe("the suggested week as tray changes", () => {
       { kind: "open-add", date: "2026-10-30", count: 2, ...T },
       { kind: "shift-publish", date: "2026-10-31", employee: "Roe, Sam", ...T },
     ]);
-  });
-
-  it("moves a clashing ADP shift: reassign to the suggested person, else delete and reopen", () => {
-    const out = suggestedChanges(
-      [
-        { date: "2026-10-30", employee: "Lee, Ana", ...T, replaces: "Saldana, Daniel" },
-        { date: "2026-10-31", employee: null, ...T, replaces: "Saldana, Daniel" },
-      ],
-      [],
-      TODAY,
-    );
-    expect(out).toEqual([
-      { kind: "shift-reassign", date: "2026-10-30", employee: "Saldana, Daniel", toEmployee: "Lee, Ana", ...T },
-      { kind: "shift-delete", date: "2026-10-31", employee: "Saldana, Daniel", ...T },
-      { kind: "open-add", date: "2026-10-31", count: 1, ...T },
-    ]);
-    expect(out.map(isClashFix)).toEqual([true, true, false]);
-    expect(validateAdpChanges(out.map(shift), TODAY)).toHaveLength(3);
   });
 
   it("a publish is its own tray line, checked like any change to an existing shift", () => {

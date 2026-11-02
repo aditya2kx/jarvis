@@ -12,7 +12,7 @@
 import { overlapMinutes, shiftKindOf, type TrainingLeft } from "@/lib/labor/new-hire-training";
 import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
 import type { ShiftTimes } from "@/lib/labor/schedule-inputs";
-import { freeSegment, hitsBlock, type Block } from "@/lib/labor/unavailability";
+import { freeSegment, type Block } from "@/lib/labor/unavailability";
 
 export type ShiftKind = "open" | "mid" | "close";
 export type ShiftTemplate = { kind: ShiftKind; startMin: number; endMin: number };
@@ -154,11 +154,6 @@ export type DraftShift = {
   adpOpen?: boolean;
   /** Saved as an open shift that this person has since taken in ADP. */
   takenBy?: string;
-  /**
-   * The ADP shift this takes over: its person is now unavailable then. Already counted as
-   * coverage and hours; `employee` takes it (null = nobody fits, it goes back as an open shift).
-   */
-  replaces?: string;
   /** Stable id of the draft step behind this shift — the key for an operator pick. */
   slot?: string;
   /** Everyone who could take this shift, best fit first; `employee: null` = leave it open. */
@@ -602,11 +597,6 @@ export function openShiftSlot(iso: string, startMin: number, endMin: number, nth
 
 export const isOpenShiftSlot = (slot: string) => slot.includes("|adp|");
 
-/** Stable id of one assigned ADP shift that clashes with its person's unavailability. */
-export function clashShiftSlot(iso: string, employee: string, startMin: number, endMin: number): string {
-  return `${iso}|clash|${employee}|${startMin}|${endMin}`;
-}
-
 export function fillOpenShift(args: {
   iso: string;
   startMin: number;
@@ -626,8 +616,6 @@ export function fillOpenShift(args: {
   pins?: DraftPins;
   /** Earlier open shifts with the same times that day. */
   nth?: number;
-  /** Pick key when this isn't an ADP open shift (`clashShiftSlot`). */
-  slot?: string;
   training?: DraftTraining;
 }): DraftShift | null {
   const { startMin: s, endMin: e } = args;
@@ -635,7 +623,7 @@ export function fillOpenShift(args: {
   const kind = shiftKindOf(s, e);
   const hours = paidHours(s, e, args.meal);
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
-  const slot = args.slot ?? openShiftSlot(args.iso, s, e, args.nth);
+  const slot = openShiftSlot(args.iso, s, e, args.nth);
   const fits = args.roster
     .filter((a) => {
       const w = a.windows[dow];
@@ -694,41 +682,6 @@ export function fillOpenShift(args: {
     ...(pinned ? { picked: true } : {}),
     ...(blocked.length ? { blocked } : {}),
   };
-}
-
-export type AssignedShift = { employee: string; startMin: number; endMin: number; hours: number };
-
-/**
- * Assigned ADP shifts on `iso` that overlap their own person's unavailability, each with who
- * should take it instead (ranked like an ADP open shift), or `employee: null` when nobody fits
- * and it goes back to ADP as an open shift. The shift's hours and count move off its person first.
- */
-export function replaceClashes(
-  args: Omit<Parameters<typeof fillOpenShift>[0], "startMin" | "endMin" | "nth" | "slot"> & {
-    shifts: readonly AssignedShift[];
-  },
-): DraftShift[] {
-  const out: DraftShift[] = [];
-  for (const x of args.shifts) {
-    if (!hitsBlock(x.startMin, x.endMin, args.unavailable?.get(x.employee) ?? [])) continue;
-    args.weekHours.set(x.employee, (args.weekHours.get(x.employee) ?? 0) - x.hours);
-    args.weekShifts?.set(x.employee, (args.weekShifts.get(x.employee) ?? 1) - 1);
-    args.periodShifts?.set(x.employee, (args.periodShifts.get(x.employee) ?? 1) - 1);
-    const slot = clashShiftSlot(args.iso, x.employee, x.startMin, x.endMin);
-    const fill = fillOpenShift({ ...args, startMin: x.startMin, endMin: x.endMin, slot });
-    const shift: DraftShift = fill ? { ...fill, fillsOpen: undefined } : {
-      date: args.iso,
-      kind: shiftKindOf(x.startMin, x.endMin),
-      startMin: x.startMin,
-      endMin: x.endMin,
-      hours: paidHours(x.startMin, x.endMin, args.meal),
-      employee: null,
-      trimmed: false,
-      slot,
-    };
-    out.push({ ...shift, replaces: x.employee });
-  }
-  return out;
 }
 
 const STORE_HOURS: [number, number] = [hm(6), hm(21)];

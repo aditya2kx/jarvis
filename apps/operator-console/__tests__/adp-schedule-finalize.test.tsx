@@ -93,23 +93,6 @@ describe("AdpScheduleFinalize: the suggested week goes through the Changes to AD
     expect(await screen.findByText(/To add: 3 new shifts \(22\.5h\)/)).toBeTruthy();
     expect(within(screen.getByTestId(`week-${WEEK}`)).getByText("3 shifts · 22.5h")).toBeTruthy();
   });
-
-  it("a shift clashing with unavailability is a reassign line, not added hours", async () => {
-    const move: ShiftChange = { kind: "shift-reassign", date: "2026-10-29", employee: "Saldana, Daniel", toEmployee: "Doe, Alex", ...T };
-    const reopen: ShiftChange = { kind: "shift-delete", date: "2026-10-30", employee: "Saldana, Daniel", ...T };
-    const onStage = setup([ADD, move, reopen]);
-    expect(screen.getByTestId("adp-finalize-status").textContent).toBe(
-      "2 shifts in ADP clash with unavailability — suggested who takes them. 1 suggested shift (6.0h) isn't in ADP yet. Add them to your changes, then Apply to ADP.",
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Review & add to changes" }));
-    expect(await screen.findByText(/To add: 1 new shift \(6\.0h\), 2 clashes to fix\./)).toBeTruthy();
-    expect(within(screen.getByTestId(`week-${WEEK}`)).getByText("1 shift · 6.0h · 2 clashes to fix")).toBeTruthy();
-    expect(screen.getByText("→ Doe, Alex")).toBeTruthy();
-    expect(screen.getByText("Clash")).toBeTruthy();
-    expect(screen.getByText("Clash · reopen")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Add 3 lines to changes" }));
-    expect(onStage).toHaveBeenCalledWith([ADD, move, reopen]);
-  });
 });
 
 describe("AdpScheduleFinalize Send ClickUp message", () => {

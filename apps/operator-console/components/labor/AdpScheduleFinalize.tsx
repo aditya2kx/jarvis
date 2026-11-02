@@ -15,7 +15,13 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
-import { timeText, type ShiftChange } from "@/lib/labor/adp-changes";
+import {
+  paidHoursOfChanges,
+  shiftsInChange,
+  timeText,
+  type ShiftChange,
+} from "@/lib/labor/adp-changes";
+import type { MealRule } from "@/lib/labor/shift-draft";
 
 const POLL_MS = 5000;
 const GRACE_MS = 90 * 1000;
@@ -41,16 +47,13 @@ export function weekRangeLabel(weekStart: string): string {
     : `${month(start)} ${start.getDate()} – ${month(end)} ${end.getDate()}`;
 }
 
-const shiftsIn = (c: ShiftChange) => (c.kind === "open-add" ? c.count : 1);
-const hoursOf = (changes: ShiftChange[]) =>
-  changes.reduce((a, c) => a + (shiftsIn(c) * (c.endMin - c.startMin)) / 60, 0);
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 const listLabel = (weeks: string[]) =>
   weeks.length > 1
     ? `${weeks.slice(0, -1).map(weekRangeLabel).join(", ")} and ${weekRangeLabel(weeks.at(-1)!)}`
     : weeks.map(weekRangeLabel).join("");
 
-function ChangeList({ changes }: { changes: ShiftChange[] }) {
+function ChangeList({ changes, meal }: { changes: ShiftChange[]; meal?: MealRule }) {
   const byDay = new Map<string, ShiftChange[]>();
   for (const c of changes) byDay.set(c.date, [...(byDay.get(c.date) ?? []), c]);
   return (
@@ -60,7 +63,8 @@ function ChangeList({ changes }: { changes: ShiftChange[] }) {
           <p className="flex justify-between text-xs font-medium text-muted-foreground">
             <span>{dayLabel(date)}</span>
             <span className="tabular-nums">
-              {plural(list.reduce((n, c) => n + shiftsIn(c), 0), "shift")} · {hoursOf(list).toFixed(1)}h
+              {plural(list.reduce((n, c) => n + shiftsInChange(c), 0), "shift")} ·{" "}
+              {paidHoursOfChanges(list, meal).toFixed(1)}h
             </span>
           </p>
           <ul className="flex flex-col divide-y rounded-md border">
@@ -146,6 +150,7 @@ export function AdpScheduleFinalize({
   weeks,
   onStage,
   enabled,
+  meal,
 }: {
   /** The week of the selected day; the card's status line is about it. */
   weekStart: string;
@@ -154,6 +159,8 @@ export function AdpScheduleFinalize({
   onStage: (changes: ShiftChange[]) => void;
   /** CONSOLE_ADP_SCHEDULE_WRITE: gates the ClickUp message (the tray gates Apply itself). */
   enabled: boolean;
+  /** Staffing meal rule — hour totals match the chart / weekly goal (paid, not wall-clock). */
+  meal?: MealRule;
 }) {
   const [running, setRunning] = useState<ScheduleWriteRun | null>(null);
   // Right after a click the Cloud Run execution may not be listed yet; keep polling meanwhile.
@@ -233,12 +240,12 @@ export function AdpScheduleFinalize({
   const range = weekRangeLabel(weekStart);
   const adds = changes.filter((c) => c.kind !== "shift-publish");
   const publishes = changes.filter((c) => c.kind === "shift-publish");
-  const addCount = adds.reduce((n, c) => n + shiftsIn(c), 0);
+  const addCount = adds.reduce((n, c) => n + shiftsInChange(c), 0);
   const openCount = adds.reduce((n, c) => n + (c.kind === "open-add" ? c.count : 0), 0);
   const lineCount = changes.length;
 
   const sheetAdds = addChanges.filter((c) => c.kind !== "shift-publish");
-  const sheetAddCount = sheetAdds.reduce((n, c) => n + shiftsIn(c), 0);
+  const sheetAddCount = sheetAdds.reduce((n, c) => n + shiftsInChange(c), 0);
   const sheetPublishes = addChanges.length - sheetAdds.length;
 
   return (
@@ -253,7 +260,7 @@ export function AdpScheduleFinalize({
             lineCount
               ? [
                   addCount
-                    ? `${plural(addCount, "suggested shift")} (${hoursOf(adds).toFixed(1)}h${openCount ? `, ${openCount} open` : ""}) ${addCount === 1 ? "isn't" : "aren't"} in ADP yet.`
+                    ? `${plural(addCount, "suggested shift")} (${paidHoursOfChanges(adds, meal).toFixed(1)}h${openCount ? `, ${openCount} open` : ""}) ${addCount === 1 ? "isn't" : "aren't"} in ADP yet.`
                     : "",
                   publishes.length === 1
                     ? "1 shift in ADP is still a draft staff can't see."
@@ -305,7 +312,9 @@ export function AdpScheduleFinalize({
                 <SheetDescription>
                   {addChanges.length
                     ? `To add: ${[
-                        sheetAddCount ? `${plural(sheetAddCount, "new shift")} (${hoursOf(sheetAdds).toFixed(1)}h)` : "",
+                        sheetAddCount
+                          ? `${plural(sheetAddCount, "new shift")} (${paidHoursOfChanges(sheetAdds, meal).toFixed(1)}h)`
+                          : "",
                         sheetPublishes ? `${plural(sheetPublishes, "ADP draft")} to publish` : "",
                       ]
                         .filter(Boolean)
@@ -321,13 +330,13 @@ export function AdpScheduleFinalize({
                 onToggle={toggle}
                 detail={(w) => {
                   const list = byWeek.get(w) ?? [];
-                  const n = list.reduce((a, c) => a + shiftsIn(c), 0);
+                  const n = list.reduce((a, c) => a + shiftsInChange(c), 0);
                   return list.length
-                    ? { text: `${plural(n, "shift")} · ${hoursOf(list).toFixed(1)}h` }
+                    ? { text: `${plural(n, "shift")} · ${paidHoursOfChanges(list, meal).toFixed(1)}h` }
                     : { text: "In ADP or your changes", disabled: true };
                 }}
               />
-              <ChangeList changes={addChanges} />
+              <ChangeList changes={addChanges} meal={meal} />
               <SheetFooter>
                 <Button
                   disabled={addChanges.length === 0}

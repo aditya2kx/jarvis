@@ -1978,8 +1978,10 @@ whose latest row isn't an assigned `drafted` one), verifies the pane shows that 
 ADP's draft count drops by exactly one, stops on anything else, marks rows `deleted`. Always run it
 with `BHAGA_SCHEDULE_DRY_RUN=1` first (opens the shift, cancels the confirm). Never "Delete all".
 **Paid hours:** ADP removes a 30-min unpaid meal from shifts over 6 h; the console's draft, saved
-shifts and scheduled lanes use paid hours (Staffing basics "Unpaid meal … min on shifts longer than …
-h") and the scraper stores exact per-day paid hours, so the week total matches ADP.
+shifts, scheduled lanes, labor-hours chart "Suggested (draft)", and the Suggested schedule card /
+week-picker hour totals all use paid hours (Staffing basics "Unpaid meal … min on shifts longer than …
+h") so they line up with the weekly goal — and the scraper stores exact per-day paid hours, so the
+week total matches ADP.
 **Unavailable on dates** (staff rule, from–to): for people who can't enter unavailability in ADP; the
 draft treats it as approved all-day unavailability and the Unavailability card lists it as
 "Scheduling rule". A saved week stays locked — fix an affected saved shift with delete + a new draft.

@@ -85,7 +85,8 @@ import type { ApplyBlock, StagedChange } from "@/lib/labor/availability-changes"
 import {
   adpChangeKey,
   adpDrafts,
-  clearDraftChanges,
+  clearChanges,
+  adpShifts,
   pruneQueue,
   readStoredQueue,
   stageAdp,
@@ -1986,14 +1987,26 @@ export function LaborCoveragePanel({
     (changes: ShiftChange[]) => setQueue((q) => changes.reduce((acc, c) => stageAdp(acc, { area: "shift", c }), q)),
     [setQueue],
   );
-  // Each upcoming week's ADP drafts (assigned, unpublished), as the deletes that clear them.
+  const stageClear = useCallback(
+    (changes: ShiftChange[]) => {
+      stageSuggestions(changes);
+      toggleOpen(changes.flatMap((c) => (c.kind === "open-delete" ? [c.slot] : [])), false);
+    },
+    [stageSuggestions, toggleOpen],
+  );
+  // Each upcoming week's ADP shifts (published, drafts and open), as the deletes that clear them.
   const clearWeeks = useMemo(
     () =>
       suggestedWeeks.map(({ weekStart }) => {
-        const drafts = adpDrafts(upcoming ?? [], todayIso, shiftCalendarDate(weekStart, "day", 6));
-        return { weekStart, changes: clearDraftChanges(drafts.filter((d) => d.date >= weekStart), todayIso, trayChanges) };
+        const weekEnd = shiftCalendarDate(weekStart, "day", 6);
+        const assigned = adpShifts(upcoming ?? [], todayIso, weekEnd).filter((d) => d.date >= weekStart);
+        const open = strip
+          .filter((iso) => iso >= weekStart && iso <= weekEnd)
+          .flatMap((iso) => openSlotsOn(iso, lanesFor(iso)).map(({ seg, slot }) => ({ slot, date: iso, startMin: seg.startMin, endMin: seg.endMin })));
+        const published = clearChanges(assigned.filter((d) => !d.draft), [], todayIso, trayChanges).length;
+        return { weekStart, changes: clearChanges(assigned, open, todayIso, trayChanges), published };
       }),
-    [suggestedWeeks, upcoming, todayIso, trayChanges],
+    [suggestedWeeks, upcoming, strip, lanesFor, todayIso, trayChanges],
   );
 
   const shortLine = useMemo(() => {
@@ -2083,7 +2096,7 @@ export function LaborCoveragePanel({
               weeks={suggestedWeeks}
               onStage={stageSuggestions}
               clearWeeks={clearWeeks}
-              onClear={stageSuggestions}
+              onClear={stageClear}
               enabled={adpWriteEnabled}
               meal={{ afterMin: rules.staffing.mealAfterMin, unpaidMin: rules.staffing.unpaidMealMin }}
             />

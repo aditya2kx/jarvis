@@ -77,9 +77,9 @@ function ChangeList({ changes, meal }: { changes: ShiftChange[]; meal?: MealRule
               >
                 <span className="tabular-nums">{timeText(c)}</span>
                 <span className="flex min-w-0 items-center gap-2">
-                  {c.kind === "open-add" ? (
-                    <Badge variant="outline" className="font-normal">
-                      {c.count > 1 ? `${c.count} open shifts` : "Open shift"}
+                  {c.kind === "open-add" || c.kind === "open-delete" ? (
+                    <Badge variant="outline" className={cn("font-normal", c.kind === "open-delete" && "line-through")}>
+                      {c.kind === "open-add" && c.count > 1 ? `${c.count} open shifts` : "Open shift"}
                     </Badge>
                   ) : (
                     <span className={cn("truncate font-medium", c.kind === "shift-delete" && "text-muted-foreground line-through")}>
@@ -139,6 +139,9 @@ function WeekPicker({
   );
 }
 
+/** `published`: how many of `changes` delete shifts staff can already see. */
+export type ClearWeek = SuggestedWeek & { published: number };
+
 export type SuggestedWeek = {
   weekStart: string;
   /** Suggested shifts ADP doesn't have yet, and ADP drafts to publish — minus what's already in the tray. */
@@ -163,8 +166,8 @@ export function AdpScheduleFinalize({
   /** Every upcoming week with a suggested schedule, ascending (includes `weekStart`). */
   weeks: SuggestedWeek[];
   onStage: (changes: ShiftChange[]) => void;
-  /** Per upcoming week, the deletes that would clear ADP's draft (unpublished) shifts from tomorrow on. */
-  clearWeeks?: SuggestedWeek[];
+  /** Per upcoming week, the deletes that would clear its ADP shifts (published, drafts, open) from tomorrow on. */
+  clearWeeks?: ClearWeek[];
   onClear?: (changes: ShiftChange[]) => void;
   /** CONSOLE_ADP_SCHEDULE_WRITE: gates the ClickUp message (the tray gates Apply itself). */
   enabled: boolean;
@@ -223,6 +226,8 @@ export function AdpScheduleFinalize({
   const clearable = clearWeeks.filter((w) => w.changes.length).map((w) => w.weekStart);
   const clearChanges = clearWeeks.filter((w) => clearPicked.has(w.weekStart)).flatMap((w) => w.changes);
   const clearCount = clearChanges.reduce((n, c) => n + shiftsInChange(c), 0);
+  const clearPublished = clearWeeks.filter((w) => clearPicked.has(w.weekStart)).reduce((n, w) => n + w.published, 0);
+  const publishedBy = new Map(clearWeeks.map((w) => [w.weekStart, w.published]));
   const tooMany = clearChanges.length > MAX_CHANGES;
   const toggleClear = (week: string, on: boolean) =>
     setClearPicked((prev) => {
@@ -331,13 +336,13 @@ export function AdpScheduleFinalize({
             variant="ghost"
             className="text-destructive hover:bg-destructive/10 hover:text-destructive"
             disabled={clearable.length === 0}
-            title="Remove the draft shifts ADP has in the weeks you pick (published shifts stay), so the suggestions start fresh"
+            title="Remove every shift ADP has in the weeks you pick, so the suggestions start fresh"
             onClick={() => {
               setClearPicked(new Set());
               setSheet("clear");
             }}
           >
-            Clear ADP drafts
+            Clear weeks
           </Button>
         ) : null}
       </div>
@@ -394,12 +399,11 @@ export function AdpScheduleFinalize({
           ) : sheet === "clear" ? (
             <>
               <SheetHeader>
-                <SheetTitle>Clear ADP drafts</SheetTitle>
+                <SheetTitle>Clear weeks in ADP</SheetTitle>
                 <SheetDescription>
-                  Removes the draft shifts (not yet published, so staff can&apos;t see them) ADP has in the weeks
-                  you pick, from tomorrow on. Published and open shifts stay. Nothing changes in ADP until you
-                  press Apply to ADP; after that the suggestions for those weeks start fresh, and you add them
-                  with Review &amp; add.
+                  Removes every shift ADP has in the weeks you pick, from tomorrow on: published, drafts and
+                  open shifts. Nothing changes in ADP until you press Apply to ADP; after that the suggestions
+                  for those weeks start fresh, and you add them with Review &amp; add.
                 </SheetDescription>
               </SheetHeader>
               <WeekPicker
@@ -409,14 +413,21 @@ export function AdpScheduleFinalize({
                 detail={(w) => {
                   const list = clearBy.get(w) ?? [];
                   const n = list.reduce((a, c) => a + shiftsInChange(c), 0);
+                  const published = publishedBy.get(w) ?? 0;
                   return list.length
-                    ? { text: `${plural(n, "draft")} · ${paidHoursOfChanges(list, meal).toFixed(1)}h` }
-                    : { text: "No drafts in ADP", disabled: true };
+                    ? { text: `${plural(n, "shift")} · ${paidHoursOfChanges(list, meal).toFixed(1)}h${published ? ` · ${published} published` : ""}` }
+                    : { text: "Nothing in ADP to clear", disabled: true };
                 }}
               />
               {tooMany ? (
                 <p className="px-4 text-xs text-destructive">
                   One Apply takes at most {MAX_CHANGES} changes — pick fewer weeks, Apply, then clear the rest.
+                </p>
+              ) : null}
+              {clearPublished ? (
+                <p className="px-4 text-xs text-destructive" data-testid="clear-published">
+                  {plural(clearPublished, "published shift")} — staff see {clearPublished === 1 ? "it" : "them"} leave
+                  their schedule when you Apply.
                 </p>
               ) : null}
               {clearChanges.length ? (

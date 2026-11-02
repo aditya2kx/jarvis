@@ -9,7 +9,7 @@
  * No one fits → unassigned.
  */
 
-import { overlapMinutes, shiftKindOf, type TrainingLeft } from "@/lib/labor/new-hire-training";
+import { isTrainingShift, overlapMinutes, shiftKindOf, type TrainingLeft } from "@/lib/labor/new-hire-training";
 import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
 import type { ShiftTimes, ShiftWindowRule } from "@/lib/labor/schedule-inputs";
 import { freeSegment, type Block } from "@/lib/labor/unavailability";
@@ -34,8 +34,6 @@ export type Availability = {
   maxShiftsPerPeriod?: number;
   /** Operator rule: final working day (YYYY-MM-DD). */
   lastDay?: string;
-  /** New hires train beside this person (Issue #450). */
-  experienced?: boolean;
   /** Operator rule: on these weekdays each shift fits entirely inside one window. */
   shiftWindows?: ShiftWindowRule[];
 };
@@ -57,9 +55,10 @@ export function shiftSpans(a: Availability, dow: number): [number, number][] {
 const insideSpan = (spans: [number, number][], s: number, e: number) => spans.some(([ws, we]) => ws <= s && e <= we);
 
 /**
- * New-hire gate for one day (Issue #450): someone in `left` works an opener / closer alone once
- * they've done that kind's supervised shifts; anything else needs experienced staff overlapping
- * it by `overlapMin`.
+ * New-hire training for one day (Issue #450): someone in `left` works an opener / closer like
+ * anyone else once they've done that kind's supervised shifts. Until then a shift of that kind —
+ * and any mid — is a training shift: drafted on top of need beside experienced staff overlapping
+ * it by `overlapMin`, never toward need.
  */
 export type DraftTraining = {
   overlapMin: number;
@@ -69,35 +68,18 @@ export type DraftTraining = {
   experiencedOn: [number, number][];
 };
 
-const hoursLabel = (min: number) => `${Number((min / 60).toFixed(2))}h`;
+export const TRAINING_ON_TOP = "New hire — trains on top of need, beside experienced staff";
 
-/** Why a new hire can't take [s, e) of `kind`, or null when they can. */
-export function trainingBlock(
-  training: DraftTraining | undefined,
-  employee: string,
-  kind: ShiftKind,
-  s: number,
-  e: number,
-  alsoOn: readonly [number, number][] = [],
-): string | null {
-  const left = training?.left.get(employee);
-  if (!training || !left) return null;
-  if (left.open <= 0 && left.close <= 0) return null;
-  if (kind !== "mid" && left[kind] <= 0) return null;
-  if (overlapMinutes(s, e, [...training.experiencedOn, ...alsoOn]) < training.overlapMin) {
-    return `New hire — no experienced person on for ${hoursLabel(training.overlapMin)} of it`;
-  }
-  return null;
+/** Why a new hire can't take a `kind` shift toward need, or null when they can. */
+export function trainingBlock(training: DraftTraining | undefined, employee: string, kind: ShiftKind): string | null {
+  return isTrainingShift(training?.left.get(employee), kind) ? TRAINING_ON_TOP : null;
 }
 
 /** A supervised shift counts toward the new hire's openers / closers. */
-function countTraining(training: DraftTraining | undefined, employee: string, kind: ShiftKind) {
-  const left = training?.left.get(employee);
-  if (left && kind !== "mid" && left[kind] > 0) training!.left.set(employee, { ...left, [kind]: left[kind] - 1 });
+function countTraining(training: DraftTraining, employee: string, kind: ShiftKind) {
+  const left = training.left.get(employee);
+  if (left && kind !== "mid" && left[kind] > 0) training.left.set(employee, { ...left, [kind]: left[kind] - 1 });
 }
-
-const copyTraining = (t: DraftTraining | undefined): DraftTraining | undefined =>
-  t && { ...t, left: new Map(t.left) };
 
 const worksOn = (a: Availability, iso: string) => a.lastDay == null || iso <= a.lastDay;
 
@@ -181,6 +163,8 @@ export type DraftShift = {
   picked?: boolean;
   /** New hires who could otherwise take it, and why they can't yet (Issue #450). */
   blocked?: { employee: string; reason: string }[];
+  /** A new hire's training shift beside experienced staff — on top of need, not counted toward it. */
+  training?: boolean;
 };
 
 /** One person who could take a drafted shift, on their own times (trimmed / paced). */
@@ -293,8 +277,6 @@ function draftCore(
     force?: DraftChoice;
     seed?: DraftShift[];
     rolloutLong?: boolean;
-    /** Rollout: give each step to anyone else before experienced staff, keeping them for the shifts new hires can't take alone. */
-    rolloutReserve?: boolean;
   },
 ): DraftShift[] | null {
   const dow = isoWeekdayMon0(args.iso);
@@ -305,9 +287,6 @@ function draftCore(
   const cover = [...args.onFloor];
   const busy = new Set(args.busy);
   const out: DraftShift[] = (opts.seed ?? []).map((o) => ({ ...o }));
-  const experienced = new Set(args.roster.filter((a) => a.experienced).map((a) => a.employee));
-  const experiencedDrafted = (): [number, number][] =>
-    out.filter((o) => o.employee != null && experienced.has(o.employee)).map((o) => [o.startMin, o.endMin]);
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
   const priority = byPriority(weekOf, (a) => args.weekShifts?.get(a.employee) ?? 0, args.prefer);
   const paid = (s: number, e: number) => paidHours(s, e, args.meal);
@@ -388,7 +367,7 @@ function draftCore(
   };
 
   const maxShifts = args.maxShifts ?? 8;
-  const bestChoice = (n: number, slot: string): DraftChoice => {
+  const bestChoice = (n: number): DraftChoice => {
     const free = args.roster
       .filter((a) => !busy.has(a.employee) && shiftSpans(a, dow).length && worksOn(a, args.iso))
       .map((a) => a.employee);
@@ -400,14 +379,7 @@ function draftCore(
     ];
     let best: DraftChoice = {};
     let bestScore: number[] | null = null;
-    const training = free.some((p) => {
-      const l = args.training?.left.get(p);
-      return !!l && (l.open > 0 || l.close > 0);
-    });
-    const rollouts = [false, true].flatMap((rolloutLong) =>
-      (training ? [false, true] : [false]).map((rolloutReserve) => ({ rolloutLong, rolloutReserve })),
-    );
-    for (const force of choices) for (const rollout of rollouts) {
+    for (const force of choices) for (const rolloutLong of [false, true]) {
       const plan = draftCore(
         {
           ...args,
@@ -416,10 +388,9 @@ function draftCore(
           weekHours: new Map(args.weekHours),
           weekShifts: args.weekShifts && new Map(args.weekShifts),
           periodShifts: args.periodShifts && new Map(args.periodShifts),
-          training: copyTraining(args.training),
           maxShifts: maxShifts - n,
         },
-        { lookahead: false, force, seed: out, ...rollout },
+        { lookahead: false, force, seed: out, rolloutLong },
       );
       if (!plan) continue;
       const shortH =
@@ -433,9 +404,7 @@ function draftCore(
       const score = [shortH + openH, totalH];
       const k = bestScore ? score.findIndex((v, i) => Math.abs(v - bestScore![i]!) > 1e-9) : -1;
       if (!bestScore || (k >= 0 && score[k]! < bestScore[k]!)) {
-        // The rollout may rank this step differently (reserve) — keep the person it actually chose.
-        const taken = plan.find((p) => p.slot === slot);
-        best = force.person === undefined && taken ? { ...force, person: taken.employee } : force;
+        best = force;
         bestScore = score;
       }
     }
@@ -528,20 +497,16 @@ function draftCore(
             .sort((x, y) => Number(covers(y)) - Number(covers(x)) || y.gain - x.gain || y.len - x.len)[0];
           return best ? [best] : [];
         });
-      const drafted = experiencedDrafted();
-      const blocked = fits.flatMap(({ a, s, e }) => {
-        const reason = trainingBlock(args.training, a.employee, block.kind, s, e, drafted);
+      const blocked = fits.flatMap(({ a }) => {
+        const reason = trainingBlock(args.training, a.employee, block.kind);
         return reason ? [{ employee: a.employee, reason }] : [];
       });
       const eligible = fits.filter((x) => !blocked.some((b) => b.employee === x.a.employee));
-      const reserve = (x: (typeof eligible)[number]) => (opts.rolloutReserve && x.a.experienced ? 1 : 0);
-      const starts = eligible
-        .filter(covers)
-        .sort((x, y) => reserve(x) - reserve(y) || priority(x.a, y.a));
+      const starts = eligible.filter(covers).sort((x, y) => priority(x.a, y.a));
       // Nobody can start the gap: whoever covers the most of it takes their part.
       const rest = eligible
         .filter((x) => !starts.includes(x))
-        .sort((x, y) => reserve(x) - reserve(y) || y.gain - x.gain || priority(x.a, y.a));
+        .sort((x, y) => y.gain - x.gain || priority(x.a, y.a));
       return { kind: block.kind, blockStart, blockEnd, ranked: [...starts, ...rest], blocked };
     };
 
@@ -551,7 +516,7 @@ function draftCore(
     const pinned = c != null;
     let choice: DraftChoice = { person: pin };
     if (!c) {
-      choice = (n === 0 ? opts.force : undefined) ?? (opts.lookahead ? bestChoice(n, slot) : { long: opts.rolloutLong });
+      choice = (n === 0 ? opts.force : undefined) ?? (opts.lookahead ? bestChoice(n) : { long: opts.rolloutLong });
       c = candidates(choice);
     }
     if (!c) break;
@@ -595,7 +560,6 @@ function draftCore(
       ...(pinned ? { picked: true } : {}),
     });
     if (pick) {
-      countTraining(args.training, pick.a.employee, c.kind);
       busy.add(pick.a.employee);
       args.weekHours.set(pick.a.employee, (args.weekHours.get(pick.a.employee) ?? 0) + paid(s, e));
       args.weekShifts?.set(pick.a.employee, (args.weekShifts.get(pick.a.employee) ?? 0) + 1);
@@ -662,7 +626,7 @@ export function fillOpenShift(args: {
     })
     .sort(byPriority(weekOf, (a) => args.weekShifts?.get(a.employee) ?? 0));
   const blocked = fits.flatMap((a) => {
-    const reason = trainingBlock(args.training, a.employee, kind, s, e);
+    const reason = trainingBlock(args.training, a.employee, kind);
     return reason ? [{ employee: a.employee, reason }] : [];
   });
   const ranked = fits.filter((a) => !blocked.some((b) => b.employee === a.employee));
@@ -689,7 +653,6 @@ export function fillOpenShift(args: {
   args.weekHours.set(pick.employee, weekOf(pick) + hours);
   args.weekShifts?.set(pick.employee, (args.weekShifts.get(pick.employee) ?? 0) + 1);
   args.periodShifts?.set(pick.employee, (args.periodShifts.get(pick.employee) ?? 0) + 1);
-  countTraining(args.training, pick.employee, kind);
   return {
     date: args.iso,
     kind,
@@ -704,6 +667,103 @@ export function fillOpenShift(args: {
     ...(pinned ? { picked: true } : {}),
     ...(blocked.length ? { blocked } : {}),
   };
+}
+
+/**
+ * New hires' training shifts for one day (Issue #450), on top of need: each new hire with openers /
+ * closers left shadows an experienced opener / closer already on that day (ADP or drafted), one new
+ * hire per experienced shift, within their own availability, longest shift and weekly cap. Called
+ * day by day from the earliest, so new hires clear as soon as trainers are on.
+ */
+export function draftTrainingDay(args: {
+  iso: string;
+  roster: Availability[];
+  /** Mutated on a pick. */
+  weekHours: Map<string, number>;
+  /** Mutated on a pick. */
+  weekShifts?: Map<string, number>;
+  /** Mutated on a pick. */
+  busy: Set<string>;
+  /** Mutated on a pick. */
+  periodShifts?: Map<string, number>;
+  unavailable?: Map<string, Block[]>;
+  minShiftMin?: number;
+  maxShiftMin?: number;
+  meal?: MealRule;
+  /** `left` is mutated as new hires get openers / closers. */
+  training: DraftTraining;
+}): DraftShift[] {
+  const { training } = args;
+  const dow = isoWeekdayMon0(args.iso);
+  const minLen = args.minShiftMin ?? 240;
+  const trainers = [...training.experiencedOn].sort((x, y) => x[0] - y[0]);
+  const used = new Set<number>();
+  const out: DraftShift[] = [];
+  const trainees = args.roster
+    .filter((a) => {
+      const l = training.left.get(a.employee);
+      return (
+        !!l && (l.open > 0 || l.close > 0) &&
+        !args.busy.has(a.employee) && worksOn(a, args.iso) &&
+        (a.maxShiftsPerPeriod == null || (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod)
+      );
+    })
+    // Whoever can train on only one kind goes first, so someone flexible doesn't take their trainer.
+    .sort((x, y) => {
+      const lx = training.left.get(x.employee)!;
+      const ly = training.left.get(y.employee)!;
+      const kinds = (l: TrainingLeft) => Number(l.open > 0) + Number(l.close > 0);
+      return (
+        kinds(lx) - kinds(ly) ||
+        ly.open + ly.close - (lx.open + lx.close) ||
+        x.employee.localeCompare(y.employee)
+      );
+    });
+  for (const a of trainees) {
+    const left = training.left.get(a.employee)!;
+    const kinds = (["open", "close"] as const).filter((k) => left[k] > 0).sort((x, y) => left[y] - left[x]);
+    const len = Math.min(a.maxShiftMin ?? args.maxShiftMin ?? 8 * 60, args.maxShiftMin ?? Infinity);
+    const room = snapDown((weekCap(a) - (args.weekHours.get(a.employee) ?? 0)) * 60);
+    const fit = kinds.flatMap((kind) =>
+      trainers.flatMap(([ts, te], i) => {
+        if (used.has(i) || shiftKindOf(ts, te) !== kind) return [];
+        return shiftSpans(a, dow).flatMap(([ws, we]) => {
+          const [fs, fe] = freeSegment(Math.max(ts, ws), Math.min(te, we), args.unavailable?.get(a.employee));
+          let s = snapUp(fs);
+          let e = snapDown(fe);
+          // Openers start with the trainer, closers finish with them.
+          if (kind === "open") e = Math.min(e, s + len, s + room);
+          else s = Math.max(s, e - len, e - room);
+          const hours = paidHours(s, e, args.meal);
+          const ok =
+            e - s >= minLen &&
+            shiftKindOf(s, e) === kind &&
+            overlapMinutes(s, e, [[ts, te]]) >= training.overlapMin &&
+            (args.weekHours.get(a.employee) ?? 0) + hours <= weekCap(a);
+          return ok ? [{ kind, i, s, e, hours }] : [];
+        });
+      }),
+    )[0];
+    if (!fit) continue;
+    used.add(fit.i);
+    args.busy.add(a.employee);
+    args.weekHours.set(a.employee, (args.weekHours.get(a.employee) ?? 0) + fit.hours);
+    args.weekShifts?.set(a.employee, (args.weekShifts.get(a.employee) ?? 0) + 1);
+    args.periodShifts?.set(a.employee, (args.periodShifts.get(a.employee) ?? 0) + 1);
+    countTraining(training, a.employee, fit.kind);
+    out.push({
+      date: args.iso,
+      kind: fit.kind,
+      startMin: fit.s,
+      endMin: fit.e,
+      hours: fit.hours,
+      employee: a.employee,
+      trimmed: false,
+      slot: `${args.iso}|t|${a.employee}`,
+      training: true,
+    });
+  }
+  return out;
 }
 
 const STORE_HOURS: [number, number] = [hm(6), hm(21)];

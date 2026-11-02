@@ -67,12 +67,20 @@ export type TrainingStatus = {
   worked: number;
   /** Upcoming ADP shifts that still need an experienced person on long enough and don't have one. */
   unsupervised: string[];
+  /** Days whose ADP shift is a training shift — on top of need, not counted toward it. */
+  trainingDates: string[];
 };
 
 export const isTraining = (t: TrainingStatus | undefined): t is TrainingStatus => !!t && !t.cleared;
 
 export function trainingLeftOf(t: TrainingStatus): TrainingLeft {
   return { open: Math.max(0, t.needOpen - t.open), close: Math.max(0, t.needClose - t.close) };
+}
+
+/** Whether a `kind` shift is still training for this person — on top of need, never toward it. */
+export function isTrainingShift(left: TrainingLeft | undefined, kind: ShiftKind): boolean {
+  if (!left || (left.open <= 0 && left.close <= 0)) return false;
+  return kind === "mid" || left[kind] > 0;
 }
 
 /** "1/2 openers · 0/2 closers". */
@@ -169,6 +177,7 @@ export function trainingProgress(args: {
       marked,
       worked: 0,
       unsupervised: [],
+      trainingDates: [],
     };
     for (const iso of dates) {
       const lanes = args.days.get(iso)!;
@@ -178,6 +187,7 @@ export function trainingProgress(args: {
       if (t.cleared) continue;
       const spans = spansOf(mine);
       const kind = shiftKindOf(Math.min(...spans.map(([s]) => s)), Math.max(...spans.map(([, e]) => e)));
+      if (isTrainingShift(trainingLeftOf(t), kind)) t.trainingDates.push(iso);
       const withExperienced = lanes
         .filter((p) => !isOpenLane(p) && experienced.has(p.employee))
         .flatMap(spansOf);

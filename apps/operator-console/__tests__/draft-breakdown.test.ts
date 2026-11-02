@@ -28,6 +28,6 @@ describe("draft hours breakdown", () => {
   it("puts drafted hours beyond required person-hours into shift shape", () => {
     const b = emptyBreakdown(10, ["a"]);
     addDay(b, { floor: 14, rules: [{ id: "a", hours: 5 }] }, 22);
-    expect(b).toEqual({ existing: 10, floor: 14, rules: [{ id: "a", hours: 5 }], shape: 3, peak: 0 });
+    expect(b).toEqual({ existing: 10, floor: 14, rules: [{ id: "a", hours: 5 }], shape: 3, peak: 0, training: 0 });
   });
 });

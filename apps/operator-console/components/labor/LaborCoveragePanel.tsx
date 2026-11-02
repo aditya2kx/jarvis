@@ -49,6 +49,7 @@ import {
   availableCount,
   canWorkDay,
   draftDay,
+  draftTrainingDay,
   fillOpenShift,
   isOpenShiftSlot,
   openShiftSlot,
@@ -190,8 +191,9 @@ function newShifts(shifts: DraftShift[]): DraftShift[] {
   return shifts.filter((s) => !s.fillsOpen && !s.inAdp);
 }
 
+/** Drafted headcount toward need — new hires' training shifts sit on top of it. */
 function draftCountSeries(points: OccupancyPoint[], shifts: DraftShift[]): number[] {
-  const added = newShifts(shifts);
+  const added = newShifts(shifts).filter((s) => !s.training);
   return points.map((p) => added.filter((s) => p.min >= s.startMin && p.min < s.endMin).length);
 }
 
@@ -1452,13 +1454,15 @@ export function LaborCoveragePanel({
       ...a,
       maxWeekHours: r.staffing.maxWeekHours,
       minWeekShifts: r.staffing.minWeekShifts,
-      experienced: experienced.has(a.employee),
       ...limits.get(a.employee),
     }));
     // One-time requirement: what a new hire does in one week's draft counts toward the next.
+    const progress = progressFor(r.staffing.training);
     const trainingLeft = new Map<string, TrainingLeft>(
-      [...progressFor(r.staffing.training).values()].filter(isTraining).map((t) => [t.employee, trainingLeftOf(t)]),
+      [...progress.values()].filter(isTraining).map((t) => [t.employee, trainingLeftOf(t)]),
     );
+    const countsTowardNeed = (iso: string) => (p: CoveragePersonDay) =>
+      isOpenLane(p) || !progress.get(p.employee)?.trainingDates.includes(iso);
     const weekStarts = [
       ...new Set(
         strip
@@ -1520,7 +1524,7 @@ export function LaborCoveragePanel({
         .filter((iso) => iso > todayIso)
         .map((iso) => {
           const dayPeople = peopleByDay.get(iso)!;
-          const cov = dayCoverage(iso, dayPeople, demand, inputs);
+          const cov = dayCoverage(iso, dayPeople.filter(countsTowardNeed(iso)), demand, inputs);
           const mins = cov.points.map((p) => p.min);
           const floorOnly = needSeries(iso, cov.points, [], inputs.staffing.ordersPerPerson, floorOf(inputs.staffing));
           return {
@@ -1653,7 +1657,6 @@ export function LaborCoveragePanel({
         let placed = false;
         for (const g of gaps) {
           const placedOnDay = peakPlaced.get(g.d.iso) ?? 0;
-          const leftBefore = new Map(left);
           const next = run(g.d, g.d.need, `${g.d.iso}|p${placedOnDay}`, 1, "regulars")[0];
           if (next && next.hours <= budget) {
             add(g.d, [next]);
@@ -1668,14 +1671,32 @@ export function LaborCoveragePanel({
             weekShifts.set(next.employee, (weekShifts.get(next.employee) ?? 1) - 1);
             const counts = shiftsInPeriod(next.date);
             counts.set(next.employee, (counts.get(next.employee) ?? 1) - 1);
-            const undo = leftBefore.get(next.employee);
-            if (undo) left.set(next.employee, undo);
           }
         }
         if (!placed) {
           peakLeftHours = gaps.reduce((a, g) => a + g.short, 0);
           break;
         }
+      }
+      // Pass 3: new hires train on top of need beside whoever is opening / closing, earliest day first.
+      for (const d of state) {
+        const training = trainingOn(d.iso, d.shifts);
+        if (!training) break;
+        const shifts = draftTrainingDay({
+          iso: d.iso,
+          roster,
+          weekHours,
+          weekShifts,
+          busy: d.busy,
+          periodShifts: shiftsInPeriod(d.iso),
+          unavailable: blocksOn(unavail, d.iso),
+          minShiftMin: r.staffing.minShiftMin,
+          maxShiftMin: r.staffing.maxShiftMin,
+          meal,
+          training,
+        });
+        d.shifts.push(...shifts);
+        breakdown.training += shifts.reduce((a, s) => a + s.hours, 0);
       }
 
       const plan = plans.get(weekStart);

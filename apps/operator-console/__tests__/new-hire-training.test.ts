@@ -5,6 +5,7 @@ import {
   progressLabel,
   shiftKindOf,
   staffTags,
+  isTrainingShift,
   trainingLeftOf,
   trainingProgress,
   TRAINING_FROM,
@@ -26,6 +27,15 @@ describe("shiftKindOf / overlapMinutes", () => {
     expect(shiftKindOf(450, 840)).toBe("open");
     expect(shiftKindOf(600, 1020)).toBe("mid");
     expect(shiftKindOf(810, 1230)).toBe("close");
+  });
+
+  it("treats a kind as training until its supervised shifts are done; mids until both are", () => {
+    expect(isTrainingShift({ open: 1, close: 0 }, "close")).toBe(false);
+    expect(isTrainingShift({ open: 1, close: 0 }, "open")).toBe(true);
+    expect(isTrainingShift({ open: 1, close: 0 }, "mid")).toBe(true);
+    expect(isTrainingShift({ open: 0, close: 2 }, "open")).toBe(false);
+    expect(isTrainingShift({ open: 0, close: 0 }, "mid")).toBe(false);
+    expect(isTrainingShift(undefined, "open")).toBe(false);
   });
 
   it("counts covered minutes once across overlapping spans", () => {
@@ -91,6 +101,8 @@ describe("trainingProgress", () => {
     }).get("New, Lee")!;
     expect(wing).toMatchObject({ worked: 3, open: 0, close: 2, cleared: false, marked: false });
     expect(wing.unsupervised).toEqual(["2026-11-03"]);
+    // Closes after both supervised closers count toward need; the opener is still training.
+    expect(wing.trainingDates).toEqual(["2026-10-20", "2026-10-22", "2026-11-03"]);
     expect(trainingLeftOf(wing)).toEqual({ open: 2, close: 0 });
   });
 

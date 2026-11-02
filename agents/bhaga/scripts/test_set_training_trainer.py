@@ -5,7 +5,6 @@ import contextlib
 import io
 import json
 import unittest
-from types import SimpleNamespace
 from unittest import mock
 
 from agents.bhaga.scripts import set_training_trainer as S

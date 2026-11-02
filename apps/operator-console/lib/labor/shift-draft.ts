@@ -419,7 +419,12 @@ function draftCore(
         ) * step / 60;
       const openH = plan.reduce((acc, p) => acc + (p.employee == null ? p.hours : 0), 0);
       const totalH = plan.reduce((acc, p) => acc + p.hours, 0);
-      const score = [shortH + openH, totalH];
+      // Then keep new hires still training free for the training pass.
+      const learners = plan.filter((p) => {
+        const l = p.employee ? args.training?.left.get(p.employee) : undefined;
+        return !!l && (l.open > 0 || l.close > 0);
+      }).length;
+      const score = [shortH + openH, learners, totalH];
       const k = bestScore ? score.findIndex((v, i) => Math.abs(v - bestScore![i]!) > 1e-9) : -1;
       if (!bestScore || (k >= 0 && score[k]! < bestScore[k]!)) {
         best = force;

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { forwardHorizonEnd } from "@/lib/labor/actual-schedule-windows";
 import { inWeeks, weekOptions, weekRange, weekStartOf } from "@/lib/labor/week-options";
 
 describe("week options", () => {
@@ -36,6 +37,18 @@ describe("hours per person stacking", () => {
       [UNASSIGNED_ROW, 0, null, 4.5],
     ]);
     expect(out.series.map((s) => s.key)).toEqual(["parttime", "parttime_sched", "open", "suggested"]);
+  });
+
+  it("offers five future weeks on a Sunday", () => {
+    const w = weekOptions([], "2026-11-01", { start: "2026-10-26", end: forwardHorizonEnd("2026-11-01", null) });
+    expect(w.map((x) => x.label)).toEqual([
+      "Nov 30–Dec 6",
+      "Nov 23–29",
+      "Nov 16–22",
+      "Nov 9–15",
+      "Next week · Nov 2–8",
+      "This week · Oct 26–Nov 1",
+    ]);
   });
 
   it("lists every week through the forward horizon", () => {

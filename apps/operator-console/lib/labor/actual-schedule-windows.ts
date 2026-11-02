@@ -61,7 +61,7 @@ export function extendEndForScheduleHorizon(
 }
 
 /** Full Mon–Sun weeks ahead of today that a Period including today always shows. */
-export const FORWARD_WEEKS = 3;
+export const FORWARD_WEEKS = 5;
 
 /**
  * Forward horizon for a Period that includes today: the later of the ADP

@@ -654,10 +654,10 @@ def _open_assigned_shift(frame, page, *, date_iso: str, employee: str, start_min
                          state: str) -> None:
     """From the grid (on the right week), open the Shift details pane of one assigned shift.
 
-    2026-11-02: 31 of 95 deletes opened the person's pane (or an unavailability's) instead —
-    rows with unavailability drew it while scrolling in, moving the shift under a click
-    aimed at its old place. So: centre the shift, wait until it stops moving, click; a
-    wrong pane is closed untouched and the click retried.
+    2026-11-02: 31 of 95 deletes opened the person's pane (or an unavailability's) instead,
+    all in cells that also hold unavailability, though the mouse landed on the shift's own
+    time. So: centre the shift and wait until it stops moving; after a wrong pane (closed
+    untouched), click the shift element directly (a DOM click, no mouse press on the cell).
     """
     d = dt.date.fromisoformat(date_iso)
     rng = f"{fmt_time(start_min)} - {fmt_time(end_min)}"
@@ -667,21 +667,27 @@ def _open_assigned_shift(frame, page, *, date_iso: str, employee: str, start_min
         _mark_settled(frame, page, date_iso=date_iso, employee=employee,
                       start_min=start_min, end_min=end_min, state=state)
         hit = frame.evaluate(HIT_JS)
-        frame.locator("[data-jarvis-del='1']").first.click(timeout=8000)
+        how = "mouse" if attempt == 0 else "dom"
+        if how == "mouse":
+            frame.locator("[data-jarvis-del='1']").first.click(timeout=8000)
+        else:
+            frame.evaluate("() => document.querySelector('[data-jarvis-del]').click()")
         if not _wait_for(page, lambda: _pane_open(frame), 8.0):
             raise ScheduleWriteError("shift details pane did not open")
         page.wait_for_timeout(500)
         pane = frame.evaluate(PANE_TEXT_JS)
         if all(s in pane for s in expect) and employee.split(",")[0] in pane:
+            if attempt:
+                print(f"[schedule_write] shift details opened on attempt {attempt + 1} ({how} click)")
             return
         _back_out(frame, page)
         if not WRONG_PANE_RE.search(pane):
             break
-        print(f"[schedule_write] attempt {attempt + 1}: not the shift's pane (clicked {hit}); retrying")
+        print(f"[schedule_write] attempt {attempt + 1} ({how} click): not the shift's pane (clicked {hit}); retrying")
     raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r} (clicked {hit})")
 
 
-_OPEN_ATTEMPTS = 3
+_OPEN_ATTEMPTS = 5
 
 
 def _mark_settled(frame, page, **shift) -> None:

@@ -415,12 +415,19 @@ class ConsoleShiftChanges(unittest.TestCase):
 
     def _open(self, panes, spots=None):
         """_open_assigned_shift where each click opens the next pane text and the marked shift
-        sits at the next of ``spots`` (default: still). Returns (clicks, back-outs)."""
+        sits at the next of ``spots`` (default: still). Returns (mouse clicks, DOM clicks, back-outs)."""
         frame, page = mock.MagicMock(), mock.Mock()
         texts, where = iter(panes), iter(spots or [[1, 2, 3, 4]] * 99)
+        dom = []
 
         def evaluate(js, *_a):
-            return next(texts) if js == wb.PANE_TEXT_JS else next(where) if js == wb.CENTRE_MARKED_JS else "x"
+            if js == wb.PANE_TEXT_JS:
+                return next(texts)
+            if js == wb.CENTRE_MARKED_JS:
+                return next(where)
+            if ".click()" in js:
+                dom.append(js)
+            return "x"
         frame.evaluate.side_effect = evaluate
         click = frame.locator.return_value.first.click
         with mock.patch.object(wb, "_mark_shift", return_value={"found": True}), \
@@ -429,31 +436,31 @@ class ConsoleShiftChanges(unittest.TestCase):
             try:
                 wb._open_assigned_shift(frame, page, **self.T, state="any")
             finally:
-                self.counts = (click.call_count, back.call_count)
+                self.counts = (click.call_count, len(dom), back.call_count)
         return self.counts
 
     SHIFT_PANE = "Shift details Lee, Kim Tue, Nov 3, 2026 9:00 AM - 3:00 PM"
     PERSON_PANE = "Lee, Kim Delete all schedules Add shift Add unavailability"
     UNAVAIL_PANE = "Lee, Kim Category Unavailability Time 12:00 AM - 8:30 AM Repeats Daily Forever"
 
-    def test_open_assigned_shift_opens_shift_details_with_one_click(self):
-        self.assertEqual(self._open([self.SHIFT_PANE]), (1, 0))
+    def test_open_assigned_shift_opens_shift_details_with_one_mouse_click(self):
+        self.assertEqual(self._open([self.SHIFT_PANE]), (1, 0, 0))
 
     def test_open_assigned_shift_waits_for_the_shift_to_stop_moving(self):
-        self.assertEqual(self._open([self.SHIFT_PANE], spots=[[0, 900, 1, 1], [0, 400, 1, 1], [0, 400, 1, 1]]), (1, 0))
+        self.assertEqual(self._open([self.SHIFT_PANE], spots=[[0, 900, 1, 1], [0, 400, 1, 1], [0, 400, 1, 1]]), (1, 0, 0))
 
-    def test_open_assigned_shift_retries_after_a_person_or_unavailability_pane(self):
-        self.assertEqual(self._open([self.PERSON_PANE, self.UNAVAIL_PANE, self.SHIFT_PANE]), (3, 2))
+    def test_open_assigned_shift_retries_with_dom_clicks_after_a_person_or_unavailability_pane(self):
+        self.assertEqual(self._open([self.PERSON_PANE, self.UNAVAIL_PANE, self.SHIFT_PANE]), (1, 2, 2))
 
-    def test_open_assigned_shift_gives_up_after_three_wrong_panes_without_pressing_anything(self):
+    def test_open_assigned_shift_gives_up_after_five_wrong_panes_without_pressing_anything(self):
         with self.assertRaisesRegex(wb.ScheduleWriteError, "details pane is not .* \\(clicked x\\)"):
-            self._open([self.PERSON_PANE] * 3)
-        self.assertEqual(self.counts, (3, 3))
+            self._open([self.PERSON_PANE] * 5)
+        self.assertEqual(self.counts, (1, 4, 5))
 
     def test_open_assigned_shift_other_wrong_pane_fails_without_retry(self):
         with self.assertRaisesRegex(wb.ScheduleWriteError, "details pane is not"):
             self._open(["Shift details Lee, Kim Wed, Nov 4, 2026 9:00 AM - 3:00 PM"])
-        self.assertEqual(self.counts, (1, 1))
+        self.assertEqual(self.counts, (1, 0, 1))
 
     def test_edit_shift_is_confirmed_live_at_the_new_times(self):
         self._patch(grid=[True])

@@ -1868,6 +1868,8 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
   writes are proven live; only **approve** is wired in the job today — other kinds fail without a click).
 - **Suggestions** switch (per browser, `labor-show-suggestions:v1:<store>`): off hides draft lanes, `+N draft`
   chip counts, the Finalize card, the shift-draft table and suggested names. ADP's own shifts always show.
+- When the Period includes today, the page (coverage strip, drafts, week pickers) runs at least **4** full weeks
+  past this one (`FORWARD_WEEKS` in `lib/labor/actual-schedule-windows.ts`), or further if ADP's schedule does.
 
 **Apply to ADP** inserts one `queued` row per change under one `batch_id` — shifts in `adp_shift_changes`
 (migration 096), unavailability in `adp_unavailability_changes` (092) — and starts

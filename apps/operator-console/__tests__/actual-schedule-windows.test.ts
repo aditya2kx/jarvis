@@ -91,11 +91,11 @@ describe("actual / schedule windows", () => {
     ).toBe("2026-07-15");
   });
 
-  it("forward horizon runs through the Sunday ending the week three weeks out", () => {
-    // Sun 2026-10-04 → weeks of Oct 5, 12, 19 → Sun Oct 25.
-    expect(forwardHorizonEnd("2026-10-04", "2026-10-11")).toBe("2026-10-25");
-    // Mid-week today: Wed Oct 7 + 21 = Wed Oct 28 → that week ends Sun Nov 1.
-    expect(forwardHorizonEnd("2026-10-07", null)).toBe("2026-11-01");
+  it("forward horizon runs through the Sunday ending the week four weeks out", () => {
+    // Sun 2026-10-04 → weeks of Oct 5, 12, 19, 26 → Sun Nov 1.
+    expect(forwardHorizonEnd("2026-10-04", "2026-10-11")).toBe("2026-11-01");
+    // Mid-week today: Wed Oct 7 + 28 = Wed Nov 4 → that week ends Sun Nov 8.
+    expect(forwardHorizonEnd("2026-10-07", null)).toBe("2026-11-08");
     // A further-out ADP schedule still wins.
     expect(forwardHorizonEnd("2026-10-04", "2026-11-22")).toBe("2026-11-22");
   });

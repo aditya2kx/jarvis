@@ -24,6 +24,10 @@ operator's only gate is PR approval. `tier()` labels each op in the reply:
     /prod-ops shift-windows Ana 09:00-17:00 16:00-20:30 [days=Mon,Tue]
                                                       # new scheduling-rules version: Ana's shifts must
                                                       # fit inside one window (first name; all days default)
+    /prod-ops clear-weeks 2026-11-09 2026-11-29 [limit=1] [dry-run]
+                                                      # delete every ADP shift (published, draft, open) in the
+                                                      # dates: queue one Apply batch + start the ADP job;
+                                                      # limit=N = first N assigned only (canary); dry-run is safe
     /prod-ops run-job-pr bhaga-daily-refresh [KEY=v …] # PR comments only: build the PR head's image,
                                                       # copy the job as <job>-pr<N> on it, run once, delete the copy.
                                                       # Cloud Agent comments post as cursor[bot]; the guard accepts that login.
@@ -60,6 +64,7 @@ _JOB = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _FIRST_NAME = re.compile(r"^[A-Za-z][A-Za-z'-]{0,30}$")
 _WINDOW = re.compile(r"^\d{2}:\d{2}-\d{2}:\d{2}$")
 _DAYS = re.compile(r"^[A-Za-z]{3}(,[A-Za-z]{3}){0,6}$")
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # Set by the deploy workflow; changing them here would desync prod from git.
 _DEPLOY_OWNED = {"BQ_PROJECT", "BQ_DATASET", "PLAID_ENV", "PLAID_WEBHOOK_URL", "CONSOLE_PREVIEW"}
 # A safe run-job-pr may set only these, and must be an `apply` dry run: any other key
@@ -98,7 +103,7 @@ def parse_comment(body: str) -> dict:
         raise RequestError("comment must start with /prod-ops")
     argv = shlex.split(first)[1:]
     if not argv:
-        raise RequestError("missing operation: whoami | console-env | run-job | apply-migrations | experienced-staff | shift-windows")
+        raise RequestError("missing operation: whoami | console-env | run-job | apply-migrations | experienced-staff | shift-windows | clear-weeks")
     op, rest = argv[0], argv[1:]
     if op in ("whoami", "apply-migrations"):
         if rest:
@@ -140,6 +145,15 @@ def parse_comment(body: str) -> dict:
                 or (days and not _DAYS.match(days[0][5:]))):
             raise RequestError("shift-windows <FirstName> HH:MM-HH:MM … (1–4 windows) [days=Mon,Tue,…]")
         return {"op": op, "name": rest[0], "windows": windows, "days": days[0][5:] if days else None}
+    if op == "clear-weeks":
+        dates, opts = rest[:2], rest[2:]
+        limit = [t[6:] for t in opts if t.startswith("limit=")]
+        if (len(dates) != 2 or not all(_DATE.match(d) for d in dates)
+                or any(t != "dry-run" and not t.startswith("limit=") for t in opts)
+                or len(limit) > 1 or (limit and not limit[0].isdigit()) or opts.count("dry-run") > 1):
+            raise RequestError("clear-weeks <from YYYY-MM-DD> <through YYYY-MM-DD> [limit=N] [dry-run]")
+        return {"op": op, "from": dates[0], "through": dates[1], "limit": int(limit[0]) if limit else 0,
+                "dry_run": "dry-run" in opts}
     raise RequestError(f"unknown operation {op!r}")
 
 
@@ -301,6 +315,11 @@ def commands(req: dict, pr: str | None = None) -> list[list[str]]:
         days = ["--days", req["days"]] if req["days"] else []
         return [[sys.executable, "-m", "agents.bhaga.scripts.set_shift_windows", "--by", by, *days,
                  req["name"], *req["windows"]]]
+    if op == "clear-weeks":
+        by = f"prod-ops PR #{pr}" if pr else "prod-ops"
+        extra = (["--limit", str(req["limit"])] if req["limit"] else []) + (["--dry-run"] if req["dry_run"] else [])
+        return [[sys.executable, "-m", "agents.bhaga.scripts.clear_adp_weeks", "--by", by, *extra,
+                 req["from"], req["through"]]]
     raise RequestError(f"unknown operation {op!r}")
 
 
@@ -350,7 +369,7 @@ def _sql_body(path: Path) -> str:
 def tier(req: dict, code_root: Path) -> tuple[str, str]:
     """("safe", why) when the op cannot change data the operator relies on, else ("changes-prod", why)."""
     op, env = req["op"], req.get("env", {})
-    if op == "whoami":
+    if op == "whoami" or (op == "clear-weeks" and req["dry_run"]):
         return "safe", "read-only"
     if op == "apply-migrations":
         # ensure_schema() is PR-head Python: only main's runner is known to apply just the SQL.

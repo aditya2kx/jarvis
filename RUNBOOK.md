@@ -1868,7 +1868,10 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
   on — published (`shift-delete`; the sheet counts them, since staff see them leave their schedule), drafts
   and open shifts (`open-delete`). PTO is never included. After Apply, those hours come back as
   suggestions, so a re-plan (e.g. after correcting someone's unavailability or shift windows) is: Clear
-  weeks → Apply → Review & add → Apply. One Apply takes at most 160 changes.
+  weeks → Apply → Review & add → Apply. One Apply takes at most 160 changes. Agents run the same clear
+  with `/prod-ops clear-weeks <from> <through> [limit=N] [dry-run]` (`clear_adp_weeks.py`: same rows, one
+  batch, starts the Apply job, refuses while another schedule write runs; `limit=1` = one-shift canary;
+  counts only in the log).
 - Unavailability changes (#427) stage into the same tray (`CONSOLE_ADP_UNAVAIL_WRITE`, off until its ADP
   writes are proven live; only **approve** is wired in the job today — other kinds fail without a click).
 - **Suggestions** switch (per browser, `labor-show-suggestions:v1:<store>`): off hides draft lanes, `+N draft`

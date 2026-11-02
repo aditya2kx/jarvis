@@ -1829,7 +1829,11 @@ training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hir
 done the set number of supervised openers and closers (default 2 + 2). Each kind clears on its own:
 after their supervised closers they close with anyone or alone (likewise openers); mids stay
 training until both are done. **Mark trained** on a person's progress row (saved in the rules as
-`training.trained`) skips the rule for someone already up to speed; each row shows shifts worked.
+`training.trained`) skips the rule for someone already up to speed — or only for **Openers only** /
+**Closers only** (`training.trainedOnly`); each row shows shifts worked. Each experienced-staff chip
+says what they train — openers & closers (default), openers only or closers only
+(`training.trainsOnly`): a one-kind trainer counts as trained on that kind, supervises only that kind
+(never mids), and still trains on the other kind if they're a new hire.
 It's one-time, counted over every ADP shift (past actuals + upcoming schedule), not per week.
 **Training shifts sit on top of need (2026-11-02):** a shift of a kind the new hire hasn't cleared
 (or any mid) never counts toward headcount — the need passes skip them (the draft row lists them

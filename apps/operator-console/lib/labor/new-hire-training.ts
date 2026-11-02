@@ -83,6 +83,13 @@ export function isTrainingShift(left: TrainingLeft | undefined, kind: ShiftKind)
   return kind === "mid" || left[kind] > 0;
 }
 
+/** Whether new hires can train a `kind` shift beside this person; mids only beside someone who trains both. */
+export function trainsKind(rules: Pick<TrainingRules, "experienced" | "trainsOnly">, employee: string, kind: ShiftKind): boolean {
+  if (!rules.experienced.includes(employee)) return false;
+  const only = rules.trainsOnly[employee];
+  return !only || only === kind;
+}
+
 /** "1/2 openers · 0/2 closers". */
 export function progressLabel(t: Pick<TrainingStatus, "open" | "close" | "needOpen" | "needClose">): string {
   const parts: string[] = [];
@@ -137,7 +144,8 @@ function spansOf(p: CoveragePersonDay): [number, number][] {
 /**
  * Who is a new hire and how far along their supervised openers / closers are. `days` holds every
  * day's ADP lanes (clocked before today, scheduled from today) in the window; `employees` is the
- * draftable roster. Experienced staff are never new hires.
+ * draftable roster. Experienced staff who train both kinds are never new hires; someone who trains
+ * one kind, or is marked trained on one, still needs the other's supervised shifts.
  */
 export function trainingProgress(args: {
   todayIso: string;
@@ -150,7 +158,6 @@ export function trainingProgress(args: {
   const out = new Map<string, TrainingStatus>();
   // Nobody to train beside means the gate would leave every new hire's shift open — treat as off.
   if (!rules.experienced.length) return out;
-  const experienced = new Set(rules.experienced);
   const dates = [...args.days.keys()].sort();
   const firstShift = new Map<string, string>();
   for (const iso of dates) {
@@ -160,20 +167,24 @@ export function trainingProgress(args: {
   }
   const trained = new Set(rules.trained);
   for (const employee of args.employees) {
-    if (experienced.has(employee)) continue;
+    if (rules.experienced.includes(employee) && !rules.trainsOnly[employee]) continue;
     const hireDate = args.hireDates.get(employee) ?? null;
     const since = hireDate ?? firstShift.get(employee);
     if (!since || since < TRAINING_FROM) continue;
     const marked = trained.has(employee);
+    const done = (kind: "open" | "close") =>
+      rules.trainsOnly[employee] === kind || rules.trainedOnly[employee] === kind;
+    const needOpen = done("open") ? 0 : rules.openShifts;
+    const needClose = done("close") ? 0 : rules.closeShifts;
     const t: TrainingStatus = {
       employee,
       hireDate,
       since,
       open: 0,
       close: 0,
-      needOpen: rules.openShifts,
-      needClose: rules.closeShifts,
-      cleared: marked || (rules.openShifts <= 0 && rules.closeShifts <= 0),
+      needOpen,
+      needClose,
+      cleared: marked || (needOpen <= 0 && needClose <= 0),
       marked,
       worked: 0,
       unsupervised: [],
@@ -189,7 +200,7 @@ export function trainingProgress(args: {
       const kind = shiftKindOf(Math.min(...spans.map(([s]) => s)), Math.max(...spans.map(([, e]) => e)));
       if (isTrainingShift(trainingLeftOf(t), kind)) t.trainingDates.push(iso);
       const withExperienced = lanes
-        .filter((p) => !isOpenLane(p) && experienced.has(p.employee))
+        .filter((p) => !isOpenLane(p) && p.employee !== employee && trainsKind(rules, p.employee, kind))
         .flatMap(spansOf);
       const together = spans.reduce((acc, [s, e]) => acc + overlapMinutes(s, e, withExperienced), 0);
       if (together < rules.overlapMin) {

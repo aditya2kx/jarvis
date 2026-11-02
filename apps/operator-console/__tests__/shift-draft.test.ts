@@ -568,6 +568,18 @@ describe("new-hire training (Issue #450)", () => {
     expect(shadow).toMatchObject({ employee: "Kai", kind: "close", startMin: 960, endMin: 1230, training: true });
   });
 
+  it("only steers a one-kind trainer toward the kind they train", () => {
+    const pro: Availability = { employee: "Pro", maxWeekHours: 40, experienced: true, trainsOnly: "open", recentHours: 90, windows: all([390, 1230]) };
+    const crew = ["Ann", "Bo", "Cy"].map((employee, i): Availability => ({
+      employee, maxWeekHours: 40, recentHours: 50 - i * 10, windows: all([390, 1230]),
+    }));
+    const late: Availability = { employee: "Kai", maxWeekHours: 40, windows: all([960, 1230]) };
+    const kindOf = (p: Availability) => draft([p, ...crew, late], training({ Kai: [0, 2] })).find((s) => s.employee === "Pro")?.kind;
+    expect(kindOf({ ...pro, trainsOnly: undefined })).toBe("close");
+    expect(kindOf(pro)).toBe("open");
+    expect(kindOf({ ...pro, trainsOnly: "close" })).toBe("close");
+  });
+
   it("keeps a new hire still training off a cleared kind when someone else can take it", () => {
     const opener: Availability = { employee: "Kai", maxWeekHours: 40, recentHours: 90, windows: all([390, 1230]) };
     const crew = ["Tia", "Uma", "Vic"].map((employee, i): Availability => ({ ...sam, employee, recentHours: 5 - i }));

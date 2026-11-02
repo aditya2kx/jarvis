@@ -43,6 +43,8 @@ export type Availability = {
   lastDay?: string;
   /** New hires train beside this person (Issue #450). */
   experienced?: boolean;
+  /** Experienced, but trains only openers or only closers. */
+  trainsOnly?: "open" | "close";
   /** Operator rule: on these weekdays each shift fits entirely inside one window. */
   shiftWindows?: ShiftWindowRule[];
 };
@@ -531,9 +533,12 @@ function draftCore(
       // leave every other shift to others while one could.
       const wantsOpen = wantsTrainer("open");
       const wantsClose = wantsTrainer("close");
-      const here = (block.kind === "open" && wantsOpen) || (block.kind === "close" && wantsClose);
+      const trains = (a: Availability, kind: "open" | "close") =>
+        !!a.experienced && (!a.trainsOnly || a.trainsOnly === kind);
+      const wanted = (a: Availability, kind: "open" | "close") =>
+        trains(a, kind) && (kind === "open" ? wantsOpen : wantsClose);
       const trainer = (x: (typeof eligible)[number]) =>
-        !x.a.experienced ? 0 : here ? -1 : wantsOpen || wantsClose ? 1 : 0;
+        block.kind !== "mid" && wanted(x.a, block.kind) ? -1 : wanted(x.a, "open") || wanted(x.a, "close") ? 1 : 0;
       // A new hire with openers / closers still to do takes a cleared kind only when nobody else
       // can, staying free to train beside a trainer that day.
       const learner = (x: (typeof eligible)[number]) => {

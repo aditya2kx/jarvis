@@ -106,9 +106,15 @@ export type TrainingRules = {
   traineesPerTrainer: number;
   /** Canonical names of the people new hires train with. */
   experienced: string[];
+  /** Experienced staff who train only openers or only closers (absent = both); trained on that kind themselves. */
+  trainsOnly: Record<string, TrainKind>;
   /** New hires the operator marked as already trained — no supervision needed. */
   trained: string[];
+  /** New hires marked trained on one kind only (`trained` covers both). */
+  trainedOnly: Record<string, TrainKind>;
 };
+
+export type TrainKind = "open" | "close";
 
 export type ShiftTimes = "history" | "need";
 
@@ -131,7 +137,9 @@ export const DEFAULT_TRAINING: TrainingRules = {
   overlapMin: 180,
   traineesPerTrainer: 2,
   experienced: [],
+  trainsOnly: {},
   trained: [],
+  trainedOnly: {},
 };
 
 /** ADP's shortest regular shift is 4.5 h (4:00–8:30 PM closer). */
@@ -464,13 +472,27 @@ function parseTraining(raw: unknown): TrainingRules {
     }
     return [...new Set(v.map((n: string) => n.trim()))].sort((a, b) => a.localeCompare(b));
   };
+  const kinds = (v: unknown, what: string, keep: (n: string) => boolean): Record<string, TrainKind> => {
+    if (v == null) return {};
+    if (typeof v !== "object" || Array.isArray(v)) throw new Error(`${what} must map names to openers or closers`);
+    const out: Record<string, TrainKind> = {};
+    for (const [n, k] of Object.entries(v as Record<string, unknown>)) {
+      if (k !== "open" && k !== "close") throw new Error(`${what} must map names to openers or closers`);
+      if (n.trim() && keep(n.trim())) out[n.trim()] = k;
+    }
+    return out;
+  };
+  const experienced = names(t.experienced, "Experienced staff");
+  const trained = names(t.trained ?? [], "Trained new hires");
   return {
     openShifts: t.openShifts!,
     closeShifts: t.closeShifts!,
     overlapMin: t.overlapMin!,
     traineesPerTrainer: perTrainer,
-    experienced: names(t.experienced, "Experienced staff"),
-    trained: names(t.trained ?? [], "Trained new hires"),
+    experienced,
+    trainsOnly: kinds(t.trainsOnly, "Trains only", (n) => experienced.includes(n)),
+    trained,
+    trainedOnly: kinds(t.trainedOnly, "Trained only", (n) => !trained.includes(n)),
   };
 }
 

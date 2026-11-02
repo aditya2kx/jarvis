@@ -63,9 +63,11 @@ import {
 } from "@/lib/labor/shift-draft";
 import {
   isTraining,
+  shiftKindOf,
   staffTags,
   trainingLeftOf,
   trainingProgress,
+  trainsKind,
   type TrainingLeft,
 } from "@/lib/labor/new-hire-training";
 import { StaffTagsContext, TRAINING_TEXT_CLASS, useStaffTag } from "@/components/labor/StaffTag";
@@ -1456,6 +1458,7 @@ export function LaborCoveragePanel({
       maxWeekHours: r.staffing.maxWeekHours,
       minWeekShifts: r.staffing.minWeekShifts,
       experienced: experienced.has(a.employee),
+      trainsOnly: r.staffing.training.trainsOnly[a.employee],
       ...limits.get(a.employee),
     }));
     // One-time requirement: what a new hire does in one week's draft counts toward the next.
@@ -1502,13 +1505,15 @@ export function LaborCoveragePanel({
               perTrainer: r.staffing.training.traineesPerTrainer,
               left,
               experiencedOn: [
-                ...buildPersonDaysForDate(iso, actuals, scheduledForCoverage, null)
-                  .filter((p) => experienced.has(p.employee))
-                  .flatMap((p) => p.segments.map((g): [number, number] => [g.startMin, g.endMin])),
-                ...drafted.flatMap((s): [number, number][] =>
-                  s.employee && experienced.has(s.employee) ? [[s.startMin, s.endMin]] : [],
+                ...buildPersonDaysForDate(iso, actuals, scheduledForCoverage, null).flatMap((p) =>
+                  p.segments.map((g): [string, number, number] => [p.employee, g.startMin, g.endMin]),
                 ),
-              ],
+                ...drafted.flatMap((s): [string, number, number][] =>
+                  s.employee ? [[s.employee, s.startMin, s.endMin]] : [],
+                ),
+              ].flatMap(([who, s, e]): [number, number][] =>
+                trainsKind(r.staffing.training, who, shiftKindOf(s, e)) ? [[s, e]] : [],
+              ),
             }
           : undefined;
       const weekHours = new Map<string, number>();

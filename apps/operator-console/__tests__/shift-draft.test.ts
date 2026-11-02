@@ -9,8 +9,10 @@ import {
   shiftSpans,
   type Availability,
   type DraftPreference,
+  type DraftShift,
   type DraftTraining,
   draftTrainingDay,
+  fillClearedTrainees,
   TRAINING_ON_TOP,
 } from "@/lib/labor/shift-draft";
 
@@ -627,6 +629,33 @@ describe("new-hire training (Issue #450)", () => {
       iso, startMin: 810, endMin: 1230, roster: [kai], weekHours: new Map(), busy: new Set(), training: training({ Kai: [1, 0] }),
     })!;
     expect(done.employee).toBe("Kai");
+  });
+
+  describe("fillClearedTrainees", () => {
+    const blockedOpen: DraftShift = {
+      date: iso, kind: "open", startMin: 390, endMin: 840, hours: 7.5, employee: null, trimmed: false,
+      slot: `${iso}|f|390|0`, blocked: [{ employee: "Kai", reason: TRAINING_ON_TOP }],
+    };
+    const fill = (left: Record<string, [number, number]>, pins?: Map<string, string | null>, busy = new Set<string>()) => {
+      const weekHours = new Map<string, number>();
+      const shifts = fillClearedTrainees({
+        iso, shifts: [blockedOpen], roster: [kai], weekHours, busy, pins, training: training(left),
+      });
+      return { shift: shifts[0]!, weekHours };
+    };
+
+    it("gives a shift left open for training to the new hire once that kind is cleared", () => {
+      const { shift, weekHours } = fill({ Kai: [0, 1] });
+      expect(shift).toMatchObject({ employee: "Kai", kind: "open", startMin: 390, endMin: 840, slot: blockedOpen.slot });
+      expect(shift.options?.at(-1)?.employee).toBeNull();
+      expect(weekHours.get("Kai")).toBe(7.5);
+    });
+
+    it("leaves it open while still training, when busy, or when the operator left it open", () => {
+      expect(fill({ Kai: [1, 1] }).shift).toBe(blockedOpen);
+      expect(fill({ Kai: [0, 1] }, undefined, new Set(["Kai"])).shift).toBe(blockedOpen);
+      expect(fill({ Kai: [0, 1] }, new Map([[blockedOpen.slot!, null]])).shift).toBe(blockedOpen);
+    });
   });
 });
 

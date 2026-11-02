@@ -50,6 +50,7 @@ import {
   canWorkDay,
   draftDay,
   draftTrainingDay,
+  fillClearedTrainees,
   fillOpenShift,
   isOpenShiftSlot,
   openShiftSlot,
@@ -1680,9 +1681,11 @@ export function LaborCoveragePanel({
         }
       }
       // Pass 3: new hires train on top of need beside whoever is opening / closing, earliest day first.
+      const leftBefore = new Map<string, Map<string, TrainingLeft>>();
       for (const d of state) {
         const training = trainingOn(d.iso, d.shifts);
         if (!training) break;
+        leftBefore.set(d.iso, new Map(left));
         const shifts = draftTrainingDay({
           iso: d.iso,
           roster,
@@ -1698,6 +1701,25 @@ export function LaborCoveragePanel({
         });
         d.shifts.push(...shifts);
         breakdown.training += shifts.reduce((a, s) => a + s.hours, 0);
+      }
+      // Pass 4: from the day after a new hire's last training shift of a kind, they take that kind toward need.
+      for (const d of state) {
+        const asOf = leftBefore.get(d.iso);
+        const training = trainingOn(d.iso, d.shifts);
+        if (!asOf || !training) continue;
+        d.shifts = fillClearedTrainees({
+          iso: d.iso,
+          shifts: d.shifts,
+          roster,
+          weekHours,
+          weekShifts,
+          busy: d.busy,
+          periodShifts: shiftsInPeriod(d.iso),
+          unavailable: blocksOn(unavail, d.iso),
+          meal,
+          pins,
+          training: { ...training, left: asOf },
+        });
       }
 
       const plan = plans.get(weekStart);

@@ -708,6 +708,50 @@ export function fillOpenShift(args: {
 }
 
 /**
+ * After the training pass: a shift left open only because new hires were still training goes to
+ * whoever can take it now that `training.left` (as of this day) counts the training drafted on
+ * earlier days — a new hire works a kind toward need from the day after its last training shift.
+ * An operator's "leave open" pick stands.
+ */
+export function fillClearedTrainees(args: {
+  iso: string;
+  shifts: DraftShift[];
+  roster: Availability[];
+  /** Mutated on a pick. */
+  weekHours: Map<string, number>;
+  /** Mutated on a pick. */
+  weekShifts?: Map<string, number>;
+  /** Mutated on a pick. */
+  busy: Set<string>;
+  /** Mutated on a pick. */
+  periodShifts?: Map<string, number>;
+  unavailable?: Map<string, Block[]>;
+  meal?: MealRule;
+  pins?: DraftPins;
+  training: DraftTraining;
+}): DraftShift[] {
+  return args.shifts.map((s) => {
+    if (s.employee || s.training || !s.blocked?.length || !s.slot || args.pins?.get(s.slot) === null) return s;
+    if (s.blocked.every((b) => trainingBlock(args.training, b.employee, s.kind))) return s;
+    const pin = args.pins?.get(s.slot);
+    const fill = fillOpenShift({
+      ...args,
+      startMin: s.startMin,
+      endMin: s.endMin,
+      pins: pin ? new Map([[openShiftSlot(args.iso, s.startMin, s.endMin), pin]]) : undefined,
+    });
+    if (!fill?.employee) return s;
+    const open: ShiftOption = { employee: null, startMin: s.startMin, endMin: s.endMin, hours: s.hours, trimmed: false };
+    return {
+      ...fill,
+      slot: s.slot,
+      fillsOpen: s.fillsOpen,
+      options: s.fillsOpen ? fill.options : [...(fill.options ?? []), open],
+    };
+  });
+}
+
+/**
  * New hires' training shifts for one day (Issue #450), on top of need: each new hire with openers /
  * closers left shadows an experienced opener / closer already on that day (ADP or drafted), one new
  * hire per experienced shift, within their own availability, longest shift and weekly cap. Called

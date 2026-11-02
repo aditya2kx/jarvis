@@ -566,6 +566,28 @@ HIT_JS = r"""
 }
 """
 
+# DOM-click the shift host at a jittered point (i = attempt index). Centre-only .click() on the
+# marked range opens person/unavailability panes ~60% of the time when the cell also has
+# unavailability; the host + offset often hits the shift's own handler instead.
+CLICK_MARKED_JS = r"""
+(i) => {
+  const m = document.querySelector('[data-jarvis-del]');
+  if (!m) return 'nothing marked';
+  const host = m.closest('schedule-calendar-shifts') || m;
+  const b = host.getBoundingClientRect();
+  const pts = [[0.5, 0.4], [0.3, 0.35], [0.7, 0.35], [0.3, 0.6], [0.7, 0.6],
+               [0.5, 0.25], [0.5, 0.7], [0.4, 0.5], [0.6, 0.5], [0.55, 0.45], [0.45, 0.55]];
+  const [fx, fy] = pts[i % pts.length];
+  const x = b.x + b.width * fx, y = b.y + b.height * fy;
+  const el = document.elementFromPoint(x, y) || host;
+  el.click();
+  return (el.tagName || '?').toLowerCase()
+    + (typeof el.className === 'string' && el.className
+         ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '')
+    + ` @${Math.round(fx * 100)}%,${Math.round(fy * 100)}%`;
+}
+"""
+
 # Scrolls the marked shift to the middle of the grid; returns where it sits now (None if gone).
 CENTRE_MARKED_JS = r"""
 () => {
@@ -671,7 +693,8 @@ def _open_assigned_shift(frame, page, *, date_iso: str, employee: str, start_min
         if how == "mouse":
             frame.locator("[data-jarvis-del='1']").first.click(timeout=8000)
         else:
-            frame.evaluate("() => document.querySelector('[data-jarvis-del]').click()")
+            # attempt-1.. : jittered host click (see CLICK_MARKED_JS)
+            hit = frame.evaluate(CLICK_MARKED_JS, attempt - 1) or hit
         if not _wait_for(page, lambda: _pane_open(frame), 8.0):
             raise ScheduleWriteError("shift details pane did not open")
         page.wait_for_timeout(500)
@@ -687,7 +710,9 @@ def _open_assigned_shift(frame, page, *, date_iso: str, employee: str, start_min
     raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r} (clicked {hit})")
 
 
-_OPEN_ATTEMPTS = 9  # a DOM click opens Shift details only ~40% of the time in cells with unavailability
+# First mouse + up to 11 jittered DOM clicks. Plain centre .click() opens Shift details ~40% of
+# the time beside unavailability; 2 of 31 still failed at 9 tries on the 2026-11-02 live retry.
+_OPEN_ATTEMPTS = 12
 
 
 def _mark_settled(frame, page, **shift) -> None:

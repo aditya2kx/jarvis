@@ -1895,8 +1895,8 @@ retried and a crash marks the rest `not attempted: job stopped (…)`. Exception
 with the batch id re-walks that batch's **failed deletes** (each re-checks the grid first, so none can delete
 twice). In a cell that also holds unavailability, a mouse click on the shift can open the person's pane
 (`Delete all schedules …`) or the unavailability's: the job centres the shift and waits until it stops moving
-before clicking; a wrong pane is closed untouched and the shift clicked directly (DOM click, no mouse press on
-the cell) up to 8 more times (the error names what the click hit). A reassign whose add fails says
+before clicking; a wrong pane is closed untouched and the shift's host is DOM-clicked at a jittered point
+(up to 11 more tries; the error names what the click hit). A reassign whose add fails says
 `removed <name>'s shift but could not add it for <name> … — add it again`. A `shift-publish` (or a
 `shift-add` whose exact shift ADP shows as a draft) deletes that draft and adds the same shift published;
 already live → `skipped`; its add failing says `removed <name>'s draft but could not add it published`. Applied rows append to

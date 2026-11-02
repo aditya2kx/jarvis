@@ -1,3 +1,7 @@
+## 2026-11-02 — ADP Apply: open Shift details beside unavailability (Issue #485)
+
+**Bug:** Clear weeks deletes in cells that also hold unavailability often opened the person's pane or the unavailability's instead of Shift details — 31 of 95 Nov 9–29 deletes failed that way. **Fix:** centre the shift and wait until it settles; on a wrong pane (closed untouched) DOM-click the shift host at a jittered point (up to 12 tries). `BHAGA_SCHEDULE_RETRY_FAILED=1` re-walks a batch's failed deletes. Live retry on the PR image cut the batch to 2 failures; remaining clears + draft verify still in flight on #484.
+
 ## 2026-11-01 — `/prod-ops clear-weeks`: agents run Clear weeks → Apply (#481 follow-up)
 
 **Why:** the operator wants the agent to drive the Nov 9+ re-plan; agents can't press Apply on the prod console (IAP sign-in; previews are read-only), and `BHAGA_SCHEDULE_CHANGES` would put full names in a public comment. **Change:** `clear_adp_weeks.py` builds the console's Clear weeks rows server-side, queues one Apply batch and starts the ADP Apply job; `limit=1` canary and `dry-run` (safe tier). Counts only in logs.

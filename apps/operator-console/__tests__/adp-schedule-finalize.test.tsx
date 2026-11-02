@@ -24,7 +24,14 @@ const LATER = "2026-11-09";
 const NEXT_ADD: ShiftChange = { kind: "shift-add", date: "2026-11-03", employee: "Doe, Alex", ...T };
 const LATER_ADD: ShiftChange = { kind: "shift-add", date: "2026-11-10", employee: "Roe, Sam", ...T };
 
-function setup(changes: ShiftChange[], enabled = true, more: { weekStart: string; changes: ShiftChange[] }[] = []) {
+const MEAL = { afterMin: 6 * 60, unpaidMin: 30 };
+
+function setup(
+  changes: ShiftChange[],
+  enabled = true,
+  more: { weekStart: string; changes: ShiftChange[] }[] = [],
+  meal = MEAL,
+) {
   status.mockResolvedValue({ ok: true, data: { running: null } });
   const onStage = vi.fn();
   render(
@@ -33,6 +40,7 @@ function setup(changes: ShiftChange[], enabled = true, more: { weekStart: string
       weeks={[{ weekStart: WEEK, changes }, ...more]}
       onStage={onStage}
       enabled={enabled}
+      meal={meal}
     />,
   );
   return onStage;
@@ -70,6 +78,20 @@ describe("AdpScheduleFinalize: the suggested week goes through the Changes to AD
     setup([]);
     expect(screen.getByTestId("adp-finalize-status").textContent).toMatch(/Everything suggested for this week is in ADP or in your changes/);
     expect((screen.getByRole("button", { name: "Review & add to changes" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows paid hours (unpaid meal removed), matching the chart and weekly goal", async () => {
+    // 6:30–2:30 = 8h wall-clock → 7.5h paid. Two opens + one assigned = 22.5h paid (24h clock).
+    const long = { startMin: 390, endMin: 870 };
+    const add: ShiftChange = { kind: "shift-add", date: "2026-10-27", employee: "Doe, Alex", ...long };
+    const open: ShiftChange = { kind: "open-add", date: "2026-10-27", count: 2, ...long };
+    setup([add, open]);
+    expect(screen.getByTestId("adp-finalize-status").textContent).toMatch(
+      /3 suggested shifts \(22\.5h, 2 open\) aren't in ADP yet/,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Review & add to changes" }));
+    expect(await screen.findByText(/To add: 3 new shifts \(22\.5h\)/)).toBeTruthy();
+    expect(within(screen.getByTestId(`week-${WEEK}`)).getByText("3 shifts · 22.5h")).toBeTruthy();
   });
 });
 

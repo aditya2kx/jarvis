@@ -2053,6 +2053,7 @@ export function LaborCoveragePanel({
               weeks={suggestedWeeks}
               onStage={stageSuggestions}
               enabled={adpWriteEnabled}
+              meal={{ afterMin: rules.staffing.mealAfterMin, unpaidMin: rules.staffing.unpaidMealMin }}
             />
           ) : null}
 

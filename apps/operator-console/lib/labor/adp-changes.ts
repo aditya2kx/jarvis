@@ -6,6 +6,7 @@
 import { changeKey, entryError, KIND_LABEL as UNAVAIL_LABEL, trayGroups, type StagedChange, type TrayGroup } from "@/lib/labor/availability-changes";
 import { dayLabel, hoursText, shortDate, weekdaysText } from "@/lib/labor/unavailability-format";
 import { formatClockMin } from "@/lib/labor/coverage-model";
+import { paidHours, type MealRule } from "@/lib/labor/shift-draft";
 import { parseShiftRange } from "@/lib/labor/shift-ranges";
 
 export type Times = { startMin: number; endMin: number };
@@ -441,6 +442,17 @@ export function adpDrafts(
       .filter((p) => p.draft && p.date > afterIso && p.date <= throughIso)
       .map(({ date, startMin, endMin }) => ({ date, employee, startMin, endMin })),
   );
+}
+
+/** How many ADP shifts one staged change represents (`open-add` can bundle several). */
+export const shiftsInChange = (c: ShiftChange) => (c.kind === "open-add" ? c.count : 1);
+
+/**
+ * Paid hours across suggested / staged shifts — same meter as the labor chart and the weekly goal
+ * (ADP unpaid meal removed). Wall-clock `end − start` overstated the goal and disagreed with the chart.
+ */
+export function paidHoursOfChanges(changes: readonly ShiftChange[], meal?: MealRule): number {
+  return changes.reduce((a, c) => a + shiftsInChange(c) * paidHours(c.startMin, c.endMin, meal), 0);
 }
 
 /**

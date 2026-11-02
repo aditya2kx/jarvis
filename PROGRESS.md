@@ -1,3 +1,7 @@
+## 2026-11-02 — Day strip tags open shifts in the draft too
+
+**Operator ask:** the Labor day chips showed ADP "sched" and "+N draft · Hh" but not open slots once weeks were cleared (draft leave-opens only). **Change:** the existing `+N open` tag counts ADP open lanes plus unassigned draft shifts; the draft tag lists only assigned suggestions so open isn't double-counted.
+
 ## 2026-11-02 — `/prod-ops training-trainer` for per-kind new-hire trainers (#450 follow-up)
 
 **Gap:** Cloud Agents cannot open the prod Operator Console (IAP is Google accounts only), so after #484 a closers-only / openers-only trainer could only be saved by hand. **Change:** `/prod-ops training-trainer <First> openers-only|closers-only|both` appends a rules version that adds them to experienced, removes them from `trained`, and sets or clears `trainsOnly` (counts-only logs).

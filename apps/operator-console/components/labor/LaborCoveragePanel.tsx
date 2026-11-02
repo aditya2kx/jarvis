@@ -45,6 +45,11 @@ import {
 } from "@/lib/labor/staffing-need";
 import { addDay, emptyBreakdown, requiredByRule } from "@/lib/labor/draft-breakdown";
 import {
+  dayStripOpenCount,
+  draftAssignedShifts,
+  newShifts,
+} from "@/lib/labor/day-strip";
+import {
   adpRoster,
   availableCount,
   canWorkDay,
@@ -189,10 +194,6 @@ function personDayHours(p: CoveragePersonDay): number {
   return (actual.length ? actual : p.segments).reduce((a, s) => a + s.hours, 0);
 }
 
-/** Draft shifts that add people/hours: not fills for ADP open shifts, not saved shifts ADP already shows. */
-function newShifts(shifts: DraftShift[]): DraftShift[] {
-  return shifts.filter((s) => !s.fillsOpen && !s.inAdp);
-}
 
 /** Drafted headcount toward need — new hires' training shifts sit on top of it. */
 function draftCountSeries(points: OccupancyPoint[], shifts: DraftShift[]): number[] {
@@ -283,6 +284,9 @@ function DayStrip({
           const active = chip.date === selected;
           const isToday = chip.date === todayIso;
           const label = chipLabel(chip.date);
+          const dayDrafts = draftShifts?.get(chip.date) ?? [];
+          const openCount = dayStripOpenCount(chip, dayDrafts);
+          const assignedDrafts = draftAssignedShifts(dayDrafts);
           const suffix =
             chip.kind === "scheduled"
               ? "sched"
@@ -321,28 +325,25 @@ function DayStrip({
               >
                 {chip.headcount} {suffix}
               </Badge>
-              {chip.open > 0 ? (
+              {openCount > 0 ? (
                 <span
                   className="mt-0.5 text-[11px] font-medium leading-none"
                   style={{ color: OPEN }}
                 >
-                  +{chip.open} open
+                  +{openCount} open
                 </span>
               ) : null}
-              {newShifts(draftShifts?.get(chip.date) ?? []).length ? (
+              {assignedDrafts.length ? (
                 <span
                   className="mt-0.5 text-[11px] font-medium tabular-nums"
                   style={{ color: DRAFT_COLOR }}
                 >
-                  +{newShifts(draftShifts!.get(chip.date)!).length} draft ·{" "}
-                  {Number(
-                    newShifts(draftShifts!.get(chip.date)!)
-                      .reduce((h, d) => h + d.hours, 0)
-                      .toFixed(1),
-                  )}
+                  +{assignedDrafts.length} draft ·{" "}
+                  {Number(assignedDrafts.reduce((h, d) => h + d.hours, 0).toFixed(1))}
                   h
                 </span>
-              ) : (shortHours?.get(chip.date) ?? 0) > 0 ? (
+              ) : null}
+              {!newShifts(dayDrafts).length && (shortHours?.get(chip.date) ?? 0) > 0 ? (
                 <span className="mt-0.5 text-[11px] font-medium tabular-nums text-rose-600 dark:text-rose-400">
                   {shortHours!.get(chip.date)!.toFixed(1)}h short
                 </span>

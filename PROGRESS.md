@@ -1,3 +1,7 @@
+## 2026-11-02 — Training shifts count toward need (switch, default on)
+
+**Operator ask:** Nov 9 had an experienced opener plus a trainee opening, yet a 8:30 mid on top — the trainee should count toward the day's need. **Change:** training rule `countTowardNeed` (Scheduling rules switch, default on; older versions load on). Trainee ADP shifts count as coverage; after each day's training pass, need shifts the trainee covers start later / end sooner (picks, ADP shifts and the shadowed trainer untouched) and later open shifts get another try with the freed hours. Preview A/B Nov 9–15: paid 217.5h → 196h, Nov 9 mid 8:30 AM → 1 PM. Open shifts unchanged (Nov 12 mid, Nov 13 + 14 opens, Nov 28 mid): only new hires still training that kind were free and no trainer was on; marking one new hire trained (what-if) fills 2 of the 4.
+
 ## 2026-11-02 — Day strip tags open shifts in the draft too
 
 **Operator ask:** the Labor day chips showed ADP "sched" and "+N draft · Hh" but not open slots once weeks were cleared (draft leave-opens only). **Change:** the existing `+N open` tag counts ADP open lanes plus unassigned draft shifts; the draft tag lists only assigned suggestions so open isn't double-counted.

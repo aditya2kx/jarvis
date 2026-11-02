@@ -1848,7 +1848,17 @@ hours breakdown shows them as **New-hire training**. From the day after a new hi
 shift of a kind, a shift the need passes left open only for training goes to whoever can take it now,
 that new hire included. Training hours never spend the weekly hours goal. Pickers tag people
 **Experienced** / **New hire · 1/2 openers · 0/2 closers** and list blocked people (disabled) with the
-reason, so a manual ADP edit is informed. Hire date = `bhaga.adp_hire_dates` (migration 097, from the
+reason, so a manual ADP edit is informed.
+**Training counts toward need (switch, default on — 2026-11-02):** Scheduling rules → New-hire
+training → **Training counts toward need** (`training.countTowardNeed`; versions saved before it
+load on). On: new hires' ADP shifts count as coverage, and after each day's training pass the need
+shifts that day start later / end sooner where the trainee covers (open shifts first, then mids;
+operator picks, ADP shifts and the opener / closer a trainee shadows stay as drafted). The freed hours
+come off the weekly totals, and later open shifts that week are offered again. Rows read
+**training · counts toward need**; the hours breakdown adds a negative **Covered by new hires** line.
+Off: the "on top of need" behaviour above. A new hire still can't take a kind they haven't cleared
+(or any mid) without a trainer on — an open shift only they could take stays open.
+Hire date = `bhaga.adp_hire_dates` (migration 097, from the
 ADP profile's **Employee status → Hire date** field; falls back to the first ADP shift). The
 **nightly** pay_info pass keeps it fresh: punchers missing a row get the field read on the same
 profile open as their wage rate; any other Active person still missing a row (new hire, no punches

@@ -68,8 +68,8 @@ const insideSpan = (spans: [number, number][], s: number, e: number) => spans.so
 /**
  * New-hire training for one day (Issue #450): someone in `left` works an opener / closer like
  * anyone else once they've done that kind's supervised shifts. Until then a shift of that kind —
- * and any mid — is a training shift: drafted on top of need beside experienced staff overlapping
- * it by `overlapMin`, never toward need.
+ * and any mid — is a training shift: drafted beside experienced staff overlapping it by `overlapMin`,
+ * on top of need unless the training rule counts it toward need.
  */
 export type DraftTraining = {
   overlapMin: number;
@@ -81,7 +81,7 @@ export type DraftTraining = {
   experiencedOn: [number, number][];
 };
 
-export const TRAINING_ON_TOP = "New hire — trains on top of need, beside experienced staff";
+export const TRAINING_ON_TOP = "New hire — still training this kind beside experienced staff";
 
 /** Why a new hire can't take a `kind` shift toward need, or null when they can. */
 export function trainingBlock(training: DraftTraining | undefined, employee: string, kind: ShiftKind): string | null {

@@ -1,3 +1,7 @@
+## 2026-11-02 — `/prod-ops training-trainer` for per-kind new-hire trainers (#450 follow-up)
+
+**Gap:** Cloud Agents cannot open the prod Operator Console (IAP is Google accounts only), so after #484 a closers-only / openers-only trainer could only be saved by hand. **Change:** `/prod-ops training-trainer <First> openers-only|closers-only|both` appends a rules version that adds them to experienced, removes them from `trained`, and sets or clears `trainsOnly` (counts-only logs).
+
 ## 2026-11-02 — New hires train on top of need; closed days no longer read as stale (#450 follow-up)
 
 **Operator ask:** a trainee's shift shouldn't count toward the day's need — the trainer's does — and new hires should train as soon as trainers are on. **Change:** a shift of a kind the new hire hasn't cleared (or any mid) never counts toward headcount; a third draft pass gives each new hire one experienced opener / closer to shadow, earliest day first, and the need passes put experienced staff on the kind a new hire free that day can shadow. From the day after a new hire's last training shift of a kind, shifts left open only for training go to them (Nov 9–15 preview: unfilled 8 · 42h → 6 · 29h). A fourth experienced person was added via `/prod-ops experienced-staff`. **Banner:** closed Oct 31 + Nov 1 add no `model_daily` row, so the console said "Data is 3 days ago" though both nightlies succeeded; staleness now uses the later of the model's last date and the day before the latest successful nightly.

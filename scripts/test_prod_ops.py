@@ -44,6 +44,17 @@ class ProdOpsTests(unittest.TestCase):
             with self.assertRaises(RequestError, msg=body):
                 parse_comment(body)
 
+    def test_training_trainer_takes_a_first_name_and_kind(self):
+        cmd = commands(parse_comment("/prod-ops training-trainer Wing closers-only"), "484")[0]
+        self.assertEqual(cmd[1:], ["-m", "agents.bhaga.scripts.set_training_trainer", "--by", "prod-ops PR #484",
+                                   "Wing", "closers-only"])
+        self.assertEqual(prod_ops.tier(parse_comment("/prod-ops training-trainer Wing both"), Path("."))[0],
+                         "changes-prod")
+        for body in ("/prod-ops training-trainer Wing", "/prod-ops training-trainer Wing mids-only",
+                     '/prod-ops training-trainer "Wing, Zee" closers-only', "/prod-ops training-trainer"):
+            with self.assertRaises(RequestError, msg=body):
+                parse_comment(body)
+
     def test_shift_windows_takes_a_first_name_and_windows(self):
         cmd = commands(parse_comment("/prod-ops shift-windows Ana 09:00-17:00 16:00-20:30"), "480")[0]
         self.assertEqual(cmd[1:], ["-m", "agents.bhaga.scripts.set_shift_windows", "--by", "prod-ops PR #480",

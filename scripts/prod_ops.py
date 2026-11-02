@@ -21,6 +21,8 @@ operator's only gate is PR approval. `tier()` labels each op in the reply:
                                                       # new vs main is additive
     /prod-ops experienced-staff Ana Ben …             # new scheduling-rules version with these as the
                                                       # new-hire training experienced staff (first names)
+    /prod-ops training-trainer Wing closers-only      # add Wing as experienced, unmark trained, set
+                                                      # trainsOnly (openers-only | closers-only | both)
     /prod-ops shift-windows Ana 09:00-17:00 16:00-20:30 [days=Mon,Tue]
                                                       # new scheduling-rules version: Ana's shifts must
                                                       # fit inside one window (first name; all days default)
@@ -112,7 +114,7 @@ def parse_comment(body: str) -> dict:
         raise RequestError("comment must start with /prod-ops")
     argv = shlex.split(first)[1:]
     if not argv:
-        raise RequestError("missing operation: whoami | console-env | run-job | apply-migrations | experienced-staff | shift-windows | clear-weeks")
+        raise RequestError("missing operation: whoami | console-env | run-job | apply-migrations | experienced-staff | training-trainer | shift-windows | clear-weeks")
     op, rest = argv[0], argv[1:]
     if op in ("whoami", "apply-migrations"):
         if rest:
@@ -146,6 +148,11 @@ def parse_comment(body: str) -> dict:
         if not rest or not all(_FIRST_NAME.match(n) for n in rest):
             raise RequestError("experienced-staff <FirstName> … (first names only, resolved against the ADP Directory)")
         return {"op": op, "names": rest}
+    if op == "training-trainer":
+        kinds = {"openers-only", "closers-only", "both"}
+        if len(rest) != 2 or not _FIRST_NAME.match(rest[0]) or rest[1] not in kinds:
+            raise RequestError("training-trainer <FirstName> openers-only|closers-only|both")
+        return {"op": op, "name": rest[0], "kind": rest[1]}
     if op == "shift-windows":
         days = [t for t in rest[1:] if t.startswith("days=")]
         windows = [t for t in rest[1:] if not t.startswith("days=")]
@@ -319,6 +326,10 @@ def commands(req: dict, pr: str | None = None) -> list[list[str]]:
     if op == "experienced-staff":
         by = f"prod-ops PR #{pr}" if pr else "prod-ops"
         return [[sys.executable, "-m", "agents.bhaga.scripts.set_experienced_staff", "--by", by, *req["names"]]]
+    if op == "training-trainer":
+        by = f"prod-ops PR #{pr}" if pr else "prod-ops"
+        return [[sys.executable, "-m", "agents.bhaga.scripts.set_training_trainer", "--by", by,
+                 req["name"], req["kind"]]]
     if op == "shift-windows":
         by = f"prod-ops PR #{pr}" if pr else "prod-ops"
         days = ["--days", req["days"]] if req["days"] else []

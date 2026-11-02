@@ -1833,7 +1833,9 @@ training until both are done. **Mark trained** on a person's progress row (saved
 **Closers only** (`training.trainedOnly`); each row shows shifts worked. Each experienced-staff chip
 says what they train — openers & closers (default), openers only or closers only
 (`training.trainsOnly`): a one-kind trainer counts as trained on that kind, supervises only that kind
-(never mids), and still trains on the other kind if they're a new hire.
+(never mids), and still trains on the other kind if they're a new hire. Agents set that without the
+console via `/prod-ops training-trainer <FirstName> openers-only|closers-only|both` (unmarks them,
+adds them to experienced, sets or clears `trainsOnly`).
 It's one-time, counted over every ADP shift (past actuals + upcoming schedule), not per week.
 **Training shifts sit on top of need (2026-11-02):** a shift of a kind the new hire hasn't cleared
 (or any mid) never counts toward headcount — the need passes skip them (the draft row lists them

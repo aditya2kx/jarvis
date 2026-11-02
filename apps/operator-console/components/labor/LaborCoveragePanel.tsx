@@ -44,11 +44,8 @@ import {
   type DemandCell,
 } from "@/lib/labor/staffing-need";
 import { addDay, emptyBreakdown, requiredByRule } from "@/lib/labor/draft-breakdown";
-import {
-  dayStripOpenCount,
-  draftAssignedShifts,
-  newShifts,
-} from "@/lib/labor/day-strip";
+import { newShifts } from "@/lib/labor/day-strip";
+import { DayStripTags } from "@/components/labor/DayStripTags";
 import {
   adpRoster,
   availableCount,
@@ -284,9 +281,6 @@ function DayStrip({
           const active = chip.date === selected;
           const isToday = chip.date === todayIso;
           const label = chipLabel(chip.date);
-          const dayDrafts = draftShifts?.get(chip.date) ?? [];
-          const openCount = dayStripOpenCount(chip, dayDrafts);
-          const assignedDrafts = draftAssignedShifts(dayDrafts);
           const suffix =
             chip.kind === "scheduled"
               ? "sched"
@@ -325,29 +319,7 @@ function DayStrip({
               >
                 {chip.headcount} {suffix}
               </Badge>
-              {openCount > 0 ? (
-                <span
-                  className="mt-0.5 text-[11px] font-medium leading-none"
-                  style={{ color: OPEN }}
-                >
-                  +{openCount} open
-                </span>
-              ) : null}
-              {assignedDrafts.length ? (
-                <span
-                  className="mt-0.5 text-[11px] font-medium tabular-nums"
-                  style={{ color: DRAFT_COLOR }}
-                >
-                  +{assignedDrafts.length} draft ·{" "}
-                  {Number(assignedDrafts.reduce((h, d) => h + d.hours, 0).toFixed(1))}
-                  h
-                </span>
-              ) : null}
-              {!newShifts(dayDrafts).length && (shortHours?.get(chip.date) ?? 0) > 0 ? (
-                <span className="mt-0.5 text-[11px] font-medium tabular-nums text-rose-600 dark:text-rose-400">
-                  {shortHours!.get(chip.date)!.toFixed(1)}h short
-                </span>
-              ) : null}
+              <DayStripTags open={chip.open} drafts={draftShifts?.get(chip.date) ?? []} shortHours={shortHours?.get(chip.date)} />
               {requestCounts?.get(chip.date) ? (
                 <span className="mt-0.5 text-[11px] font-medium tabular-nums" style={{ color: REQUEST_COLOR }}>
                   {requestCounts.get(chip.date)} request{requestCounts.get(chip.date) === 1 ? "" : "s"}

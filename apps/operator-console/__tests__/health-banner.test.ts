@@ -15,6 +15,7 @@ const HEALTHY: SystemHealth = {
   haltScope: null,
   haltSince: null,
   dataWindowEnd: "2026-09-13",
+  refreshedThrough: "2026-09-12",
   dataAgeDays: 0,
   stale: false,
   error: null,

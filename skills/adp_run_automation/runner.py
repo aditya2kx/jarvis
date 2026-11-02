@@ -2037,28 +2037,30 @@ def _open_unavailability_requests(page, frame):
     return pane, list_text, unavail_text
 
 
-def _ensure_show_unavailability(page, frame) -> None:
-    """Turn on Filter › Display › Show Unavailability (off by default).
+def _ensure_show_unavailability(page, frame, on: bool = True) -> None:
+    """Set Filter › Display › Show Unavailability (off by default) to ``on``.
 
     A per-manager view preference — without it the grid never draws approved
-    unavailability. Never raises: the schedule read proceeds either way.
+    unavailability; with it, a shift click in such a cell can open the person's
+    pane instead (schedule writes turn it off). Never raises.
     """
     import re as _re
 
+    state = "on" if on else "off"
     try:
         frame.get_by_text("Filter", exact=True).first.click(timeout=8_000)
         page.wait_for_timeout(1_200)
         box = frame.locator("[data-id=team-schedule-display-preferences-show-unavailability]").first
-        if box.get_attribute("aria-checked", timeout=5_000) == "true":
-            print("[adp_schedule] Show Unavailability already on")
+        if (box.get_attribute("aria-checked", timeout=5_000) == "true") == on:
+            print(f"[adp_schedule] Show Unavailability already {state}")
             page.keyboard.press("Escape")
         else:
             box.click(timeout=5_000)
             frame.get_by_role("button", name=_re.compile(r"^\s*Apply\s*$")).first.click(timeout=5_000)
-            print("[adp_schedule] turned on Show Unavailability")
+            print(f"[adp_schedule] turned {state} Show Unavailability")
         page.wait_for_timeout(2_500)
     except Exception as exc:  # noqa: BLE001
-        print(f"[adp_schedule] WARN: could not turn on Show Unavailability: {type(exc).__name__}: {exc}"[:300])
+        print(f"[adp_schedule] WARN: could not turn {state} Show Unavailability: {type(exc).__name__}: {exc}"[:300])
         try:
             page.keyboard.press("Escape")
         except Exception:  # noqa: BLE001

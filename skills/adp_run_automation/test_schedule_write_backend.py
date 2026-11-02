@@ -413,6 +413,35 @@ class ConsoleShiftChanges(unittest.TestCase):
         wb.delete_any_shift(mock.MagicMock(), mock.Mock(), **self.T, dry_run=True)
         self.assertEqual(self.calls, [("open", "any"), ("delete", True)])
 
+    def _open(self, panes):
+        """_open_assigned_shift with each click opening the next pane text; returns the Show Unavailability calls."""
+        frame, toggles = mock.MagicMock(), []
+        texts = iter(panes)
+        frame.evaluate.side_effect = lambda js, *_a: next(texts) if js == wb.PANE_TEXT_JS else "x"
+        with mock.patch.object(wb, "_mark_shift", return_value={"found": True}), \
+             mock.patch.object(wb, "_pane_open", return_value=True), \
+             mock.patch.object(wb, "_back_out"), \
+             mock.patch.object(runner, "_ensure_show_unavailability", lambda _p, _f, on: toggles.append(on)):
+            wb._open_assigned_shift(frame, mock.Mock(), **self.T, state="any")
+        return toggles
+
+    SHIFT_PANE = "Shift details Lee, Kim Tue, Nov 3, 2026 9:00 AM - 3:00 PM"
+    PERSON_PANE = "Lee, Kim Delete all schedules Add shift Add unavailability"
+
+    def test_open_assigned_shift_opens_shift_details_without_touching_the_filter(self):
+        self.assertEqual(self._open([self.SHIFT_PANE]), [])
+
+    def test_open_assigned_shift_hides_unavailability_when_the_person_pane_opens(self):
+        self.assertEqual(self._open([self.PERSON_PANE, self.SHIFT_PANE]), [False])
+
+    def test_open_assigned_shift_person_pane_twice_fails_without_pressing_anything(self):
+        with self.assertRaisesRegex(wb.ScheduleWriteError, "details pane is not .* \\(clicked x\\)"):
+            self._open([self.PERSON_PANE, self.PERSON_PANE])
+
+    def test_open_assigned_shift_other_wrong_pane_fails_without_retry(self):
+        with self.assertRaisesRegex(wb.ScheduleWriteError, "details pane is not"):
+            self._open(["Shift details Lee, Kim Wed, Nov 4, 2026 9:00 AM - 3:00 PM"])
+
     def test_edit_shift_is_confirmed_live_at_the_new_times(self):
         self._patch(grid=[True])
         wb.edit_shift(mock.MagicMock(), mock.Mock(), **self.T, to_start_min=600, to_end_min=960)

@@ -759,7 +759,8 @@ def _apply_assigned(frame, page, row: dict, *, dry_run: bool) -> str | None:
     raise ValueError(f"unknown shift change {kind!r}")
 
 
-def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows: list[dict] | None = None) -> int:
+def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows: list[dict] | None = None,
+              retry_failed: bool = False) -> int:
     """Apply one console "Apply to ADP" batch: queued adp_shift_changes + adp_unavailability_changes.
 
     Every row ends 'applied' (ADP re-read shows it), 'skipped' (ADP already showed it,
@@ -767,14 +768,18 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
     marks every unsettled row failed. Then the changed weeks are re-read into BQ.
     Unavailability: only approve is wired; other kinds fail without a click.
     `rows`: walk these unqueued shift changes instead (dry run only — nothing in BQ to settle).
+    `retry_failed`: also the batch's failed deletes — a delete re-checks the grid first, so it can't
+    remove twice; other kinds stay never-retried.
     """
     params = [("store", "STRING", store), ("id", "STRING", batch_id)]
     if rows is not None:
         assert dry_run, "unqueued rows can only be dry-run"
         shifts, unavail = rows, []
     else:
+        retry = " OR (status = 'failed' AND kind IN ('shift-delete', 'open-delete'))" if retry_failed else ""
         shifts = _query(
-            "SELECT * FROM {T} WHERE store = @store AND batch_id = @id AND status = 'queued'", params, table=SHIFT_TABLE,
+            f"SELECT * FROM {{T}} WHERE store = @store AND batch_id = @id AND (status = 'queued'{retry})",
+            params, table=SHIFT_TABLE,
         )
         unavail = _query(
             "SELECT * FROM {T} WHERE store = @store AND batch_id = @id AND status = 'queued'", params, table=UNAVAIL_TABLE,
@@ -1478,6 +1483,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--delete", help="';'-separated row_keys of drafted shifts to remove from ADP (--week-start)")
     p.add_argument("--assign-id", help="assign the queued open shifts of this labor_open_shift_assignments run")
     p.add_argument("--apply-batch", help="apply every queued change of this console Apply to ADP batch")
+    p.add_argument("--retry-failed", action="store_true",
+                   help="with --apply-batch: also re-walk its failed deletes (each re-checks ADP first)")
     p.add_argument("--queue-changes", metavar="SPEC",
                    help="queue shift changes as one batch, then apply it (see parse_changes for SPEC)")
     p.add_argument("--queue-assign", metavar="FILE",
@@ -1521,7 +1528,7 @@ def main(argv: list[str] | None = None) -> int:
         a.apply_batch = queue_changes(a.store, rows, by=a.requested_by)
         print(f"queued batch_id={a.apply_batch} rows={len(rows)}")
     if a.apply_batch:
-        return run_apply(a.store, a.apply_batch, headless=a.headless, dry_run=a.dry_run)
+        return run_apply(a.store, a.apply_batch, headless=a.headless, dry_run=a.dry_run, retry_failed=a.retry_failed)
     if a.assign_id:
         return run_assign(a.store, a.assign_id, headless=a.headless, dry_run=a.dry_run)
     if a.refresh_schedule:

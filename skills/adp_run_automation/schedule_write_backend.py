@@ -550,6 +550,25 @@ FIND_SHIFT_JS = r"""
 }
 """
 
+# What a click on the marked shift lands on: the top element at its centre, up to 4 ancestors.
+HIT_JS = r"""
+() => {
+  const m = document.querySelector('[data-jarvis-del]');
+  if (!m) return 'nothing marked';
+  const b = m.getBoundingClientRect();
+  let e = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+  const out = [];
+  for (let i = 0; e && i < 5; i++, e = e.parentElement) {
+    out.push(e.tagName.toLowerCase() + (e === m ? '*' : '')
+      + (typeof e.className === 'string' && e.className ? '.' + e.className.trim().split(/\s+/).slice(0, 2).join('.') : ''));
+  }
+  return out.join(' < ') + ` @${Math.round(b.width)}x${Math.round(b.height)}`;
+}
+"""
+
+# The person's pane (a click on the row, not a shift): never press anything in it.
+PERSON_PANE_RE = re.compile(r"Delete all schedules", re.I)
+
 PANE_TEXT_JS = r"""
 () => [...document.querySelectorAll('sdf-focus-pane')]
   .filter(p => { const b = p.getBoundingClientRect(); return b.width > 0 && b.height > 0; })
@@ -623,21 +642,31 @@ def delete_shift(
 def _open_assigned_shift(frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int,
                          state: str) -> None:
     """From the grid (on the right week), open the Shift details pane of one assigned shift."""
+    from skills.adp_run_automation import runner as r
+
     d = dt.date.fromisoformat(date_iso)
     rng = f"{fmt_time(start_min)} - {fmt_time(end_min)}"
-    info = _mark_shift(frame, page, date_iso=date_iso, employee=employee,
-                       start_min=start_min, end_min=end_min, state=state)
-    if not info.get("found"):
-        raise ScheduleWriteError(f"{state} shift {employee} {date_iso} {rng} not found in grid: {info.get('why')}")
-    frame.locator("[data-jarvis-del='1']").first.click(timeout=8000)
-    if not _wait_for(page, lambda: _pane_open(frame), 8.0):
-        raise ScheduleWriteError("shift details pane did not open")
-    page.wait_for_timeout(500)
-    pane = frame.evaluate(PANE_TEXT_JS)
     expect = (f"{d:%b} {d.day}, {d.year}", rng) + (("Draft",) if state == "draft" else ())
-    if not all(s in pane for s in expect) or employee.split(",")[0] not in pane:
+    for retry in (False, True):
+        info = _mark_shift(frame, page, date_iso=date_iso, employee=employee,
+                           start_min=start_min, end_min=end_min, state=state)
+        if not info.get("found"):
+            raise ScheduleWriteError(f"{state} shift {employee} {date_iso} {rng} not found in grid: {info.get('why')}")
+        hit = frame.evaluate(HIT_JS)
+        frame.locator("[data-jarvis-del='1']").first.click(timeout=8000)
+        if not _wait_for(page, lambda: _pane_open(frame), 8.0):
+            raise ScheduleWriteError("shift details pane did not open")
+        page.wait_for_timeout(500)
+        pane = frame.evaluate(PANE_TEXT_JS)
+        if all(s in pane for s in expect) and employee.split(",")[0] in pane:
+            return
         _back_out(frame, page)
-        raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r}")
+        if retry or not PERSON_PANE_RE.search(pane):
+            raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r} (clicked {hit})")
+        # 2026-11-02: 30 of 31 failed deletes were days ADP drew unavailability in the cell; the
+        # click opened the person's pane. Reads turn Show Unavailability back on.
+        print(f"[schedule_write] person pane instead of shift details (clicked {hit}); hiding unavailability")
+        r._ensure_show_unavailability(page, frame, on=False)
 
 
 def _press_delete(frame, page, *, dry_run: bool) -> bool:

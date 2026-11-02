@@ -1891,7 +1891,11 @@ Per week the job applies deletes, then edits, reassigns, adds (and publishes), a
 (wizard / Edit **Publish**); the week's **Publish drafts** and **Delete all schedules** are never pressed.
 Every row ends `applied` (ADP re-read shows it: the grid for assigned shifts, the week's open-shift counts for
 open shifts), `skipped` (ADP already showed it — nothing clicked) or `failed` with the reason; nothing is
-retried and a crash marks the rest `not attempted: job stopped (…)`. A reassign whose add fails says
+retried and a crash marks the rest `not attempted: job stopped (…)`. Exception: `BHAGA_SCHEDULE_RETRY_FAILED=1`
+with the batch id re-walks that batch's **failed deletes** (each re-checks the grid first, so none can delete
+twice). With Filter › Show Unavailability on, a click on a shift in a cell that also draws unavailability can
+open the person's pane (`Delete all schedules …`) instead of Shift details; the job then turns Show
+Unavailability off and clicks once more (the post-Apply re-read turns it back on). A reassign whose add fails says
 `removed <name>'s shift but could not add it for <name> … — add it again`. A `shift-publish` (or a
 `shift-add` whose exact shift ADP shows as a draft) deletes that draft and adds the same shift published;
 already live → `skipped`; its add failing says `removed <name>'s draft but could not add it published`. Applied rows append to

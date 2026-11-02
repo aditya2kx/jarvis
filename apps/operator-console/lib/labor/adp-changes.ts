@@ -430,18 +430,29 @@ export function personShifts(
 
 export type WeekShift = { date: string; employee: string } & Times;
 
+/** Assigned ADP shifts (published and drafts) dated after `afterIso` up to `throughIso`. */
+export function adpShifts(
+  shifts: { date: string; employee: string; shift_ranges_json: string | null }[],
+  afterIso: string,
+  throughIso: string,
+): (WeekShift & { draft: boolean })[] {
+  const people = new Set(shifts.filter((s) => s.date > afterIso && s.date <= throughIso).map((s) => s.employee));
+  return [...people].flatMap((employee) =>
+    personShifts(shifts, employee, afterIso)
+      .filter((p) => p.date > afterIso && p.date <= throughIso)
+      .map((p) => ({ ...p, employee })),
+  );
+}
+
 /** Assigned shifts ADP still shows as drafts, dated after `afterIso` up to `throughIso`. */
 export function adpDrafts(
   shifts: { date: string; employee: string; shift_ranges_json: string | null }[],
   afterIso: string,
   throughIso: string,
 ): WeekShift[] {
-  const people = new Set(shifts.filter((s) => s.date > afterIso && s.date <= throughIso).map((s) => s.employee));
-  return [...people].flatMap((employee) =>
-    personShifts(shifts, employee, afterIso)
-      .filter((p) => p.draft && p.date > afterIso && p.date <= throughIso)
-      .map(({ date, startMin, endMin }) => ({ date, employee, startMin, endMin })),
-  );
+  return adpShifts(shifts, afterIso, throughIso)
+    .filter((p) => p.draft)
+    .map(({ date, employee, startMin, endMin }) => ({ date, employee, startMin, endMin }));
 }
 
 /** How many ADP shifts one staged change represents (`open-add` can bundle several). */
@@ -483,6 +494,27 @@ export function suggestedChanges(
   }
   for (const d of drafts) if (d.date > todayIso) out.push({ kind: "shift-publish", ...d });
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin);
+}
+
+/**
+ * Deletes that clear these ADP shifts (assigned — published or draft — and open) from tomorrow on,
+ * so the suggestions start fresh. Deletes already staged are left out.
+ */
+export function clearChanges(
+  assigned: readonly WeekShift[],
+  open: readonly ({ slot: string; date: string } & Times)[],
+  todayIso: string,
+  staged: readonly AdpChange[] = [],
+): ShiftChange[] {
+  const have = new Set(
+    staged.flatMap((a) => (a.area === "shift" && (a.c.kind === "shift-delete" || a.c.kind === "open-delete") ? [shiftKey(a.c)] : [])),
+  );
+  return [
+    ...assigned.map((d): ShiftChange => ({ kind: "shift-delete", date: d.date, employee: d.employee, startMin: d.startMin, endMin: d.endMin })),
+    ...open.map((o): ShiftChange => ({ kind: "open-delete", slot: o.slot, date: o.date, startMin: o.startMin, endMin: o.endMin })),
+  ]
+    .filter((c) => c.date > todayIso && !have.has(shiftKey(c)))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin);
 }
 
 /** "HH:MM" ↔ minutes for the drawers' time inputs. */

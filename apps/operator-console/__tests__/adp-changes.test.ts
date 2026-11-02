@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   adpChangeKey,
   adpDrafts,
+  clearChanges,
+  adpShifts,
   changePeople,
   paidHoursOfChanges,
   personShifts,
@@ -218,6 +220,48 @@ describe("the suggested week as tray changes", () => {
     const keep = (has: boolean) =>
       pruneQueue([shift(pub)], { todayIso: TODAY, unavailabilityKeys: new Set(), openSlots: new Set(), hasShift: () => has });
     expect([keep(true).length, keep(false).length]).toEqual([1, 0]);
+  });
+});
+
+describe("clearChanges (Clear weeks)", () => {
+  const assigned = [
+    { date: TODAY, employee: "Lee, Ana", ...T },
+    { date: "2026-10-30", employee: "Kim, Dee", startMin: 840, endMin: 1230 },
+    { date: "2026-10-30", employee: "Lee, Ana", ...T },
+  ];
+  const open = [{ slot: "2026-10-30|adp|420|780", date: "2026-10-30", ...T }];
+
+  it("deletes every assigned and open shift from tomorrow on, earliest first, and the result validates", () => {
+    const out = clearChanges(assigned, open, TODAY);
+    expect(out).toEqual([
+      { kind: "shift-delete", date: "2026-10-30", employee: "Lee, Ana", ...T },
+      { kind: "open-delete", slot: "2026-10-30|adp|420|780", date: "2026-10-30", ...T },
+      { kind: "shift-delete", date: "2026-10-30", employee: "Kim, Dee", startMin: 840, endMin: 1230 },
+    ]);
+    expect(validateAdpChanges(out.map(shift), TODAY)).toHaveLength(3);
+  });
+
+  it("leaves out deletes already in the tray; a staged publish of the same shift is replaced, not kept", () => {
+    const staged = [
+      shift({ kind: "shift-delete", date: "2026-10-30", employee: "Lee, Ana", ...T }),
+      shift({ kind: "open-delete", slot: "2026-10-30|adp|420|780", date: "2026-10-30", ...T }),
+      shift({ kind: "shift-publish", date: "2026-10-30", employee: "Kim, Dee", startMin: 840, endMin: 1230 }),
+    ];
+    const out = clearChanges(assigned, open, TODAY, staged);
+    expect(out.map((c) => "employee" in c && c.employee)).toEqual(["Kim, Dee"]);
+    expect(out.reduce((q, c) => stageAdp(q, shift(c)), staged).map((a) => a.c.kind)).toEqual(["shift-delete", "open-delete", "shift-delete"]);
+  });
+});
+
+describe("adpShifts", () => {
+  it("lists published and draft shifts in the window, flagged", () => {
+    const rows = [
+      { date: "2026-10-30", employee: "Lee, Ana", shift_ranges_json: '["7:00 AM - 1:00 PM"]' },
+      { date: "2026-10-31", employee: "Lee, Ana", shift_ranges_json: '["2:00 PM - 8:30 PM DRAFT"]' },
+      { date: "2026-11-09", employee: "Lee, Ana", shift_ranges_json: '["7:00 AM - 1:00 PM"]' },
+    ];
+    expect(adpShifts(rows, TODAY, "2026-11-01").map((s) => [s.date, s.draft])).toEqual([["2026-10-30", false], ["2026-10-31", true]]);
+    expect(adpDrafts(rows, TODAY, "2026-11-01").map((s) => s.date)).toEqual(["2026-10-31"]);
   });
 });
 

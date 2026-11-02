@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   adpRoster,
   availableCount,
+  canWorkDay,
   draftDay,
   fillOpenShift,
   paidHours,
+  shiftSpans,
   type Availability,
   type DraftPreference,
   type DraftTraining,
@@ -625,5 +627,50 @@ describe("new-hire training gate (Issue #450)", () => {
     })!;
     expect(onlyKai).toMatchObject({ employee: null, fillsOpen: true, blocked: [{ employee: "Kai" }] });
     expect(fillOpenShift({ iso, startMin: 810, endMin: 1230, roster: [], weekHours: new Map(), busy: new Set() })).toBeNull();
+  });
+});
+
+describe("shift windows (each shift fits inside one window)", () => {
+  // 9 AM–5 PM or 4–8:30 PM; 2:30–8:30 PM crosses from one into the other.
+  const dee = (rule = true): Availability => ({
+    employee: "Dee",
+    maxWeekHours: 40,
+    windows: all([360, 1260]),
+    ...(rule ? { shiftWindows: [{ days: [0, 1, 2, 3, 4, 5, 6], windows: [[540, 1020], [960, 1230]] as [number, number][] }] } : {}),
+  });
+  const MON = "2026-09-28";
+  const lateNeed = mins.map((t) => (t >= 840 && t < 1230 ? 1 : 0));
+  const inOne = (s: number, e: number) => (s >= 540 && e <= 1020) || (s >= 960 && e <= 1230);
+
+  it("spans are the windows clipped to the day window; other weekdays keep the day window", () => {
+    expect(shiftSpans(dee(), 0)).toEqual([[540, 1020], [960, 1230]]);
+    const weekdays: Availability = { ...dee(), windows: all([600, 1200]), shiftWindows: [{ days: [0], windows: [[540, 1020], [960, 1230]] }] };
+    expect(shiftSpans(weekdays, 0)).toEqual([[600, 1020], [960, 1200]]);
+    expect(shiftSpans(weekdays, 1)).toEqual([[600, 1200]]);
+  });
+
+  it("draft keeps her shift inside one window instead of 2–8:30 PM", () => {
+    const run = (a: Availability) =>
+      draftDay({ iso: MON, mins, onFloor: zeros, need: lateNeed, roster: [a], weekHours: new Map(), busy: new Set() })
+        .filter((s) => s.employee === "Dee");
+    expect(run(dee(false)).some((s) => !inOne(s.startMin, s.endMin))).toBe(true);
+    const mine = run(dee());
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ startMin: 960, endMin: 1230 });
+  });
+
+  it("open shifts: offered only when the slot fits one window", () => {
+    const fill = (startMin: number, endMin: number) =>
+      fillOpenShift({ iso: MON, startMin, endMin, roster: [dee()], weekHours: new Map(), busy: new Set() });
+    expect(fill(870, 1230)).toBeNull();
+    expect(fill(960, 1230)?.employee).toBe("Dee");
+    expect(fill(540, 1020)?.employee).toBe("Dee");
+  });
+
+  it("a day counts as workable only if one window has a long enough free stretch", () => {
+    const blocks = [{ fromMin: 720, toMin: 840, status: "approved" as const }];
+    expect(canWorkDay(dee(false), MON, blocks, 300)).toBe(true);
+    expect(canWorkDay(dee(), MON, blocks, 270)).toBe(true);
+    expect(canWorkDay(dee(), MON, blocks, 300)).toBe(false);
   });
 });

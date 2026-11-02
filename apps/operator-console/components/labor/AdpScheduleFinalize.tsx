@@ -16,12 +16,14 @@ import {
 } from "@/components/ui/sheet";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import {
+  MAX_CHANGES,
   paidHoursOfChanges,
   shiftsInChange,
   timeText,
   type ShiftChange,
 } from "@/lib/labor/adp-changes";
 import type { MealRule } from "@/lib/labor/shift-draft";
+import { cn } from "@/lib/utils";
 
 const POLL_MS = 5000;
 const GRACE_MS = 90 * 1000;
@@ -75,12 +77,14 @@ function ChangeList({ changes, meal }: { changes: ShiftChange[]; meal?: MealRule
               >
                 <span className="tabular-nums">{timeText(c)}</span>
                 <span className="flex min-w-0 items-center gap-2">
-                  {c.kind === "open-add" ? (
-                    <Badge variant="outline" className="font-normal">
-                      {c.count > 1 ? `${c.count} open shifts` : "Open shift"}
+                  {c.kind === "open-add" || c.kind === "open-delete" ? (
+                    <Badge variant="outline" className={cn("font-normal", c.kind === "open-delete" && "line-through")}>
+                      {c.kind === "open-add" && c.count > 1 ? `${c.count} open shifts` : "Open shift"}
                     </Badge>
                   ) : (
-                    <span className="truncate font-medium">{"employee" in c ? c.employee : ""}</span>
+                    <span className={cn("truncate font-medium", c.kind === "shift-delete" && "text-muted-foreground line-through")}>
+                      {"employee" in c ? c.employee : ""}
+                    </span>
                   )}
                   {c.kind === "shift-publish" ? (
                     <Badge variant="secondary" className="font-normal">
@@ -135,6 +139,9 @@ function WeekPicker({
   );
 }
 
+/** `published`: how many of `changes` delete shifts staff can already see. */
+export type ClearWeek = SuggestedWeek & { published: number };
+
 export type SuggestedWeek = {
   weekStart: string;
   /** Suggested shifts ADP doesn't have yet, and ADP drafts to publish — minus what's already in the tray. */
@@ -149,6 +156,8 @@ export function AdpScheduleFinalize({
   weekStart,
   weeks,
   onStage,
+  clearWeeks = [],
+  onClear,
   enabled,
   meal,
 }: {
@@ -157,6 +166,9 @@ export function AdpScheduleFinalize({
   /** Every upcoming week with a suggested schedule, ascending (includes `weekStart`). */
   weeks: SuggestedWeek[];
   onStage: (changes: ShiftChange[]) => void;
+  /** Per upcoming week, the deletes that would clear its ADP shifts (published, drafts, open) from tomorrow on. */
+  clearWeeks?: ClearWeek[];
+  onClear?: (changes: ShiftChange[]) => void;
   /** CONSOLE_ADP_SCHEDULE_WRITE: gates the ClickUp message (the tray gates Apply itself). */
   enabled: boolean;
   /** Staffing meal rule — hour totals match the chart / weekly goal (paid, not wall-clock). */
@@ -166,7 +178,9 @@ export function AdpScheduleFinalize({
   // Right after a click the Cloud Run execution may not be listed yet; keep polling meanwhile.
   const [graceUntil, setGraceUntil] = useState(0);
   const [sentTo, setSentTo] = useState<"dm" | "channel" | null>(null);
-  const [sheet, setSheet] = useState<"add" | "message" | null>(null);
+  const [sheet, setSheet] = useState<"add" | "message" | "clear" | null>(null);
+  // Clearing deletes shifts, so no week starts ticked.
+  const [clearPicked, setClearPicked] = useState<Set<string>>(() => new Set());
   // One week selection for both sheets: the weeks just added are the weeks to announce.
   const [picked, setPicked] = useState<Set<string>>(() => new Set([weekStart]));
   const [pickedFor, setPickedFor] = useState(weekStart);
@@ -207,6 +221,21 @@ export function AdpScheduleFinalize({
   const addWeeks = addable.filter((w) => picked.has(w));
   const addChanges = addWeeks.flatMap((w) => byWeek.get(w) ?? []);
   const messageWeeks = allWeeks.filter((w) => picked.has(w));
+
+  const clearBy = new Map(clearWeeks.map((w) => [w.weekStart, w.changes]));
+  const clearable = clearWeeks.filter((w) => w.changes.length).map((w) => w.weekStart);
+  const clearChanges = clearWeeks.filter((w) => clearPicked.has(w.weekStart)).flatMap((w) => w.changes);
+  const clearCount = clearChanges.reduce((n, c) => n + shiftsInChange(c), 0);
+  const clearPublished = clearWeeks.filter((w) => clearPicked.has(w.weekStart)).reduce((n, w) => n + w.published, 0);
+  const publishedBy = new Map(clearWeeks.map((w) => [w.weekStart, w.published]));
+  const tooMany = clearChanges.length > MAX_CHANGES;
+  const toggleClear = (week: string, on: boolean) =>
+    setClearPicked((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(week);
+      else next.delete(week);
+      return next;
+    });
 
   const toggle = (week: string, on: boolean) =>
     setPicked((prev) => {
@@ -301,6 +330,21 @@ export function AdpScheduleFinalize({
         >
           {messaging ? (toChannel ? "Posting to Shift Coverage…" : "Sending ClickUp message…") : "Send ClickUp message"}
         </Button>
+        {onClear ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            disabled={clearable.length === 0}
+            title="Remove every shift ADP has in the weeks you pick, so the suggestions start fresh"
+            onClick={() => {
+              setClearPicked(new Set());
+              setSheet("clear");
+            }}
+          >
+            Clear weeks
+          </Button>
+        ) : null}
       </div>
 
       <Sheet open={sheet != null} onOpenChange={(o) => !o && setSheet(null)}>
@@ -348,6 +392,60 @@ export function AdpScheduleFinalize({
                 >
                   Add {plural(addChanges.length, "line")} to changes
                   {addWeeks.length > 1 ? ` · ${addWeeks.length} weeks` : ""}
+                </Button>
+                <SheetClose render={<Button variant="outline">Cancel</Button>} />
+              </SheetFooter>
+            </>
+          ) : sheet === "clear" ? (
+            <>
+              <SheetHeader>
+                <SheetTitle>Clear weeks in ADP</SheetTitle>
+                <SheetDescription>
+                  Removes every shift ADP has in the weeks you pick, from tomorrow on: published, drafts and
+                  open shifts. Nothing changes in ADP until you press Apply to ADP; after that the suggestions
+                  for those weeks start fresh, and you add them with Review &amp; add.
+                </SheetDescription>
+              </SheetHeader>
+              <WeekPicker
+                weeks={clearWeeks.map((w) => w.weekStart)}
+                picked={clearPicked}
+                onToggle={toggleClear}
+                detail={(w) => {
+                  const list = clearBy.get(w) ?? [];
+                  const n = list.reduce((a, c) => a + shiftsInChange(c), 0);
+                  const published = publishedBy.get(w) ?? 0;
+                  return list.length
+                    ? { text: `${plural(n, "shift")} · ${paidHoursOfChanges(list, meal).toFixed(1)}h${published ? ` · ${published} published` : ""}` }
+                    : { text: "Nothing in ADP to clear", disabled: true };
+                }}
+              />
+              {tooMany ? (
+                <p className="px-4 text-xs text-destructive">
+                  One Apply takes at most {MAX_CHANGES} changes — pick fewer weeks, Apply, then clear the rest.
+                </p>
+              ) : null}
+              {clearPublished ? (
+                <p className="px-4 text-xs text-destructive" data-testid="clear-published">
+                  {plural(clearPublished, "published shift")} — staff see {clearPublished === 1 ? "it" : "them"} leave
+                  their schedule when you Apply.
+                </p>
+              ) : null}
+              {clearChanges.length ? (
+                <p className="px-4 text-xs text-muted-foreground">
+                  These come back as suggestions after Apply, so Review &amp; add can re-plan them.
+                </p>
+              ) : null}
+              <ChangeList changes={clearChanges} meal={meal} />
+              <SheetFooter>
+                <Button
+                  variant="destructive"
+                  disabled={clearChanges.length === 0 || tooMany}
+                  onClick={() => {
+                    onClear!(clearChanges);
+                    setSheet(null);
+                  }}
+                >
+                  {clearChanges.length ? `Add ${plural(clearCount, "delete")} to changes` : "Pick weeks to clear"}
                 </Button>
                 <SheetClose render={<Button variant="outline">Cancel</Button>} />
               </SheetFooter>

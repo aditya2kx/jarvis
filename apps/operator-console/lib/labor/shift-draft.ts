@@ -11,7 +11,7 @@
 
 import { overlapMinutes, shiftKindOf, type TrainingLeft } from "@/lib/labor/new-hire-training";
 import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
-import type { ShiftTimes } from "@/lib/labor/schedule-inputs";
+import type { ShiftTimes, ShiftWindowRule } from "@/lib/labor/schedule-inputs";
 import { freeSegment, type Block } from "@/lib/labor/unavailability";
 
 export type ShiftKind = "open" | "mid" | "close";
@@ -36,7 +36,25 @@ export type Availability = {
   lastDay?: string;
   /** New hires train beside this person (Issue #450). */
   experienced?: boolean;
+  /** Operator rule: on these weekdays each shift fits entirely inside one window. */
+  shiftWindows?: ShiftWindowRule[];
 };
+
+/**
+ * Spans a shift for this person must fit inside on weekday `dow`: their day window, or each of
+ * their shift windows (the last rule covering `dow`) clipped to it. Empty = can't work that weekday.
+ */
+export function shiftSpans(a: Availability, dow: number): [number, number][] {
+  const w = a.windows[dow];
+  if (!w) return [];
+  const rule = a.shiftWindows?.findLast((r) => r.days.includes(dow));
+  if (!rule) return [w];
+  return rule.windows
+    .map(([s, e]): [number, number] => [Math.max(s, w[0]), Math.min(e, w[1])])
+    .filter(([s, e]) => e > s);
+}
+
+const insideSpan = (spans: [number, number][], s: number, e: number) => spans.some(([ws, we]) => ws <= s && e <= we);
 
 /**
  * New-hire gate for one day (Issue #450): someone in `left` works an opener / closer alone once
@@ -121,10 +139,11 @@ function byPriority(
 
 /** Could this person work a minimum shift on `iso` (weekday window, last day, ADP unavailability)? */
 export function canWorkDay(a: Availability, iso: string, blocks: readonly Block[] | undefined, minShiftMin: number): boolean {
-  const w = a.windows[isoWeekdayMon0(iso)];
-  if (!w || !worksOn(a, iso)) return false;
-  const [s, e] = freeSegment(w[0], w[1], blocks);
-  return e - s >= minShiftMin;
+  if (!worksOn(a, iso)) return false;
+  return shiftSpans(a, isoWeekdayMon0(iso)).some(([ws, we]) => {
+    const [s, e] = freeSegment(ws, we, blocks);
+    return e - s >= minShiftMin;
+  });
 }
 
 /** How many people could work a minimum shift on `iso` — the draft staffs the scarcest days first. */
@@ -346,14 +365,13 @@ function draftCore(
       .filter((o) => o.employee != null && (o.endMin === g0 || o.startMin === g1))
       .flatMap((o) => {
         const a = args.roster.find((r) => r.employee === o.employee);
-        const w = a?.windows[dow];
-        if (!a || !w) return [];
+        if (!a) return [];
         const s = Math.max(dayStart, snapDown(Math.min(o.startMin, g0)));
         const e = Math.min(dayEnd, snapUp(Math.max(o.endMin, g1)));
         const [fs, fe] = freeSegment(s, e, args.unavailable?.get(a.employee));
         const added = paid(s, e) - paid(o.startMin, o.endMin);
         const ok =
-          s >= w[0] && e <= w[1] && fs === s && fe === e &&
+          insideSpan(shiftSpans(a, dow), s, e) && fs === s && fe === e &&
           e - s <= (a.maxShiftMin ?? maxLen) &&
           weekOf(a) + added <= weekCap(a);
         return ok ? [{ o, a, s, e, added }] : [];
@@ -372,7 +390,7 @@ function draftCore(
   const maxShifts = args.maxShifts ?? 8;
   const bestChoice = (n: number, slot: string): DraftChoice => {
     const free = args.roster
-      .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
+      .filter((a) => !busy.has(a.employee) && shiftSpans(a, dow).length && worksOn(a, args.iso))
       .map((a) => a.employee);
     const choices: DraftChoice[] = [
       {},
@@ -469,10 +487,7 @@ function draftCore(
       while (runEnd + 1 < short.length && short[runEnd + 1]! > 0) runEnd++;
       const reach = Math.min(dayEnd, Math.max(blockEnd, args.mins[runEnd]! + step));
 
-      const fits = args.roster
-        .filter((a) => !busy.has(a.employee) && a.windows[dow] && worksOn(a, args.iso))
-        .map((a) => {
-          const [ws, we] = a.windows[dow]!;
+      const fitIn = (a: Availability, ws: number, we: number) => {
           const lo = Math.max(ws, blockStart);
           let hi = Math.min(we, blockEnd);
           const own = a.maxShiftMin;
@@ -496,15 +511,23 @@ function draftCore(
           // "Trimmed" = cut short by their availability, not by pacing or their own longest shift.
           const trimmed = s > lo || free < hi || lo > blockStart || (own == null && hi < blockEnd);
           return { a, s, e, len: e - s, gain: gain(short, args.mins, s, e), trimmed };
-        })
+      };
+      const covers = (x: { s: number; e: number }) => mustCover == null || (x.s <= mustCover && mustCover < x.e);
+      const fits = args.roster
         .filter(
-          ({ a, len, gain }) =>
-            len >= minLen &&
-            gain > 0 &&
-            weekOf(a) + paid(0, len) <= weekCap(a) &&
-            (a.maxShiftsPerPeriod == null ||
-              (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod),
-        );
+          (a) =>
+            !busy.has(a.employee) &&
+            worksOn(a, args.iso) &&
+            (a.maxShiftsPerPeriod == null || (args.periodShifts?.get(a.employee) ?? 0) < a.maxShiftsPerPeriod),
+        )
+        .flatMap((a) => {
+          // Shift windows: the span that starts the gap, else covers the most of it.
+          const best = shiftSpans(a, dow)
+            .map(([ws, we]) => fitIn(a, ws, we))
+            .filter((x) => x.len >= minLen && x.gain > 0 && weekOf(a) + paid(0, x.len) <= weekCap(a))
+            .sort((x, y) => Number(covers(y)) - Number(covers(x)) || y.gain - x.gain || y.len - x.len)[0];
+          return best ? [best] : [];
+        });
       const drafted = experiencedDrafted();
       const blocked = fits.flatMap(({ a, s, e }) => {
         const reason = trainingBlock(args.training, a.employee, block.kind, s, e, drafted);
@@ -513,7 +536,7 @@ function draftCore(
       const eligible = fits.filter((x) => !blocked.some((b) => b.employee === x.a.employee));
       const reserve = (x: (typeof eligible)[number]) => (opts.rolloutReserve && x.a.experienced ? 1 : 0);
       const starts = eligible
-        .filter(({ s, e }) => mustCover == null || (s <= mustCover && mustCover < e))
+        .filter(covers)
         .sort((x, y) => reserve(x) - reserve(y) || priority(x.a, y.a));
       // Nobody can start the gap: whoever covers the most of it takes their part.
       const rest = eligible
@@ -626,8 +649,7 @@ export function fillOpenShift(args: {
   const slot = openShiftSlot(args.iso, s, e, args.nth);
   const fits = args.roster
     .filter((a) => {
-      const w = a.windows[dow];
-      if (args.busy.has(a.employee) || !w || w[0] > s || w[1] < e || !worksOn(a, args.iso)) return false;
+      if (args.busy.has(a.employee) || !insideSpan(shiftSpans(a, dow), s, e) || !worksOn(a, args.iso)) return false;
       const [fs, fe] = freeSegment(s, e, args.unavailable?.get(a.employee));
       return (
         fs === s &&

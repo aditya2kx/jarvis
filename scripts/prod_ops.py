@@ -21,6 +21,9 @@ operator's only gate is PR approval. `tier()` labels each op in the reply:
                                                       # new vs main is additive
     /prod-ops experienced-staff Ana Ben …             # new scheduling-rules version with these as the
                                                       # new-hire training experienced staff (first names)
+    /prod-ops shift-windows Ana 09:00-17:00 16:00-20:30 [days=Mon,Tue]
+                                                      # new scheduling-rules version: Ana's shifts must
+                                                      # fit inside one window (first name; all days default)
     /prod-ops run-job-pr bhaga-daily-refresh [KEY=v …] # PR comments only: build the PR head's image,
                                                       # copy the job as <job>-pr<N> on it, run once, delete the copy.
                                                       # Cloud Agent comments post as cursor[bot]; the guard accepts that login.
@@ -55,6 +58,8 @@ _SYSTEM_ANNOTATIONS = {
 _KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _JOB = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _FIRST_NAME = re.compile(r"^[A-Za-z][A-Za-z'-]{0,30}$")
+_WINDOW = re.compile(r"^\d{2}:\d{2}-\d{2}:\d{2}$")
+_DAYS = re.compile(r"^[A-Za-z]{3}(,[A-Za-z]{3}){0,6}$")
 # Set by the deploy workflow; changing them here would desync prod from git.
 _DEPLOY_OWNED = {"BQ_PROJECT", "BQ_DATASET", "PLAID_ENV", "PLAID_WEBHOOK_URL", "CONSOLE_PREVIEW"}
 # A safe run-job-pr may set only these, and must be an `apply` dry run: any other key
@@ -93,7 +98,7 @@ def parse_comment(body: str) -> dict:
         raise RequestError("comment must start with /prod-ops")
     argv = shlex.split(first)[1:]
     if not argv:
-        raise RequestError("missing operation: whoami | console-env | run-job | apply-migrations | experienced-staff")
+        raise RequestError("missing operation: whoami | console-env | run-job | apply-migrations | experienced-staff | shift-windows")
     op, rest = argv[0], argv[1:]
     if op in ("whoami", "apply-migrations"):
         if rest:
@@ -127,6 +132,14 @@ def parse_comment(body: str) -> dict:
         if not rest or not all(_FIRST_NAME.match(n) for n in rest):
             raise RequestError("experienced-staff <FirstName> … (first names only, resolved against the ADP Directory)")
         return {"op": op, "names": rest}
+    if op == "shift-windows":
+        days = [t for t in rest[1:] if t.startswith("days=")]
+        windows = [t for t in rest[1:] if not t.startswith("days=")]
+        if (not rest or not _FIRST_NAME.match(rest[0]) or not 1 <= len(windows) <= 4
+                or not all(_WINDOW.match(w) for w in windows) or len(days) > 1
+                or (days and not _DAYS.match(days[0][5:]))):
+            raise RequestError("shift-windows <FirstName> HH:MM-HH:MM … (1–4 windows) [days=Mon,Tue,…]")
+        return {"op": op, "name": rest[0], "windows": windows, "days": days[0][5:] if days else None}
     raise RequestError(f"unknown operation {op!r}")
 
 
@@ -283,6 +296,11 @@ def commands(req: dict, pr: str | None = None) -> list[list[str]]:
     if op == "experienced-staff":
         by = f"prod-ops PR #{pr}" if pr else "prod-ops"
         return [[sys.executable, "-m", "agents.bhaga.scripts.set_experienced_staff", "--by", by, *req["names"]]]
+    if op == "shift-windows":
+        by = f"prod-ops PR #{pr}" if pr else "prod-ops"
+        days = ["--days", req["days"]] if req["days"] else []
+        return [[sys.executable, "-m", "agents.bhaga.scripts.set_shift_windows", "--by", by, *days,
+                 req["name"], *req["windows"]]]
     raise RequestError(f"unknown operation {op!r}")
 
 

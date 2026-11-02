@@ -1864,6 +1864,11 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
   suggestions too), so 3–4 weeks go out in one Apply. Its **Send ClickUp message** is the only other
   action. (Issue #434 retired the card's Save-as-drafts and
   Publish-week buttons.)
+- **Clear weeks** (same card): pick weeks → stages a delete for every shift ADP has in them from tomorrow
+  on — published (`shift-delete`; the sheet counts them, since staff see them leave their schedule), drafts
+  and open shifts (`open-delete`). PTO is never included. After Apply, those hours come back as
+  suggestions, so a re-plan (e.g. after correcting someone's unavailability or shift windows) is: Clear
+  weeks → Apply → Review & add → Apply. One Apply takes at most 160 changes.
 - Unavailability changes (#427) stage into the same tray (`CONSOLE_ADP_UNAVAIL_WRITE`, off until its ADP
   writes are proven live; only **approve** is wired in the job today — other kinds fail without a click).
 - **Suggestions** switch (per browser, `labor-show-suggestions:v1:<store>`): off hides draft lanes, `+N draft`
@@ -1985,6 +1990,14 @@ week total matches ADP.
 **Unavailable on dates** (staff rule, from–to): for people who can't enter unavailability in ADP; the
 draft treats it as approved all-day unavailability and the Unavailability card lists it as
 "Scheduling rule". A saved week stays locked — fix an affected saved shift with delete + a new draft.
+**Shifts must fit within** (staff rule, weekdays + 1–4 windows): each of the person's shifts must sit
+entirely inside one window (e.g. 9 AM–5 PM or 4–8:30 PM — 2:30–8:30 PM crosses them, so it's out). The
+draft trims or skips them to fit, only offers them ADP open shifts that fit, and a scheduled ADP shift
+that doesn't fit is ringed on their lane ("outside shift windows"). Hours someone can't work at all
+still belong in ADP unavailability; this rule only shapes the shifts inside them. The last rule
+covering a weekday wins. Agents save it with `/prod-ops shift-windows <FirstName> 09:00-17:00 16:00-20:30
+[days=Mon,Tue]` — a new rules version replacing that person's windows (first name resolved against
+Active ADP Directory staff; all days by default).
 
 **ADP local attach — one OTP per live ADP session (Issue #342).** Every fresh browser process is a new
 ADP login (`SMSESSION` is a session cookie), and ADP's risk engine texts a code for most of them. For

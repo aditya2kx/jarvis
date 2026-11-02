@@ -11,7 +11,7 @@ vi.mock("@/app/labor/actions", () => ({
 }));
 vi.mock("@/lib/actions/ActionToast", () => ({ useActionToast: () => ({ push: vi.fn() }) }));
 
-import { AdpScheduleFinalize } from "@/components/labor/AdpScheduleFinalize";
+import { AdpScheduleFinalize, type ClearWeek } from "@/components/labor/AdpScheduleFinalize";
 
 const WEEK = "2026-10-26";
 const T = { startMin: 420, endMin: 780 };
@@ -92,6 +92,59 @@ describe("AdpScheduleFinalize: the suggested week goes through the Changes to AD
     fireEvent.click(screen.getByRole("button", { name: "Review & add to changes" }));
     expect(await screen.findByText(/To add: 3 new shifts \(22\.5h\)/)).toBeTruthy();
     expect(within(screen.getByTestId(`week-${WEEK}`)).getByText("3 shifts · 22.5h")).toBeTruthy();
+  });
+});
+
+describe("AdpScheduleFinalize Clear weeks", () => {
+  const DEL: ShiftChange = { kind: "shift-delete", date: "2026-11-03", employee: "Kim, Dee", ...T };
+  const OPEN_DEL: ShiftChange = { kind: "open-delete", slot: "2026-11-03|adp|420|780", date: "2026-11-03", ...T };
+  const LATER_DEL: ShiftChange = { kind: "shift-delete", date: "2026-11-10", employee: "Roe, Sam", ...T };
+
+  function setupClear(clearWeeks: ClearWeek[]) {
+    status.mockResolvedValue({ ok: true, data: { running: null } });
+    const onClear = vi.fn();
+    render(
+      <AdpScheduleFinalize weekStart={WEEK} weeks={[{ weekStart: WEEK, changes: [] }]} onStage={vi.fn()} clearWeeks={clearWeeks} onClear={onClear} enabled meal={MEAL} />,
+    );
+    return onClear;
+  }
+  const open = async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Clear weeks" }));
+    await screen.findByText("Clear weeks in ADP");
+  };
+
+  it("stages nothing until weeks are picked, then that week's published, draft and open deletes", async () => {
+    const onClear = setupClear([
+      { weekStart: WEEK, changes: [], published: 0 },
+      { weekStart: NEXT, changes: [DEL, OPEN_DEL], published: 1 },
+      { weekStart: LATER, changes: [LATER_DEL], published: 0 },
+    ]);
+    await open();
+    expect(within(screen.getByTestId(`week-${WEEK}`)).getByText("Nothing in ADP to clear")).toBeTruthy();
+    expect(weekBox(WEEK).hasAttribute("data-disabled")).toBe(true);
+    expect(within(screen.getByTestId(`week-${NEXT}`)).getByText("2 shifts · 12.0h · 1 published")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Pick weeks to clear" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByTestId("clear-published")).toBeNull();
+    fireEvent.click(weekBox(NEXT));
+    expect(screen.getByText("Kim, Dee")).toBeTruthy();
+    expect(screen.getByTestId("clear-published").textContent).toMatch(/1 published shift — staff see it leave/);
+    fireEvent.click(screen.getByRole("button", { name: "Add 2 deletes to changes" }));
+    expect(onClear).toHaveBeenCalledWith([DEL, OPEN_DEL]);
+  });
+
+  it("is off when ADP has nothing ahead", () => {
+    setupClear([{ weekStart: WEEK, changes: [], published: 0 }]);
+    expect((screen.getByRole("button", { name: "Clear weeks" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("won't stage more than one Apply can take", async () => {
+    const many = Array.from({ length: 161 }, (_, i): ShiftChange => ({ ...DEL, employee: `P${i}, X` }));
+    const onClear = setupClear([{ weekStart: NEXT, changes: many, published: 161 }]);
+    await open();
+    fireEvent.click(weekBox(NEXT));
+    expect(screen.getByText(/One Apply takes at most 160 changes/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Add 161 deletes to changes" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(onClear).not.toHaveBeenCalled();
   });
 });
 

@@ -28,7 +28,10 @@ export type StaffRuleKind =
   | "min_shifts_per_week"
   | "max_shifts_per_period"
   | "last_day"
-  | "unavailable";
+  | "unavailable"
+  | "shift_windows";
+
+export type TimeWindow = { fromMin: number; toMin: number };
 
 export type StaffRule = {
   id: string;
@@ -39,7 +42,14 @@ export type StaffRule = {
   date?: string;
   /** `unavailable` only: last day off, inclusive (defaults to `date`). */
   endDate?: string;
+  /** `shift_windows` only: each shift must fit entirely inside one of these. */
+  windows?: TimeWindow[];
+  /** `shift_windows` only: weekdays it applies to, Mon = 0 (sorted, at least one). */
+  days?: number[];
 };
+
+/** A person's shifts must fit inside one window on these weekdays (later rules win per weekday). */
+export type ShiftWindowRule = { days: number[]; windows: [number, number][] };
 
 export type StaffLimits = {
   targetWeekHours?: number;
@@ -49,6 +59,7 @@ export type StaffLimits = {
   minWeekShifts?: number;
   maxShiftsPerPeriod?: number;
   lastDay?: string;
+  shiftWindows?: ShiftWindowRule[];
 };
 
 /** Store-wide basics behind the needed headcount and the draft. */
@@ -277,7 +288,12 @@ export function staffLimits(rules: StaffRule[]): Map<string, StaffLimits> {
     if (!r.employee) continue;
     const cur = out.get(r.employee) ?? {};
     if (r.kind === "unavailable") continue;
-    if (r.kind === "last_day") {
+    if (r.kind === "shift_windows") {
+      if (r.windows?.length && r.days?.length) {
+        const rule = { days: r.days, windows: r.windows.map((w): [number, number] => [w.fromMin, w.toMin]) };
+        cur.shiftWindows = [...(cur.shiftWindows ?? []), rule];
+      }
+    } else if (r.kind === "last_day") {
       if (r.date && ISO_DATE.test(r.date)) cur.lastDay = r.date;
     } else if (!(r.value >= 0)) continue;
     else if (r.kind === "target_week_hours") cur.targetWeekHours = r.value;
@@ -297,6 +313,7 @@ const KINDS = new Set<string>([
   "max_shifts_per_period",
   "last_day",
   "unavailable",
+  "shift_windows",
 ]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const isMin = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 24 * 60;
@@ -343,6 +360,20 @@ export function parseScheduleRules(raw: unknown): ScheduleRules {
         throw new Error(`Staff rule ${i + 1}: unavailable needs a from date on or before the to date`);
       }
       return { ...base, value: 0, date: from, endDate: to };
+    }
+    if (r.kind === "shift_windows") {
+      const days = parseDays(r as Record<string, unknown>);
+      const windows = Array.isArray(r.windows) ? r.windows : [];
+      if (!days) throw new Error(`Staff rule ${i + 1}: shift windows need at least one day`);
+      if (!windows.length || windows.length > 4 || windows.some((w) => !isMin(w?.fromMin) || !isMin(w?.toMin) || w.toMin <= w.fromMin)) {
+        throw new Error(`Staff rule ${i + 1}: shift windows need 1–4 windows, each with a from time before the to time`);
+      }
+      return {
+        ...base,
+        value: 0,
+        days,
+        windows: windows.map((w) => ({ fromMin: w.fromMin, toMin: w.toMin })).sort((a, b) => a.fromMin - b.fromMin),
+      };
     }
     if (!(Number(r.value) >= 0) || Number(r.value) > 80) {
       throw new Error(`Staff rule ${i + 1}: value must be 0–80`);

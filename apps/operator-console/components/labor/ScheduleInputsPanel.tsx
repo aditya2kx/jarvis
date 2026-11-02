@@ -41,6 +41,7 @@ import {
   type StaffingBasics,
   type StaffRule,
   type StaffRuleKind,
+  type TimeWindow,
   type TrainingRules,
 } from "@/lib/labor/schedule-inputs";
 import { cn } from "@/lib/utils";
@@ -294,8 +295,16 @@ const KINDS: { value: StaffRuleKind; label: string; unit: string; initial: numbe
   { value: "max_shifts_per_period", label: "At most … shifts / pay period", unit: "shifts / pay period", initial: 1 },
   { value: "last_day", label: "Last working day", unit: "not drafted after this day", initial: 0 },
   { value: "unavailable", label: "Unavailable on dates", unit: "not drafted these days · until they can mark it in ADP", initial: 0 },
+  { value: "shift_windows", label: "Shifts must fit within", unit: "each shift fits inside one window", initial: 0 },
 ];
 const isDateKind = (k: StaffRuleKind) => k === "last_day" || k === "unavailable";
+/** Fields a rule of `kind` starts with (dates from today; shift windows every day, 9 AM–5 PM). */
+const kindDefaults = (k: StaffRuleKind, r?: StaffRule): Partial<StaffRule> =>
+  isDateKind(k) && !r?.date
+    ? { date: todayCt() }
+    : k === "shift_windows" && !r?.windows?.length
+      ? { days: [...ALL_DAYS], windows: [{ fromMin: 9 * 60, toMin: 17 * 60 }] }
+      : {};
 const todayCt = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
 const kindOrder = (k: StaffRuleKind) => KINDS.findIndex((x) => x.value === k);
 const valueMax = (k: StaffRuleKind) => (k === "max_day_hours" ? 16 : k === "min_shifts_per_week" ? 7 : 80);
@@ -448,6 +457,43 @@ function TimeInput({
       className="h-7 w-28 text-xs"
       aria-label={label}
     />
+  );
+}
+
+/** Weekdays + 1–4 windows; each shift must fit entirely inside one window. */
+function ShiftWindowsEditor({ rule, onPatch }: { rule: StaffRule; onPatch: (patch: Partial<StaffRule>) => void }) {
+  const windows = rule.windows ?? [];
+  const setWindow = (i: number, patch: Partial<TimeWindow>) =>
+    onPatch({ windows: windows.map((w, j) => (j === i ? { ...w, ...patch } : w)) });
+  return (
+    <div className="flex flex-wrap items-center gap-2" data-testid="shift-windows">
+      <DayPicker days={rule.days ?? [...ALL_DAYS]} onChange={(days) => onPatch({ days })} />
+      {windows.map((w, i) => (
+        <span key={i} className="inline-flex items-center gap-1">
+          {i ? <span className="text-xs text-muted-foreground">or</span> : null}
+          <TimeInput value={w.fromMin} onChange={(v) => setWindow(i, { fromMin: v })} label={`Window ${i + 1} from`} />
+          <span className="text-xs text-muted-foreground">to</span>
+          <TimeInput value={w.toMin} onChange={(v) => setWindow(i, { toMin: v })} label={`Window ${i + 1} to`} />
+          {windows.length > 1 ? (
+            <RemoveButton label={`Remove window ${i + 1}`} onClick={() => onPatch({ windows: windows.filter((_, j) => j !== i) })} />
+          ) : null}
+        </span>
+      ))}
+      {windows.length < 4 ? (
+        <Button
+          size="xs"
+          variant="ghost"
+          className="text-muted-foreground"
+          onClick={() => {
+            const last = windows[windows.length - 1];
+            const from = Math.min(last ? last.toMin : 9 * 60, 22 * 60);
+            onPatch({ windows: [...windows, { fromMin: from, toMin: Math.min(from + 4 * 60, 24 * 60) }] });
+          }}
+        >
+          <Plus /> Window
+        </Button>
+      ) : null}
+    </div>
   );
 }
 
@@ -950,7 +996,7 @@ export function ScheduleInputsPanel({
                                   employee: name,
                                   kind: k.value,
                                   value: k.initial,
-                                  ...(isDateKind(k.value) ? { date: todayCt() } : {}),
+                                  ...kindDefaults(k.value),
                                 },
                               ],
                             });
@@ -970,7 +1016,7 @@ export function ScheduleInputsPanel({
                               v &&
                               setStaffRule(r.id, {
                                 kind: v as StaffRuleKind,
-                                ...(isDateKind(v as StaffRuleKind) && !r.date ? { date: todayCt() } : {}),
+                                ...kindDefaults(v as StaffRuleKind, r),
                               })
                             }
                           >
@@ -1009,6 +1055,8 @@ export function ScheduleInputsPanel({
                                 aria-label="Last day unavailable"
                               />
                             </>
+                          ) : r.kind === "shift_windows" ? (
+                            <ShiftWindowsEditor rule={r} onPatch={(patch) => setStaffRule(r.id, patch)} />
                           ) : r.kind === "last_day" ? (
                             <Input
                               type="date"

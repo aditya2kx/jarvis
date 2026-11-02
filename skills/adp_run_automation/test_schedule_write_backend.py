@@ -452,10 +452,10 @@ class ConsoleShiftChanges(unittest.TestCase):
     def test_open_assigned_shift_retries_with_dom_clicks_after_a_person_or_unavailability_pane(self):
         self.assertEqual(self._open([self.PERSON_PANE, self.UNAVAIL_PANE, self.SHIFT_PANE]), (1, 2, 2))
 
-    def test_open_assigned_shift_gives_up_after_five_wrong_panes_without_pressing_anything(self):
+    def test_open_assigned_shift_gives_up_after_nine_wrong_panes_without_pressing_anything(self):
         with self.assertRaisesRegex(wb.ScheduleWriteError, "details pane is not .* \\(clicked x\\)"):
-            self._open([self.PERSON_PANE] * 5)
-        self.assertEqual(self.counts, (1, 4, 5))
+            self._open([self.PERSON_PANE] * 9)
+        self.assertEqual(self.counts, (1, 8, 9))
 
     def test_open_assigned_shift_other_wrong_pane_fails_without_retry(self):
         with self.assertRaisesRegex(wb.ScheduleWriteError, "details pane is not"):

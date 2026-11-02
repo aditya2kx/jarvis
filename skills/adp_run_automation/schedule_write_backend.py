@@ -687,7 +687,7 @@ def _open_assigned_shift(frame, page, *, date_iso: str, employee: str, start_min
     raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r} (clicked {hit})")
 
 
-_OPEN_ATTEMPTS = 5
+_OPEN_ATTEMPTS = 9  # a DOM click opens Shift details only ~40% of the time in cells with unavailability
 
 
 def _mark_settled(frame, page, **shift) -> None:

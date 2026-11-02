@@ -547,6 +547,25 @@ describe("new-hire training (Issue #450)", () => {
     expect(draft([kai]).some((s) => s.employee === "Kai")).toBe(true);
   });
 
+  it("puts experienced staff on the kind a new hire can shadow today, so they train sooner", () => {
+    const pro: Availability = { employee: "Pro", maxWeekHours: 40, experienced: true, recentHours: 90, windows: all([390, 1230]) };
+    const crew = ["Ann", "Bo", "Cy"].map((employee, i): Availability => ({
+      employee, maxWeekHours: 40, recentHours: 50 - i * 10, windows: all([390, 1230]),
+    }));
+    const late: Availability = { employee: "Kai", maxWeekHours: 40, windows: all([960, 1230]) };
+    const proOn = (t?: DraftTraining) => draft([pro, ...crew, late], t).find((s) => s.employee === "Pro")?.kind;
+    expect(proOn()).toBe("open");
+    const t = training({ Kai: [0, 2] });
+    const out = draft([pro, ...crew, late], t);
+    const close = out.find((s) => s.employee === "Pro")!;
+    expect(close.kind).toBe("close");
+    const [shadow] = draftTrainingDay({
+      iso, roster: [late], weekHours: new Map(), busy: new Set(out.flatMap((s) => (s.employee ? [s.employee] : []))),
+      training: { ...t, experiencedOn: [[close.startMin, close.endMin]] },
+    });
+    expect(shadow).toMatchObject({ employee: "Kai", kind: "close", startMin: 960, endMin: 1230, training: true });
+  });
+
   describe("draftTrainingDay", () => {
     const run = (roster: Availability[], t: DraftTraining, weekHours = new Map<string, number>(), busy = new Set<string>()) =>
       draftTrainingDay({ iso, roster, weekHours, busy, training: t, minShiftMin: 240, maxShiftMin: 450, meal: { afterMin: 360, unpaidMin: 30 } });

@@ -9,7 +9,14 @@
  * No one fits → unassigned.
  */
 
-import { isTrainingShift, overlapMinutes, shiftKindOf, type TrainingLeft } from "@/lib/labor/new-hire-training";
+import {
+  CLOSER_FROM,
+  isTrainingShift,
+  OPENER_BY,
+  overlapMinutes,
+  shiftKindOf,
+  type TrainingLeft,
+} from "@/lib/labor/new-hire-training";
 import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
 import type { ShiftTimes, ShiftWindowRule } from "@/lib/labor/schedule-inputs";
 import { freeSegment, type Block } from "@/lib/labor/unavailability";
@@ -34,6 +41,8 @@ export type Availability = {
   maxShiftsPerPeriod?: number;
   /** Operator rule: final working day (YYYY-MM-DD). */
   lastDay?: string;
+  /** New hires train beside this person (Issue #450). */
+  experienced?: boolean;
   /** Operator rule: on these weekdays each shift fits entirely inside one window. */
   shiftWindows?: ShiftWindowRule[];
 };
@@ -290,6 +299,15 @@ function draftCore(
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
   const priority = byPriority(weekOf, (a) => args.weekShifts?.get(a.employee) ?? 0, args.prefer);
   const paid = (s: number, e: number) => paidHours(s, e, args.meal);
+  /** A new hire free today still needs a `kind` shift and could start / finish one. */
+  const wantsTrainer = (kind: "open" | "close") =>
+    args.roster.some((a) => {
+      if (!(args.training?.left.get(a.employee)?.[kind] ?? 0) || busy.has(a.employee) || !worksOn(a, args.iso)) return false;
+      return shiftSpans(a, dow).some(([ws, we]) => {
+        const [s, e] = freeSegment(ws, we, args.unavailable?.get(a.employee));
+        return e - s >= minLen && (kind === "open" ? s <= OPENER_BY : e >= CLOSER_FROM);
+      });
+    });
 
   const step = args.mins.length > 1 ? args.mins[1]! - args.mins[0]! : 15;
   const needIdx = args.need.flatMap((x, i) => (x > 0 ? [i] : []));
@@ -502,11 +520,18 @@ function draftCore(
         return reason ? [{ employee: a.employee, reason }] : [];
       });
       const eligible = fits.filter((x) => !blocked.some((b) => b.employee === x.a.employee));
-      const starts = eligible.filter(covers).sort((x, y) => priority(x.a, y.a));
+      // Train sooner: experienced staff take the openers / closers a new hire can shadow today, and
+      // leave every other shift to others while one could.
+      const wantsOpen = wantsTrainer("open");
+      const wantsClose = wantsTrainer("close");
+      const here = (block.kind === "open" && wantsOpen) || (block.kind === "close" && wantsClose);
+      const trainer = (x: (typeof eligible)[number]) =>
+        !x.a.experienced ? 0 : here ? -1 : wantsOpen || wantsClose ? 1 : 0;
+      const starts = eligible.filter(covers).sort((x, y) => trainer(x) - trainer(y) || priority(x.a, y.a));
       // Nobody can start the gap: whoever covers the most of it takes their part.
       const rest = eligible
         .filter((x) => !starts.includes(x))
-        .sort((x, y) => y.gain - x.gain || priority(x.a, y.a));
+        .sort((x, y) => trainer(x) - trainer(y) || y.gain - x.gain || priority(x.a, y.a));
       return { kind: block.kind, blockStart, blockEnd, ranked: [...starts, ...rest], blocked };
     };
 

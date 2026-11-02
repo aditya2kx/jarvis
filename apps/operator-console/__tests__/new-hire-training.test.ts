@@ -163,8 +163,8 @@ describe("staffTags", () => {
     const kai = tags.get("New, Kai");
     expect(kai).toMatchObject({ kind: "training", label: "New hire · 0/2 openers · 0/2 closers" });
     expect(kai?.kind === "training" && kai.detail).toBe(
-      "Hired Oct 15. Drafted beside experienced staff (3h+ together) until they've done 2 openers and 2 closers" +
-        " — each kind on its own once done.",
+      "Hired Oct 15. Trains on top of need beside experienced staff (3h+ together) until they've done 2 openers and 2 closers" +
+        " — each kind counts toward need once done.",
     );
     expect(kai?.kind === "training" && [...kai.unsupervised]).toEqual(["2026-11-02"]);
     expect(staffTags({ ...rules, experienced: [] }, progress).size).toBe(0);

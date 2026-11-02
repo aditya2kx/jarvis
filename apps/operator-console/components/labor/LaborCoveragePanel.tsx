@@ -1454,6 +1454,7 @@ export function LaborCoveragePanel({
       ...a,
       maxWeekHours: r.staffing.maxWeekHours,
       minWeekShifts: r.staffing.minWeekShifts,
+      experienced: experienced.has(a.employee),
       ...limits.get(a.employee),
     }));
     // One-time requirement: what a new hire does in one week's draft counts toward the next.

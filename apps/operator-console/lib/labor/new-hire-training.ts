@@ -12,8 +12,8 @@ import type { TrainingRules } from "@/lib/labor/schedule-inputs";
 import type { ShiftKind } from "@/lib/labor/shift-draft";
 
 /** ADP open / close by clock time: starts by 7:30 AM = opener, ends 8 PM or later = closer. */
-const OPENER_BY = 7 * 60 + 30;
-const CLOSER_FROM = 20 * 60;
+export const OPENER_BY = 7 * 60 + 30;
+export const CLOSER_FROM = 20 * 60;
 
 export function shiftKindOf(startMin: number, endMin: number): ShiftKind {
   return startMin <= OPENER_BY ? "open" : endMin >= CLOSER_FROM ? "close" : "mid";
@@ -121,8 +121,8 @@ export function staffTags(rules: TrainingRules, progress: ReadonlyMap<string, Tr
       kind: "training",
       label: `New hire · ${progressLabel(t)}`,
       detail:
-        `${started}. Drafted beside experienced staff (${overlap}+ together) until they've done ${goal(t)}` +
-        ` — each kind on its own once done.` +
+        `${started}. Trains on top of need beside experienced staff (${overlap}+ together) until they've done ${goal(t)}` +
+        ` — each kind counts toward need once done.` +
         (alone.length ? ` Already ${alone.join(" and ")} without them.` : ""),
       unsupervised: new Set(t.unsupervised),
     });

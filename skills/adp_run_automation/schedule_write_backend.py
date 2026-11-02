@@ -566,8 +566,19 @@ HIT_JS = r"""
 }
 """
 
-# The person's pane (a click on the row, not a shift): never press anything in it.
-PERSON_PANE_RE = re.compile(r"Delete all schedules", re.I)
+# Scrolls the marked shift to the middle of the grid; returns where it sits now (None if gone).
+CENTRE_MARKED_JS = r"""
+() => {
+  const m = document.querySelector('[data-jarvis-del]');
+  if (!m) return null;
+  m.scrollIntoView({ block: 'center', inline: 'nearest' });
+  const b = m.getBoundingClientRect();
+  return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
+}
+"""
+
+# A click that missed the shift: the person's pane (row) or an unavailability's. Closed untouched.
+WRONG_PANE_RE = re.compile(r"Delete all schedules|Category Unavailability", re.I)
 
 PANE_TEXT_JS = r"""
 () => [...document.querySelectorAll('sdf-focus-pane')]
@@ -641,17 +652,20 @@ def delete_shift(
 
 def _open_assigned_shift(frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int,
                          state: str) -> None:
-    """From the grid (on the right week), open the Shift details pane of one assigned shift."""
-    from skills.adp_run_automation import runner as r
+    """From the grid (on the right week), open the Shift details pane of one assigned shift.
 
+    2026-11-02: 31 of 95 deletes opened the person's pane (or an unavailability's) instead —
+    rows with unavailability drew it while scrolling in, moving the shift under a click
+    aimed at its old place. So: centre the shift, wait until it stops moving, click; a
+    wrong pane is closed untouched and the click retried.
+    """
     d = dt.date.fromisoformat(date_iso)
     rng = f"{fmt_time(start_min)} - {fmt_time(end_min)}"
     expect = (f"{d:%b} {d.day}, {d.year}", rng) + (("Draft",) if state == "draft" else ())
-    for retry in (False, True):
-        info = _mark_shift(frame, page, date_iso=date_iso, employee=employee,
-                           start_min=start_min, end_min=end_min, state=state)
-        if not info.get("found"):
-            raise ScheduleWriteError(f"{state} shift {employee} {date_iso} {rng} not found in grid: {info.get('why')}")
+    pane = hit = ""
+    for attempt in range(_OPEN_ATTEMPTS):
+        _mark_settled(frame, page, date_iso=date_iso, employee=employee,
+                      start_min=start_min, end_min=end_min, state=state)
         hit = frame.evaluate(HIT_JS)
         frame.locator("[data-jarvis-del='1']").first.click(timeout=8000)
         if not _wait_for(page, lambda: _pane_open(frame), 8.0):
@@ -661,12 +675,30 @@ def _open_assigned_shift(frame, page, *, date_iso: str, employee: str, start_min
         if all(s in pane for s in expect) and employee.split(",")[0] in pane:
             return
         _back_out(frame, page)
-        if retry or not PERSON_PANE_RE.search(pane):
-            raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r} (clicked {hit})")
-        # 2026-11-02: 30 of 31 failed deletes were days ADP drew unavailability in the cell; the
-        # click opened the person's pane. Reads turn Show Unavailability back on.
-        print(f"[schedule_write] person pane instead of shift details (clicked {hit}); hiding unavailability")
-        r._ensure_show_unavailability(page, frame, on=False)
+        if not WRONG_PANE_RE.search(pane):
+            break
+        print(f"[schedule_write] attempt {attempt + 1}: not the shift's pane (clicked {hit}); retrying")
+    raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r} (clicked {hit})")
+
+
+_OPEN_ATTEMPTS = 3
+
+
+def _mark_settled(frame, page, **shift) -> None:
+    """Mark the shift (FIND_SHIFT_JS), centre it, and re-mark until its position holds still."""
+    rng = f"{fmt_time(shift['start_min'])} - {fmt_time(shift['end_min'])}"
+    last = None
+    for _ in range(12):
+        info = _mark_shift(frame, page, **shift)
+        if not info.get("found"):
+            raise ScheduleWriteError(
+                f"{shift['state']} shift {shift['employee']} {shift['date_iso']} {rng} not found in grid: {info.get('why')}"
+            )
+        at = frame.evaluate(CENTRE_MARKED_JS)
+        if at is not None and at == last:
+            return
+        last = at
+        page.wait_for_timeout(300)
 
 
 def _press_delete(frame, page, *, dry_run: bool) -> bool:

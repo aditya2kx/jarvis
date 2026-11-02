@@ -455,12 +455,16 @@ export function paidHoursOfChanges(changes: readonly ShiftChange[], meal?: MealR
   return changes.reduce((a, c) => a + shiftsInChange(c) * paidHours(c.startMin, c.endMin, meal), 0);
 }
 
+/** A suggested change that moves an ADP shift off someone now unavailable, not new hours. */
+export const isClashFix = (c: ShiftChange) => c.kind === "shift-reassign" || c.kind === "shift-delete";
+
 /**
  * The suggested week as tray changes: suggested shifts ADP doesn't have become adds (open shifts at
- * the same day and hours fold into one count), drafts ADP already has become publishes.
+ * the same day and hours fold into one count), drafts ADP already has become publishes, and an ADP
+ * shift that clashes with its person's unavailability is reassigned (or deleted and reopened).
  */
 export function suggestedChanges(
-  suggested: ({ date: string; employee: string | null; inAdp?: boolean } & Times)[],
+  suggested: ({ date: string; employee: string | null; inAdp?: boolean; replaces?: string } & Times)[],
   drafts: WeekShift[],
   todayIso: string,
 ): ShiftChange[] {
@@ -469,7 +473,12 @@ export function suggestedChanges(
   for (const s of suggested) {
     if (s.inAdp || s.date <= todayIso) continue;
     const t = { startMin: s.startMin, endMin: s.endMin };
-    if (s.employee) {
+    if (s.replaces && s.employee) {
+      out.push({ kind: "shift-reassign", date: s.date, employee: s.replaces, toEmployee: s.employee, ...t });
+      continue;
+    }
+    if (s.replaces) out.push({ kind: "shift-delete", date: s.date, employee: s.replaces, ...t });
+    else if (s.employee) {
       out.push({ kind: "shift-add", date: s.date, employee: s.employee, ...t });
       continue;
     }

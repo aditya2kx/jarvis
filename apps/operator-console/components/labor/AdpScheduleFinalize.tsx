@@ -16,12 +16,14 @@ import {
 } from "@/components/ui/sheet";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import {
+  isClashFix,
   paidHoursOfChanges,
   shiftsInChange,
   timeText,
   type ShiftChange,
 } from "@/lib/labor/adp-changes";
 import type { MealRule } from "@/lib/labor/shift-draft";
+import { cn } from "@/lib/utils";
 
 const POLL_MS = 5000;
 const GRACE_MS = 90 * 1000;
@@ -53,18 +55,35 @@ const listLabel = (weeks: string[]) =>
     ? `${weeks.slice(0, -1).map(weekRangeLabel).join(", ")} and ${weekRangeLabel(weeks.at(-1)!)}`
     : weeks.map(weekRangeLabel).join("");
 
+/** Shift count and paid hours of a list; a clash fix moves an ADP shift, so it adds neither. */
+function weekTotals(list: ShiftChange[], meal?: MealRule) {
+  const added = list.filter((c) => !isClashFix(c));
+  const fixes = list.length - added.length;
+  return {
+    added,
+    shifts: added.reduce((n, c) => n + shiftsInChange(c), 0),
+    hours: paidHoursOfChanges(added, meal),
+    fixes,
+  };
+}
+
+const fixesText = (n: number) => `${n} ${n === 1 ? "clash" : "clashes"} to fix`;
+
 function ChangeList({ changes, meal }: { changes: ShiftChange[]; meal?: MealRule }) {
   const byDay = new Map<string, ShiftChange[]>();
   for (const c of changes) byDay.set(c.date, [...(byDay.get(c.date) ?? []), c]);
   return (
     <div className="flex flex-col gap-3 px-4">
-      {[...byDay].map(([date, list]) => (
+      {[...byDay].map(([date, list]) => {
+        const t = weekTotals(list, meal);
+        return (
         <div key={date} className="flex flex-col gap-1">
           <p className="flex justify-between text-xs font-medium text-muted-foreground">
             <span>{dayLabel(date)}</span>
             <span className="tabular-nums">
-              {plural(list.reduce((n, c) => n + shiftsInChange(c), 0), "shift")} ·{" "}
-              {paidHoursOfChanges(list, meal).toFixed(1)}h
+              {[t.shifts ? `${plural(t.shifts, "shift")} · ${t.hours.toFixed(1)}h` : "", t.fixes ? fixesText(t.fixes) : ""]
+                .filter(Boolean)
+                .join(" · ")}
             </span>
           </p>
           <ul className="flex flex-col divide-y rounded-md border">
@@ -79,12 +98,31 @@ function ChangeList({ changes, meal }: { changes: ShiftChange[]; meal?: MealRule
                     <Badge variant="outline" className="font-normal">
                       {c.count > 1 ? `${c.count} open shifts` : "Open shift"}
                     </Badge>
+                  ) : c.kind === "shift-reassign" ? (
+                    <span className="truncate">
+                      <span className="text-muted-foreground line-through">{c.employee}</span>{" "}
+                      <span className="font-medium">→ {c.toEmployee}</span>
+                    </span>
                   ) : (
-                    <span className="truncate font-medium">{"employee" in c ? c.employee : ""}</span>
+                    <span className={cn("truncate font-medium", c.kind === "shift-delete" && "text-muted-foreground line-through")}>
+                      {"employee" in c ? c.employee : ""}
+                    </span>
                   )}
                   {c.kind === "shift-publish" ? (
                     <Badge variant="secondary" className="font-normal">
                       ADP draft
+                    </Badge>
+                  ) : isClashFix(c) ? (
+                    <Badge
+                      variant="outline"
+                      className="border-destructive/50 font-normal text-destructive"
+                      title={
+                        c.kind === "shift-reassign"
+                          ? "Their unavailability covers this shift; it moves to the suggested person."
+                          : "Their unavailability covers this shift and nobody else fits; it goes back as an open shift."
+                      }
+                    >
+                      {c.kind === "shift-reassign" ? "Clash" : "Clash · reopen"}
                     </Badge>
                   ) : null}
                 </span>
@@ -92,7 +130,8 @@ function ChangeList({ changes, meal }: { changes: ShiftChange[]; meal?: MealRule
             ))}
           </ul>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -238,15 +277,17 @@ export function AdpScheduleFinalize({
   };
 
   const range = weekRangeLabel(weekStart);
-  const adds = changes.filter((c) => c.kind !== "shift-publish");
+  const adds = changes.filter((c) => c.kind !== "shift-publish" && !isClashFix(c));
   const publishes = changes.filter((c) => c.kind === "shift-publish");
+  const fixCount = changes.filter(isClashFix).length;
   const addCount = adds.reduce((n, c) => n + shiftsInChange(c), 0);
   const openCount = adds.reduce((n, c) => n + (c.kind === "open-add" ? c.count : 0), 0);
   const lineCount = changes.length;
 
-  const sheetAdds = addChanges.filter((c) => c.kind !== "shift-publish");
+  const sheetAdds = addChanges.filter((c) => c.kind !== "shift-publish" && !isClashFix(c));
   const sheetAddCount = sheetAdds.reduce((n, c) => n + shiftsInChange(c), 0);
-  const sheetPublishes = addChanges.length - sheetAdds.length;
+  const sheetPublishes = addChanges.filter((c) => c.kind === "shift-publish").length;
+  const sheetFixes = addChanges.filter(isClashFix).length;
 
   return (
     <div
@@ -259,6 +300,9 @@ export function AdpScheduleFinalize({
           {[
             lineCount
               ? [
+                  fixCount
+                    ? `${fixCount === 1 ? "1 shift in ADP clashes" : `${fixCount} shifts in ADP clash`} with unavailability — suggested who takes ${fixCount === 1 ? "it" : "them"}.`
+                    : "",
                   addCount
                     ? `${plural(addCount, "suggested shift")} (${paidHoursOfChanges(adds, meal).toFixed(1)}h${openCount ? `, ${openCount} open` : ""}) ${addCount === 1 ? "isn't" : "aren't"} in ADP yet.`
                     : "",
@@ -316,6 +360,7 @@ export function AdpScheduleFinalize({
                           ? `${plural(sheetAddCount, "new shift")} (${paidHoursOfChanges(sheetAdds, meal).toFixed(1)}h)`
                           : "",
                         sheetPublishes ? `${plural(sheetPublishes, "ADP draft")} to publish` : "",
+                        sheetFixes ? fixesText(sheetFixes) : "",
                       ]
                         .filter(Boolean)
                         .join(", ")}. `
@@ -330,9 +375,13 @@ export function AdpScheduleFinalize({
                 onToggle={toggle}
                 detail={(w) => {
                   const list = byWeek.get(w) ?? [];
-                  const n = list.reduce((a, c) => a + shiftsInChange(c), 0);
+                  const t = weekTotals(list, meal);
                   return list.length
-                    ? { text: `${plural(n, "shift")} · ${paidHoursOfChanges(list, meal).toFixed(1)}h` }
+                    ? {
+                        text: [t.shifts ? `${plural(t.shifts, "shift")} · ${t.hours.toFixed(1)}h` : "", t.fixes ? fixesText(t.fixes) : ""]
+                          .filter(Boolean)
+                          .join(" · "),
+                      }
                     : { text: "In ADP or your changes", disabled: true };
                 }}
               />

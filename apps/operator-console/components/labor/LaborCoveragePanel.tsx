@@ -53,6 +53,7 @@ import {
   isOpenShiftSlot,
   openShiftSlot,
   paidHours,
+  replaceClashes,
   type DraftPreference,
   type DraftShift,
   type DraftTraining,
@@ -182,9 +183,9 @@ function personDayHours(p: CoveragePersonDay): number {
   return (actual.length ? actual : p.segments).reduce((a, s) => a + s.hours, 0);
 }
 
-/** Draft shifts that add people/hours: not fills for ADP open shifts, not saved shifts ADP already shows. */
+/** Draft shifts that add people/hours: not fills for ADP open or clashing shifts, not saved shifts ADP already shows. */
 function newShifts(shifts: DraftShift[]): DraftShift[] {
-  return shifts.filter((s) => !s.fillsOpen && !s.inAdp);
+  return shifts.filter((s) => !s.fillsOpen && !s.inAdp && !s.replaces);
 }
 
 function draftCountSeries(points: OccupancyPoint[], shifts: DraftShift[]): number[] {
@@ -903,11 +904,13 @@ function CoverageTimeline({
             const clash =
               flagClash && p.segments.some((g) => g.kind !== "open" && hitsBlock(g.startMin, g.endMin, blocks));
             const departed = flagClash && !open && activeStaff != null && !activeStaff.has(p.employee);
-            const takers = open
-              ? draftShifts
-                  .filter((s) => s.fillsOpen && p.segments.some((g) => g.startMin === s.startMin && g.endMin === s.endMin))
-                  .flatMap((s) => (s.employee ? [s.employee] : []))
-              : [];
+            const takers = draftShifts
+              .filter(
+                (s) =>
+                  (open ? s.fillsOpen : s.replaces === p.employee) &&
+                  p.segments.some((g) => g.startMin === s.startMin && g.endMin === s.endMin),
+              )
+              .flatMap((s) => (s.employee ? [s.employee] : open ? [] : ["open shift"]));
             return (
               <div key={p.employee} className="flex items-center gap-2">
                 <div className={cn(GUTTER, "shrink-0 truncate")}>
@@ -1584,6 +1587,32 @@ export function LaborCoveragePanel({
           if (fill) d.shifts.push(fill);
         }
       }
+      // A published shift whose person is now unavailable: suggest who takes it (or reopen it).
+      for (const d of state) {
+        const shifts = peopleByDay
+          .get(d.iso)!
+          .filter((p) => !isOpenLane(p))
+          .flatMap((p) =>
+            p.segments
+              .filter((g) => g.kind === "scheduled")
+              .map((g) => ({ employee: p.employee, startMin: g.startMin, endMin: g.endMin, hours: g.hours })),
+          );
+        d.shifts.push(
+          ...replaceClashes({
+            iso: d.iso,
+            shifts,
+            roster,
+            weekHours,
+            weekShifts,
+            busy: d.busy,
+            periodShifts: shiftsInPeriod(d.iso),
+            unavailable: blocksOn(unavail, d.iso),
+            meal,
+            pins,
+            training: trainingOn(d.iso, d.shifts),
+          }),
+        );
+      }
       // Pass 1: labor floor + day rules are mandatory regardless of the goal. Days with the
       // fewest people free (vs. headcount needed) go first so their few people aren't capped out.
       const breakdown = emptyBreakdown(existingHours, r.dayRules.map((x) => x.id));
@@ -1660,7 +1689,7 @@ export function LaborCoveragePanel({
       const byDay = new Map<string, DraftShift[]>();
       for (const d of state) {
         const shifts = plan
-          ? [...d.shifts.filter((s) => s.fillsOpen), ...plan
+          ? [...d.shifts.filter((s) => s.fillsOpen || s.replaces), ...plan
               .filter((s) => s.date === d.iso)
               .map((s, _i, day) => planShift(s, lanesFor(d.iso), meal, day))
               // Saved before the person left: their slot still needs covering, so it reads as open.
@@ -1953,7 +1982,7 @@ export function LaborCoveragePanel({
         const shifts = [...w.byDay.values()]
           .flat()
           .filter((s) => !s.fillsOpen)
-          .map(({ date, employee, startMin, endMin, inAdp }) => ({ date, employee, startMin, endMin, inAdp }));
+          .map(({ date, employee, startMin, endMin, inAdp, replaces }) => ({ date, employee, startMin, endMin, inAdp, replaces }));
         const adp = adpDrafts(upcoming ?? [], todayIso, shiftCalendarDate(w.weekStart, "day", 6));
         const changes = suggestedChanges(shifts, adp.filter((d) => d.date >= w.weekStart), todayIso).filter(
           (c) => !staged.has(adpChangeKey({ area: "shift", c })),

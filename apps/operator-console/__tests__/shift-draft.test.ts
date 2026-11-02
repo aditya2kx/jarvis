@@ -5,6 +5,7 @@ import {
   draftDay,
   fillOpenShift,
   paidHours,
+  replaceClashes,
   type Availability,
   type DraftPreference,
   type DraftTraining,
@@ -404,6 +405,53 @@ describe("fillOpenShift", () => {
     expect(
       fillOpenShift({ ...slot, roster, weekHours: new Map([["Capped", 15]]), busy: new Set() }),
     ).toBeNull();
+  });
+});
+
+describe("replaceClashes (ADP shift now covered by its person's unavailability)", () => {
+  const iso = "2026-11-14";
+  const off = new Map([["Daniel", [{ fromMin: 0, toMin: 1440, status: "approved" as const }]]]);
+  const shifts = [
+    { employee: "Daniel", startMin: 420, endMin: 900, hours: 7.5 },
+    { employee: "Ann", startMin: 420, endMin: 900, hours: 7.5 },
+  ];
+
+  it("suggests who takes it, moves the hours, and leaves non-clashing shifts alone", () => {
+    const roster: Availability[] = [
+      { employee: "Daniel", maxWeekHours: 40, windows: all([360, 1260]) },
+      { employee: "Ann", maxWeekHours: 40, windows: all([360, 1260]) },
+      { employee: "Ben", maxWeekHours: 40, windows: all([360, 1260]) },
+    ];
+    const weekHours = new Map([["Daniel", 30], ["Ann", 7.5]]);
+    const out = replaceClashes({
+      iso, shifts, roster, weekHours, busy: new Set(["Daniel", "Ann"]), unavailable: off,
+      meal: { afterMin: 360, unpaidMin: 30 },
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      employee: "Ben", replaces: "Daniel", startMin: 420, endMin: 900, hours: 7.5,
+      slot: "2026-11-14|clash|Daniel|420|900",
+    });
+    expect(out[0]!.fillsOpen).toBeUndefined();
+    expect([weekHours.get("Daniel"), weekHours.get("Ben")]).toEqual([22.5, 7.5]);
+  });
+
+  it("goes back as an open shift when nobody else fits", () => {
+    const roster: Availability[] = [{ employee: "Daniel", maxWeekHours: 40, windows: all([360, 1260]) }];
+    const out = replaceClashes({ iso, shifts: shifts.slice(0, 1), roster, weekHours: new Map(), busy: new Set(["Daniel"]), unavailable: off });
+    expect(out).toEqual([
+      expect.objectContaining({ employee: null, replaces: "Daniel", startMin: 420, endMin: 900, trimmed: false }),
+    ]);
+  });
+
+  it("an operator pick on the clash slot wins over the ranking", () => {
+    const roster: Availability[] = [
+      { employee: "Ben", maxWeekHours: 40, windows: all([360, 1260]) },
+      { employee: "Cy", maxWeekHours: 40, windows: all([360, 1260]) },
+    ];
+    const pins = new Map([["2026-11-14|clash|Daniel|420|900", "Cy"]]);
+    const [out] = replaceClashes({ iso, shifts, roster, weekHours: new Map(), busy: new Set(), unavailable: off, pins });
+    expect(out).toMatchObject({ employee: "Cy", picked: true, replaces: "Daniel" });
   });
 });
 

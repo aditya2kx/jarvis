@@ -44,6 +44,20 @@ class ProdOpsTests(unittest.TestCase):
             with self.assertRaises(RequestError, msg=body):
                 parse_comment(body)
 
+    def test_shift_windows_takes_a_first_name_and_windows(self):
+        cmd = commands(parse_comment("/prod-ops shift-windows Ana 09:00-17:00 16:00-20:30"), "480")[0]
+        self.assertEqual(cmd[1:], ["-m", "agents.bhaga.scripts.set_shift_windows", "--by", "prod-ops PR #480",
+                                   "Ana", "09:00-17:00", "16:00-20:30"])
+        cmd = commands(parse_comment("/prod-ops shift-windows Ana 09:00-17:00 days=Mon,Tue"))[0]
+        self.assertEqual(cmd[3:], ["--by", "prod-ops", "--days", "Mon,Tue", "Ana", "09:00-17:00"])
+        self.assertEqual(prod_ops.tier(parse_comment("/prod-ops shift-windows Ana 09:00-17:00"), Path("."))[0],
+                         "changes-prod")
+        for body in ("/prod-ops shift-windows Ana", '/prod-ops shift-windows "Doe, Ana" 09:00-17:00',
+                     "/prod-ops shift-windows Ana 9-5", "/prod-ops shift-windows Ana 09:00-17:00 days=Mon;rm",
+                     "/prod-ops shift-windows Ana " + " ".join(["09:00-10:00"] * 5)):
+            with self.assertRaises(RequestError, msg=body):
+                parse_comment(body)
+
     def test_run_job_with_env(self):
         cmds = commands(parse_comment("/prod-ops run-job bhaga-daily-refresh REFRESH_DATE=2026-10-10"))
         self.assertEqual(cmds[0][-2:], ["wait-deploy", "bhaga-daily-refresh"])

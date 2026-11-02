@@ -1995,7 +1995,9 @@ entirely inside one window (e.g. 9 AM–5 PM or 4–8:30 PM — 2:30–8:30 PM c
 draft trims or skips them to fit, only offers them ADP open shifts that fit, and a scheduled ADP shift
 that doesn't fit is ringed on their lane ("outside shift windows"). Hours someone can't work at all
 still belong in ADP unavailability; this rule only shapes the shifts inside them. The last rule
-covering a weekday wins.
+covering a weekday wins. Agents save it with `/prod-ops shift-windows <FirstName> 09:00-17:00 16:00-20:30
+[days=Mon,Tue]` — a new rules version replacing that person's windows (first name resolved against
+Active ADP Directory staff; all days by default).
 
 **ADP local attach — one OTP per live ADP session (Issue #342).** Every fresh browser process is a new
 ADP login (`SMSESSION` is a session cookie), and ADP's risk engine texts a code for most of them. For

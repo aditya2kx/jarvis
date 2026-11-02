@@ -527,11 +527,19 @@ function draftCore(
       const here = (block.kind === "open" && wantsOpen) || (block.kind === "close" && wantsClose);
       const trainer = (x: (typeof eligible)[number]) =>
         !x.a.experienced ? 0 : here ? -1 : wantsOpen || wantsClose ? 1 : 0;
-      const starts = eligible.filter(covers).sort((x, y) => trainer(x) - trainer(y) || priority(x.a, y.a));
+      // A new hire with openers / closers still to do takes a cleared kind only when nobody else
+      // can, staying free to train beside a trainer that day.
+      const learner = (x: (typeof eligible)[number]) => {
+        const l = args.training?.left.get(x.a.employee);
+        return l && (l.open > 0 || l.close > 0) ? 1 : 0;
+      };
+      const rank = (x: (typeof eligible)[number], y: (typeof eligible)[number]) =>
+        trainer(x) - trainer(y) || learner(x) - learner(y);
+      const starts = eligible.filter(covers).sort((x, y) => rank(x, y) || priority(x.a, y.a));
       // Nobody can start the gap: whoever covers the most of it takes their part.
       const rest = eligible
         .filter((x) => !starts.includes(x))
-        .sort((x, y) => trainer(x) - trainer(y) || y.gain - x.gain || priority(x.a, y.a));
+        .sort((x, y) => rank(x, y) || y.gain - x.gain || priority(x.a, y.a));
       return { kind: block.kind, blockStart, blockEnd, ranked: [...starts, ...rest], blocked };
     };
 

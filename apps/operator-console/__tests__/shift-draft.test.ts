@@ -566,6 +566,16 @@ describe("new-hire training (Issue #450)", () => {
     expect(shadow).toMatchObject({ employee: "Kai", kind: "close", startMin: 960, endMin: 1230, training: true });
   });
 
+  it("keeps a new hire still training off a cleared kind when someone else can take it", () => {
+    const opener: Availability = { employee: "Kai", maxWeekHours: 40, recentHours: 90, windows: all([390, 1230]) };
+    const crew = ["Tia", "Uma", "Vic"].map((employee, i): Availability => ({ ...sam, employee, recentHours: 5 - i }));
+    const both = draft([opener, sam, ...crew], training({ Kai: [0, 1] }));
+    expect(draft([opener, sam, ...crew]).some((s) => s.employee === "Kai")).toBe(true);
+    expect(both.some((s) => s.employee === "Kai")).toBe(false);
+    // Nobody else free: they still cover the cleared kind rather than leave it open.
+    expect(draft([opener], training({ Kai: [0, 1] })).filter((s) => s.employee === "Kai").map((s) => s.kind)).toEqual(["open"]);
+  });
+
   describe("draftTrainingDay", () => {
     const run = (roster: Availability[], t: DraftTraining, weekHours = new Map<string, number>(), busy = new Set<string>()) =>
       draftTrainingDay({ iso, roster, weekHours, busy, training: t, minShiftMin: 240, maxShiftMin: 450, meal: { afterMin: 360, unpaidMin: 30 } });

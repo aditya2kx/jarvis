@@ -226,7 +226,7 @@ describe("the suggested week as tray changes", () => {
 describe("clearChanges (Clear weeks)", () => {
   const assigned = [
     { date: TODAY, employee: "Lee, Ana", ...T },
-    { date: "2026-10-30", employee: "Saldana, Daniel", startMin: 840, endMin: 1230 },
+    { date: "2026-10-30", employee: "Kim, Dee", startMin: 840, endMin: 1230 },
     { date: "2026-10-30", employee: "Lee, Ana", ...T },
   ];
   const open = [{ slot: "2026-10-30|adp|420|780", date: "2026-10-30", ...T }];
@@ -236,7 +236,7 @@ describe("clearChanges (Clear weeks)", () => {
     expect(out).toEqual([
       { kind: "shift-delete", date: "2026-10-30", employee: "Lee, Ana", ...T },
       { kind: "open-delete", slot: "2026-10-30|adp|420|780", date: "2026-10-30", ...T },
-      { kind: "shift-delete", date: "2026-10-30", employee: "Saldana, Daniel", startMin: 840, endMin: 1230 },
+      { kind: "shift-delete", date: "2026-10-30", employee: "Kim, Dee", startMin: 840, endMin: 1230 },
     ]);
     expect(validateAdpChanges(out.map(shift), TODAY)).toHaveLength(3);
   });
@@ -245,10 +245,10 @@ describe("clearChanges (Clear weeks)", () => {
     const staged = [
       shift({ kind: "shift-delete", date: "2026-10-30", employee: "Lee, Ana", ...T }),
       shift({ kind: "open-delete", slot: "2026-10-30|adp|420|780", date: "2026-10-30", ...T }),
-      shift({ kind: "shift-publish", date: "2026-10-30", employee: "Saldana, Daniel", startMin: 840, endMin: 1230 }),
+      shift({ kind: "shift-publish", date: "2026-10-30", employee: "Kim, Dee", startMin: 840, endMin: 1230 }),
     ];
     const out = clearChanges(assigned, open, TODAY, staged);
-    expect(out.map((c) => "employee" in c && c.employee)).toEqual(["Saldana, Daniel"]);
+    expect(out.map((c) => "employee" in c && c.employee)).toEqual(["Kim, Dee"]);
     expect(out.reduce((q, c) => stageAdp(q, shift(c)), staged).map((a) => a.c.kind)).toEqual(["shift-delete", "open-delete", "shift-delete"]);
   });
 });

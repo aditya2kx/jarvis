@@ -96,7 +96,7 @@ describe("AdpScheduleFinalize: the suggested week goes through the Changes to AD
 });
 
 describe("AdpScheduleFinalize Clear weeks", () => {
-  const DEL: ShiftChange = { kind: "shift-delete", date: "2026-11-03", employee: "Saldana, Daniel", ...T };
+  const DEL: ShiftChange = { kind: "shift-delete", date: "2026-11-03", employee: "Kim, Dee", ...T };
   const OPEN_DEL: ShiftChange = { kind: "open-delete", slot: "2026-11-03|adp|420|780", date: "2026-11-03", ...T };
   const LATER_DEL: ShiftChange = { kind: "shift-delete", date: "2026-11-10", employee: "Roe, Sam", ...T };
 
@@ -126,7 +126,7 @@ describe("AdpScheduleFinalize Clear weeks", () => {
     expect((screen.getByRole("button", { name: "Pick weeks to clear" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByTestId("clear-published")).toBeNull();
     fireEvent.click(weekBox(NEXT));
-    expect(screen.getByText("Saldana, Daniel")).toBeTruthy();
+    expect(screen.getByText("Kim, Dee")).toBeTruthy();
     expect(screen.getByTestId("clear-published").textContent).toMatch(/1 published shift — staff see it leave/);
     fireEvent.click(screen.getByRole("button", { name: "Add 2 deletes to changes" }));
     expect(onClear).toHaveBeenCalledWith([DEL, OPEN_DEL]);

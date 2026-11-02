@@ -1989,6 +1989,12 @@ week total matches ADP.
 **Unavailable on dates** (staff rule, from–to): for people who can't enter unavailability in ADP; the
 draft treats it as approved all-day unavailability and the Unavailability card lists it as
 "Scheduling rule". A saved week stays locked — fix an affected saved shift with delete + a new draft.
+**Shifts must fit within** (staff rule, weekdays + 1–4 windows): each of the person's shifts must sit
+entirely inside one window (e.g. 9 AM–5 PM or 4–8:30 PM — 2:30–8:30 PM crosses them, so it's out). The
+draft trims or skips them to fit, only offers them ADP open shifts that fit, and a scheduled ADP shift
+that doesn't fit is ringed on their lane ("outside shift windows"). Hours someone can't work at all
+still belong in ADP unavailability; this rule only shapes the shifts inside them. The last rule
+covering a weekday wins.
 
 **ADP local attach — one OTP per live ADP session (Issue #342).** Every fresh browser process is a new
 ADP login (`SMSESSION` is a session cookie), and ADP's risk engine texts a code for most of them. For

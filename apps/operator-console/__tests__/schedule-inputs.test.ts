@@ -418,3 +418,33 @@ describe("new-hire training rules (Issue #450)", () => {
     expect(parseScheduleRules(withTraining(before)).staffing.training.trained).toEqual([]);
   });
 });
+
+describe("shift_windows staff rule", () => {
+  const rule = {
+    id: "w",
+    employee: "Dee",
+    kind: "shift_windows" as const,
+    value: 0,
+    days: [0, 1, 2, 3, 4, 5, 6],
+    windows: [{ fromMin: 960, toMin: 1230 }, { fromMin: 540, toMin: 1020 }],
+  };
+  const parse = (r: object) => parseScheduleRules({ dayRules: [], staffRules: [r] }).staffRules[0];
+
+  it("round-trips with windows sorted by start", () => {
+    expect(parse(rule)).toEqual({ ...rule, windows: [{ fromMin: 540, toMin: 1020 }, { fromMin: 960, toMin: 1230 }] });
+  });
+
+  it("rejects no days, no windows, or a window that ends before it starts", () => {
+    expect(() => parse({ ...rule, days: [] })).toThrow(/at least one day/);
+    expect(() => parse({ ...rule, windows: [] })).toThrow(/1–4 windows/);
+    expect(() => parse({ ...rule, windows: [{ fromMin: 600, toMin: 540 }] })).toThrow(/from time before/);
+  });
+
+  it("becomes the person's shift windows, one entry per rule", () => {
+    const weekend = { ...rule, id: "w2", days: [5, 6], windows: [{ fromMin: 600, toMin: 960 }] };
+    expect(staffLimits([rule, weekend]).get("Dee")?.shiftWindows).toEqual([
+      { days: rule.days, windows: [[960, 1230], [540, 1020]] },
+      { days: [5, 6], windows: [[600, 960]] },
+    ]);
+  });
+});

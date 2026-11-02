@@ -53,6 +53,7 @@ import {
   isOpenShiftSlot,
   openShiftSlot,
   paidHours,
+  shiftSpans,
   type DraftPreference,
   type DraftShift,
   type DraftTraining,
@@ -479,12 +480,16 @@ function AxisTicks({ axisStart, axisEnd }: { axisStart: number; axisEnd: number 
   );
 }
 
+const outsideSpans = (spans: [number, number][] | undefined, g: { startMin: number; endMin: number }) =>
+  !!spans && !spans.some(([s, e]) => s <= g.startMin && g.endMin <= e);
+
 export function PersonLaneTrack({
   person,
   axisStart,
   axisSpan,
   blocks = NO_BLOCKS,
   flagClash = false,
+  spans,
 }: {
   person: CoveragePersonDay;
   axisStart: number;
@@ -493,6 +498,8 @@ export function PersonLaneTrack({
   blocks?: LaneOff[];
   /** Ring scheduled shifts that overlap a block (today and ahead). */
   flagClash?: boolean;
+  /** Their shift windows on the day; a scheduled shift outside every one is ringed too. */
+  spans?: [number, number][];
 }) {
   const end = axisStart + axisSpan;
   return (
@@ -542,7 +549,8 @@ export function PersonLaneTrack({
             </div>
           );
         }
-        const clash = flagClash && hitsBlock(seg.startMin, seg.endMin, blocks);
+        const clash =
+          flagClash && (hitsBlock(seg.startMin, seg.endMin, blocks) || (isSched && outsideSpans(spans, seg)));
         return (
           <div
             key={`${seg.kind}-${seg.startMin}-${i}`}
@@ -637,6 +645,7 @@ function CoverageTimeline({
   need,
   draftShifts,
   off,
+  spans,
   activeStaff,
   onPerson,
 }: {
@@ -651,6 +660,8 @@ function CoverageTimeline({
   draftShifts: DraftShift[];
   /** Unavailability per person on this day. */
   off: Map<string, LaneOff[]>;
+  /** Shift windows on this day, for people with a shift-windows rule. */
+  spans?: ReadonlyMap<string, [number, number][]>;
   /** Directory-active people; null when unknown. */
   activeStaff?: ReadonlySet<string> | null;
   /** Tap a name → that person's unavailability drawer. */
@@ -903,6 +914,8 @@ function CoverageTimeline({
             const blocks = open ? NO_BLOCKS : (off.get(p.employee) ?? NO_BLOCKS);
             const clash =
               flagClash && p.segments.some((g) => g.kind !== "open" && hitsBlock(g.startMin, g.endMin, blocks));
+            const outside =
+              flagClash && !open && p.segments.some((g) => g.kind === "scheduled" && outsideSpans(spans?.get(p.employee), g));
             const departed = flagClash && !open && activeStaff != null && !activeStaff.has(p.employee);
             const takers = open
               ? draftShifts
@@ -917,6 +930,7 @@ function CoverageTimeline({
                     {totalHrs.toFixed(1)}h
                     {open ? (activeDay < todayIso ? " · unfilled" : " · unassigned") : ""}
                     {clash ? <span className="font-medium text-destructive"> · clash</span> : null}
+                    {outside ? <span className="font-medium text-destructive"> · outside shift windows</span> : null}
                   </span>
                   {departed ? (
                     <span className="block truncate text-xs font-medium text-destructive" title="Still on the ADP schedule, but not Active in the ADP Directory">
@@ -941,6 +955,7 @@ function CoverageTimeline({
                     axisSpan={span}
                     blocks={blocks}
                     flagClash={flagClash}
+                    spans={spans?.get(p.employee)}
                   />
                 </div>
               </div>
@@ -1332,6 +1347,11 @@ export function LaborCoveragePanel({
     [activeDay, people, demand, inputs, todayIso],
   );
   const dayOff = useMemo(() => (activeDay ? laneBlocks(offRows, activeDay) : new Map<string, LaneOff[]>()), [offRows, activeDay]);
+  const daySpans = useMemo(() => {
+    if (!activeDay) return undefined;
+    const dow = isoWeekdayMon0(activeDay);
+    return new Map(roster.filter((a) => a.shiftWindows?.some((r) => r.days.includes(dow))).map((a) => [a.employee, shiftSpans(a, dow)]));
+  }, [roster, activeDay]);
 
   // "Suggestions" (draft shifts, fill names, Finalize) — on unless the operator turned it off.
   const [showDraft, setShowDraftState] = useState(true);
@@ -2148,6 +2168,7 @@ export function LaborCoveragePanel({
             need={need}
             draftShifts={draftShifts}
             off={dayOff}
+            spans={daySpans}
             activeStaff={active}
             onPerson={(employee) => setTarget({ mode: "person", employee })}
           />

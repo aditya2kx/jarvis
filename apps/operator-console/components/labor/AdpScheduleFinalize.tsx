@@ -163,7 +163,7 @@ export function AdpScheduleFinalize({
   /** Every upcoming week with a suggested schedule, ascending (includes `weekStart`). */
   weeks: SuggestedWeek[];
   onStage: (changes: ShiftChange[]) => void;
-  /** Per upcoming week, the deletes that would clear what ADP has (assigned, drafts, open) from tomorrow on. */
+  /** Per upcoming week, the deletes that would clear ADP's draft (unpublished) shifts from tomorrow on. */
   clearWeeks?: SuggestedWeek[];
   onClear?: (changes: ShiftChange[]) => void;
   /** CONSOLE_ADP_SCHEDULE_WRITE: gates the ClickUp message (the tray gates Apply itself). */

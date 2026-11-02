@@ -39,9 +39,10 @@ describe("hours per person stacking", () => {
     expect(out.series.map((s) => s.key)).toEqual(["parttime", "parttime_sched", "open", "suggested"]);
   });
 
-  it("offers four future weeks on a Sunday", () => {
+  it("offers five future weeks on a Sunday", () => {
     const w = weekOptions([], "2026-11-01", { start: "2026-10-26", end: forwardHorizonEnd("2026-11-01", null) });
     expect(w.map((x) => x.label)).toEqual([
+      "Nov 30–Dec 6",
       "Nov 23–29",
       "Nov 16–22",
       "Nov 9–15",

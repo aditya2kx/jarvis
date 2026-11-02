@@ -3,11 +3,13 @@ import {
   adpChangeKey,
   adpDrafts,
   changePeople,
+  paidHoursOfChanges,
   personShifts,
   pruneQueue,
   readStoredQueue,
   shiftError,
   shiftText,
+  shiftsInChange,
   stageAdp,
   stagedShift,
   suggestedChanges,
@@ -216,5 +218,27 @@ describe("the suggested week as tray changes", () => {
     const keep = (has: boolean) =>
       pruneQueue([shift(pub)], { todayIso: TODAY, unavailabilityKeys: new Set(), openSlots: new Set(), hasShift: () => has });
     expect([keep(true).length, keep(false).length]).toEqual([1, 0]);
+  });
+});
+
+describe("paidHoursOfChanges (chart / goal meter)", () => {
+  const meal = { afterMin: 6 * 60, unpaidMin: 30 };
+  // 6:30–2:30 = 8h wall-clock → 7.5h paid once the unpaid meal is removed.
+  const long = { startMin: 390, endMin: 870 };
+
+  it("counts open-add by its count and removes the unpaid meal like ADP", () => {
+    const add: ShiftChange = { kind: "shift-add", date: "2026-11-10", employee: "Lee, Ana", ...long };
+    const open: ShiftChange = { kind: "open-add", date: "2026-11-10", count: 2, ...long };
+    expect(shiftsInChange(open)).toBe(2);
+    expect(paidHoursOfChanges([add], meal)).toBe(7.5);
+    expect(paidHoursOfChanges([open], meal)).toBe(15);
+    // Wall-clock would have been 24h for the same three shifts.
+    expect(paidHoursOfChanges([add, open], meal)).toBe(22.5);
+  });
+
+  it("leaves shifts at or under the meal threshold alone", () => {
+    const six: ShiftChange = { kind: "shift-add", date: "2026-11-10", employee: "Lee, Ana", ...T };
+    expect(paidHoursOfChanges([six], meal)).toBe(6);
+    expect(paidHoursOfChanges([six])).toBe(6);
   });
 });

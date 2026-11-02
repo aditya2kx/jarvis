@@ -1824,16 +1824,21 @@ their own times and hours so far this week — plus **Leave open**. A pick re-dr
 flagged). Picks live in that browser's local storage per week until the week is saved to ADP, so they don't
 follow you to another device.
 **New-hire training (Issue #450)** is part of the same versioned rules (Schedule inputs › **New-hire
-training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hire from now on) is drafted only beside an experienced person
+training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hire from now on) trains beside an experienced person
 (the operator picks the list in the console, or an agent saves it with `/prod-ops experienced-staff <FirstName> …` — a new rules version, first names resolved against Active ADP Directory staff; empty = gate off) for at least the set overlap (default 3 h) until they've
 done the set number of supervised openers and closers (default 2 + 2). Each kind clears on its own:
 after their supervised closers they close with anyone or alone (likewise openers); mids stay
-supervised until both are done. **Mark trained** on a person's progress row (saved in the rules as
+training until both are done. **Mark trained** on a person's progress row (saved in the rules as
 `training.trained`) skips the rule for someone already up to speed; each row shows shifts worked.
-It's one-time, counted over every ADP shift (past actuals + upcoming schedule), not per week. It's a
-hard rule: a slot no trainee can take stays open, and the draft row says why. The draft searches
-for where experienced staff unlock the most coverage — e.g. a trainee on the morning mid beside the
-opener while the second experienced person moves to the close. Pickers tag people
+It's one-time, counted over every ADP shift (past actuals + upcoming schedule), not per week.
+**Training shifts sit on top of need (2026-11-02):** a shift of a kind the new hire hasn't cleared
+(or any mid) never counts toward headcount — the need passes skip them (the draft row lists them
+with the reason) and their training shifts already in ADP are left out of draft coverage; the
+trainer's shift counts as usual. After the need passes, the draft walks the week from the earliest
+day and gives each new hire with openers / closers left one experienced opener or closer to shadow
+(one new hire per experienced shift, within their availability, longest shift and weekly cap), so
+new hires clear as soon as trainers are on. Those rows read **training · on top of need** and the
+hours breakdown shows them as **New-hire training**. Pickers tag people
 **Experienced** / **New hire · 1/2 openers · 0/2 closers** and list blocked people (disabled) with the
 reason, so a manual ADP edit is informed. Hire date = `bhaga.adp_hire_dates` (migration 097, from the
 ADP profile's **Employee status → Hire date** field; falls back to the first ADP shift). The
@@ -2614,7 +2619,9 @@ model-scoped, in which case raw ingest is still running — and, failing that, w
 has stopped advancing, naming the date the figures stop at. Derived on the server so it is identical
 for every viewer: pipeline health is a property of the system, not of a session. It is computed from
 the Firestore `_pipeline_state` doc (read over REST with ADC — the console has no Firestore SDK) plus
-`MAX(date)` from `model_daily`. A healthy system shows no banner; a failed health lookup says
+the later of `MAX(date)` from `model_daily` and the day before the latest `pipeline_runs` row with
+`status = 'success'` — a closed day adds no model row, so the model alone flagged the Oct 31 + Nov 1
+closure as stale (2026-11-02). A healthy system shows no banner; a failed health lookup says
 "unknown" rather than implying health. This exists because on 2026-09-07 the console rendered
 six-day-old numbers as though they were current.
 

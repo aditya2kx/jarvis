@@ -1437,12 +1437,24 @@ def queue_assign(store: str, items, *, by: str, today: dt.date | None = None,
 
 def start_assign_job(store: str, assign_id: str) -> str:
     """Start one assign execution. Overrides apply to this run only, not the job."""
-    body = {"overrides": {"containerOverrides": [{"env": [
-        {"name": "BHAGA_ADP_SCHEDULE_WRITE", "value": "assign"},
+    return _start_write_job(store, "assign", "BHAGA_SCHEDULE_ASSIGN_ID", assign_id)
+
+
+def start_apply_job(store: str, batch_id: str) -> str:
+    """Start one Apply execution, as the console's Apply does (2h task timeout, like the console)."""
+    return _start_write_job(store, "apply", "BHAGA_SCHEDULE_BATCH_ID", batch_id, timeout="7200s")
+
+
+def _start_write_job(store: str, mode: str, key: str, value: str, *, timeout: str | None = None) -> str:
+    overrides: dict = {"containerOverrides": [{"env": [
+        {"name": "BHAGA_ADP_SCHEDULE_WRITE", "value": mode},
         {"name": "BHAGA_IGNORE_HALT", "value": "1"},
         {"name": "BHAGA_STORE", "value": store},
-        {"name": "BHAGA_SCHEDULE_ASSIGN_ID", "value": assign_id},
-    ]}]}}
+        {"name": key, "value": value},
+    ]}]}
+    if timeout:
+        overrides["timeout"] = timeout
+    body = {"overrides": overrides}
     req = urllib.request.Request(
         f"{_ASSIGN_JOB}:run", data=json.dumps(body).encode(), method="POST",
         headers={"Authorization": f"Bearer {_gcp_token()}", "Content-Type": "application/json"},

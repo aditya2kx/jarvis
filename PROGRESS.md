@@ -1,3 +1,7 @@
+## 2026-11-01 — `/prod-ops clear-weeks`: agents run Clear weeks → Apply (#481 follow-up)
+
+**Why:** the operator wants the agent to drive the Nov 9+ re-plan; agents can't press Apply on the prod console (IAP sign-in; previews are read-only), and `BHAGA_SCHEDULE_CHANGES` would put full names in a public comment. **Change:** `clear_adp_weeks.py` builds the console's Clear weeks rows server-side, queues one Apply batch and starts the ADP Apply job; `limit=1` canary and `dry-run` (safe tier). Counts only in logs.
+
 ## 2026-11-01 — Clear weeks + "Shifts must fit within" staff rule (#481, PR #480)
 
 **Scope:** the suggested-week card's **Clear weeks** stages a delete for every ADP shift (published, draft, open) in the picked weeks from tomorrow on — the re-plan flow is Clear weeks → Apply → Review & add → Apply. New staff rule **Shifts must fit within** (weekdays + 1–4 windows): the draft and open-shift fill keep each of that person's shifts inside one window, and a scheduled ADP shift outside them is ringed on the lane. **Decision:** windows live in the console, not ADP (ADP unavailability is blocks and can't express overlapping either-or windows); agents save one with `/prod-ops shift-windows <FirstName> HH:MM-HH:MM …` (first names only — public logs). **Post-merge:** one-shift published-delete canary before the 97-delete Nov 9–29 clear (first live `shift-delete` of a published shift).

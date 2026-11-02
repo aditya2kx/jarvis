@@ -58,6 +58,21 @@ class ProdOpsTests(unittest.TestCase):
             with self.assertRaises(RequestError, msg=body):
                 parse_comment(body)
 
+    def test_clear_weeks(self):
+        cmd = commands(parse_comment("/prod-ops clear-weeks 2026-11-09 2026-11-29"), "482")[0]
+        self.assertEqual(cmd[1:], ["-m", "agents.bhaga.scripts.clear_adp_weeks", "--by", "prod-ops PR #482",
+                                   "2026-11-09", "2026-11-29"])
+        canary = parse_comment("/prod-ops clear-weeks 2026-11-09 2026-11-09 limit=1")
+        self.assertEqual(commands(canary)[0][5:], ["--limit", "1", "2026-11-09", "2026-11-09"])
+        self.assertEqual(prod_ops.tier(canary, Path("."))[0], "changes-prod")
+        dry = parse_comment("/prod-ops clear-weeks 2026-11-09 2026-11-29 dry-run")
+        self.assertIn("--dry-run", commands(dry)[0])
+        self.assertEqual(prod_ops.tier(dry, Path("."))[0], "safe")
+        for body in ("/prod-ops clear-weeks 2026-11-09", "/prod-ops clear-weeks 2026-11-09 11/29",
+                     "/prod-ops clear-weeks 2026-11-09 2026-11-29 limit=x", "/prod-ops clear-weeks 2026-11-09 2026-11-29 all", "/prod-ops clear-weeks 2026-02-30 2026-03-01"):
+            with self.assertRaises(RequestError, msg=body):
+                parse_comment(body)
+
     def test_run_job_with_env(self):
         cmds = commands(parse_comment("/prod-ops run-job bhaga-daily-refresh REFRESH_DATE=2026-10-10"))
         self.assertEqual(cmds[0][-2:], ["wait-deploy", "bhaga-daily-refresh"])

@@ -1864,12 +1864,6 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
   suggestions too), so 3–4 weeks go out in one Apply. Its **Send ClickUp message** is the only other
   action. (Issue #434 retired the card's Save-as-drafts and
   Publish-week buttons.)
-- **Re-plan after an unavailability fix:** a published ADP shift (tomorrow on) that overlaps its person's
-  unavailability (ADP pending/approved, or a staff rule) is re-drafted like an ADP open shift — the lane says
-  `· clash · suggest <who>`, the draft table marks it **instead of <person>**, and **Review & add to changes**
-  stages a `shift-reassign` (or, when nobody fits, `shift-delete` + `open-add` at the same hours). One Apply
-  moves it in ADP. These lines add no hours (already counted). The draft only sees unavailability ADP has —
-  fix it in ADP (or Apply the staged entry) first, then Review & add.
 - Unavailability changes (#427) stage into the same tray (`CONSOLE_ADP_UNAVAIL_WRITE`, off until its ADP
   writes are proven live; only **approve** is wired in the job today — other kinds fail without a click).
 - **Suggestions** switch (per browser, `labor-show-suggestions:v1:<store>`): off hides draft lanes, `+N draft`

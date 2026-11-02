@@ -17,7 +17,9 @@ export type SystemHealth = {
   haltSince: string | null;
   /** Latest date present in the model, ISO. Null when the model is empty. */
   dataWindowEnd: string | null;
-  /** Whole days between dataWindowEnd and today (America/Chicago). */
+  /** Day before the latest successful nightly — refreshed even if the store was closed (no model row). */
+  refreshedThrough: string | null;
+  /** Whole days between the later of the two above and today (America/Chicago). */
   dataAgeDays: number | null;
   stale: boolean;
   /** Set when health could not be determined; the banner says so rather than lying. */
@@ -90,12 +92,19 @@ export async function readPipelineHalt(): Promise<HaltState> {
   };
 }
 
-/** Latest date the model actually covers. */
-export async function readDataWindowEnd(): Promise<string | null> {
-  const rows = await q<{ data_window_end: string | null }>(
-    `SELECT CAST(MAX(date) AS STRING) AS data_window_end FROM ${fq("model_daily")}`,
+/**
+ * Latest date the model covers, and the day before the latest fully successful nightly (side jobs,
+ * dry runs and partial runs never record `success`). A closed day adds no model row, so the model
+ * alone reads stale after a closure (2026-11-02: closed Oct 31 + Nov 1 looked like a 3-day outage).
+ */
+export async function readDataWindowEnd(): Promise<Pick<SystemHealth, "dataWindowEnd" | "refreshedThrough">> {
+  const rows = await q<{ data_window_end: string | null; refreshed_through: string | null }>(
+    `SELECT CAST(MAX(date) AS STRING) AS data_window_end,
+       (SELECT CAST(DATE_SUB(MAX(run_date), INTERVAL 1 DAY) AS STRING)
+          FROM ${fq("pipeline_runs")} WHERE status = 'success') AS refreshed_through
+     FROM ${fq("model_daily")}`,
   );
-  return rows[0]?.data_window_end ?? null;
+  return { dataWindowEnd: rows[0]?.data_window_end ?? null, refreshedThrough: rows[0]?.refreshed_through ?? null };
 }
 
 /** Whole days between an ISO date and today in America/Chicago. */
@@ -119,14 +128,12 @@ export function ageInDays(dateIso: string, now: Date = new Date()): number {
  */
 export async function getSystemHealth(): Promise<SystemHealth> {
   try {
-    const [halt, dataWindowEnd] = await Promise.all([
-      readPipelineHalt(),
-      readDataWindowEnd(),
-    ]);
-    const dataAgeDays = dataWindowEnd ? ageInDays(dataWindowEnd) : null;
+    const [halt, window] = await Promise.all([readPipelineHalt(), readDataWindowEnd()]);
+    const current = [window.dataWindowEnd, window.refreshedThrough].filter((d): d is string => !!d).sort().at(-1);
+    const dataAgeDays = current ? ageInDays(current) : null;
     return {
       ...halt,
-      dataWindowEnd,
+      ...window,
       dataAgeDays,
       stale: dataAgeDays !== null && dataAgeDays > STALE_AFTER_DAYS,
       error: null,
@@ -135,6 +142,7 @@ export async function getSystemHealth(): Promise<SystemHealth> {
     return {
       ...NOT_HALTED,
       dataWindowEnd: null,
+      refreshedThrough: null,
       dataAgeDays: null,
       stale: false,
       error: e instanceof Error ? e.message : String(e),

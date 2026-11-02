@@ -102,11 +102,19 @@ export type TrainingRules = {
   closeShifts: number;
   /** Minutes an experienced person must overlap each training shift. */
   overlapMin: number;
+  /** New hires who may shadow the same experienced shift at once. */
+  traineesPerTrainer: number;
   /** Canonical names of the people new hires train with. */
   experienced: string[];
+  /** Experienced staff who train only openers or only closers (absent = both); trained on that kind themselves. */
+  trainsOnly: Record<string, TrainKind>;
   /** New hires the operator marked as already trained — no supervision needed. */
   trained: string[];
+  /** New hires marked trained on one kind only (`trained` covers both). */
+  trainedOnly: Record<string, TrainKind>;
 };
+
+export type TrainKind = "open" | "close";
 
 export type ShiftTimes = "history" | "need";
 
@@ -127,8 +135,11 @@ export const DEFAULT_TRAINING: TrainingRules = {
   openShifts: 2,
   closeShifts: 2,
   overlapMin: 180,
+  traineesPerTrainer: 2,
   experienced: [],
+  trainsOnly: {},
   trained: [],
+  trainedOnly: {},
 };
 
 /** ADP's shortest regular shift is 4.5 h (4:00–8:30 PM closer). */
@@ -451,18 +462,37 @@ function parseTraining(raw: unknown): TrainingRules {
   if (!whole(t.overlapMin, 15, 12 * 60) || t.overlapMin! % 15) {
     throw new Error("Training overlap must be 15 min–12 hours in 15-minute steps");
   }
+  const perTrainer = t.traineesPerTrainer ?? DEFAULT_TRAINING.traineesPerTrainer;
+  if (!whole(perTrainer, 1, 5)) {
+    throw new Error("New hires per trainer must be a whole number 1–5");
+  }
   const names = (v: unknown, what: string): string[] => {
     if (!Array.isArray(v) || v.some((n) => typeof n !== "string" || !n.trim())) {
       throw new Error(`${what} must be a list of names`);
     }
     return [...new Set(v.map((n: string) => n.trim()))].sort((a, b) => a.localeCompare(b));
   };
+  const kinds = (v: unknown, what: string, keep: (n: string) => boolean): Record<string, TrainKind> => {
+    if (v == null) return {};
+    if (typeof v !== "object" || Array.isArray(v)) throw new Error(`${what} must map names to openers or closers`);
+    const out: Record<string, TrainKind> = {};
+    for (const [n, k] of Object.entries(v as Record<string, unknown>)) {
+      if (k !== "open" && k !== "close") throw new Error(`${what} must map names to openers or closers`);
+      if (n.trim() && keep(n.trim())) out[n.trim()] = k;
+    }
+    return out;
+  };
+  const experienced = names(t.experienced, "Experienced staff");
+  const trained = names(t.trained ?? [], "Trained new hires");
   return {
     openShifts: t.openShifts!,
     closeShifts: t.closeShifts!,
     overlapMin: t.overlapMin!,
-    experienced: names(t.experienced, "Experienced staff"),
-    trained: names(t.trained ?? [], "Trained new hires"),
+    traineesPerTrainer: perTrainer,
+    experienced,
+    trainsOnly: kinds(t.trainsOnly, "Trains only", (n) => experienced.includes(n)),
+    trained,
+    trainedOnly: kinds(t.trainedOnly, "Trained only", (n) => !trained.includes(n)),
   };
 }
 

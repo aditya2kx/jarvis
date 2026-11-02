@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { progressLabel, TRAINING_FROM, type TrainingStatus } from "@/lib/labor/new-hire-training";
-import type { TrainingRules } from "@/lib/labor/schedule-inputs";
+import type { TrainKind, TrainingRules } from "@/lib/labor/schedule-inputs";
 import { WARN_BADGE_CLASS } from "@/lib/run-status";
 import { cn } from "@/lib/utils";
 
@@ -50,6 +50,16 @@ function Field({
       </span>
     </label>
   );
+}
+
+const BOTH = "both";
+const TRAINS_LABEL: Record<string, string> = { both: "openers & closers", open: "openers only", close: "closers only" };
+const MARK_LABEL: Record<string, string> = { both: "Openers and closers", open: "Openers only", close: "Closers only" };
+
+/** `map` with `name` set to openers / closers, or removed for "both". */
+function withKind(map: Record<string, TrainKind>, name: string, v: string): Record<string, TrainKind> {
+  const rest = Object.fromEntries(Object.entries(map).filter(([n]) => n !== name));
+  return v === "open" || v === "close" ? { ...rest, [name]: v } : rest;
 }
 
 const shortDate = (iso: string) => {
@@ -103,6 +113,14 @@ export function NewHireTrainingRules({
           step={0.25}
           onChange={(v) => onChange({ overlapMin: Math.round((v * 60) / 15) * 15 })}
         />
+        <Field
+          label="New hires per trainer"
+          unit="at once"
+          value={t.traineesPerTrainer}
+          min={1}
+          max={5}
+          onChange={(v) => onChange({ traineesPerTrainer: Math.round(v) })}
+        />
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -111,10 +129,34 @@ export function NewHireTrainingRules({
           {t.experienced.map((name) => (
             <Badge key={name} variant="secondary" className="h-7 gap-1 pr-1 font-normal">
               {name}
+              <Select
+                value={t.trainsOnly[name] ?? BOTH}
+                onValueChange={(v) => v && onChange({ trainsOnly: withKind(t.trainsOnly, name, String(v)) })}
+              >
+                <SelectTrigger
+                  size="sm"
+                  aria-label={`What ${name} trains`}
+                  className="h-9 gap-1 border-0 bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none hover:text-foreground sm:h-5"
+                >
+                  <SelectValue>{(v: string) => TRAINS_LABEL[v]}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(TRAINS_LABEL).map(([v, label]) => (
+                    <SelectItem key={v} value={v}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <button
                 type="button"
                 aria-label={`Remove ${name} from experienced staff`}
-                onClick={() => onChange({ experienced: t.experienced.filter((n) => n !== name) })}
+                onClick={() =>
+                  onChange({
+                    experienced: t.experienced.filter((n) => n !== name),
+                    trainsOnly: withKind(t.trainsOnly, name, BOTH),
+                  })
+                }
                 className="flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <X className="size-3" />
@@ -173,22 +215,58 @@ export function NewHireTrainingRules({
                     staff
                   </Badge>
                 ) : null}
-                {p.marked || !p.cleared ? (
+                {t.trainedOnly[p.employee] && !p.marked ? (
+                  <Badge variant="outline" className="h-4 gap-0.5 px-1.5 pr-0.5 text-[11px] font-normal text-muted-foreground">
+                    {t.trainedOnly[p.employee] === "open" ? "Openers" : "Closers"} marked trained
+                    <button
+                      type="button"
+                      aria-label={`Undo ${t.trainedOnly[p.employee] === "open" ? "openers" : "closers"} marked trained for ${p.employee}`}
+                      onClick={() => onChange({ trainedOnly: withKind(t.trainedOnly, p.employee, BOTH) })}
+                      className="flex size-4 items-center justify-center rounded-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </Badge>
+                ) : null}
+                {p.marked ? (
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
                     className="ml-auto text-xs text-muted-foreground hover:text-foreground"
-                    onClick={() =>
-                      onChange({
-                        trained: p.marked
-                          ? t.trained.filter((n) => n !== p.employee)
-                          : [...t.trained, p.employee].sort((a, b) => a.localeCompare(b)),
-                      })
+                    onClick={() => onChange({ trained: t.trained.filter((n) => n !== p.employee) })}
+                  >
+                    Undo
+                  </Button>
+                ) : !p.cleared ? (
+                  <Select
+                    value={null}
+                    onValueChange={(v) =>
+                      v === BOTH
+                        ? onChange({
+                            trained: [...t.trained, p.employee].sort((a, b) => a.localeCompare(b)),
+                            trainedOnly: withKind(t.trainedOnly, p.employee, BOTH),
+                          })
+                        : v && onChange({ trainedOnly: withKind(t.trainedOnly, p.employee, String(v)) })
                     }
                   >
-                    {p.marked ? "Undo" : "Mark trained"}
-                  </Button>
+                    <SelectTrigger
+                      size="sm"
+                      aria-label={`Mark ${p.employee} trained`}
+                      className="ml-auto h-9 w-auto gap-1 border-0 bg-transparent text-xs text-muted-foreground shadow-none hover:text-foreground sm:h-7"
+                    >
+                      <SelectValue placeholder="Mark trained" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(MARK_LABEL)
+                        .filter(([v]) => v === BOTH || (v === "open" ? p.needOpen > 0 : p.needClose > 0))
+                        .map(([v, label]) => (
+                          <SelectItem key={v} value={v}>
+                            {label}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
                 ) : null}
               </li>
             ))}

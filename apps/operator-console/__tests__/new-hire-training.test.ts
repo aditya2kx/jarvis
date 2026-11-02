@@ -5,8 +5,10 @@ import {
   progressLabel,
   shiftKindOf,
   staffTags,
+  isTrainingShift,
   trainingLeftOf,
   trainingProgress,
+  trainsKind,
   TRAINING_FROM,
 } from "@/lib/labor/new-hire-training";
 import { DEFAULT_TRAINING, type TrainingRules } from "@/lib/labor/schedule-inputs";
@@ -26,6 +28,15 @@ describe("shiftKindOf / overlapMinutes", () => {
     expect(shiftKindOf(450, 840)).toBe("open");
     expect(shiftKindOf(600, 1020)).toBe("mid");
     expect(shiftKindOf(810, 1230)).toBe("close");
+  });
+
+  it("treats a kind as training until its supervised shifts are done; mids until both are", () => {
+    expect(isTrainingShift({ open: 1, close: 0 }, "close")).toBe(false);
+    expect(isTrainingShift({ open: 1, close: 0 }, "open")).toBe(true);
+    expect(isTrainingShift({ open: 1, close: 0 }, "mid")).toBe(true);
+    expect(isTrainingShift({ open: 0, close: 2 }, "open")).toBe(false);
+    expect(isTrainingShift({ open: 0, close: 0 }, "mid")).toBe(false);
+    expect(isTrainingShift(undefined, "open")).toBe(false);
   });
 
   it("counts covered minutes once across overlapping spans", () => {
@@ -91,6 +102,8 @@ describe("trainingProgress", () => {
     }).get("New, Lee")!;
     expect(wing).toMatchObject({ worked: 3, open: 0, close: 2, cleared: false, marked: false });
     expect(wing.unsupervised).toEqual(["2026-11-03"]);
+    // Closes after both supervised closers count toward need; the opener is still training.
+    expect(wing.trainingDates).toEqual(["2026-10-20", "2026-10-22", "2026-11-03"]);
     expect(trainingLeftOf(wing)).toEqual({ open: 2, close: 0 });
   });
 
@@ -108,6 +121,43 @@ describe("trainingProgress", () => {
     });
     expect(out.get("New, Lee")).toMatchObject({ cleared: true, marked: true, worked: 1, unsupervised: [] });
     expect(staffTags(rules, out).has("New, Lee")).toBe(false);
+  });
+
+  it("lets a closers-only trainer supervise closes but not openers, and still trains them on openers", () => {
+    const closesOnly: TrainingRules = { ...rules, experienced: ["Pro, Dolce", "New, Lee"], trainsOnly: { "New, Lee": "close" } };
+    const days = new Map<string, CoveragePersonDay[]>([
+      ["2026-10-20", [closer("New, Lee"), closer("New, Kai")]], // beside a closers trainer → counts
+      ["2026-10-21", [opener("New, Lee"), opener("New, Kai")]], // openers: Lee can't supervise
+      ["2026-10-22", [opener("Pro, Dolce"), opener("New, Lee")]], // Lee's own supervised opener
+    ]);
+    const out = trainingProgress({
+      todayIso: today,
+      rules: closesOnly,
+      employees: ["Pro, Dolce", "New, Lee", "New, Kai"],
+      hireDates: new Map([["New, Lee", "2026-09-26"], ["New, Kai", "2026-10-15"]]),
+      days,
+    });
+    expect(out.get("New, Kai")).toMatchObject({ open: 0, close: 1 });
+    expect(out.get("New, Lee")).toMatchObject({ needOpen: 2, needClose: 0, open: 1, cleared: false });
+    expect(trainingLeftOf(out.get("New, Lee")!)).toEqual({ open: 1, close: 0 });
+    expect(progressLabel(out.get("New, Lee")!)).toBe("1/2 openers");
+    expect(trainsKind(closesOnly, "New, Lee", "close")).toBe(true);
+    expect(trainsKind(closesOnly, "New, Lee", "open")).toBe(false);
+    expect(trainsKind(closesOnly, "New, Lee", "mid")).toBe(false);
+    expect(trainsKind(closesOnly, "Pro, Dolce", "mid")).toBe(true);
+    expect(trainsKind(closesOnly, "New, Kai", "close")).toBe(false);
+  });
+
+  it("clears only the kind a new hire is marked trained on", () => {
+    const out = trainingProgress({
+      todayIso: today,
+      rules: { ...rules, trainedOnly: { "New, Lee": "close" } },
+      employees: ["New, Lee"],
+      hireDates: new Map([["New, Lee", "2026-09-26"]]),
+      days: new Map([["2026-11-03", [closer("New, Lee")]]]),
+    });
+    expect(out.get("New, Lee")).toMatchObject({ needOpen: 2, needClose: 0, cleared: false, marked: false, unsupervised: [] });
+    expect(trainingLeftOf(out.get("New, Lee")!)).toEqual({ open: 2, close: 0 });
   });
 
   it("falls back to the first ADP shift without a hire date, and skips long-timers and an empty experienced list", () => {
@@ -151,8 +201,8 @@ describe("staffTags", () => {
     const kai = tags.get("New, Kai");
     expect(kai).toMatchObject({ kind: "training", label: "New hire · 0/2 openers · 0/2 closers" });
     expect(kai?.kind === "training" && kai.detail).toBe(
-      "Hired Oct 15. Drafted beside experienced staff (3h+ together) until they've done 2 openers and 2 closers" +
-        " — each kind on its own once done.",
+      "Hired Oct 15. Trains on top of need beside experienced staff (3h+ together) until they've done 2 openers and 2 closers" +
+        " — each kind counts toward need once done.",
     );
     expect(kai?.kind === "training" && [...kai.unsupervised]).toEqual(["2026-11-02"]);
     expect(staffTags({ ...rules, experienced: [] }, progress).size).toBe(0);

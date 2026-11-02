@@ -550,6 +550,58 @@ FIND_SHIFT_JS = r"""
 }
 """
 
+# What a click on the marked shift lands on: the top element at its centre, up to 4 ancestors.
+HIT_JS = r"""
+() => {
+  const m = document.querySelector('[data-jarvis-del]');
+  if (!m) return 'nothing marked';
+  const b = m.getBoundingClientRect();
+  let e = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+  const out = [];
+  for (let i = 0; e && i < 5; i++, e = e.parentElement) {
+    out.push(e.tagName.toLowerCase() + (e === m ? '*' : '')
+      + (typeof e.className === 'string' && e.className ? '.' + e.className.trim().split(/\s+/).slice(0, 2).join('.') : ''));
+  }
+  return out.join(' < ') + ` @${Math.round(b.width)}x${Math.round(b.height)}`;
+}
+"""
+
+# DOM-click the shift host at a jittered point (i = attempt index). Centre-only .click() on the
+# marked range opens person/unavailability panes ~60% of the time when the cell also has
+# unavailability; the host + offset often hits the shift's own handler instead.
+CLICK_MARKED_JS = r"""
+(i) => {
+  const m = document.querySelector('[data-jarvis-del]');
+  if (!m) return 'nothing marked';
+  const host = m.closest('schedule-calendar-shifts') || m;
+  const b = host.getBoundingClientRect();
+  const pts = [[0.5, 0.4], [0.3, 0.35], [0.7, 0.35], [0.3, 0.6], [0.7, 0.6],
+               [0.5, 0.25], [0.5, 0.7], [0.4, 0.5], [0.6, 0.5], [0.55, 0.45], [0.45, 0.55]];
+  const [fx, fy] = pts[i % pts.length];
+  const x = b.x + b.width * fx, y = b.y + b.height * fy;
+  const el = document.elementFromPoint(x, y) || host;
+  el.click();
+  return (el.tagName || '?').toLowerCase()
+    + (typeof el.className === 'string' && el.className
+         ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '')
+    + ` @${Math.round(fx * 100)}%,${Math.round(fy * 100)}%`;
+}
+"""
+
+# Scrolls the marked shift to the middle of the grid; returns where it sits now (None if gone).
+CENTRE_MARKED_JS = r"""
+() => {
+  const m = document.querySelector('[data-jarvis-del]');
+  if (!m) return null;
+  m.scrollIntoView({ block: 'center', inline: 'nearest' });
+  const b = m.getBoundingClientRect();
+  return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
+}
+"""
+
+# A click that missed the shift: the person's pane (row) or an unavailability's. Closed untouched.
+WRONG_PANE_RE = re.compile(r"Delete all schedules|Category Unavailability", re.I)
+
 PANE_TEXT_JS = r"""
 () => [...document.querySelectorAll('sdf-focus-pane')]
   .filter(p => { const b = p.getBoundingClientRect(); return b.width > 0 && b.height > 0; })
@@ -622,22 +674,62 @@ def delete_shift(
 
 def _open_assigned_shift(frame, page, *, date_iso: str, employee: str, start_min: int, end_min: int,
                          state: str) -> None:
-    """From the grid (on the right week), open the Shift details pane of one assigned shift."""
+    """From the grid (on the right week), open the Shift details pane of one assigned shift.
+
+    2026-11-02: 31 of 95 deletes opened the person's pane (or an unavailability's) instead,
+    all in cells that also hold unavailability, though the mouse landed on the shift's own
+    time. So: centre the shift and wait until it stops moving; after a wrong pane (closed
+    untouched), click the shift element directly (a DOM click, no mouse press on the cell).
+    """
     d = dt.date.fromisoformat(date_iso)
     rng = f"{fmt_time(start_min)} - {fmt_time(end_min)}"
-    info = _mark_shift(frame, page, date_iso=date_iso, employee=employee,
-                       start_min=start_min, end_min=end_min, state=state)
-    if not info.get("found"):
-        raise ScheduleWriteError(f"{state} shift {employee} {date_iso} {rng} not found in grid: {info.get('why')}")
-    frame.locator("[data-jarvis-del='1']").first.click(timeout=8000)
-    if not _wait_for(page, lambda: _pane_open(frame), 8.0):
-        raise ScheduleWriteError("shift details pane did not open")
-    page.wait_for_timeout(500)
-    pane = frame.evaluate(PANE_TEXT_JS)
     expect = (f"{d:%b} {d.day}, {d.year}", rng) + (("Draft",) if state == "draft" else ())
-    if not all(s in pane for s in expect) or employee.split(",")[0] not in pane:
+    pane = hit = ""
+    for attempt in range(_OPEN_ATTEMPTS):
+        _mark_settled(frame, page, date_iso=date_iso, employee=employee,
+                      start_min=start_min, end_min=end_min, state=state)
+        hit = frame.evaluate(HIT_JS)
+        how = "mouse" if attempt == 0 else "dom"
+        if how == "mouse":
+            frame.locator("[data-jarvis-del='1']").first.click(timeout=8000)
+        else:
+            # attempt-1.. : jittered host click (see CLICK_MARKED_JS)
+            hit = frame.evaluate(CLICK_MARKED_JS, attempt - 1) or hit
+        if not _wait_for(page, lambda: _pane_open(frame), 8.0):
+            raise ScheduleWriteError("shift details pane did not open")
+        page.wait_for_timeout(500)
+        pane = frame.evaluate(PANE_TEXT_JS)
+        if all(s in pane for s in expect) and employee.split(",")[0] in pane:
+            if attempt:
+                print(f"[schedule_write] shift details opened on attempt {attempt + 1} ({how} click)")
+            return
         _back_out(frame, page)
-        raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r}")
+        if not WRONG_PANE_RE.search(pane):
+            break
+        print(f"[schedule_write] attempt {attempt + 1} ({how} click): not the shift's pane (clicked {hit}); retrying")
+    raise ScheduleWriteError(f"details pane is not {employee} {date_iso} {rng}: {pane[:200]!r} (clicked {hit})")
+
+
+# First mouse + up to 11 jittered DOM clicks. Plain centre .click() opens Shift details ~40% of
+# the time beside unavailability; 2 of 31 still failed at 9 tries on the 2026-11-02 live retry.
+_OPEN_ATTEMPTS = 12
+
+
+def _mark_settled(frame, page, **shift) -> None:
+    """Mark the shift (FIND_SHIFT_JS), centre it, and re-mark until its position holds still."""
+    rng = f"{fmt_time(shift['start_min'])} - {fmt_time(shift['end_min'])}"
+    last = None
+    for _ in range(12):
+        info = _mark_shift(frame, page, **shift)
+        if not info.get("found"):
+            raise ScheduleWriteError(
+                f"{shift['state']} shift {shift['employee']} {shift['date_iso']} {rng} not found in grid: {info.get('why')}"
+            )
+        at = frame.evaluate(CENTRE_MARKED_JS)
+        if at is not None and at == last:
+            return
+        last = at
+        page.wait_for_timeout(300)
 
 
 def _press_delete(frame, page, *, dry_run: bool) -> bool:

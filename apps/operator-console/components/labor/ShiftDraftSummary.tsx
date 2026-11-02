@@ -60,6 +60,9 @@ function HoursBreakdownList({
       hours: b.shape,
     },
     { key: "peak", label: "Busy-order shifts", hint: "only while under the goal", hours: b.peak },
+    ...(b.training >= 0.25
+      ? [{ key: "training", label: "New-hire training", hint: "on top of need, beside experienced staff", hours: b.training }]
+      : []),
   ];
   const total = lines.reduce((a, l) => a + l.hours, 0);
   const max = Math.max(...lines.map((l) => Math.abs(l.hours)), 1);
@@ -305,6 +308,9 @@ export function ShiftDraftSummary({
                         ) : null}
                         {s.trimmed ? (
                           <span className="text-xs text-muted-foreground">shortened to availability</span>
+                        ) : null}
+                        {s.training ? (
+                          <span className={cn("text-xs", TRAINING_TEXT_CLASS)}>training · on top of need</span>
                         ) : null}
                         {s.fillsOpen ? (
                           <Badge

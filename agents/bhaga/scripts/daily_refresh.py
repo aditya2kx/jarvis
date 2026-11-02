@@ -2917,6 +2917,8 @@ def _run_refresh(run_id: str) -> int:
             changes = os.environ.get("BHAGA_SCHEDULE_CHANGES", "").strip()
             argv += (["--queue-changes", changes, "--requested-by", "agent:prod-ops"] if changes
                      else ["--apply-batch", os.environ.get("BHAGA_SCHEDULE_BATCH_ID", "")])
+            if os.environ.get("BHAGA_SCHEDULE_RETRY_FAILED") == "1":
+                argv.append("--retry-failed")
         elif write_mode == "delete":
             argv += ["--delete", os.environ.get("BHAGA_SCHEDULE_DELETE_KEYS", ""),
                      "--week-start", os.environ.get("BHAGA_SCHEDULE_WEEK_START", "")]

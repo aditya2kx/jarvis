@@ -123,6 +123,23 @@ describe("getSystemHealth", () => {
     expect((await getSystemHealth()).stale).toBe(false);
   });
 
+  it("is not stale after closed days when the nightly kept succeeding", async () => {
+    vi.mocked(fetch).mockResolvedValue(fsResponse(null, 404));
+    const day = (back: number) =>
+      new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date(Date.now() - back * 86_400_000));
+    // Last sales 3 days ago (closed since); last successful nightly today, so refreshed through yesterday.
+    q.mockResolvedValue([{ data_window_end: day(3), refreshed_through: day(1) }]);
+    const h = await getSystemHealth();
+    expect(h).toMatchObject({ stale: false, dataWindowEnd: day(3), refreshedThrough: day(1), dataAgeDays: 1 });
+    expect(String(q.mock.calls[0]![0])).toContain("status = 'success'");
+  });
+
+  it("is still stale when the nightly stopped succeeding too", async () => {
+    vi.mocked(fetch).mockResolvedValue(fsResponse(null, 404));
+    q.mockResolvedValue([{ data_window_end: "2000-01-01", refreshed_through: "2000-01-02" }]);
+    expect(await getSystemHealth()).toMatchObject({ stale: true, dataWindowEnd: "2000-01-01" });
+  });
+
   it("reports unknown rather than throwing when the lookup fails", async () => {
     vi.mocked(fetch).mockRejectedValue(new Error("no ADC"));
     q.mockResolvedValue([{ data_window_end: "2026-09-13" }]);

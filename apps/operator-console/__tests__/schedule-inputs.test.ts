@@ -388,7 +388,13 @@ describe("new-hire training rules (Issue #450)", () => {
     const { training: _t, ...older } = DEFAULT_STAFFING;
     const t = parseScheduleRules({ dayRules: [], staffRules: [], staffing: older }).staffing.training;
     expect(t).toEqual(DEFAULT_TRAINING);
-    expect(t).toMatchObject({ openShifts: 2, closeShifts: 2, overlapMin: 180 });
+    expect(t).toMatchObject({ openShifts: 2, closeShifts: 2, overlapMin: 180, traineesPerTrainer: 2 });
+  });
+
+  it("loads training saved before trainees-per-trainer with 2, and keeps a saved value", () => {
+    const { traineesPerTrainer: _p, ...older } = DEFAULT_TRAINING;
+    expect(parseScheduleRules(withTraining(older)).staffing.training.traineesPerTrainer).toBe(2);
+    expect(parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, traineesPerTrainer: 3 })).staffing.training.traineesPerTrainer).toBe(3);
   });
 
   it("ignores the retired new-hire window on versions that saved one", () => {
@@ -407,8 +413,27 @@ describe("new-hire training rules (Issue #450)", () => {
   it("rejects out-of-range values", () => {
     expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, openShifts: 1.5 }))).toThrow(/openers and closers/);
     expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, overlapMin: 100 }))).toThrow(/overlap/);
+    expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, traineesPerTrainer: 0 }))).toThrow(/per trainer/);
     expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, experienced: [""] }))).toThrow(/Experienced/);
     expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, trained: [" "] }))).toThrow(/Trained/);
+  });
+
+  it("keeps per-kind trainers and marks, dropping stale names; older versions load none", () => {
+    const t = parseScheduleRules(
+      withTraining({
+        ...DEFAULT_TRAINING,
+        experienced: ["Pro, Dolce", "Hire, Wing"],
+        trainsOnly: { "Hire, Wing": "close", "Gone, Ana": "open" },
+        trained: ["Hire, Sam"],
+        trainedOnly: { "Hire, Kai": "open", "Hire, Sam": "close" },
+      }),
+    ).staffing.training;
+    expect(t.trainsOnly).toEqual({ "Hire, Wing": "close" });
+    expect(t.trainedOnly).toEqual({ "Hire, Kai": "open" });
+    const { trainsOnly: _a, trainedOnly: _b, ...older } = DEFAULT_TRAINING;
+    expect(parseScheduleRules(withTraining(older)).staffing.training).toMatchObject({ trainsOnly: {}, trainedOnly: {} });
+    expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, trainsOnly: { "Pro, Dolce": "mid" } }))).toThrow(/Trains only/);
+    expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, trainedOnly: ["x"] }))).toThrow(/Trained only/);
   });
 
   it("keeps the marked-trained list; versions saved before it load an empty one", () => {

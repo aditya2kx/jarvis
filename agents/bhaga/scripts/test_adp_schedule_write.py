@@ -616,7 +616,29 @@ class RunApply(unittest.TestCase):
     def test_cli_and_cloud_run_dispatch_reach_run_apply(self):
         with mock.patch.object(w, "run_apply", return_value=0) as ra:
             self.assertEqual(w.main(["--store", "palmetto", "--apply-batch", "b9", "--headless"]), 0)
-        ra.assert_called_once_with("palmetto", "b9", headless=True, dry_run=False)
+        ra.assert_called_once_with("palmetto", "b9", headless=True, dry_run=False, retry_failed=False)
+
+    def test_retry_failed_rewalks_only_failed_deletes(self):
+        sqls = []
+
+        def fq(sql, params, *, table):
+            sqls.append(sql)
+            return []
+        with mock.patch.object(w, "_query", fq):
+            self.assertEqual(w.run_apply("palmetto", "b9", headless=True, dry_run=True), 0)
+            self.assertEqual(w.run_apply("palmetto", "b9", headless=True, dry_run=True, retry_failed=True), 0)
+        self.assertNotIn("failed", sqls[0])
+        self.assertIn("(status = 'queued' OR (status = 'failed' AND kind IN ('shift-delete', 'open-delete')))", sqls[2])
+        self.assertNotIn("failed", sqls[3])  # unavailability approvals are never retried
+
+    def test_cloud_run_retry_failed_env_reaches_the_cli(self):
+        env = {"BHAGA_ADP_SCHEDULE_WRITE": "apply", "BHAGA_SCHEDULE_BATCH_ID": "b9", "BHAGA_SCHEDULE_RETRY_FAILED": "1"}
+        with mock.patch.dict("os.environ", env, clear=True), mock.patch.object(w, "main", return_value=0) as m, \
+                mock.patch("sys.argv", ["daily_refresh", "--store", "palmetto"]):
+            self.assertEqual(daily_refresh.main(), 0)
+        argv = m.call_args.args[0]
+        self.assertEqual(argv[argv.index("--apply-batch") + 1], "b9")
+        self.assertIn("--retry-failed", argv)
 
 
 class QueueChanges(unittest.TestCase):
@@ -661,7 +683,7 @@ class QueueChanges(unittest.TestCase):
         self.assertEqual((table, p["by"]), (w.SHIFT_TABLE, "agent:cli"))
         (item,) = json.loads(p["items"])
         self.assertEqual((item["kind"], item["date"], item["start_min"], item["count"]), ("open-delete", "2026-11-03", 600, None))
-        ra.assert_called_once_with("palmetto", p["batch"], headless=True, dry_run=False)
+        ra.assert_called_once_with("palmetto", p["batch"], headless=True, dry_run=False, retry_failed=False)
 
     def test_dry_run_walks_unqueued_rows_and_writes_nothing(self):
         adp = FakeApplyAdp(open_shifts={("2026-11-03", 600, 840): 1})

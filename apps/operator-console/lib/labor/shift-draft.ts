@@ -176,8 +176,10 @@ export type DraftShift = {
   picked?: boolean;
   /** New hires who could otherwise take it, and why they can't yet (Issue #450). */
   blocked?: { employee: string; reason: string }[];
-  /** A new hire's training shift beside experienced staff — on top of need, not counted toward it. */
+  /** A new hire's training shift beside experienced staff — on top of need unless `countsTowardNeed`. */
   training?: boolean;
+  /** This training shift counts toward need (the training rule's switch). */
+  countsTowardNeed?: boolean;
 };
 
 /** One person who could take a drafted shift, on their own times (trimmed / paced). */
@@ -718,7 +720,8 @@ export function fillOpenShift(args: {
  * Before each day's training pass: a shift left open only because new hires were still training goes
  * to whoever can take it now that `training.left` (as of this day) counts the training drafted on
  * earlier days — a new hire works a kind toward need from the day after its last training shift.
- * An operator's "leave open" pick stands.
+ * `retryOpen`: every open shift is offered again (hours freed earlier in the week). An operator's
+ * "leave open" pick stands.
  */
 export function fillClearedTrainees(args: {
   iso: string;
@@ -735,11 +738,13 @@ export function fillClearedTrainees(args: {
   unavailable?: Map<string, Block[]>;
   meal?: MealRule;
   pins?: DraftPins;
-  training: DraftTraining;
+  training?: DraftTraining;
+  retryOpen?: boolean;
 }): DraftShift[] {
   return args.shifts.map((s) => {
-    if (s.employee || s.training || !s.blocked?.length || !s.slot || args.pins?.get(s.slot) === null) return s;
-    if (s.blocked.every((b) => trainingBlock(args.training, b.employee, s.kind))) return s;
+    if (s.employee || s.training || !s.slot || args.pins?.get(s.slot) === null) return s;
+    const stillTraining = !s.blocked?.length || s.blocked.every((b) => trainingBlock(args.training, b.employee, s.kind));
+    if (stillTraining && !args.retryOpen) return s;
     const pin = args.pins?.get(s.slot);
     const fill = fillOpenShift({
       ...args,
@@ -854,6 +859,92 @@ export function draftTrainingDay(args: {
     });
   }
   return out;
+}
+
+/**
+ * Training counts toward need: a drafted shift the day's training shifts now cover starts later /
+ * ends earlier (never under the shortest shift), or goes when wholly covered — open shifts first,
+ * then mids, latest start first. Operator picks, ADP shifts and any opener / closer a new hire
+ * shadows stay as drafted. What's freed comes off `weekHours` / `weekShifts` / `periodShifts` / `busy`.
+ */
+export function trimCoveredByTraining(args: {
+  mins: number[];
+  /** Headcount per step, every shift but the training ones. */
+  onFloor: number[];
+  need: number[];
+  shifts: DraftShift[];
+  minShiftMin: number;
+  overlapMin: number;
+  trains: (employee: string, kind: ShiftKind) => boolean;
+  meal?: MealRule;
+  /** Mutated as hours are freed. */
+  weekHours: Map<string, number>;
+  /** Mutated as shifts go. */
+  weekShifts?: Map<string, number>;
+  /** Mutated as shifts go. */
+  periodShifts?: Map<string, number>;
+  /** Mutated as shifts go. */
+  busy: Set<string>;
+}): DraftShift[] {
+  const trainees = args.shifts.filter((s) => s.training);
+  if (!trainees.length) return args.shifts;
+  const cover = [...args.onFloor];
+  const shift = (s: number, e: number, by: number) =>
+    args.mins.forEach((t, i) => {
+      if (t >= s && t < e) cover[i]! += by;
+    });
+  for (const t of trainees) shift(t.startMin, t.endMin, 1);
+  const spare = (s: number, e: number) => args.mins.every((t, i) => t < s || t >= e || cover[i]! > args.need[i]!);
+  const shadowed = (s: DraftShift) => {
+    const kind = shiftKindOf(s.startMin, s.endMin);
+    return (
+      !!s.employee &&
+      args.trains(s.employee, kind) &&
+      trainees.some((t) => t.kind === kind && overlapMinutes(s.startMin, s.endMin, [[t.startMin, t.endMin]]) >= args.overlapMin)
+    );
+  };
+  const free = (employee: string | null, hours: number, gone: boolean) => {
+    if (!employee) return;
+    args.weekHours.set(employee, (args.weekHours.get(employee) ?? 0) - hours);
+    if (!gone) return;
+    args.weekShifts?.set(employee, (args.weekShifts.get(employee) ?? 1) - 1);
+    args.periodShifts?.set(employee, (args.periodShifts.get(employee) ?? 1) - 1);
+    args.busy.delete(employee);
+  };
+  const order = (s: DraftShift) => [Number(s.employee != null), Number(s.kind !== "mid"), -s.startMin];
+  const candidates = args.shifts
+    .filter((s) => !s.training && !s.fillsOpen && !s.inAdp && !s.picked && !shadowed(s))
+    .sort((x, y) => {
+      const [a, b] = [order(x), order(y)];
+      return a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!;
+    });
+  const next = new Map<DraftShift, DraftShift | null>();
+  for (const s of candidates) {
+    if (spare(s.startMin, s.endMin)) {
+      shift(s.startMin, s.endMin, -1);
+      free(s.employee, s.hours, true);
+      next.set(s, null);
+      continue;
+    }
+    let st = s.startMin;
+    let en = s.endMin;
+    while (en - st - GRID >= args.minShiftMin && spare(st, st + GRID)) st += GRID;
+    while (en - st - GRID >= args.minShiftMin && spare(en - GRID, en)) en -= GRID;
+    if (st === s.startMin && en === s.endMin) continue;
+    shift(s.startMin, st, -1);
+    shift(en, s.endMin, -1);
+    const hours = paidHours(st, en, args.meal);
+    free(s.employee, s.hours - hours, false);
+    const clip = (o: ShiftOption): ShiftOption => {
+      const [os, oe] = [Math.max(o.startMin, st), Math.min(o.endMin, en)];
+      return { ...o, startMin: os, endMin: oe, hours: paidHours(os, oe, args.meal) };
+    };
+    next.set(s, { ...s, kind: shiftKindOf(st, en), startMin: st, endMin: en, hours, options: s.options?.map(clip) });
+  }
+  return args.shifts.flatMap((s) => {
+    const n = next.get(s);
+    return n === undefined ? [s] : n ? [n] : [];
+  });
 }
 
 const STORE_HOURS: [number, number] = [hm(6), hm(21)];

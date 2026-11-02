@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { progressLabel, TRAINING_FROM, type TrainingStatus } from "@/lib/labor/new-hire-training";
 import type { TrainKind, TrainingRules } from "@/lib/labor/schedule-inputs";
 import { WARN_BADGE_CLASS } from "@/lib/run-status";
@@ -121,6 +122,16 @@ export function NewHireTrainingRules({
           max={5}
           onChange={(v) => onChange({ traineesPerTrainer: Math.round(v) })}
         />
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground">Training counts toward need</span>
+          <span className="flex h-9 items-center sm:h-7">
+            <Switch
+              checked={t.countTowardNeed}
+              onCheckedChange={(v) => onChange({ countTowardNeed: v })}
+              aria-label="Training counts toward need"
+            />
+          </span>
+        </label>
       </div>
 
       <div className="flex flex-col gap-1.5">

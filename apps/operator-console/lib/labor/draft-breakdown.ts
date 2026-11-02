@@ -23,8 +23,10 @@ export type HoursBreakdown = {
   shape: number;
   /** Extra shifts for busy order times, within the weekly goal. */
   peak: number;
-  /** New hires' training shifts, on top of need. */
+  /** New hires' training shifts. */
   training: number;
+  /** Need-shift hours training covered instead (≤ 0; only when training counts toward need). */
+  trainingCover: number;
 };
 
 const STEP_H = 0.25;
@@ -56,7 +58,7 @@ export function requiredByRule(args: {
 }
 
 export function emptyBreakdown(existing: number, ruleIds: readonly string[]): HoursBreakdown {
-  return { existing, floor: 0, rules: ruleIds.map((id) => ({ id, hours: 0 })), shape: 0, peak: 0, training: 0 };
+  return { existing, floor: 0, rules: ruleIds.map((id) => ({ id, hours: 0 })), shape: 0, peak: 0, training: 0, trainingCover: 0 };
 }
 
 /** Add one day's required split and its required-pass draft hours into the week. */

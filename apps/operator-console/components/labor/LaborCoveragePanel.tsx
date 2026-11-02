@@ -58,6 +58,7 @@ import {
   openShiftSlot,
   paidHours,
   shiftSpans,
+  trimCoveredByTraining,
   type DraftPreference,
   type DraftShift,
   type DraftTraining,
@@ -194,7 +195,7 @@ function personDayHours(p: CoveragePersonDay): number {
 
 /** Drafted headcount toward need — new hires' training shifts sit on top of it. */
 function draftCountSeries(points: OccupancyPoint[], shifts: DraftShift[]): number[] {
-  const added = newShifts(shifts).filter((s) => !s.training);
+  const added = newShifts(shifts).filter((s) => !s.training || s.countsTowardNeed);
   return points.map((p) => added.filter((s) => p.min >= s.startMin && p.min < s.endMin).length);
 }
 
@@ -1439,8 +1440,9 @@ export function LaborCoveragePanel({
     const trainingLeft = new Map<string, TrainingLeft>(
       [...progress.values()].filter(isTraining).map((t) => [t.employee, trainingLeftOf(t)]),
     );
+    const trainingCounts = r.staffing.training.countTowardNeed;
     const countsTowardNeed = (iso: string) => (p: CoveragePersonDay) =>
-      isOpenLane(p) || !progress.get(p.employee)?.trainingDates.includes(iso);
+      trainingCounts || isOpenLane(p) || !progress.get(p.employee)?.trainingDates.includes(iso);
     const weekStarts = [
       ...new Set(
         strip
@@ -1661,9 +1663,12 @@ export function LaborCoveragePanel({
       }
       // Pass 3, earliest day first. Need before training speed: from the day after a new hire's last
       // training shift of a kind, they first take that kind toward need where only training kept it
-      // open; then new hires train on top of need beside whoever is opening / closing.
+      // open; then new hires train beside whoever is opening / closing. When training counts toward
+      // need, the need shifts it covers shorten and later open shifts get another try with the freed hours.
+      let freed = false;
       for (const d of state) {
-        if (!trainingOn(d.iso, d.shifts)) break;
+        const before = trainingOn(d.iso, d.shifts);
+        if (!before && !freed) break;
         d.shifts = fillClearedTrainees({
           iso: d.iso,
           shifts: d.shifts,
@@ -1675,8 +1680,10 @@ export function LaborCoveragePanel({
           unavailable: blocksOn(unavail, d.iso),
           meal,
           pins,
-          training: { ...trainingOn(d.iso, d.shifts)!, left: new Map(left) },
+          training: before && { ...before, left: new Map(left) },
+          retryOpen: freed,
         });
+        if (!before) continue;
         const training = trainingOn(d.iso, d.shifts)!;
         const shifts = draftTrainingDay({
           iso: d.iso,
@@ -1691,8 +1698,30 @@ export function LaborCoveragePanel({
           meal,
           training,
         });
-        d.shifts.push(...shifts);
         breakdown.training += shifts.reduce((a, s) => a + s.hours, 0);
+        if (!trainingCounts || !shifts.length) {
+          d.shifts.push(...shifts);
+          continue;
+        }
+        const needHours = () => d.shifts.reduce((a, s) => a + (s.training ? 0 : s.hours), 0);
+        const was = needHours();
+        d.shifts = trimCoveredByTraining({
+          mins: d.mins,
+          onFloor: d.cover,
+          need: d.need,
+          shifts: [...d.shifts, ...shifts.map((s) => ({ ...s, countsTowardNeed: true }))],
+          minShiftMin: r.staffing.minShiftMin,
+          overlapMin: r.staffing.training.overlapMin,
+          trains: (who, kind) => trainsKind(r.staffing.training, who, kind),
+          meal,
+          weekHours,
+          weekShifts,
+          periodShifts: shiftsInPeriod(d.iso),
+          busy: d.busy,
+        });
+        const saved = was - needHours();
+        breakdown.trainingCover -= saved;
+        freed ||= saved > 0;
       }
 
       const plan = plans.get(weekStart);

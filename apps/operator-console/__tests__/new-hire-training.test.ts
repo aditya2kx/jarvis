@@ -201,6 +201,11 @@ describe("staffTags", () => {
     const kai = tags.get("New, Kai");
     expect(kai).toMatchObject({ kind: "training", label: "New hire · 0/2 openers · 0/2 closers" });
     expect(kai?.kind === "training" && kai.detail).toBe(
+      "Hired Oct 15. Trains beside experienced staff (3h+ together) until they've done 2 openers and 2 closers" +
+        " — training shifts count toward need.",
+    );
+    const onTop = staffTags({ ...rules, countTowardNeed: false }, progress).get("New, Kai");
+    expect(onTop?.kind === "training" && onTop.detail).toBe(
       "Hired Oct 15. Trains on top of need beside experienced staff (3h+ together) until they've done 2 openers and 2 closers" +
         " — each kind counts toward need once done.",
     );

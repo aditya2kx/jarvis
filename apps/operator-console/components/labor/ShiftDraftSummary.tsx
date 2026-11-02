@@ -61,7 +61,17 @@ function HoursBreakdownList({
     },
     { key: "peak", label: "Busy-order shifts", hint: "only while under the goal", hours: b.peak },
     ...(b.training >= 0.25
-      ? [{ key: "training", label: "New-hire training", hint: "on top of need, beside experienced staff", hours: b.training }]
+      ? [
+          {
+            key: "training",
+            label: "New-hire training",
+            hint: b.trainingCover < 0 ? "beside experienced staff, counts toward need" : "on top of need, beside experienced staff",
+            hours: b.training,
+          },
+        ]
+      : []),
+    ...(b.trainingCover <= -0.25
+      ? [{ key: "trainingCover", label: "Covered by new hires", hint: "need shifts shortened beside training", hours: b.trainingCover }]
       : []),
   ];
   const total = lines.reduce((a, l) => a + l.hours, 0);
@@ -310,7 +320,9 @@ export function ShiftDraftSummary({
                           <span className="text-xs text-muted-foreground">shortened to availability</span>
                         ) : null}
                         {s.training ? (
-                          <span className={cn("text-xs", TRAINING_TEXT_CLASS)}>training · on top of need</span>
+                          <span className={cn("text-xs", TRAINING_TEXT_CLASS)}>
+                            {s.countsTowardNeed ? "training · counts toward need" : "training · on top of need"}
+                          </span>
                         ) : null}
                         {s.fillsOpen ? (
                           <Badge

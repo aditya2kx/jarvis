@@ -128,8 +128,8 @@ export function staffTags(rules: TrainingRules, progress: ReadonlyMap<string, Tr
       kind: "training",
       label: `New hire · ${progressLabel(t)}`,
       detail:
-        `${started}. Trains on top of need beside experienced staff (${overlap}+ together) until they've done ${goal(t)}` +
-        ` — each kind counts toward need once done.` +
+        `${started}. Trains ${rules.countTowardNeed ? "" : "on top of need "}beside experienced staff (${overlap}+ together) until they've done ${goal(t)}` +
+        (rules.countTowardNeed ? " — training shifts count toward need." : " — each kind counts toward need once done.") +
         (alone.length ? ` Already ${alone.join(" and ")} without them.` : ""),
       unsupervised: new Set(t.unsupervised),
     });

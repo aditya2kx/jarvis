@@ -100,6 +100,15 @@ class MainTests(unittest.TestCase):
 
 
 class StartApplyJobTests(unittest.TestCase):
+    def test_assign_start_body_is_unchanged(self):
+        with mock.patch.object(w, "_gcp_token", return_value="t"), \
+             mock.patch.object(w.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b'{"name": "exec-2"}'
+            self.assertEqual(w.start_assign_job("palmetto", "a-1"), "exec-2")
+        self.assertEqual(json.loads(urlopen.call_args.args[0].data), {"overrides": {"containerOverrides": [{"env": [
+            {"name": "BHAGA_ADP_SCHEDULE_WRITE", "value": "assign"}, {"name": "BHAGA_IGNORE_HALT", "value": "1"},
+            {"name": "BHAGA_STORE", "value": "palmetto"}, {"name": "BHAGA_SCHEDULE_ASSIGN_ID", "value": "a-1"}]}]}})
+
     def test_runs_the_apply_mode_with_the_consoles_two_hour_timeout(self):
         with mock.patch.object(w, "_gcp_token", return_value="t"), \
              mock.patch.object(w.urllib.request, "urlopen") as urlopen:

@@ -69,7 +69,7 @@ class ProdOpsTests(unittest.TestCase):
         self.assertIn("--dry-run", commands(dry)[0])
         self.assertEqual(prod_ops.tier(dry, Path("."))[0], "safe")
         for body in ("/prod-ops clear-weeks 2026-11-09", "/prod-ops clear-weeks 2026-11-09 11/29",
-                     "/prod-ops clear-weeks 2026-11-09 2026-11-29 limit=x", "/prod-ops clear-weeks 2026-11-09 2026-11-29 all"):
+                     "/prod-ops clear-weeks 2026-11-09 2026-11-29 limit=x", "/prod-ops clear-weeks 2026-11-09 2026-11-29 all", "/prod-ops clear-weeks 2026-02-30 2026-03-01"):
             with self.assertRaises(RequestError, msg=body):
                 parse_comment(body)
 

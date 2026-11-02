@@ -37,6 +37,7 @@ operator's only gate is PR approval. `tier()` labels each op in the reply:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
@@ -83,6 +84,14 @@ _DESTRUCTIVE_SQL = re.compile(
 
 class RequestError(ValueError):
     pass
+
+
+def _is_date(text: str) -> bool:
+    try:
+        dt.date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
 
 
 def _pairs(tokens: list[str]) -> dict[str, str]:
@@ -148,7 +157,7 @@ def parse_comment(body: str) -> dict:
     if op == "clear-weeks":
         dates, opts = rest[:2], rest[2:]
         limit = [t[6:] for t in opts if t.startswith("limit=")]
-        if (len(dates) != 2 or not all(_DATE.match(d) for d in dates)
+        if (len(dates) != 2 or not all(_DATE.match(d) and _is_date(d) for d in dates)
                 or any(t != "dry-run" and not t.startswith("limit=") for t in opts)
                 or len(limit) > 1 or (limit and not limit[0].isdigit()) or opts.count("dry-run") > 1):
             raise RequestError("clear-weeks <from YYYY-MM-DD> <through YYYY-MM-DD> [limit=N] [dry-run]")

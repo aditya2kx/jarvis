@@ -10,6 +10,7 @@ import { Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHe
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import {
   adpChangeKey,
+  applyErrorText,
   changePeople,
   summarizeApply,
   trayLines,
@@ -43,6 +44,27 @@ function writeInflight(store: string, v: Inflight | null): void {
   }
 }
 
+type Failed = Record<string, string>;
+const failedKey = (store: string) => `labor-adp-failed:v1:${store}`;
+
+function readFailed(store: string): Failed {
+  try {
+    const v = JSON.parse(window.localStorage.getItem(failedKey(store)) ?? "{}") as unknown;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Failed) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeFailed(store: string, v: Failed): void {
+  try {
+    if (Object.keys(v).length) window.localStorage.setItem(failedKey(store), JSON.stringify(v));
+    else window.localStorage.removeItem(failedKey(store));
+  } catch {
+    // Storage blocked: failed lines just lose their mark on reload.
+  }
+}
+
 const AREA_TITLE: Record<AdpChange["area"], string> = { shift: "Shifts", unavailability: "Unavailability" };
 
 function blockText(area: AdpChange["area"], block: ApplyBlock): string | null {
@@ -55,7 +77,7 @@ function blockText(area: AdpChange["area"], block: ApplyBlock): string | null {
   return null;
 }
 
-function Lines({ lines, onUndo }: { lines: TrayLine[]; onUndo?: (keys: string[]) => void }) {
+function Lines({ lines, onUndo, failed = {} }: { lines: TrayLine[]; onUndo?: (keys: string[]) => void; failed?: Failed }) {
   const areas = (["shift", "unavailability"] as const).filter((a) => lines.some((l) => l.area === a));
   return (
     <div className="flex flex-col gap-2">
@@ -72,6 +94,11 @@ function Lines({ lines, onUndo }: { lines: TrayLine[]; onUndo?: (keys: string[])
                   </Badge>
                   <span className="min-w-0 flex-1 break-words text-muted-foreground">
                     {l.text}
+                    {l.keys.some((k) => k in failed) ? (
+                      <span className="block text-xs text-rose-600 dark:text-rose-400">
+                        Failed last Apply: {l.keys.map((k) => failed[k]).find(Boolean)}
+                      </span>
+                    ) : null}
                   </span>
                   {onUndo ? (
                     <Button size="icon-sm" variant="ghost" aria-label={`Undo ${l.label.toLowerCase()} ${l.text}`} onClick={() => onUndo(l.keys)}>
@@ -118,6 +145,15 @@ export function AdpChangesTray({
   const [rows, setRows] = useState<ApplyRow[]>([]);
   const [graceUntil, setGraceUntil] = useState(0);
   const [result, setResult] = useState<ApplyRow[] | null>(null);
+  // The last Apply's failed lines (queue key → reason): they stay in the tray, marked, for "Retry failed".
+  const [failed, setFailedState] = useState<Failed>(() => (typeof window === "undefined" ? {} : readFailed(store)));
+  const setFailed = useCallback(
+    (next: Failed) => {
+      setFailedState(next);
+      writeFailed(store, next);
+    },
+    [store],
+  );
   const { isPending, run } = useConsoleAction();
   const router = useRouter();
 
@@ -148,13 +184,15 @@ export function AdpChangesTray({
       const done = new Set(final.filter((r) => r.status === "applied" || r.status === "skipped").map((r) => r.change_id));
       const keys = sent.filter((s) => done.has(s.id)).map((s) => s.key);
       if (keys.length) onApplied(keys);
+      const why = new Map(final.flatMap((r) => (r.status === "failed" ? [[r.change_id, applyErrorText(r.error)] as const] : [])));
+      setFailed(Object.fromEntries(sent.flatMap((s) => (why.has(s.id) ? [[s.key, why.get(s.id)!]] : []))));
       setResult(final);
       setInflight(null);
       setGraceUntil(0);
       writeInflight(store, null);
       router.refresh();
     },
-    [onApplied, router, store],
+    [onApplied, router, store, setFailed],
   );
 
   // The run can take a while to show as running; until the grace ends, queued rows mean "not yet".
@@ -185,8 +223,9 @@ export function AdpChangesTray({
     .map((area) => blockText(area, blocks[area]))
     .find((t) => t != null) ?? null;
 
-  const apply = async () => {
-    const sending = changes;
+  const retryable = changes.filter((c) => adpChangeKey(c) in failed);
+
+  const apply = async (sending: AdpChange[]) => {
     const ack = await run(() => applyAdpChangesAction(sending), {
       saving: "Queuing…",
       queued: "Applying your changes in ADP in the background.",
@@ -197,6 +236,7 @@ export function AdpChangesTray({
       setInflight(next);
       setRows([]);
       setResult(null);
+      setFailed({});
       setGraceUntil(Date.now() + GRACE_MS);
       setSheet(false);
     }
@@ -214,7 +254,9 @@ export function AdpChangesTray({
       <div className="flex flex-wrap items-center gap-2">
         {busy ? (
           <p className="text-sm text-foreground" aria-live="polite">
-            Applying in ADP — {done} of {total || "…"} done. Safe to leave or reload this page.
+            Applying in ADP — {done} of {total || "…"} done
+            {progress.failed ? <span className="text-rose-600 dark:text-rose-400"> · {progress.failed} failed so far</span> : null}.
+            Safe to leave or reload this page.
           </p>
         ) : changes.length ? (
           <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex items-baseline gap-2 text-left">
@@ -222,6 +264,9 @@ export function AdpChangesTray({
               {changes.length} change{changes.length === 1 ? "" : "s"} to ADP
               {people ? ` · ${people} ${people === 1 ? "person" : "people"}` : ""}
             </span>
+            {retryable.length && !outcome ? (
+              <span className="text-xs text-rose-600 dark:text-rose-400">{retryable.length} failed last Apply</span>
+            ) : null}
             <span className="text-xs text-muted-foreground">{open ? "Hide" : "Review"}</span>
           </button>
         ) : null}
@@ -230,6 +275,17 @@ export function AdpChangesTray({
             <Button size="sm" variant="ghost" onClick={onDiscard}>
               Discard
             </Button>
+            {retryable.length ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isPending || blocked != null}
+                title={blocked ?? "Apply only the lines that failed; ADP is checked before each, so nothing is done twice"}
+                onClick={() => void apply(retryable)}
+              >
+                Retry {retryable.length} failed
+              </Button>
+            ) : null}
             <Button size="sm" disabled={blocked != null} title={blocked ?? undefined} onClick={() => setSheet(true)}>
               Apply to ADP
             </Button>
@@ -262,9 +318,9 @@ export function AdpChangesTray({
             </Button>
           </p>
           {outcome.errors.length ? (
-            <ul className="text-rose-600 dark:text-rose-400">
-              {outcome.errors.slice(0, 4).map((e) => (
-                <li key={e}>{e}</li>
+            <ul data-testid="apply-errors" className="max-h-32 overflow-y-auto text-rose-600 dark:text-rose-400">
+              {outcome.errors.map((e, i) => (
+                <li key={`${i}-${e}`}>{e}</li>
               ))}
             </ul>
           ) : null}
@@ -272,7 +328,7 @@ export function AdpChangesTray({
       ) : null}
       {open && !busy && changes.length ? (
         <div className="border-t border-border pt-1">
-          <Lines lines={lines} onUndo={onUndo} />
+          <Lines lines={lines} onUndo={onUndo} failed={failed} />
         </div>
       ) : null}
 
@@ -293,7 +349,7 @@ export function AdpChangesTray({
             <Lines lines={lines} />
           </div>
           <SheetFooter>
-            <Button onClick={() => void apply()} disabled={isPending || blocked != null}>
+            <Button onClick={() => void apply(changes)} disabled={isPending || blocked != null}>
               {isPending ? "Queuing…" : `Apply ${changes.length} to ADP`}
             </Button>
             <SheetClose render={<Button variant="outline">Cancel</Button>} />

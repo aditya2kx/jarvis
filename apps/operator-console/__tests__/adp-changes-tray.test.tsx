@@ -103,6 +103,43 @@ describe("AdpChangesTray", () => {
     expect(window.localStorage.getItem("labor-adp-apply:v1:palmetto")).toBeNull();
   });
 
+  it("marks failed lines with a plain reason, keeps them across a reload, and retries only those", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    tray();
+    apply.mockResolvedValue({ ok: true, data: { batchId: "b1", ids: ["c1", "c2", "c3"] }, queued: ["adp-schedule-write"] });
+    fireEvent.click(screen.getByRole("button", { name: "Apply to ADP" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Apply 3 to ADP" }));
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    status.mockResolvedValue({
+      ok: true,
+      data: {
+        rows: [
+          { change_id: "c1", area: "shift", summary: "Lee", status: "failed",
+            error: "ScheduleWriteError: details pane is not Lee, Ana 2026-10-31 7:00 AM-1:00 PM: 'Delete all schedules' (after one retry)" },
+          { change_id: "c2", area: "shift", summary: "Open shift", status: "applied", error: null },
+          { change_id: "c3", area: "unavailability", summary: "Cy", status: "applied", error: null },
+        ],
+        running: null,
+      },
+    });
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    await waitFor(() => expect(screen.getByText(/1 not done/)).toBeTruthy());
+    expect(screen.getByTestId("apply-errors").textContent).toBe(
+      "Lee: ADP wouldn't open this shift's details, so nothing was changed (tried twice)",
+    );
+    cleanup();
+
+    // The page reloads with the failed line still in the tray.
+    tray({ changes: [SHIFT] });
+    await waitFor(() => expect(screen.getByText("1 failed last Apply")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /1 change to ADP/ }));
+    expect(screen.getByText(/Failed last Apply: ADP wouldn't open/)).toBeTruthy();
+    apply.mockResolvedValue({ ok: true, data: { batchId: "b2", ids: ["c9"] }, queued: ["adp-schedule-write"] });
+    fireEvent.click(screen.getByRole("button", { name: "Retry 1 failed" }));
+    await waitFor(() => expect(apply).toHaveBeenLastCalledWith([SHIFT]));
+    expect(window.localStorage.getItem("labor-adp-failed:v1:palmetto")).toBeNull();
+  });
+
   it("a reload resumes the Apply still running", async () => {
     status.mockResolvedValue({ ok: true, data: { rows: [], running: "b9" } });
     tray({ changes: [] });

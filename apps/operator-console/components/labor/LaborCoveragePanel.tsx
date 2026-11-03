@@ -2050,7 +2050,9 @@ export function LaborCoveragePanel({
           .filter((iso) => iso >= weekStart && iso <= weekEnd)
           .flatMap((iso) => openSlotsOn(iso, lanesFor(iso)).map(({ seg, slot }) => ({ slot, date: iso, startMin: seg.startMin, endMin: seg.endMin })));
         const published = clearChanges(assigned.filter((d) => !d.draft), [], todayIso, trayChanges).length;
-        return { weekStart, changes: clearChanges(assigned, open, todayIso, trayChanges), published };
+        const changes = clearChanges(assigned, open, todayIso, trayChanges);
+        const inChanges = clearChanges(assigned, open, todayIso).length - changes.length;
+        return { weekStart, changes, published, inChanges };
       }),
     [suggestedWeeks, upcoming, strip, lanesFor, todayIso, trayChanges],
   );

@@ -747,6 +747,38 @@ def build_open_shift_records(weeks: list[dict]) -> list[dict]:
     return sorted(out, key=lambda r: (r["date"], r["slot_index"]))
 
 
+def _as_utc(ts) -> Optional[datetime.datetime]:
+    if ts is None:
+        return None
+    if isinstance(ts, str):
+        ts = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return ts if ts.tzinfo else ts.replace(tzinfo=datetime.timezone.utc)
+
+
+def drop_superseded_weeks(
+    weeks: list[dict], scraped_at, loaded: dict[str, object]
+) -> tuple[list[dict], list[str]]:
+    """Weeks of a scrape taken at ``scraped_at`` that may load, and the week starts it must not.
+
+    ``loaded`` maps week_start ISO → the newest ``scraped_at_utc`` BQ already holds for it.
+    A sync that read ADP before another job's write can finish loading after that job's
+    re-read (2026-11-03: a Sync ADP read at 04:44 UTC loaded at 04:53 over the Apply's 04:51
+    read and erased Nov 23–29). An older read never replaces a newer one.
+    """
+    mine = _as_utc(scraped_at)
+    if mine is None:
+        return weeks, []
+    keep, dropped = [], []
+    for wk in weeks:
+        ws = parse_week_start(wk.get("week_label"))
+        newer = _as_utc(loaded.get(ws.isoformat())) if ws else None
+        if newer is not None and newer > mine:
+            dropped.append(ws.isoformat())
+        else:
+            keep.append(wk)
+    return keep, dropped
+
+
 def open_shift_weeks(weeks: list[dict]) -> list[str]:
     """week_start ISO of every week whose open-shift extract succeeded.
 

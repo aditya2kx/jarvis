@@ -493,3 +493,22 @@ def test_purge_dates_include_days_the_footer_shows_empty():
 def test_purge_dates_skip_unpainted_footer():
     weeks = [{"week_label": "Week of Oct 26, 2026 - Nov 1, 2026", "days": [""] * 7, "employee_rows": []}]
     assert sb.scheduled_shift_purge_dates(weeks) == []
+
+
+def test_an_older_read_never_replaces_a_newer_one():
+    utc = datetime.timezone.utc
+    weeks = [{"week_label": f"Week of Nov {d}, 2026 - Nov {d + 6}, 2026"} for d in (9, 16, 23)]
+    keep, dropped = sb.drop_superseded_weeks(weeks, "2026-11-03T04:44:09.629418Z", {
+        "2026-11-09": datetime.datetime(2026, 11, 3, 4, 32, tzinfo=utc),   # older: load
+        "2026-11-16": datetime.datetime(2026, 11, 3, 4, 44, 9, 629418, tzinfo=utc),  # same read: load
+        "2026-11-23": datetime.datetime(2026, 11, 3, 4, 51, 11, tzinfo=utc),  # Apply's re-read: keep it
+    })
+    assert [w["week_label"][8:14] for w in keep] == ["Nov 9,", "Nov 16"]
+    assert dropped == ["2026-11-23"]
+
+
+def test_a_read_without_a_timestamp_loads_every_week():
+    weeks = [{"week_label": "Week of Nov 23, 2026 - Nov 29, 2026"}]
+    newer = {"2026-11-23": "2026-11-03T04:51:11Z"}
+    assert sb.drop_superseded_weeks(weeks, None, newer) == (weeks, [])
+    assert sb.drop_superseded_weeks(weeks, "2026-11-03T05:00:00Z", newer) == (weeks, [])

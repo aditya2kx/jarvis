@@ -44,7 +44,8 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    `employee_rows`; paid ADP **Approved Time Off / PERSONAL** cells count toward hours with
    `hour_kind` = `shift` | `pto` | `mixed` — Issue #218; console may Exclude PTO; each load purges
    every scraped date with a row plus every day the footer shows `0 Employees`, so removing the last
-   person from a day clears it — Issue #427),
+   person from a day clears it — Issue #427; a week BQ already holds from a newer read is skipped in
+   every schedule table, `schedule_backend.drop_superseded_weeks`),
    `adp_open_shifts` (open / unassigned slots from the same JSON's `open_shift_cells`, one row per
    `(date, slot_index)`, purged per scraped `week_start` — Issue #342; `RUNBOOK.md` § ADP open shifts),
    `adp_timecard_gaps` (open punches / scheduled-no-punch days from the Timecards month view

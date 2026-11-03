@@ -463,7 +463,8 @@ class RunApply(unittest.TestCase):
             self.goto = stack.enter_context(mock.patch.object(wb, "goto_week", goto or mock.MagicMock()))
             self.approve = stack.enter_context(mock.patch.object(
                 w, "_approve_unavailability", approve or mock.MagicMock(return_value=True)))
-            self.refresh = stack.enter_context(mock.patch.object(w, "refresh_schedule"))
+            self.refresh = stack.enter_context(mock.patch.object(w, "refresh_schedule", return_value=True))
+            self.notify = stack.enter_context(mock.patch.object(w, "notify_published", return_value=True))
             stack.enter_context(mock.patch.object(w, "_today_ct", return_value=datetime.date(2026, 10, 28)))
             return w.run_apply("palmetto", "b1", headless=True, dry_run=dry_run)
 
@@ -502,7 +503,31 @@ class RunApply(unittest.TestCase):
         self.assertEqual(adp.calls[-1][0], "assign_open_shift")
         self.assertIn(("Denton, Cimino", "2026-11-03", 420, 900), adp.assigned)
         self.assertEqual(adp.open[("2026-11-03", 780, 1080)], 2)
+        # From this week (the draft's open shifts start tomorrow) through the changed week.
+        self.refresh.assert_called_once_with(mock.ANY, "palmetto", datetime.date(2026, 10, 26), weeks=2)
+        self.notify.assert_called_once_with("palmetto", [datetime.date(2026, 11, 2)], fresh=True)
+
+    def test_an_apply_that_adds_shifts_sends_the_operator_one_clickup_draft(self):
+        fq = FakeApplyQuery([
+            _change("add", "shift-add", employee="Doe, Alex"),
+            _change("add2", "shift-add", employee="Lee, Kim", date=datetime.date(2026, 11, 24)),
+        ])
+        self.assertEqual(self._run(fq, FakeApplyAdp()), 0)
+        self.refresh.assert_called_once_with(mock.ANY, "palmetto", datetime.date(2026, 10, 26), weeks=5)
+        self.notify.assert_called_once_with(
+            "palmetto", [datetime.date(2026, 11, 2), datetime.date(2026, 11, 23)], fresh=True)
+
+    def test_the_draft_says_open_shifts_are_stale_when_the_re_read_fails(self):
+        fq = FakeApplyQuery([_change("add", "shift-add", employee="Doe, Alex")])
+        self.assertEqual(self._run(fq, FakeApplyAdp(), goto=mock.MagicMock(side_effect=[None, RuntimeError("x")])), 0)
+        self.notify.assert_called_once_with("palmetto", [datetime.date(2026, 11, 2)], fresh=False)
+
+    def test_deletes_only_send_no_clickup_draft(self):
+        fq = FakeApplyQuery([_change("del", "shift-delete", employee="Lee, Kim"), _change("odel", "open-delete")])
+        adp = FakeApplyAdp(assigned={("Lee, Kim", "2026-11-03", 540, 900)}, open_shifts={self.SLOT: 1})
+        self.assertEqual(self._run(fq, adp), 0)
         self.refresh.assert_called_once_with(mock.ANY, "palmetto", datetime.date(2026, 11, 2), weeks=1)
+        self.notify.assert_not_called()
 
     def test_changes_adp_already_shows_are_skipped_without_a_click(self):
         fq = FakeApplyQuery([
@@ -655,6 +680,7 @@ class RunApply(unittest.TestCase):
         self.assertEqual([c[0] for c in adp.calls], ["delete_any_shift", "create_shift", "create_open_shift"])
         self.assertIn(("Huynh, Hillary", "2026-11-03", 540, 900), adp.assigned)
         self.refresh.assert_not_called()
+        self.notify.assert_not_called()
 
     def test_crash_marks_every_unsettled_change_failed_and_reraises(self):
         fq = FakeApplyQuery([_change("add", "shift-add", employee="Doe, Alex")],

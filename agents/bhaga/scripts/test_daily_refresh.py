@@ -2079,6 +2079,15 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         import agents.bhaga.scripts.daily_refresh as dr
 
         argv = ["daily_refresh", "--store", "palmetto", "--date", "2026-08-23", "--no-slack"]
+        # Mid-period today (== refresh_date): sync_timecard_load_end keeps load_end
+        # at yesterday so through_date stays unset. Profile is required for the
+        # period-boundary check even when the answer is "do not extend".
+        profile = {
+            "adp_run": {
+                "pay_periods_anchor_end_date": "2026-05-17",
+                "pay_frequency": "Biweekly",
+            },
+        }
         with tempfile.TemporaryDirectory() as td:
             fake_dl = pathlib.Path(td)
             result = {k: (fake_dl / v if isinstance(v, str) else v)
@@ -2099,9 +2108,8 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
                  mock.patch("agents.bhaga.scripts.daily_refresh.subprocess.run") as run, \
                  mock.patch.object(dr, "_stamp_adp_hours_scraped_at") as stamp, \
                  mock.patch.object(dr, "_refresh_stale_payroll_drafts") as refresh, \
-                 mock.patch.object(
-                     dr, "_load_profile", side_effect=AssertionError("must not load profile"),
-                 ):
+                 mock.patch.object(dr, "_today_ct", return_value=datetime.date(2026, 8, 23)), \
+                 mock.patch.object(dr, "_load_profile", return_value=profile):
                 rc = dr.main()
             self.refresh = refresh
         return rc, dl, run, stamp
@@ -2216,7 +2224,8 @@ class TestPunchFixResync(unittest.TestCase):
         cmd = run.call_args.args[0]
         self.assertEqual(cmd[cmd.index("--refresh-date") + 1], "2026-10-04")
         self.assertEqual(cmd[cmd.index("--end") + 1], "2026-10-06")
-        stamp.assert_called_once_with(datetime.date(2026, 9, 21), datetime.date(2026, 10, 4))
+        # Stamp matches load_end (max of argv date and fix date), not just the fix day.
+        stamp.assert_called_once_with(datetime.date(2026, 9, 21), datetime.date(2026, 10, 6))
 
     def test_unverified_write_forces_a_fresh_export(self):
         _rc, dl, _run, _stamp, kept = self._run(

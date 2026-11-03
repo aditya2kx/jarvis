@@ -3044,11 +3044,14 @@ def _run_refresh(run_id: str) -> int:
         # flip actual→schedule). On the first day of a new biweekly period,
         # yesterday is the prior period — extend through today so the open
         # period is ingested (2026-11-02 Sync with target=11-01 missed Nov 2).
-        load_end = sync_timecard_load_end(
-            refresh_date,
-            today=today_ct,
-            store_profile=_load_profile(args.store),
-        )
+        # Punch-fix resync already set load_end to max(argv date, fix date)
+        # for the period that holds the write — do not widen it to "today".
+        if not after_punch_fix:
+            load_end = sync_timecard_load_end(
+                refresh_date,
+                today=today_ct,
+                store_profile=_load_profile(args.store),
+            )
         print(
             f"[adp-timecard-only] store={args.store} sync_all={sync_all} "
             f"target_date={refresh_date.isoformat()} load_end={load_end.isoformat()} — "

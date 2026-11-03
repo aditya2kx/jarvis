@@ -1793,6 +1793,11 @@ ADP footer totals exclude open shifts, so they never double-count `adp_scheduled
 the nightly (bundle) and **Sync ADP**. Load failures surface as
 an isolated `adp_schedule` PARTIAL (`BREADCRUMB raw_load_failed source=adp_schedule`). Reconcile
 warnings (`adp_open_shifts reconcile week_start=…`) mean the parsed slots disagree with the row label.
+**An older ADP read never replaces a newer one:** before loading, each scraped week's `scraped_at_utc`
+is compared with the newest one `adp_scheduled_daily` holds for it, and a week BQ read more recently is
+left alone in every schedule table (`BREADCRUMB adp_schedule_superseded … weeks=…`). Two jobs can
+overlap: on 2026-11-03 a Sync ADP that read ADP at 04:44 UTC, mid-Apply, loaded at 04:53 over the
+Apply's 04:51 re-read and erased Nov 16–29's new shifts from the console until the next sync.
 Check: `bq query 'SELECT * FROM bhaga.adp_open_shifts ORDER BY date, slot_index'`.
 
 **ADP unavailability + scheduling rules (Issue #337).** Every Team Schedule scrape (nightly bundle and
@@ -1888,8 +1893,8 @@ Every change made from Coverage waits in one sticky **Changes to ADP** tray (loc
   to changes** stages the suggested shifts ADP doesn't have (`shift-add`; open shifts as one
   `open-add` per day and hours, with a count) and the assigned ADP drafts (`shift-publish`) of every
   week ticked in the sheet's week list (this week by default; the card says when later weeks have
-  suggestions too), so 3–4 weeks go out in one Apply. Its **Send ClickUp message** is the only other
-  action. (Issue #434 retired the card's Save-as-drafts and
+  suggestions too), so 3–4 weeks go out in one Apply (which sends the operator's ClickUp draft by
+  itself). Its **Send ClickUp message** is the only other action — re-send the draft or post to the team. (Issue #434 retired the card's Save-as-drafts and
   Publish-week buttons.)
 - **Clear weeks** (same card): pick weeks → stages a delete for every shift ADP has in them from tomorrow
   on — published (`shift-delete`; the sheet counts them, since staff see them leave their schedule), drafts
@@ -1935,7 +1940,11 @@ before clicking; a wrong pane is closed untouched and the shift's host is DOM-cl
 `shift-add` whose exact shift ADP shows as a draft) deletes that draft and adds the same shift published;
 already live → `skipped`; its add failing says `removed <name>'s draft but could not add it published`. Applied rows append to
 `adp_shift_events` / `adp_unavailability_events` (append-only). The job ends by re-reading the touched weeks
-(`refresh_schedule`); the tray polls the batch and keeps any change that didn't land.
+(`refresh_schedule`); the tray polls the batch and keeps any change that didn't land. When any change other
+than a delete landed, that re-read starts at this week and the job then sends the operator the **Send me a
+draft** note (`notify_published`, `#jarvis-drafts`) for the weeks those changes are in, so an Apply that
+publishes shifts always leaves a ready-to-post ClickUp note. A Clear (deletes only) sends none, and posting
+to the team stays the console's **Post to Shift Coverage**.
 `BREADCRUMB adp_apply batch_id=… change_id=… kind=… error=…` on each failure.
 Dry run (walks each wizard / pane to its commit button and backs out; BQ untouched):
 `BHAGA_ADP_CDP_URL=http://127.0.0.1:9333 python3 -m agents.bhaga.scripts.adp_schedule_write --store palmetto --apply-batch <id> --dry-run`.

@@ -476,7 +476,7 @@ export function AdpScheduleFinalize({
                   person with no unavailability marked in a picked week. It re-reads open shifts from ADP (about
                   3 min), then types the note in ClickUp so the @mentions are real. Your draft goes to
                   #jarvis-drafts with a &quot;copy and post&quot; header; Shift Coverage starts at @everyone
-                  and notifies the team.
+                  and notifies the team. An Apply that adds or publishes shifts already sends you the draft.
                 </SheetDescription>
               </SheetHeader>
               <WeekPicker weeks={allWeeks} picked={picked} onToggle={toggle} detail={() => ({ text: "" })} />

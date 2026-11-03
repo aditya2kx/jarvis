@@ -812,6 +812,8 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
     from skills.adp_run_automation import runner as r
 
     changed: set[dt.date] = set()
+    announce: set[dt.date] = set()  # weeks staff see new or moved shifts in: the ClickUp draft covers them
+    fresh = False
     try:
         with r.adp_session(store=store, headed=not headless) as (_ctx, page):
             frame = r._open_team_schedule(page)
@@ -847,6 +849,8 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
                     settled.add(row["change_id"])
                     return open_now
                 changed.add(week)
+                if row["kind"] not in RETRY_KINDS:
+                    announce.add(week)
                 set_status(row, SHIFT_TABLE, "applied", adp_name=name)
                 return open_now
 
@@ -903,9 +907,12 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
                     # Statuses land first: the console trusts a schedule read newer than a row's updated_at.
                     writer.submit(lambda: None).result()
                     lo, hi = min(changed), max(changed)
+                    if announce:
+                        # The draft lists open shifts from tomorrow on; read those weeks too.
+                        lo = min(lo, week_start_of(open_shift_window(max(announce), _today_ct())[0]))
                     try:
                         wb.goto_week(r._open_team_schedule(page), page, lo)
-                        refresh_schedule(page, store, lo, weeks=(hi - lo).days // 7 + 1)
+                        fresh = refresh_schedule(page, store, lo, weeks=(hi - lo).days // 7 + 1)
                     except Exception as exc:  # noqa: BLE001 — the ADP changes already happened
                         print(f"BREADCRUMB adp_schedule_refresh store={store} week_start={lo} error={type(exc).__name__}: {exc}"[:500])
     except Exception as exc:
@@ -919,6 +926,9 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
     finally:
         writer.shutdown(wait=True)
     print(f"[schedule_write] apply batch_id={batch_id} done failed={failed}")
+    if announce:
+        # The operator's draft only; posting to the team stays the console's Post to Shift Coverage.
+        notify_published(store, sorted(announce), fresh=fresh)
     return 1 if failed else 0
 
 

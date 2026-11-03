@@ -390,6 +390,23 @@ def main() -> int:
                               f"{type(exc).__name__}: {exc}")
 
     # ── ADP scheduled hours (Team Schedule, forward-looking) ─────
+    def _schedule_loaded_at(weeks: list) -> dict:
+        """week_start ISO → newest scraped_at_utc already in adp_scheduled_daily (every scraped day lands there)."""
+        starts = sorted({ws.isoformat() for wk in weeks
+                         if (ws := schedule_backend.parse_week_start(wk.get("week_label")))})
+        if args.dry_run or not starts:
+            return {}
+        from core.datastore import fq, get_client  # noqa: PLC0415
+        client = get_client()
+        if client is None:
+            return {}
+        week_list = ", ".join(f"DATE '{w}'" for w in starts)
+        rows = client.query(
+            f"SELECT CAST(week_start AS STRING) AS ws, MAX(scraped_at_utc) AS at"
+            f" FROM {fq('adp_scheduled_daily')} WHERE week_start IN ({week_list}) GROUP BY ws"
+        ).result()
+        return {r["ws"]: r["at"] for r in rows}
+
     def _load_adp_schedule() -> None:
         schedule_json = _newest("Schedule-*.json")
         if not schedule_json:
@@ -398,6 +415,13 @@ def main() -> int:
             print(f"# parsing ADP schedule: {schedule_json.name}")
             payload = json.loads(schedule_json.read_text())
             scraped_at = payload.get("scraped_at_utc")
+            weeks, superseded = schedule_backend.drop_superseded_weeks(
+                payload.get("weeks", []), scraped_at, _schedule_loaded_at(payload.get("weeks", []))
+            )
+            if superseded:
+                print(f"  BREADCRUMB adp_schedule_superseded store={args.store} scraped_at={scraped_at}"
+                      f" weeks={','.join(superseded)} — BQ already holds a newer ADP read; left as is")
+            payload = {**payload, "weeks": weeks}
             records = schedule_backend.build_schedule_records(payload.get("weeks", []))
             _record_load_receipt("adp_schedule", rows=len(records))
             now_utc = datetime.datetime.utcnow().isoformat() + "Z"

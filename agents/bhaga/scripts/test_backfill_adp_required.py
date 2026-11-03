@@ -260,7 +260,7 @@ class TestOpenShiftsLoad(unittest.TestCase):
         "skills", "adp_run_automation", "testdata", "schedule_open_shifts_spike.json",
     )
 
-    def _run(self, weeks, *, open_error=None):
+    def _run(self, weeks, *, open_error=None, loaded=None):
         import json
         import pathlib
         import tempfile
@@ -278,8 +278,14 @@ class TestOpenShiftsLoad(unittest.TestCase):
             loads[table] = (rows, kw)
             return len(rows)
 
+        def _query(sql):
+            if "MAX(scraped_at_utc)" in sql:
+                return mock.Mock(result=lambda: [{"ws": k, "at": v} for k, v in (loaded or {}).items()])
+            queries.append(sql)
+            return mock.Mock()
+
         client = mock.Mock()
-        client.query.side_effect = lambda sql: queries.append(sql) or mock.Mock()
+        client.query.side_effect = _query
         argv = ["backfill_from_downloads", "--store", "palmetto",
                 "--skip", "square", "--skip", "adp_shifts", "--skip", "adp_punches",
                 "--skip", "adp_liability", "--skip", "adp_rates",
@@ -303,6 +309,7 @@ class TestOpenShiftsLoad(unittest.TestCase):
         failures = (json.loads(result_json.read_text())["failures"]
                     if result_json.exists() else None)
         open_deletes = [q for q in queries if "adp_open_shifts" in q]
+        self.queries = queries
         return rc, loads, open_deletes, failures
 
     def _weeks(self):
@@ -341,6 +348,32 @@ class TestOpenShiftsLoad(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(deletes, [])
         self.assertNotIn("adp_open_shifts", loads)
+
+    def test_a_week_bq_read_more_recently_is_left_as_is(self):
+        """2026-11-03: a Sync ADP read before an Apply loaded after the Apply's re-read and erased Nov 23–29."""
+        import datetime
+        newer = datetime.datetime(2026, 9, 25, 15, 5, tzinfo=datetime.timezone.utc)
+        older = datetime.datetime(2026, 9, 25, 14, 0, tzinfo=datetime.timezone.utc)
+        weeks = self._weeks()
+        for wk in weeks:
+            wk["days"] = ["1 Employees\n7:00 Hrs"] * 7
+            wk["employee_rows"] = [{"name": "Doe, Alex",
+                                    "days": [{"header_index": i, "ranges": ["6:30 AM - 1:30 PM"]} for i in range(7)]}]
+        with mock.patch("builtins.print") as out:
+            rc, loads, deletes, failures = self._run(
+                weeks, loaded={"2026-09-28": newer, "2026-10-05": older})
+        self.assertEqual((rc, failures), (0, None))
+        self.assertNotIn("DATE '2026-09-28'", deletes[0])
+        self.assertIn("DATE '2026-10-05'", deletes[0])
+        for table in ("adp_scheduled_daily", "adp_scheduled_shifts", "adp_open_shifts"):
+            rows, _kw = loads[table]
+            self.assertTrue(rows)
+            self.assertNotIn("2026-09-28", {r["week_start"] for r in rows}, table)
+        purge = next(q for q in self.queries if "DELETE FROM" in q and "adp_scheduled_shifts" in q)
+        self.assertNotIn("DATE '2026-09-29'", purge)
+        printed = " ".join(str(c.args[0]) for c in out.call_args_list if c.args)
+        self.assertIn("BREADCRUMB adp_schedule_superseded store=palmetto scraped_at=2026-09-25T15:00:00Z"
+                      " weeks=2026-09-28", printed)
 
     def test_load_failure_is_isolated_partial(self):
         rc, _loads, _deletes, failures = self._run(

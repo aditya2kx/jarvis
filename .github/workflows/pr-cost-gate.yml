@@ -79,6 +79,13 @@ jobs:
           python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
             --marker pr-cost --body-file /tmp/cost.md
 
+      # Cloud Agents that continue from a prior PR chat can leave the same
+      # build session uid on two PR ledgers; validate then hard-fails. Dedup
+      # keeps one owner (preferring the merged PR) before the gate runs.
+      - name: Dedup cross-PR build sessions
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/pr_cost_ledger.py dedup-sessions
+
       - name: Validate cost ledger (hard gate — requires build cost)
         if: github.event_name == 'pull_request'
         run: python3 scripts/pr_cost_ledger.py validate --pr "$PR" --require-build

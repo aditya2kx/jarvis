@@ -1117,7 +1117,7 @@ export function ScheduleInputsPanel({
           <div className="md:col-span-2">
             <Section
               title="New-hire training"
-              hint="Every new hire trains beside experienced staff until they have done the supervised openers and closers below, once — the draft gives them an experienced opener or closer to shadow on the earliest days it can. With training counting toward need, other shifts that day start later or end sooner where the new hire covers; switch it off to keep training on top of need. Each kind clears on its own: after their supervised closers they close toward need like anyone, likewise openers. Mark someone trained to skip it. Hire dates come from ADP; without one, the first ADP shift counts."
+              hint="Every new hire trains beside experienced staff until they have done the supervised openers and closers below, once — the draft gives them an experienced opener or closer to shadow on the earliest days it can. With training counting toward need, other shifts that day start later or end sooner where the new hire covers; switch it off to keep training on top of need. Each kind clears on its own: after their supervised closers they close toward need like anyone, likewise openers. Their first mids go to them only with experienced staff on; after that they work mids with anyone. Mark someone trained to skip it. Hire dates come from ADP; without one, the first ADP shift counts."
             >
               <NewHireTrainingRules
                 training={rules.staffing.training}

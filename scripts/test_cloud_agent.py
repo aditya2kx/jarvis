@@ -59,7 +59,7 @@ class RecordCostTests(unittest.TestCase):
             out = C.record_cost(385, f"Cursor-Agent: {AID} model=claude-opus-5-5-high", "t", "b")
         meta.assert_called_once_with(385, title="t", branch="b")
         kw = rec.call_args.kwargs
-        self.assertEqual(kw["ts"], "2026-10-11T14:00:00.000Z")
+        self.assertEqual(kw["ts"], "2026-10-11T14:00:00.000Z#pr385")
         self.assertEqual(kw["tokens"], 13_000_000)
         self.assertAlmostEqual(kw["cost_usd"], 31.0)
         self.assertIn("cost=$31.00", out)
@@ -82,7 +82,8 @@ class RecordCostTests(unittest.TestCase):
         rows = {c.args[0]: c.kwargs for c in rec.call_args_list}
         self.assertAlmostEqual(rows[385]["cost_usd"], 27.9)
         self.assertAlmostEqual(rows[386]["cost_usd"], 3.1)
-        self.assertEqual({r["ts"] for r in rows.values()}, {"2026-10-11T14:00:00.000Z"})
+        self.assertEqual(rows[385]["ts"], "2026-10-11T14:00:00.000Z#pr385")
+        self.assertEqual(rows[386]["ts"], "2026-10-11T14:00:00.000Z#pr386")
         self.assertIn("PR #386 10%", out)
 
     def test_each_agent_marker_gets_its_own_row(self):
@@ -103,7 +104,8 @@ class RecordCostTests(unittest.TestCase):
         self.assertEqual({c.args[0] for c in rec.call_args_list}, {387})
         self.assertAlmostEqual(rows[AID]["cost_usd"], 31.0)
         self.assertAlmostEqual(rows[later]["cost_usd"], 15.5)
-        self.assertEqual(rows[later]["ts"], "2026-10-11T21:48:00.000Z")
+        self.assertEqual(rows[AID]["ts"], "2026-10-11T14:00:00.000Z#pr387")
+        self.assertEqual(rows[later]["ts"], "2026-10-11T21:48:00.000Z#pr387")
         self.assertEqual(len(out.splitlines()), 2)
 
     def test_split_shares_equal_when_sizes_unknown(self):
@@ -122,10 +124,37 @@ class RecordCostTests(unittest.TestCase):
         kw = rec.call_args.kwargs
         self.assertEqual(kw["tokens"], C.ZERO_USAGE_BENCHMARK_TOKENS)
         self.assertAlmostEqual(kw["cost_usd"], C.ZERO_USAGE_BENCHMARK_COST)
+        self.assertEqual(kw["ts"], "2026-10-19T14:25:00.000Z#pr413")
         self.assertEqual(kw["source"], "benchmark_estimate")
         self.assertIs(kw["mark_approximate"], True)
         self.assertIn("APPROXIMATE:", kw["note"])
         self.assertIn("approximate", out)
+
+    def test_continued_agent_gets_pr_scoped_ts_so_uids_do_not_collide(self):
+        """Same agent + same approximate $ on two PRs must not share session_uid.
+
+        Regression: PR #492 cost gate recorded then dedup stripped the only row
+        because uid matched merged #463 (sha1(createdAt|10.22)).
+        """
+        import pr_cost_store as S
+
+        def fake_api(method, path, body=None):
+            if path.endswith("/usage"):
+                return {"totalUsage": {"totalTokens": 0}}
+            return {"id": AID, "createdAt": "2026-10-19T14:25:00.000Z"}
+
+        rows = []
+        with mock.patch.object(C, "_api", side_effect=fake_api), \
+             mock.patch.object(L, "set_meta"), \
+             mock.patch.object(L, "record_build_session",
+                               side_effect=lambda pr, **kw: rows.append((pr, kw))):
+            C.record_cost(463, f"Cursor-Agent: {AID} model=claude-opus-5-5-high", "t", "b")
+            C.record_cost(492, f"Cursor-Agent: {AID} model=claude-opus-5-5-high", "t", "b")
+        self.assertEqual(rows[0][1]["ts"], "2026-10-19T14:25:00.000Z#pr463")
+        self.assertEqual(rows[1][1]["ts"], "2026-10-19T14:25:00.000Z#pr492")
+        uid463 = S._session_uid({"ts": rows[0][1]["ts"], "cost_usd": rows[0][1]["cost_usd"]})
+        uid492 = S._session_uid({"ts": rows[1][1]["ts"], "cost_usd": rows[1][1]["cost_usd"]})
+        self.assertNotEqual(uid463, uid492)
 
     def test_measured_usage_clears_an_estimate_it_replaces(self):
         rec = {"build": {"sessions": [], "approximate": None}, "review": {"runs": []}}

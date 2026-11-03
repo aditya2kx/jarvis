@@ -132,6 +132,17 @@ describe("AdpScheduleFinalize Clear weeks", () => {
     expect(onClear).toHaveBeenCalledWith([DEL, OPEN_DEL]);
   });
 
+  it("says when a week's ADP shifts already have deletes in your changes", async () => {
+    setupClear([
+      { weekStart: NEXT, changes: [], published: 0, inChanges: 2 },
+      { weekStart: LATER, changes: [LATER_DEL], published: 0, inChanges: 1 },
+    ]);
+    await open();
+    expect(within(screen.getByTestId(`week-${NEXT}`)).getByText("2 shifts in your changes — Apply to remove")).toBeTruthy();
+    expect(weekBox(NEXT).hasAttribute("data-disabled")).toBe(true);
+    expect(within(screen.getByTestId(`week-${LATER}`)).getByText("1 shift · 6.0h · 1 already in your changes")).toBeTruthy();
+  });
+
   it("is off when ADP has nothing ahead", () => {
     setupClear([{ weekStart: WEEK, changes: [], published: 0 }]);
     expect((screen.getByRole("button", { name: "Clear weeks" }) as HTMLButtonElement).disabled).toBe(true);

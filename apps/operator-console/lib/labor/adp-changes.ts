@@ -534,11 +534,24 @@ export type ApplyRow = {
 
 export type ApplySummary = Record<ApplyRowStatus, number> & { errors: string[] };
 
+/** The ADP job's failure reasons (`adp_schedule_write.py`) in the operator's words; others pass through. */
+export function applyErrorText(error: string | null): string {
+  if (!error) return "not confirmed in ADP";
+  const retried = / \(after one retry\)$/.test(error) ? " (tried twice)" : "";
+  if (/^not attempted: job stopped/.test(error)) return "not tried — the ADP run stopped early";
+  if (/check ADP before deleting again/.test(error)) {
+    return "may already be deleted, but identical open shifts are left — check ADP";
+  }
+  if (/details pane is not/.test(error)) return `ADP wouldn't open this shift's details, so nothing was changed${retried}`;
+  if (/could not re-read/.test(error)) return `ADP didn't load to confirm it${retried}`;
+  return error;
+}
+
 export function summarizeApply(rows: ApplyRow[]): ApplySummary {
   const out: ApplySummary = { queued: 0, applied: 0, skipped: 0, failed: 0, errors: [] };
   for (const r of rows) {
     out[r.status] += 1;
-    if (r.status === "failed") out.errors.push(`${r.summary ?? "Change"}: ${r.error ?? "not confirmed in ADP"}`);
+    if (r.status === "failed") out.errors.push(`${r.summary ?? "Change"}: ${applyErrorText(r.error)}`);
   }
   return out;
 }

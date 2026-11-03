@@ -642,6 +642,10 @@ class ApplySkip(Exception):
     """ADP already shows the change — nothing was clicked."""
 
 
+# Deletes re-check the grid before clicking, so a second try can't remove a shift twice.
+RETRY_KINDS = ("shift-delete", "open-delete")
+
+
 def _apply_open(frame, page, row: dict, open_now: Counter, *, dry_run: bool) -> tuple[str | None, Counter]:
     """One open-shift change. Returns (ADP name, open shifts re-read after it). Raises on failure."""
     week = week_start_of(row["date"])
@@ -764,7 +768,8 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
     """Apply one console "Apply to ADP" batch: queued adp_shift_changes + adp_unavailability_changes.
 
     Every row ends 'applied' (ADP re-read shows it), 'skipped' (ADP already showed it,
-    nothing clicked) or 'failed' (breadcrumb + reason). Nothing is retried: a crash
+    nothing clicked) or 'failed' (breadcrumb + reason). A failed delete gets one more try
+    after the rest of its week, on a reloaded week view; nothing else is retried, and a crash
     marks every unsettled row failed. Then the changed weeks are re-read into BQ.
     Unavailability: only approve is wired; other kinds fail without a click.
     `rows`: walk these unqueued shift changes instead (dry run only — nothing in BQ to settle).
@@ -776,7 +781,7 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
         assert dry_run, "unqueued rows can only be dry-run"
         shifts, unavail = rows, []
     else:
-        retry = " OR (status = 'failed' AND kind IN ('shift-delete', 'open-delete'))" if retry_failed else ""
+        retry = f" OR (status = 'failed' AND kind IN {RETRY_KINDS!r})" if retry_failed else ""
         shifts = _query(
             f"SELECT * FROM {{T}} WHERE store = @store AND batch_id = @id AND (status = 'queued'{retry})",
             params, table=SHIFT_TABLE,
@@ -810,37 +815,73 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
     try:
         with r.adp_session(store=store, headed=not headless) as (_ctx, page):
             frame = r._open_team_schedule(page)
+
+            def walk(row: dict, week: dt.date, open_now: Counter, retry: list[dict] | None) -> Counter:
+                """One shift change; a failed delete goes to `retry` (when given) instead of failing."""
+                try:
+                    if row["kind"].startswith("open-"):
+                        name, open_now = _apply_open(frame, page, row, open_now, dry_run=dry_run)
+                    else:
+                        name = _apply_assigned(frame, page, row, dry_run=dry_run)
+                except ApplySkip as why:
+                    print(f"[schedule_write] skip {row['change_id']} {row['kind']}: {why}")
+                    set_status(row, SHIFT_TABLE, "skipped", str(why))
+                    return open_now
+                except Exception as exc:  # noqa: BLE001 — one change must not stop the rest
+                    if not dry_run:
+                        changed.add(week)
+                    msg = f"{type(exc).__name__}: {exc}"
+                    if retry is not None and not dry_run and row["kind"] in RETRY_KINDS:
+                        print(f"[schedule_write] retry-later batch_id={batch_id} change_id={row['change_id']} error={msg}"[:500])
+                        retry.append({**row, "_first": exc})
+                    else:
+                        fail(row, SHIFT_TABLE, msg if "_first" not in row else f"{msg} (after one retry)")
+                    if row["kind"].startswith("open-") and not dry_run:
+                        try:
+                            open_now = wb.read_open_shifts(page, frame, week)
+                        except Exception:  # noqa: BLE001 — the next open change fails on its own read
+                            pass
+                    return open_now
+                print(f"[schedule_write] {'checked' if dry_run else 'applied'} {row['change_id']} {row.get('summary')!r}")
+                if dry_run:
+                    settled.add(row["change_id"])
+                    return open_now
+                changed.add(week)
+                set_status(row, SHIFT_TABLE, "applied", adp_name=name)
+                return open_now
+
             try:
                 for week, rows in apply_plan(shifts):
                     wb.goto_week(frame, page, week)
                     page.wait_for_timeout(1500)
                     open_now = wb.read_open_shifts(page, frame, week)
+                    retry: list[dict] = []
                     for row in rows:
-                        try:
-                            if row["kind"].startswith("open-"):
-                                name, open_now = _apply_open(frame, page, row, open_now, dry_run=dry_run)
-                            else:
-                                name = _apply_assigned(frame, page, row, dry_run=dry_run)
-                        except ApplySkip as why:
-                            print(f"[schedule_write] skip {row['change_id']} {row['kind']}: {why}")
-                            set_status(row, SHIFT_TABLE, "skipped", str(why))
+                        open_now = walk(row, week, open_now, retry)
+                    if not retry:
+                        continue
+                    # ADP's details pane sometimes won't open on the first try; a fresh week view usually does.
+                    print(f"[schedule_write] retrying {len(retry)} failed delete(s) in week {week}")
+                    try:
+                        wb.goto_week(frame, page, week)
+                        page.wait_for_timeout(1500)
+                        if any(row["kind"] == "open-delete" for row in retry):
+                            open_now = wb.read_open_shifts(page, frame, week)
+                    except Exception as exc:  # noqa: BLE001 — the first failures stand
+                        for row in retry:
+                            fail(row, SHIFT_TABLE, f"{type(row['_first']).__name__}: {row['_first']}"
+                                 f" (retry could not reload the week: {type(exc).__name__})")
+                        continue
+                    for row in retry:
+                        slot = (row["date"].isoformat(), row["start_min"], row["end_min"])
+                        if (row["kind"] == "open-delete" and isinstance(row["_first"], wb.UnconfirmedSave)
+                                and open_now[slot] > 0):
+                            # It may have been deleted already; with identical open shifts left, a second
+                            # click could remove one that was meant to stay.
+                            fail(row, SHIFT_TABLE, f"UnconfirmedSave: {row['_first']} — ADP still lists"
+                                 f" {open_now[slot]} open at these times; check ADP before deleting again")
                             continue
-                        except Exception as exc:  # noqa: BLE001 — one change must not stop the rest
-                            if not dry_run:
-                                changed.add(week)
-                            fail(row, SHIFT_TABLE, f"{type(exc).__name__}: {exc}")
-                            if row["kind"].startswith("open-") and not dry_run:
-                                try:
-                                    open_now = wb.read_open_shifts(page, frame, week)
-                                except Exception:  # noqa: BLE001 — the next open change fails on its own read
-                                    pass
-                            continue
-                        print(f"[schedule_write] {'checked' if dry_run else 'applied'} {row['change_id']} {row.get('summary')!r}")
-                        if dry_run:
-                            settled.add(row["change_id"])
-                            continue
-                        changed.add(week)
-                        set_status(row, SHIFT_TABLE, "applied", adp_name=name)
+                        open_now = walk(row, week, open_now, None)
                 for row in unavail:
                     if row["kind"] != "approve":
                         fail(row, UNAVAIL_TABLE, f"the ADP job cannot {row['kind']} unavailability yet — do it in ADP")

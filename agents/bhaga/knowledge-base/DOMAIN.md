@@ -118,11 +118,13 @@ entries; nothing here affects pay or tips.
 Employee status → Hire date field (a rehire date wins), else the People directory column;
 `source` says which. Nightly pay_info fills any Active person still missing a row. **New hire** = hired on or after 2026-08-01 (the rule's start; every hire since) and
 not yet through the supervised openers/closers set in the versioned schedule rules: until then
-their shifts of that kind (and any mid) are training shifts — drafted beside an experienced opener /
+their shifts of that kind are training shifts — drafted beside an experienced opener /
 closer (overlap ≥ the set hours), earliest day first; they count toward headcount (other need shifts
 that day shorten) unless the rule's `countTowardNeed` switch is off, then they sit on top of need and
 only the trainer's shift counts. Each kind clears on its own (done closers → closes toward
-need; likewise openers); mids stay training until both are done. The operator can mark someone trained (`training.trained`).
+need; likewise openers). Mids: the first `training.midShifts` (default 1) go to a new hire only
+beside an experienced person (any trainer, same overlap) and count toward need; after that — or once
+openers and closers are both done — they work mids with anyone. The operator can mark someone trained (`training.trained`).
 Scheduling only — no pay or tip effect.
 
 **Needed headcount** (Labor → Staffing coverage, Issue #337): ⌈median Payment orders for that

@@ -100,6 +100,8 @@ export type StaffingBasics = {
 export type TrainingRules = {
   openShifts: number;
   closeShifts: number;
+  /** Mids beside experienced staff before a new hire takes mids with anyone (done once openers and closers are). */
+  midShifts: number;
   /** Minutes an experienced person must overlap each training shift. */
   overlapMin: number;
   /** New hires who may shadow the same experienced shift at once. */
@@ -136,6 +138,7 @@ export type RulesVersion = {
 export const DEFAULT_TRAINING: TrainingRules = {
   openShifts: 2,
   closeShifts: 2,
+  midShifts: 1,
   overlapMin: 180,
   traineesPerTrainer: 2,
   experienced: [],
@@ -462,6 +465,8 @@ function parseTraining(raw: unknown): TrainingRules {
   if (!whole(t.openShifts, 0, 10) || !whole(t.closeShifts, 0, 10)) {
     throw new Error("Training openers and closers must be whole numbers 0–10");
   }
+  const midShifts = t.midShifts ?? DEFAULT_TRAINING.midShifts;
+  if (!whole(midShifts, 0, 10)) throw new Error("Training mids must be a whole number 0–10");
   if (!whole(t.overlapMin, 15, 12 * 60) || t.overlapMin! % 15) {
     throw new Error("Training overlap must be 15 min–12 hours in 15-minute steps");
   }
@@ -492,6 +497,7 @@ function parseTraining(raw: unknown): TrainingRules {
   return {
     openShifts: t.openShifts!,
     closeShifts: t.closeShifts!,
+    midShifts,
     overlapMin: t.overlapMin!,
     traineesPerTrainer: perTrainer,
     experienced,

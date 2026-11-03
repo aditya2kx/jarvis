@@ -575,6 +575,59 @@ class RunApply(unittest.TestCase):
         ))
         self.assertEqual(fq.events, [])
 
+    def test_a_delete_that_fails_is_retried_once_on_a_reloaded_week(self):
+        fq = FakeApplyQuery([_change("del", "shift-delete", employee="Lee, Kim"),
+                             _change("add", "shift-add", employee="Doe, Alex")])
+        adp = FakeApplyAdp(assigned={("Lee, Kim", "2026-11-03", 540, 900)},
+                           fail={"delete_any_shift": wb.ScheduleWriteError("details pane is not open")})
+        self.assertEqual(self._run(fq, adp), 0)
+        self.assertEqual({u[1]: u[2] for u in fq.updates}, {"del": "applied", "add": "applied"})
+        self.assertEqual([c[0] for c in adp.calls], ["delete_any_shift", "create_shift", "delete_any_shift"])
+        self.assertEqual(self.goto.call_count, 3)  # the week, its reload for the retry, the re-read
+        self.assertNotIn(("Lee, Kim", "2026-11-03", 540, 900), adp.assigned)
+
+    def test_a_delete_that_fails_twice_says_it_was_retried(self):
+        fq = FakeApplyQuery([_change("del", "shift-delete", employee="Lee, Kim")])
+        adp = FakeApplyAdp(assigned={("Lee, Kim", "2026-11-03", 540, 900)})
+        adp.delete_any_shift = mock.MagicMock(side_effect=wb.ScheduleWriteError("details pane is not open"))
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertEqual(fq.updates, [(w.SHIFT_TABLE, "del", "failed", "ScheduleWriteError: details pane is not open (after one retry)")])
+        self.assertEqual(adp.delete_any_shift.call_count, 2)
+
+    def test_other_kinds_are_never_retried(self):
+        fq = FakeApplyQuery([_change("add", "shift-add", employee="Doe, Alex")])
+        adp = FakeApplyAdp(fail={"create_shift": wb.ScheduleWriteError("not in ADP's unscheduled list")})
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertEqual([c[0] for c in adp.calls], ["create_shift"])
+
+    def _unreadable_after_delete(self, adp):
+        reads = {"n": 0}
+        real = adp.read_open_shifts
+
+        def read(*a):
+            reads["n"] += 1
+            if reads["n"] in (2, 3):  # the delete's confirming read and the failure handler's
+                raise TimeoutError("grid did not load")
+            return real(*a)
+        adp.read_open_shifts = read
+
+    def test_unconfirmed_open_delete_that_landed_is_skipped_not_clicked_again(self):
+        fq = FakeApplyQuery([_change("odel", "open-delete")])
+        adp = FakeApplyAdp(open_shifts={self.SLOT: 1})
+        self._unreadable_after_delete(adp)
+        self.assertEqual(self._run(fq, adp), 0)
+        self.assertEqual(fq.updates[0][1:3], ("odel", "skipped"))
+        self.assertEqual([c[0] for c in adp.calls], ["delete_open_shift"])
+
+    def test_unconfirmed_open_delete_with_identical_open_shifts_left_is_not_clicked_again(self):
+        fq = FakeApplyQuery([_change("odel", "open-delete")])
+        adp = FakeApplyAdp(open_shifts={self.SLOT: 2})
+        self._unreadable_after_delete(adp)
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertEqual(fq.updates[0][2], "failed")
+        self.assertIn("ADP still lists 1 open at these times; check ADP", fq.updates[0][3])
+        self.assertEqual(adp.open[self.SLOT], 1)
+
     def test_unavailability_approve_is_applied_and_other_kinds_fail_without_a_click(self):
         fq = FakeApplyQuery(unavail=[
             {**_change("ok", "approve", employee="Doe, Alex"), "row_key": "k1"},

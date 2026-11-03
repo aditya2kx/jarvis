@@ -67,31 +67,46 @@ const insideSpan = (spans: [number, number][], s: number, e: number) => spans.so
 
 /**
  * New-hire training for one day (Issue #450): someone in `left` works an opener / closer like
- * anyone else once they've done that kind's supervised shifts. Until then a shift of that kind —
- * and any mid — is a training shift: drafted beside experienced staff overlapping it by `overlapMin`,
- * on top of need unless the training rule counts it toward need.
+ * anyone else once they've done that kind's supervised shifts. Until then a shift of that kind is a
+ * training shift: drafted beside experienced staff overlapping it by `overlapMin`, on top of need
+ * unless the training rule counts it toward need. A mid still to do goes toward need, but only
+ * when experienced staff (`midTrainers`) overlap it by `overlapMin`.
  */
 export type DraftTraining = {
   overlapMin: number;
   /** New hires who may shadow one experienced shift at once (default 1). */
   perTrainer?: number;
-  /** Supervised openers / closers still to do, per new hire (mutated as the draft gives them some). */
+  /** Supervised openers / closers / mids still to do, per new hire (mutated as the draft gives them some). */
   left: Map<string, TrainingLeft>;
-  /** Experienced people already on this day (ADP or an earlier draft pass). */
+  /** Experienced people already on this day who train openers / closers (ADP or an earlier draft pass). */
   experiencedOn: [number, number][];
+  /** Every experienced person already on this day — any of them supervises a mid. */
+  midTrainers?: [number, number][];
 };
 
 export const TRAINING_ON_TOP = "New hire — still training this kind beside experienced staff";
+export const TRAINING_MID = "New hire — first mid needs experienced staff on with them";
 
-/** Why a new hire can't take a `kind` shift toward need, or null when they can. */
-export function trainingBlock(training: DraftTraining | undefined, employee: string, kind: ShiftKind): string | null {
-  return isTrainingShift(training?.left.get(employee), kind) ? TRAINING_ON_TOP : null;
+/**
+ * Why a new hire can't take a `kind` shift toward need, or null when they can. `on` is who else
+ * experienced works that day so far; a mid they overlap long enough is fine.
+ */
+export function trainingBlock(
+  training: DraftTraining | undefined,
+  employee: string,
+  kind: ShiftKind,
+  shift?: { s: number; e: number; on?: [number, number][] },
+): string | null {
+  if (!isTrainingShift(training?.left.get(employee), kind)) return null;
+  if (kind !== "mid") return TRAINING_ON_TOP;
+  const on = [...(training!.midTrainers ?? []), ...(shift?.on ?? [])];
+  return shift && overlapMinutes(shift.s, shift.e, on) >= training!.overlapMin ? null : TRAINING_MID;
 }
 
-/** A supervised shift counts toward the new hire's openers / closers. */
+/** A supervised shift counts toward the new hire's openers / closers / mids. */
 function countTraining(training: DraftTraining, employee: string, kind: ShiftKind) {
   const left = training.left.get(employee);
-  if (left && kind !== "mid" && left[kind] > 0) training.left.set(employee, { ...left, [kind]: left[kind] - 1 });
+  if (left && left[kind] > 0) training.left.set(employee, { ...left, [kind]: left[kind] - 1 });
 }
 
 const worksOn = (a: Availability, iso: string) => a.lastDay == null || iso <= a.lastDay;
@@ -526,8 +541,11 @@ function draftCore(
             .sort((x, y) => Number(covers(y)) - Number(covers(x)) || y.gain - x.gain || y.len - x.len)[0];
           return best ? [best] : [];
         });
-      const blocked = fits.flatMap(({ a }) => {
-        const reason = trainingBlock(args.training, a.employee, block.kind);
+      const on = out.flatMap((o): [number, number][] =>
+        args.roster.some((r) => r.employee === o.employee && r.experienced) ? [[o.startMin, o.endMin]] : [],
+      );
+      const blocked = fits.flatMap(({ a, s, e }) => {
+        const reason = trainingBlock(args.training, a.employee, block.kind, { s, e, on });
         return reason ? [{ employee: a.employee, reason }] : [];
       });
       const eligible = fits.filter((x) => !blocked.some((b) => b.employee === x.a.employee));
@@ -607,6 +625,8 @@ function draftCore(
       ...(pinned ? { picked: true } : {}),
     });
     if (pick) {
+      // Rollouts share `training.left`; only the real draft spends a new hire's supervised mid.
+      if (opts.lookahead && args.training && c.kind === "mid") countTraining(args.training, pick.a.employee, "mid");
       busy.add(pick.a.employee);
       args.weekHours.set(pick.a.employee, (args.weekHours.get(pick.a.employee) ?? 0) + paid(s, e));
       args.weekShifts?.set(pick.a.employee, (args.weekShifts.get(pick.a.employee) ?? 0) + 1);
@@ -673,7 +693,7 @@ export function fillOpenShift(args: {
     })
     .sort(byPriority(weekOf, (a) => args.weekShifts?.get(a.employee) ?? 0));
   const blocked = fits.flatMap((a) => {
-    const reason = trainingBlock(args.training, a.employee, kind);
+    const reason = trainingBlock(args.training, a.employee, kind, { s, e });
     return reason ? [{ employee: a.employee, reason }] : [];
   });
   const ranked = fits.filter((a) => !blocked.some((b) => b.employee === a.employee));
@@ -696,6 +716,7 @@ export function fillOpenShift(args: {
     cap: weekCap(a),
     target: a.targetWeekHours,
   }));
+  if (args.training && kind === "mid") countTraining(args.training, pick.employee, "mid");
   args.busy.add(pick.employee);
   args.weekHours.set(pick.employee, weekOf(pick) + hours);
   args.weekShifts?.set(pick.employee, (args.weekShifts.get(pick.employee) ?? 0) + 1);
@@ -743,7 +764,7 @@ export function fillClearedTrainees(args: {
 }): DraftShift[] {
   return args.shifts.map((s) => {
     if (s.employee || s.training || !s.slot || args.pins?.get(s.slot) === null) return s;
-    const stillTraining = !s.blocked?.length || s.blocked.every((b) => trainingBlock(args.training, b.employee, s.kind));
+    const stillTraining = !s.blocked?.length || s.blocked.every((b) => trainingBlock(args.training, b.employee, s.kind, { s: s.startMin, e: s.endMin }));
     if (stillTraining && !args.retryOpen) return s;
     const pin = args.pins?.get(s.slot);
     const fill = fillOpenShift({

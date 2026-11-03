@@ -16,6 +16,7 @@ import {
   stagedShift,
   suggestedChanges,
   summarizeApply,
+  applyErrorText,
   trayLines,
   unstageAdp,
   validateAdpChanges,
@@ -171,6 +172,16 @@ describe("personShifts + summarizeApply", () => {
       { change_id: "2", area: "shift", summary: "B", status: "failed", error: "not found" },
     ]);
     expect([s.applied, s.failed, s.errors]).toEqual([1, 1, ["B: not found"]]);
+  });
+
+  it("applyErrorText puts the ADP job's failure reasons in plain words", () => {
+    expect(applyErrorText("not attempted: job stopped (RuntimeError: x)")).toBe("not tried — the ADP run stopped early");
+    expect(applyErrorText("UnconfirmedSave: could not re-read ADP's open shifts (TimeoutError: t)")).toBe("ADP didn't load to confirm it");
+    expect(applyErrorText("UnconfirmedSave: x — ADP still lists 1 open at these times; check ADP before deleting again")).toMatch(
+      /identical open shifts are left — check ADP/,
+    );
+    expect(applyErrorText(null)).toBe("not confirmed in ADP");
+    expect(applyErrorText("the shift is no longer in ADP")).toBe("the shift is no longer in ADP");
   });
 });
 

@@ -139,8 +139,11 @@ function WeekPicker({
   );
 }
 
-/** `published`: how many of `changes` delete shifts staff can already see. */
-export type ClearWeek = SuggestedWeek & { published: number };
+/**
+ * `published`: how many of `changes` delete shifts staff can already see. `inChanges`: ADP shifts
+ * whose delete is already in the tray (e.g. one a past Apply couldn't make) — still in ADP.
+ */
+export type ClearWeek = SuggestedWeek & { published: number; inChanges?: number };
 
 export type SuggestedWeek = {
   weekStart: string;
@@ -228,6 +231,7 @@ export function AdpScheduleFinalize({
   const clearCount = clearChanges.reduce((n, c) => n + shiftsInChange(c), 0);
   const clearPublished = clearWeeks.filter((w) => clearPicked.has(w.weekStart)).reduce((n, w) => n + w.published, 0);
   const publishedBy = new Map(clearWeeks.map((w) => [w.weekStart, w.published]));
+  const inChangesBy = new Map(clearWeeks.map((w) => [w.weekStart, w.inChanges ?? 0]));
   const tooMany = clearChanges.length > MAX_CHANGES;
   const toggleClear = (week: string, on: boolean) =>
     setClearPicked((prev) => {
@@ -335,7 +339,7 @@ export function AdpScheduleFinalize({
             size="sm"
             variant="ghost"
             className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-            disabled={clearable.length === 0}
+            disabled={clearable.length === 0 && !clearWeeks.some((w) => w.inChanges)}
             title="Remove every shift ADP has in the weeks you pick, so the suggestions start fresh"
             onClick={() => {
               setClearPicked(new Set());
@@ -414,8 +418,21 @@ export function AdpScheduleFinalize({
                   const list = clearBy.get(w) ?? [];
                   const n = list.reduce((a, c) => a + shiftsInChange(c), 0);
                   const published = publishedBy.get(w) ?? 0;
-                  return list.length
-                    ? { text: `${plural(n, "shift")} · ${paidHoursOfChanges(list, meal).toFixed(1)}h${published ? ` · ${published} published` : ""}` }
+                  const staged = inChangesBy.get(w) ?? 0;
+                  const stagedText = `${staged} already in your changes`;
+                  if (list.length) {
+                    return {
+                      text: [
+                        `${plural(n, "shift")} · ${paidHoursOfChanges(list, meal).toFixed(1)}h`,
+                        published ? `${published} published` : "",
+                        staged ? stagedText : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" · "),
+                    };
+                  }
+                  return staged
+                    ? { text: `${plural(staged, "shift")} in your changes — Apply to remove`, disabled: true }
                     : { text: "Nothing in ADP to clear", disabled: true };
                 }}
               />

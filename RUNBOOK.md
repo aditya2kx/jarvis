@@ -1922,7 +1922,8 @@ identical open shift may be meant to stay). `BHAGA_SCHEDULE_RETRY_FAILED=1` with
 batch's failed deletes later (each re-checks the grid first, so none can delete twice). The tray marks each
 failed line with a plain reason (`applyErrorText`), keeps that mark across reloads
 (`labor-adp-failed:v1:<store>`) and offers **Retry N failed** (a new Apply of just those lines). Clear weeks
-counts ADP shifts whose delete is already in the tray as `N already in your changes` instead of hiding them. In a cell that also holds unavailability, a mouse click on the shift can open the person's pane
+counts ADP shifts whose delete is already in the tray (`N shifts in your changes — Apply to remove`, or
+`· N already in your changes`) instead of saying "Nothing in ADP to clear". In a cell that also holds unavailability, a mouse click on the shift can open the person's pane
 (`Delete all schedules …`) or the unavailability's: the job centres the shift and waits until it stops moving
 before clicking; a wrong pane is closed untouched and the shift's host is DOM-clicked at a jittered point
 (up to 11 more tries; the error names what the click hit). A reassign whose add fails says

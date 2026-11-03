@@ -138,7 +138,7 @@ describe("AdpScheduleFinalize Clear weeks", () => {
       { weekStart: LATER, changes: [LATER_DEL], published: 0, inChanges: 1 },
     ]);
     await open();
-    expect(within(screen.getByTestId(`week-${NEXT}`)).getByText("2 shifts left in ADP · deletes in your changes — Apply to remove")).toBeTruthy();
+    expect(within(screen.getByTestId(`week-${NEXT}`)).getByText("2 shifts in your changes — Apply to remove")).toBeTruthy();
     expect(weekBox(NEXT).hasAttribute("data-disabled")).toBe(true);
     expect(within(screen.getByTestId(`week-${LATER}`)).getByText("1 shift · 6.0h · 1 already in your changes")).toBeTruthy();
   });

@@ -432,7 +432,7 @@ export function AdpScheduleFinalize({
                     };
                   }
                   return staged
-                    ? { text: `${plural(staged, "shift")} left in ADP · deletes in your changes — Apply to remove`, disabled: true }
+                    ? { text: `${plural(staged, "shift")} in your changes — Apply to remove`, disabled: true }
                     : { text: "Nothing in ADP to clear", disabled: true };
                 }}
               />

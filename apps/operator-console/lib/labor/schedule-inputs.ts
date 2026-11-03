@@ -112,6 +112,8 @@ export type TrainingRules = {
   trained: string[];
   /** New hires marked trained on one kind only (`trained` covers both). */
   trainedOnly: Record<string, TrainKind>;
+  /** Training shifts count toward need, so need shifts beside them shorten (off = on top of need). */
+  countTowardNeed: boolean;
 };
 
 export type TrainKind = "open" | "close";
@@ -140,6 +142,7 @@ export const DEFAULT_TRAINING: TrainingRules = {
   trainsOnly: {},
   trained: [],
   trainedOnly: {},
+  countTowardNeed: true,
 };
 
 /** ADP's shortest regular shift is 4.5 h (4:00–8:30 PM closer). */
@@ -482,6 +485,8 @@ function parseTraining(raw: unknown): TrainingRules {
     }
     return out;
   };
+  const countTowardNeed = t.countTowardNeed ?? DEFAULT_TRAINING.countTowardNeed;
+  if (typeof countTowardNeed !== "boolean") throw new Error("Training counts toward need must be on or off");
   const experienced = names(t.experienced, "Experienced staff");
   const trained = names(t.trained ?? [], "Trained new hires");
   return {
@@ -493,6 +498,7 @@ function parseTraining(raw: unknown): TrainingRules {
     trainsOnly: kinds(t.trainsOnly, "Trains only", (n) => experienced.includes(n)),
     trained,
     trainedOnly: kinds(t.trainedOnly, "Trained only", (n) => !trained.includes(n)),
+    countTowardNeed,
   };
 }
 

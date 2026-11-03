@@ -442,6 +442,13 @@ describe("new-hire training rules (Issue #450)", () => {
     const { trained: _, ...before } = DEFAULT_TRAINING;
     expect(parseScheduleRules(withTraining(before)).staffing.training.trained).toEqual([]);
   });
+
+  it("counts training toward need unless switched off; versions saved before the switch count it", () => {
+    const { countTowardNeed: _, ...before } = DEFAULT_TRAINING;
+    expect(parseScheduleRules(withTraining(before)).staffing.training.countTowardNeed).toBe(true);
+    expect(parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, countTowardNeed: false })).staffing.training.countTowardNeed).toBe(false);
+    expect(() => parseScheduleRules(withTraining({ ...DEFAULT_TRAINING, countTowardNeed: "yes" }))).toThrow(/toward need/);
+  });
 });
 
 describe("shift_windows staff rule", () => {

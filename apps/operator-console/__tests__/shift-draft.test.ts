@@ -14,6 +14,7 @@ import {
   draftTrainingDay,
   fillClearedTrainees,
   TRAINING_ON_TOP,
+  trimCoveredByTraining,
 } from "@/lib/labor/shift-draft";
 
 const mins: number[] = [];
@@ -677,6 +678,67 @@ describe("new-hire training (Issue #450)", () => {
       expect(fill({ Kai: [1, 1] }).shift).toBe(blockedOpen);
       expect(fill({ Kai: [0, 1] }, undefined, new Set(["Kai"])).shift).toBe(blockedOpen);
       expect(fill({ Kai: [0, 1] }, new Map([[blockedOpen.slot!, null]])).shift).toBe(blockedOpen);
+    });
+
+    it("offers every open shift again once hours are freed", () => {
+      const open: DraftShift = { ...blockedOpen, blocked: undefined };
+      const offer = (retryOpen: boolean) =>
+        fillClearedTrainees({ iso, shifts: [open], roster: [sam], weekHours: new Map(), busy: new Set(), retryOpen })[0]!;
+      expect(offer(false)).toBe(open);
+      expect(offer(true)).toMatchObject({ employee: "Sam", startMin: 390, endMin: 840, slot: open.slot });
+    });
+  });
+
+  describe("trimCoveredByTraining", () => {
+    // Nov 9: 2 on until 11, 3 until 5, 2 to close.
+    const need = mins.map((t) => (t < 390 ? 0 : t < 660 ? 2 : t < 1020 ? 3 : t < 1230 ? 2 : 0));
+    const at = (employee: string | null, startMin: number, endMin: number, extra: Partial<DraftShift> = {}): DraftShift => ({
+      date: iso, kind: startMin <= 420 ? "open" : endMin >= 1200 ? "close" : "mid", startMin, endMin,
+      hours: (endMin - startMin) / 60, employee, trimmed: false, slot: `${iso}|${employee}|${startMin}`, ...extra,
+    });
+    const dayOf = (shifts: DraftShift[]) => {
+      const weekHours = new Map(shifts.flatMap((s) => (s.employee ? [[s.employee, s.hours] as [string, number]] : [])));
+      const busy = new Set(weekHours.keys());
+      const onFloor = mins.map((t) => shifts.filter((s) => !s.training && t >= s.startMin && t < s.endMin).length);
+      const out = trimCoveredByTraining({
+        mins, onFloor, need, shifts, minShiftMin: 240, overlapMin: 180,
+        trains: (who) => who === "Dolce" || who === "Wing", weekHours, busy,
+      });
+      return { out, weekHours, busy };
+    };
+    const nov9 = [
+      at("Dolce", 390, 900),
+      at("Eileen", 390, 840, { training: true, countsTowardNeed: true }),
+      at("Hillary", 510, 1020),
+      at("Wing", 870, 1230),
+      at("Quyen", 990, 1230),
+    ];
+
+    it("starts the mid later where the new hire opening beside the trainer covers", () => {
+      const { out, weekHours } = dayOf(nov9);
+      expect(out.find((s) => s.employee === "Hillary")).toMatchObject({ startMin: 660, endMin: 1020, hours: 6 });
+      expect(weekHours.get("Hillary")).toBe(6);
+      expect(out.find((s) => s.employee === "Dolce")).toMatchObject({ startMin: 390, endMin: 900 });
+      expect(out.filter((s) => s.employee !== "Hillary")).toEqual(nov9.filter((s) => s.employee !== "Hillary"));
+    });
+
+    it("drops a shift the training wholly covers, open ones first; picks and the trainer stay", () => {
+      const spare = at(null, 390, 660);
+      const { out } = dayOf([...nov9, spare]);
+      expect(out).not.toContain(spare);
+      expect(out.find((s) => s.employee === "Hillary")).toMatchObject({ startMin: 660 });
+      const picked = dayOf(nov9.map((s) => (s.employee === "Hillary" ? { ...s, picked: true } : s))).out;
+      expect(picked.find((s) => s.employee === "Hillary")).toMatchObject({ startMin: 510, endMin: 1020 });
+    });
+
+    it("frees a dropped person for the rest of the week and leaves days without training alone", () => {
+      const extra = at("Ann", 390, 660);
+      const { out, weekHours, busy } = dayOf([...nov9, extra]);
+      expect(out.some((s) => s.employee === "Ann")).toBe(false);
+      expect(weekHours.get("Ann")).toBe(0);
+      expect(busy.has("Ann")).toBe(false);
+      const plain = nov9.filter((s) => !s.training);
+      expect(dayOf(plain).out).toBe(plain);
     });
   });
 });

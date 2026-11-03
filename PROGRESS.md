@@ -1,3 +1,7 @@
+## 2026-11-02 — New hires work mids with anyone after one supervised mid
+
+**Operator ask:** Nov 12's 8:30 AM mid stayed open though an experienced opener was on 6:30–3:30 and two new hires were free — mids were blocked for anyone with openers / closers left. **Change:** training rule `midShifts` (Scheduling rules → **Supervised mids**, default 1; older versions load 1). Until a new hire has done that many mids beside any experienced person (overlap ≥ the set hours), the draft and open-shift suggestions give them a mid toward need only when experienced staff are on with them long enough, and it counts; after that they work mids with anyone. Openers and closers unchanged (each kind clears on its own); once both are done mids are done too. Progress reads "· 0/1 mid".
+
 ## 2026-11-02 — ADP Apply retries failed deletes once; tray and Clear weeks say what failed
 
 **Operator ask:** a 100-delete Clear (Nov 9 on) left 2 Nov 21 shifts in ADP (`details pane is not …` twice in a row) and 1 open-delete unconfirmed (re-read timed out; it was gone), and Clear weeks then said "Nothing in ADP to clear" for that week because the failed deletes were still in the tray. **Change:** the Apply job gives each failed delete one more try after its week, on a reloaded week view (an unconfirmed open-delete is only re-read, never clicked twice); the tray marks failed lines with a plain reason across reloads and offers **Retry N failed**, and the running line shows "N failed so far"; Clear weeks shows "N already in your changes" instead of hiding them.

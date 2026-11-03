@@ -1827,18 +1827,22 @@ follow you to another device.
 training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hire from now on) trains beside an experienced person
 (the operator picks the list in the console, or an agent saves it with `/prod-ops experienced-staff <FirstName> …` — a new rules version, first names resolved against Active ADP Directory staff; empty = gate off) for at least the set overlap (default 3 h) until they've
 done the set number of supervised openers and closers (default 2 + 2). Each kind clears on its own:
-after their supervised closers they close with anyone or alone (likewise openers); mids stay
-training until both are done. **Mark trained** on a person's progress row (saved in the rules as
+after their supervised closers they close with anyone or alone (likewise openers). **Supervised
+mids** (`training.midShifts`, default 1 — 2026-11-02; versions saved before it load 1): until a new
+hire has done that many mids beside any experienced person (any trainer, one-kind trainers too,
+overlapping by the set hours), the draft and the ADP open-shift suggestions give them a mid toward
+need only when experienced staff are on long enough with them — that mid counts. After it they work
+mids with anyone or alone; once openers and closers are both done, mids are done too. **Mark trained** on a person's progress row (saved in the rules as
 `training.trained`) skips the rule for someone already up to speed — or only for **Openers only** /
 **Closers only** (`training.trainedOnly`); each row shows shifts worked. Each experienced-staff chip
 says what they train — openers & closers (default), openers only or closers only
 (`training.trainsOnly`): a one-kind trainer counts as trained on that kind, supervises only that kind
-(never mids), and still trains on the other kind if they're a new hire. Agents set that without the
+(plus a new hire's first mids), and still trains on the other kind if they're a new hire. Agents set that without the
 console via `/prod-ops training-trainer <FirstName> openers-only|closers-only|both` (unmarks them,
 adds them to experienced, sets or clears `trainsOnly`).
 It's one-time, counted over every ADP shift (past actuals + upcoming schedule), not per week.
-**Training shifts sit on top of need (2026-11-02):** a shift of a kind the new hire hasn't cleared
-(or any mid) never counts toward headcount — the need passes skip them (the draft row lists them
+**Training shifts sit on top of need (2026-11-02):** an opener / closer of a kind the new hire hasn't cleared
+never counts toward headcount — the need passes skip them (the draft row lists them
 with the reason) and their training shifts already in ADP are left out of draft coverage; the
 trainer's shift counts as usual. After the need passes, the draft walks the week from the earliest
 day and gives each new hire with openers / closers left one experienced opener or closer to shadow
@@ -1857,7 +1861,7 @@ operator picks, ADP shifts and the opener / closer a trainee shadows stay as dra
 come off the weekly totals, and later open shifts that week are offered again. Rows read
 **training · counts toward need**; the hours breakdown adds a negative **Covered by new hires** line.
 Off: the "on top of need" behaviour above. A new hire still can't take a kind they haven't cleared
-(or any mid) without a trainer on — an open shift only they could take stays open.
+(or a first mid) without a trainer on — an open shift only they could take stays open.
 Hire date = `bhaga.adp_hire_dates` (migration 097, from the
 ADP profile's **Employee status → Hire date** field; falls back to the first ADP shift). The
 **nightly** pay_info pass keeps it fresh: punchers missing a row get the field read on the same

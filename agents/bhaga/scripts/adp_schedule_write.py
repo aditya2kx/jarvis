@@ -865,7 +865,8 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
                     try:
                         wb.goto_week(frame, page, week)
                         page.wait_for_timeout(1500)
-                        open_now = wb.read_open_shifts(page, frame, week)
+                        if any(row["kind"] == "open-delete" for row in retry):
+                            open_now = wb.read_open_shifts(page, frame, week)
                     except Exception as exc:  # noqa: BLE001 — the first failures stand
                         for row in retry:
                             fail(row, SHIFT_TABLE, f"{type(row['_first']).__name__}: {row['_first']}"

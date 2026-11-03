@@ -187,36 +187,95 @@ def _enumerate_pay_period_options(frame) -> list[tuple[object, str]]:
     return out
 
 
+def _dates_overlap_pay_period(
+    start: datetime.date,
+    end: datetime.date,
+    window_start: datetime.date,
+    window_end: datetime.date,
+) -> bool:
+    """True when [start, end] intersects [window_start, window_end] inclusive."""
+    return start <= window_end and end >= window_start
+
+
+def sync_timecard_load_end(
+    refresh_date: datetime.date,
+    *,
+    today: datetime.date,
+    store_profile: dict,
+) -> datetime.date:
+    """BQ load end for Sync ADP / timecard-only.
+
+    Mid-week Sync keeps ``refresh_date`` (usually yesterday) so in-progress
+    punches do not flip the console's actual→schedule handoff. On the first
+    day of a new biweekly period, yesterday is the *prior* period — without
+    extending through ``today``, Sync never ingests the open period until
+    tomorrow (2026-11-02: Sync with target=11-01 selected 10-19→11-01 and
+    left Nov 2's scheduled punches out of BQ).
+    """
+    if today <= refresh_date:
+        return refresh_date
+    adp = store_profile.get("adp_run") or {}
+    anchor_raw = adp.get("pay_periods_anchor_end_date")
+    if not anchor_raw:
+        return refresh_date
+    try:
+        anchor = datetime.date.fromisoformat(anchor_raw)
+        period_len = _period_len_from_frequency(adp.get("pay_frequency", "Biweekly"))
+        _, end_refresh = _biweekly_period_bounds(
+            refresh_date, anchor_end=anchor, period_len=period_len
+        )
+        _, end_today = _biweekly_period_bounds(
+            today, anchor_end=anchor, period_len=period_len
+        )
+    except (TypeError, ValueError) as exc:
+        print(f"[adp_timecard] WARN: sync_timecard_load_end bounds failed: {exc}")
+        return refresh_date
+    if end_today != end_refresh:
+        return today
+    return refresh_date
+
+
 def _select_pay_period_for_target(
     frame,
     page,
     *,
     target_date: datetime.date,
     store: str,
+    through_date: Optional[datetime.date] = None,
 ) -> None:
-    """Click the single Pay Period option that covers ``target_date``.
+    """Click Pay Period option(s) covering ``target_date``..``through_date``.
 
     Enumerates options in Python (Playwright ``name=`` filters miss ADP's
-    custom accessible names). Falls back to Select All only as last resort,
-    logging the option names seen for diagnosis.
+    custom accessible names). When ``through_date`` is after ``target_date``
+    and a new biweekly period has started, selects every option whose range
+    intersects the window (multi-select) so Sync ADP does not miss today's
+    open period. Falls back to Select All only as last resort.
     """
     options = _enumerate_pay_period_options(frame)
     names = [n for _, n in options if n]
+    window_start = target_date
+    window_end = through_date or target_date
+    if window_end < window_start:
+        window_start, window_end = window_end, window_start
 
-    # 1) Any option whose embedded date range contains target_date.
+    # 1) Every option whose embedded date range intersects the window.
+    selected: list[tuple[datetime.date, datetime.date]] = []
     for opt, name in options:
         bounds = _parse_pay_period_range(name)
         if not bounds:
             continue
         start, end = bounds
-        if start <= target_date <= end:
+        if _dates_overlap_pay_period(start, end, window_start, window_end):
             opt.click()
-            print(
-                f"[adp_timecard] selected pay period "
-                f"{start.isoformat()} → {end.isoformat()} "
-                f"(contains target_date={target_date.isoformat()})"
-            )
-            return
+            selected.append((start, end))
+    if selected:
+        selected.sort()
+        spans = ", ".join(f"{s.isoformat()} → {e.isoformat()}" for s, e in selected)
+        print(
+            f"[adp_timecard] selected pay period(s) {spans} "
+            f"(window {window_start.isoformat()}..{window_end.isoformat()})"
+        )
+        return
 
     # 2) Click by store-profile-derived biweekly bounds (unpadded + padded).
     try:
@@ -224,23 +283,29 @@ def _select_pay_period_for_target(
         adp = profile.get("adp_run") or {}
         anchor = datetime.date.fromisoformat(adp["pay_periods_anchor_end_date"])
         period_len = _period_len_from_frequency(adp.get("pay_frequency", "Biweekly"))
-        want_start, want_end = _biweekly_period_bounds(
-            target_date, anchor_end=anchor, period_len=period_len
-        )
-        needles = {
-            _format_pay_period_label(want_start, want_end, style="slash_unpadded"),
-            _format_pay_period_label(want_start, want_end, style="slash_padded"),
-            _format_pay_period_label(want_start, want_end, style="iso"),
-        }
-        for opt, name in options:
-            if any(needle in name for needle in needles):
-                opt.click()
-                print(
-                    f"[adp_timecard] selected pay period via profile bounds "
-                    f"{want_start.isoformat()} → {want_end.isoformat()} "
-                    f"(target_date={target_date.isoformat()})"
-                )
-                return
+        want_dates = {window_start, window_end}
+        clicked_any = False
+        for want in sorted(want_dates):
+            want_start, want_end = _biweekly_period_bounds(
+                want, anchor_end=anchor, period_len=period_len
+            )
+            needles = {
+                _format_pay_period_label(want_start, want_end, style="slash_unpadded"),
+                _format_pay_period_label(want_start, want_end, style="slash_padded"),
+                _format_pay_period_label(want_start, want_end, style="iso"),
+            }
+            for opt, name in options:
+                if any(needle in name for needle in needles):
+                    opt.click()
+                    clicked_any = True
+                    print(
+                        f"[adp_timecard] selected pay period via profile bounds "
+                        f"{want_start.isoformat()} → {want_end.isoformat()} "
+                        f"(for {want.isoformat()})"
+                    )
+                    break
+        if clicked_any:
+            return
     except Exception as exc:  # noqa: BLE001
         print(f"[adp_timecard] WARN: profile period bounds failed: {exc}")
 
@@ -1220,12 +1285,17 @@ def _timecard_within_session(
     *,
     target_date: Optional[datetime.date] = None,
     store: str = "palmetto",
+    through_date: Optional[datetime.date] = None,
 ) -> pathlib.Path:
     """Run the Timecard scrape on an already-authenticated ADP dashboard page.
 
     Extracted from download_timecard so the bundle helper can drive both
     Timecard and Earnings within a single browser session (one login, one
     OTP cost). Caller owns the browser context lifecycle.
+
+    ``through_date`` (inclusive) extends Pay Period multi-select past
+    ``target_date`` when a new biweekly period has started — see
+    ``sync_timecard_load_end``.
 
     Pre-condition: `page` is on the v2 ADP RUN dashboard (POST_LOGIN_URL_RE).
     """
@@ -1266,9 +1336,13 @@ def _timecard_within_session(
     page.wait_for_timeout(800)
 
     if target_date is not None:
-        # Nightly-incremental: one period covering target_date (not Select All).
+        # Nightly/Sync: period(s) covering target_date..through_date (not Select All).
         _select_pay_period_for_target(
-            frame, page, target_date=target_date, store=store
+            frame,
+            page,
+            target_date=target_date,
+            store=store,
+            through_date=through_date,
         )
     else:
         # Backfill / default mode: select every pay period exposed in the
@@ -2607,6 +2681,7 @@ def download_adp_bundle(
     *,
     store: str = "palmetto",
     target_date: Optional[datetime.date] = None,
+    through_date: Optional[datetime.date] = None,
     include_earnings: bool = True,
     include_schedule: bool = True,
     include_extras: bool = True,
@@ -2651,6 +2726,8 @@ def download_adp_bundle(
         store: store profile name (Keychain entry key).
         target_date: date contained by the Timecard pay period to scrape.
             Passed through to `_timecard_within_session`. None = backfill.
+        through_date: optional inclusive end of the Timecard pay-period window
+            (Sync ADP passes Chicago today so a new biweekly period is included).
         include_earnings: if False, only Timecard runs (orchestrator sets
             this off Mon/Tue per `_should_run_rates`).
         include_extras: if False, skip the Payroll Liability report and the
@@ -2760,7 +2837,10 @@ def download_adp_bundle(
         if needs_timecard:
             try:
                 path = _timecard_within_session(
-                    page, target_date=target_date, store=store
+                    page,
+                    target_date=target_date,
+                    store=store,
+                    through_date=through_date,
                 )
                 _write_target_meta(path, target_date)
                 result["timecard_xlsx"] = path

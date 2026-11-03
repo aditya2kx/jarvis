@@ -22,10 +22,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from skills.adp_run_automation.runner import (
     _CURRENT_PAY_PERIOD_RE,
     _biweekly_period_bounds,
+    _dates_overlap_pay_period,
     _earnings_report_date_window,
     _is_current_pay_period_label,
     _parse_pay_period_range,
+    _select_pay_period_for_target,
     regular_check_dates,
+    sync_timecard_load_end,
 )
 
 _ADP_RUN = {"pay_frequency": "Biweekly", "pay_periods_anchor_end_date": "2026-05-17",
@@ -152,6 +155,114 @@ class EarningsCheckDateWindowTests(unittest.TestCase):
         )
         self.assertEqual(end, datetime.date(2026, 8, 17))
         self.assertEqual(start, datetime.date(2026, 5, 19))
+
+
+class SyncTimecardLoadEndTests(unittest.TestCase):
+    """First day of a new biweekly period must extend Sync load through today."""
+
+    _PROFILE = {"adp_run": _ADP_RUN}
+
+    def test_mid_period_keeps_yesterday(self):
+        # Wed Nov 4 Sync with target=Nov 3 (same period Nov 2–15).
+        self.assertEqual(
+            sync_timecard_load_end(
+                _D(2026, 11, 3), today=_D(2026, 11, 4), store_profile=self._PROFILE
+            ),
+            _D(2026, 11, 3),
+        )
+
+    def test_new_period_first_day_extends_to_today(self):
+        # Sun Nov 1 ends prior period; Mon Nov 2 Sync with target=Nov 1.
+        self.assertEqual(
+            sync_timecard_load_end(
+                _D(2026, 11, 1), today=_D(2026, 11, 2), store_profile=self._PROFILE
+            ),
+            _D(2026, 11, 2),
+        )
+
+    def test_today_not_after_refresh_unchanged(self):
+        self.assertEqual(
+            sync_timecard_load_end(
+                _D(2026, 11, 2), today=_D(2026, 11, 2), store_profile=self._PROFILE
+            ),
+            _D(2026, 11, 2),
+        )
+
+    def test_overlap_helper(self):
+        self.assertTrue(
+            _dates_overlap_pay_period(
+                _D(2026, 10, 19), _D(2026, 11, 1), _D(2026, 11, 1), _D(2026, 11, 2)
+            )
+        )
+        self.assertTrue(
+            _dates_overlap_pay_period(
+                _D(2026, 11, 2), _D(2026, 11, 15), _D(2026, 11, 1), _D(2026, 11, 2)
+            )
+        )
+        self.assertFalse(
+            _dates_overlap_pay_period(
+                _D(2026, 10, 5), _D(2026, 10, 18), _D(2026, 11, 1), _D(2026, 11, 2)
+            )
+        )
+
+
+class SelectPayPeriodWindowTests(unittest.TestCase):
+    """Multi-select every period intersecting target..through."""
+
+    class _Opt:
+        def __init__(self, name: str):
+            self.name = name
+            self.clicks = 0
+
+        def click(self):
+            self.clicks += 1
+
+    def test_selects_both_periods_on_boundary(self):
+        prior = self._Opt("2026-10-19 - 2026-11-01")
+        current = self._Opt("2026-11-02 - 2026-11-15")
+        other = self._Opt("2026-10-05 - 2026-10-18")
+        options = [(prior, prior.name), (current, current.name), (other, other.name)]
+
+        import skills.adp_run_automation.runner as runner
+
+        original = runner._enumerate_pay_period_options
+        runner._enumerate_pay_period_options = lambda frame: options
+        try:
+            _select_pay_period_for_target(
+                frame=None,
+                page=None,
+                target_date=_D(2026, 11, 1),
+                store="palmetto",
+                through_date=_D(2026, 11, 2),
+            )
+        finally:
+            runner._enumerate_pay_period_options = original
+
+        self.assertEqual(prior.clicks, 1)
+        self.assertEqual(current.clicks, 1)
+        self.assertEqual(other.clicks, 0)
+
+    def test_single_period_when_through_omitted(self):
+        prior = self._Opt("2026-10-19 - 2026-11-01")
+        current = self._Opt("2026-11-02 - 2026-11-15")
+        options = [(prior, prior.name), (current, current.name)]
+
+        import skills.adp_run_automation.runner as runner
+
+        original = runner._enumerate_pay_period_options
+        runner._enumerate_pay_period_options = lambda frame: options
+        try:
+            _select_pay_period_for_target(
+                frame=None,
+                page=None,
+                target_date=_D(2026, 11, 1),
+                store="palmetto",
+            )
+        finally:
+            runner._enumerate_pay_period_options = original
+
+        self.assertEqual(prior.clicks, 1)
+        self.assertEqual(current.clicks, 0)
 
 
 class TestRegularCheckDates(unittest.TestCase):

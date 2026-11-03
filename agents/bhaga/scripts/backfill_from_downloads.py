@@ -402,10 +402,10 @@ def main() -> int:
             return {}
         week_list = ", ".join(f"DATE '{w}'" for w in starts)
         rows = client.query(
-            f"SELECT CAST(week_start AS STRING) AS ws, MAX(scraped_at_utc) AS at"
+            f"SELECT CAST(week_start AS STRING) AS ws, MAX(scraped_at_utc) AS newest"
             f" FROM {fq('adp_scheduled_daily')} WHERE week_start IN ({week_list}) GROUP BY ws"
         ).result()
-        return {r["ws"]: r["at"] for r in rows}
+        return {r["ws"]: r["newest"] for r in rows}
 
     def _load_adp_schedule() -> None:
         schedule_json = _newest("Schedule-*.json")

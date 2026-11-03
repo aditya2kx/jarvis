@@ -280,7 +280,7 @@ class TestOpenShiftsLoad(unittest.TestCase):
 
         def _query(sql):
             if "MAX(scraped_at_utc)" in sql:
-                return mock.Mock(result=lambda: [{"ws": k, "at": v} for k, v in (loaded or {}).items()])
+                return mock.Mock(result=lambda: [{"ws": k, "newest": v} for k, v in (loaded or {}).items()])
             queries.append(sql)
             return mock.Mock()
 

@@ -1473,24 +1473,26 @@ export function LaborCoveragePanel({
       // Cleared in an earlier week: no longer a new hire. A saved week's draft is discarded, so it counts nothing.
       for (const [name, l] of trainingLeft) if (!l.open && !l.close) trainingLeft.delete(name);
       const left = plans.has(weekStart) ? new Map(trainingLeft) : trainingLeft;
-      const trainingOn = (iso: string, drafted: DraftShift[]): DraftTraining | undefined =>
-        left.size
-          ? {
-              overlapMin: r.staffing.training.overlapMin,
-              perTrainer: r.staffing.training.traineesPerTrainer,
-              left,
-              experiencedOn: [
-                ...buildPersonDaysForDate(iso, actuals, scheduledForCoverage, null).flatMap((p) =>
-                  p.segments.map((g): [string, number, number] => [p.employee, g.startMin, g.endMin]),
-                ),
-                ...drafted.flatMap((s): [string, number, number][] =>
-                  s.employee ? [[s.employee, s.startMin, s.endMin]] : [],
-                ),
-              ].flatMap(([who, s, e]): [number, number][] =>
-                trainsKind(r.staffing.training, who, shiftKindOf(s, e)) ? [[s, e]] : [],
-              ),
-            }
-          : undefined;
+      const trainingOn = (iso: string, drafted: DraftShift[]): DraftTraining | undefined => {
+        if (!left.size) return undefined;
+        const on = [
+          ...buildPersonDaysForDate(iso, actuals, scheduledForCoverage, null).flatMap((p) =>
+            p.segments.map((g): [string, number, number] => [p.employee, g.startMin, g.endMin]),
+          ),
+          ...drafted.flatMap((s): [string, number, number][] => (s.employee ? [[s.employee, s.startMin, s.endMin]] : [])),
+        ];
+        return {
+          overlapMin: r.staffing.training.overlapMin,
+          perTrainer: r.staffing.training.traineesPerTrainer,
+          left,
+          experiencedOn: on.flatMap(([who, s, e]): [number, number][] =>
+            trainsKind(r.staffing.training, who, shiftKindOf(s, e)) ? [[s, e]] : [],
+          ),
+          midTrainers: on.flatMap(([who, s, e]): [number, number][] =>
+            trainsKind(r.staffing.training, who, "mid") ? [[s, e]] : [],
+          ),
+        };
+      };
       const weekHours = new Map<string, number>();
       const weekShifts = new Map<string, number>();
       let existingHours = 0;

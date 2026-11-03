@@ -106,6 +106,14 @@ export function NewHireTrainingRules({
           onChange={(v) => onChange({ closeShifts: Math.round(v) })}
         />
         <Field
+          label="Supervised mids"
+          unit="shifts"
+          value={t.midShifts}
+          min={0}
+          max={10}
+          onChange={(v) => onChange({ midShifts: Math.round(v) })}
+        />
+        <Field
           label="Together for at least"
           unit="hours"
           value={t.overlapMin / 60}

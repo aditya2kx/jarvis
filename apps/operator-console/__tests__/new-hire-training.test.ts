@@ -30,12 +30,13 @@ describe("shiftKindOf / overlapMinutes", () => {
     expect(shiftKindOf(810, 1230)).toBe("close");
   });
 
-  it("treats a kind as training until its supervised shifts are done; mids until both are", () => {
-    expect(isTrainingShift({ open: 1, close: 0 }, "close")).toBe(false);
-    expect(isTrainingShift({ open: 1, close: 0 }, "open")).toBe(true);
-    expect(isTrainingShift({ open: 1, close: 0 }, "mid")).toBe(true);
-    expect(isTrainingShift({ open: 0, close: 2 }, "open")).toBe(false);
-    expect(isTrainingShift({ open: 0, close: 0 }, "mid")).toBe(false);
+  it("treats a kind as training until its supervised shifts are done; mids until one is or openers and closers are", () => {
+    expect(isTrainingShift({ open: 1, close: 0, mid: 1 }, "close")).toBe(false);
+    expect(isTrainingShift({ open: 1, close: 0, mid: 1 }, "open")).toBe(true);
+    expect(isTrainingShift({ open: 1, close: 0, mid: 1 }, "mid")).toBe(true);
+    expect(isTrainingShift({ open: 1, close: 0, mid: 0 }, "mid")).toBe(false);
+    expect(isTrainingShift({ open: 0, close: 2, mid: 1 }, "open")).toBe(false);
+    expect(isTrainingShift({ open: 0, close: 0, mid: 1 }, "mid")).toBe(false);
     expect(isTrainingShift(undefined, "open")).toBe(false);
   });
 
@@ -66,8 +67,29 @@ describe("trainingProgress", () => {
     const kai = out.get("New, Kai")!;
     expect(kai).toMatchObject({ hireDate: "2026-10-15", open: 1, close: 1, cleared: false });
     expect(kai.unsupervised).toEqual(["2026-11-02"]);
-    expect(trainingLeftOf(kai)).toEqual({ open: 1, close: 1 });
-    expect(progressLabel(kai)).toBe("1/2 openers · 1/2 closers");
+    expect(trainingLeftOf(kai)).toEqual({ open: 1, close: 1, mid: 1 });
+    expect(progressLabel(kai)).toBe("1/2 openers · 1/2 closers · 0/1 mid");
+  });
+
+  it("counts a mid beside anyone experienced, then lets them work mids alone", () => {
+    const pros: TrainingRules = { ...rules, experienced: ["Pro, Dolce", "Pro, Ola"], trainsOnly: { "Pro, Ola": "open" } };
+    const days = new Map<string, CoveragePersonDay[]>([
+      ["2026-10-20", [lane("Pro, Dolce", 390, 900), lane("New, Kai", 600, 1020)]], // 10 AM – 3 PM together
+      ["2026-11-02", [lane("New, Kai", 600, 1020)]], // upcoming mid alone: fine now
+    ]);
+    const args = { todayIso: today, employees: ["New, Kai"], hireDates: new Map([["New, Kai", "2026-10-15"]]) };
+    const kai = trainingProgress({ ...args, rules: pros, days }).get("New, Kai")!;
+    expect(kai).toMatchObject({ mid: 1, needMid: 1, unsupervised: [], trainingDates: ["2026-10-20"] });
+    expect(trainingLeftOf(kai)).toEqual({ open: 2, close: 2, mid: 0 });
+
+    // A trainer who only trains openers still supervises a mid.
+    const besideOla = new Map([["2026-10-20", [lane("Pro, Ola", 390, 900), lane("New, Kai", 600, 1020)]]]);
+    expect(trainingProgress({ ...args, rules: pros, days: besideOla }).get("New, Kai")!.mid).toBe(1);
+
+    // Alone before their first supervised mid: flagged.
+    const alone = new Map([["2026-11-02", [lane("New, Kai", 600, 1020)]]]);
+    expect(trainingProgress({ ...args, rules: pros, days: alone }).get("New, Kai")!.unsupervised).toEqual(["2026-11-02"]);
+    expect(trainingProgress({ ...args, rules: { ...pros, midShifts: 0 }, days: alone }).get("New, Kai")!.unsupervised).toEqual([]);
   });
 
   it("requires the overlap minimum, then clears once both counts are met", () => {
@@ -104,7 +126,7 @@ describe("trainingProgress", () => {
     expect(wing.unsupervised).toEqual(["2026-11-03"]);
     // Closes after both supervised closers count toward need; the opener is still training.
     expect(wing.trainingDates).toEqual(["2026-10-20", "2026-10-22", "2026-11-03"]);
-    expect(trainingLeftOf(wing)).toEqual({ open: 2, close: 0 });
+    expect(trainingLeftOf(wing)).toEqual({ open: 2, close: 0, mid: 1 });
   });
 
   it("treats someone the operator marked trained as cleared, still counting their shifts", () => {
@@ -139,11 +161,11 @@ describe("trainingProgress", () => {
     });
     expect(out.get("New, Kai")).toMatchObject({ open: 0, close: 1 });
     expect(out.get("New, Lee")).toMatchObject({ needOpen: 2, needClose: 0, open: 1, cleared: false });
-    expect(trainingLeftOf(out.get("New, Lee")!)).toEqual({ open: 1, close: 0 });
+    expect(trainingLeftOf(out.get("New, Lee")!)).toEqual({ open: 1, close: 0, mid: 0 });
     expect(progressLabel(out.get("New, Lee")!)).toBe("1/2 openers");
     expect(trainsKind(closesOnly, "New, Lee", "close")).toBe(true);
     expect(trainsKind(closesOnly, "New, Lee", "open")).toBe(false);
-    expect(trainsKind(closesOnly, "New, Lee", "mid")).toBe(false);
+    expect(trainsKind(closesOnly, "New, Lee", "mid")).toBe(true);
     expect(trainsKind(closesOnly, "Pro, Dolce", "mid")).toBe(true);
     expect(trainsKind(closesOnly, "New, Kai", "close")).toBe(false);
   });
@@ -157,7 +179,7 @@ describe("trainingProgress", () => {
       days: new Map([["2026-11-03", [closer("New, Lee")]]]),
     });
     expect(out.get("New, Lee")).toMatchObject({ needOpen: 2, needClose: 0, cleared: false, marked: false, unsupervised: [] });
-    expect(trainingLeftOf(out.get("New, Lee")!)).toEqual({ open: 2, close: 0 });
+    expect(trainingLeftOf(out.get("New, Lee")!)).toEqual({ open: 2, close: 0, mid: 1 });
   });
 
   it("falls back to the first ADP shift without a hire date, and skips long-timers and an empty experienced list", () => {
@@ -199,14 +221,14 @@ describe("staffTags", () => {
     const tags = staffTags(rules, progress);
     expect(tags.get("Pro, Dolce")).toEqual({ kind: "experienced" });
     const kai = tags.get("New, Kai");
-    expect(kai).toMatchObject({ kind: "training", label: "New hire · 0/2 openers · 0/2 closers" });
+    expect(kai).toMatchObject({ kind: "training", label: "New hire · 0/2 openers · 0/2 closers · 0/1 mid" });
     expect(kai?.kind === "training" && kai.detail).toBe(
-      "Hired Oct 15. Trains beside experienced staff (3h+ together) until they've done 2 openers and 2 closers" +
+      "Hired Oct 15. Trains beside experienced staff (3h+ together) until they've done 2 openers, 2 closers and 1 mid" +
         " — training shifts count toward need.",
     );
     const onTop = staffTags({ ...rules, countTowardNeed: false }, progress).get("New, Kai");
     expect(onTop?.kind === "training" && onTop.detail).toBe(
-      "Hired Oct 15. Trains on top of need beside experienced staff (3h+ together) until they've done 2 openers and 2 closers" +
+      "Hired Oct 15. Trains on top of need beside experienced staff (3h+ together) until they've done 2 openers, 2 closers and 1 mid" +
         " — each kind counts toward need once done.",
     );
     expect(kai?.kind === "training" && [...kai.unsupervised]).toEqual(["2026-11-02"]);

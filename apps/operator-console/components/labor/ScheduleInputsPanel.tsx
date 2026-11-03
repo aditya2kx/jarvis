@@ -361,7 +361,7 @@ function trainingSummary(t: TrainingRules): string {
   if (!t.experienced.length) return "";
   const marked = t.trained.length ? `, ${t.trained.length} marked trained` : "";
   const need = t.countTowardNeed ? "" : ", on top of need";
-  return ` · new hires: ${t.openShifts} openers + ${t.closeShifts} closers beside ${t.experienced.length} experienced${marked}${need}`;
+  return ` · new hires: ${t.openShifts} openers + ${t.closeShifts} closers + ${t.midShifts} mid${t.midShifts === 1 ? "" : "s"} beside ${t.experienced.length} experienced${marked}${need}`;
 }
 
 function staffingSummary(s: StaffingBasics): string {

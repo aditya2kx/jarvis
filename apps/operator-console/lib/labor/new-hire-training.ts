@@ -2,7 +2,8 @@
  * New-hire training (Issue #450): someone hired on or after `TRAINING_FROM` works beside an
  * experienced person (overlapping by `overlapMin`) until trained. Each kind clears on its own:
  * after `closeShifts` supervised closers they close with anyone or alone, after `openShifts`
- * supervised openers likewise; mids stay supervised until both are done. A one-time requirement,
+ * supervised openers likewise; after `midShifts` mids beside any experienced person they take
+ * mids with anyone (or once openers and closers are both done). A one-time requirement,
  * counted over every ADP shift since they started — clocked and scheduled. The operator can mark
  * someone trained outright.
  */
@@ -48,7 +49,7 @@ export const TRAINING_FROM = "2026-08-01";
 export const TRAINING_HISTORY_FROM = "2026-01-01";
 
 /** Supervised shifts still to do; absent = not (or no longer) a new hire. */
-export type TrainingLeft = { open: number; close: number };
+export type TrainingLeft = { open: number; close: number; mid: number };
 
 export type TrainingStatus = {
   employee: string;
@@ -58,8 +59,10 @@ export type TrainingStatus = {
   since: string;
   open: number;
   close: number;
+  mid: number;
   needOpen: number;
   needClose: number;
+  needMid: number;
   cleared: boolean;
   /** The operator marked them trained (rules `trained`). */
   marked: boolean;
@@ -74,27 +77,34 @@ export type TrainingStatus = {
 export const isTraining = (t: TrainingStatus | undefined): t is TrainingStatus => !!t && !t.cleared;
 
 export function trainingLeftOf(t: TrainingStatus): TrainingLeft {
-  return { open: Math.max(0, t.needOpen - t.open), close: Math.max(0, t.needClose - t.close) };
+  return {
+    open: Math.max(0, t.needOpen - t.open),
+    close: Math.max(0, t.needClose - t.close),
+    mid: Math.max(0, t.needMid - t.mid),
+  };
 }
 
-/** Whether a `kind` shift is still training for this person — on top of need, never toward it. */
+/** Whether a `kind` shift still needs an experienced person on with this person. */
 export function isTrainingShift(left: TrainingLeft | undefined, kind: ShiftKind): boolean {
   if (!left || (left.open <= 0 && left.close <= 0)) return false;
-  return kind === "mid" || left[kind] > 0;
+  return left[kind] > 0;
 }
 
-/** Whether new hires can train a `kind` shift beside this person; mids only beside someone who trains both. */
+/** Whether new hires can train a `kind` shift beside this person; a mid beside anyone experienced. */
 export function trainsKind(rules: Pick<TrainingRules, "experienced" | "trainsOnly">, employee: string, kind: ShiftKind): boolean {
   if (!rules.experienced.includes(employee)) return false;
   const only = rules.trainsOnly[employee];
-  return !only || only === kind;
+  return kind === "mid" || !only || only === kind;
 }
 
-/** "1/2 openers · 0/2 closers". */
-export function progressLabel(t: Pick<TrainingStatus, "open" | "close" | "needOpen" | "needClose">): string {
+/** "1/2 openers · 0/2 closers · 0/1 mids". */
+export function progressLabel(
+  t: Pick<TrainingStatus, "open" | "close" | "mid" | "needOpen" | "needClose" | "needMid">,
+): string {
   const parts: string[] = [];
   if (t.needOpen) parts.push(`${Math.min(t.open, t.needOpen)}/${t.needOpen} openers`);
   if (t.needClose) parts.push(`${Math.min(t.close, t.needClose)}/${t.needClose} closers`);
+  if (t.needMid) parts.push(`${Math.min(t.mid, t.needMid)}/${t.needMid} mid${t.needMid === 1 ? "" : "s"}`);
   return parts.join(" · ");
 }
 
@@ -104,10 +114,16 @@ export type StaffTag =
   | { kind: "training"; label: string; detail: string; unsupervised: ReadonlySet<string> };
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+/** "a", "a and b", "a, b and c". */
+const listOf = (parts: string[]) => [parts.slice(0, -1).join(", "), parts.at(-1) ?? ""].filter(Boolean).join(" and ");
 const goal = (t: TrainingStatus) =>
-  [t.needOpen ? count(t.needOpen, "opener") : "", t.needClose ? count(t.needClose, "closer") : ""]
-    .filter(Boolean)
-    .join(" and ");
+  listOf(
+    [
+      t.needOpen ? count(t.needOpen, "opener") : "",
+      t.needClose ? count(t.needClose, "closer") : "",
+      t.needMid ? count(t.needMid, "mid") : "",
+    ].filter(Boolean),
+  );
 
 const monthDay = (iso: string) => {
   const [y, m, d] = iso.split("-").map(Number);
@@ -123,14 +139,18 @@ export function staffTags(rules: TrainingRules, progress: ReadonlyMap<string, Tr
   for (const t of progress.values()) {
     if (t.cleared) continue;
     const started = t.hireDate ? `Hired ${monthDay(t.hireDate)}` : `First ADP shift ${monthDay(t.since)}`;
-    const alone = [t.open >= t.needOpen ? "opens" : "", t.close >= t.needClose ? "closes" : ""].filter(Boolean);
+    const alone = [
+      t.open >= t.needOpen ? "opens" : "",
+      t.close >= t.needClose ? "closes" : "",
+      t.mid >= t.needMid ? "works mids" : "",
+    ].filter(Boolean);
     out.set(t.employee, {
       kind: "training",
       label: `New hire · ${progressLabel(t)}`,
       detail:
         `${started}. Trains ${rules.countTowardNeed ? "" : "on top of need "}beside experienced staff (${overlap}+ together) until they've done ${goal(t)}` +
         (rules.countTowardNeed ? " — training shifts count toward need." : " — each kind counts toward need once done.") +
-        (alone.length ? ` Already ${alone.join(" and ")} without them.` : ""),
+        (alone.length ? ` Already ${listOf(alone)} without them.` : ""),
       unsupervised: new Set(t.unsupervised),
     });
   }
@@ -182,8 +202,10 @@ export function trainingProgress(args: {
       since,
       open: 0,
       close: 0,
+      mid: 0,
       needOpen,
       needClose,
+      needMid: rules.trainsOnly[employee] ? 0 : rules.midShifts,
       cleared: marked || (needOpen <= 0 && needClose <= 0),
       marked,
       worked: 0,
@@ -198,18 +220,17 @@ export function trainingProgress(args: {
       if (t.cleared) continue;
       const spans = spansOf(mine);
       const kind = shiftKindOf(Math.min(...spans.map(([s]) => s)), Math.max(...spans.map(([, e]) => e)));
-      if (isTrainingShift(trainingLeftOf(t), kind)) t.trainingDates.push(iso);
+      const training = isTrainingShift(trainingLeftOf(t), kind);
+      if (training) t.trainingDates.push(iso);
       const withExperienced = lanes
         .filter((p) => !isOpenLane(p) && p.employee !== employee && trainsKind(rules, p.employee, kind))
         .flatMap(spansOf);
       const together = spans.reduce((acc, [s, e]) => acc + overlapMinutes(s, e, withExperienced), 0);
       if (together < rules.overlapMin) {
-        const kindDone = (kind === "open" && t.open >= t.needOpen) || (kind === "close" && t.close >= t.needClose);
-        if (iso >= todayIso && !kindDone) t.unsupervised.push(iso);
+        if (iso >= todayIso && training) t.unsupervised.push(iso);
         continue;
       }
-      if (kind === "open") t.open += 1;
-      if (kind === "close") t.close += 1;
+      t[kind] += 1;
       t.cleared = t.open >= t.needOpen && t.close >= t.needClose;
     }
     out.set(employee, t);

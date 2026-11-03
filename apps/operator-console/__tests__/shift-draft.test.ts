@@ -13,6 +13,7 @@ import {
   type DraftTraining,
   draftTrainingDay,
   fillClearedTrainees,
+  TRAINING_MID,
   TRAINING_ON_TOP,
   trimCoveredByTraining,
 } from "@/lib/labor/shift-draft";
@@ -519,12 +520,14 @@ describe("new-hire training (Issue #450)", () => {
   const lee: Availability = { employee: "Lee", maxWeekHours: 40, windows: all([360, 1260]) };
   const sam: Availability = { employee: "Sam", maxWeekHours: 40, recentHours: 10, windows: all([360, 1260]) };
   const training = (
-    left: Record<string, [number, number]>,
+    left: Record<string, [number, number] | [number, number, number]>,
     experiencedOn: [number, number][] = [],
+    midTrainers: [number, number][] = [],
   ): DraftTraining => ({
     overlapMin: 180,
-    left: new Map(Object.entries(left).map(([n, [open, close]]) => [n, { open, close }])),
+    left: new Map(Object.entries(left).map(([n, [open, close, mid = 1]]) => [n, { open, close, mid }])),
     experiencedOn,
+    midTrainers,
   });
   const draft = (roster: Availability[], t?: DraftTraining) =>
     draftDay({ iso, mins, onFloor: zeros, need: floorNeed, roster, weekHours: new Map(), busy: new Set(), training: t });
@@ -603,7 +606,7 @@ describe("new-hire training (Issue #450)", () => {
       expect(out).toEqual([
         expect.objectContaining({ employee: "Kai", kind: "open", startMin: 390, endMin: 840, training: true, hours: 7 }),
       ]);
-      expect(t.left.get("Kai")).toEqual({ open: 1, close: 1 });
+      expect(t.left.get("Kai")).toEqual({ open: 1, close: 1, mid: 1 });
       expect(weekHours.get("Kai")).toBe(7);
       expect(busy.has("Kai")).toBe(true);
     });
@@ -652,6 +655,57 @@ describe("new-hire training (Issue #450)", () => {
       iso, startMin: 810, endMin: 1230, roster: [kai], weekHours: new Map(), busy: new Set(), training: training({ Kai: [1, 0] }),
     })!;
     expect(done.employee).toBe("Kai");
+  });
+
+  describe("supervised mid", () => {
+    // Nov 12: an experienced opener 6:30 AM – 3:30 PM, an ADP open mid 8:30 AM – 2:30 PM.
+    const mid = (t: DraftTraining, roster = [kai]) =>
+      fillOpenShift({ iso, startMin: 510, endMin: 870, roster, weekHours: new Map(), busy: new Set(), training: t });
+
+    it("gives a new hire their first mid beside experienced staff and counts it", () => {
+      const t = training({ Kai: [1, 1, 1] }, [], [[390, 930]]);
+      expect(mid(t)).toMatchObject({ employee: "Kai", kind: "mid" });
+      expect(t.left.get("Kai")).toEqual({ open: 1, close: 1, mid: 0 });
+    });
+
+    it("keeps the first mid off a new hire with nobody experienced on long enough", () => {
+      const alone = mid(training({ Kai: [1, 1, 1] }));
+      expect(alone).toMatchObject({ employee: null, blocked: [{ employee: "Kai", reason: TRAINING_MID }] });
+      // 2 h together (12:30–2:30) is short of the 3 h overlap.
+      expect(mid(training({ Kai: [1, 1, 1] }, [], [[750, 1230]]))?.employee).toBeNull();
+    });
+
+    it("lets them take mids with anyone once their mid is done; openers and closers still train", () => {
+      const t = training({ Kai: [1, 1, 0] });
+      expect(mid(t)?.employee).toBe("Kai");
+      expect(fillOpenShift({
+        iso, startMin: 390, endMin: 840, roster: [kai], weekHours: new Map(), busy: new Set(), training: t,
+      })?.blocked).toEqual([{ employee: "Kai", reason: TRAINING_ON_TOP }]);
+    });
+
+    it("drafts a new hire onto a mid toward need beside an experienced person drafted earlier", () => {
+      const pro: Availability = { employee: "Pro", maxWeekHours: 40, experienced: true, recentHours: 90, windows: all([390, 930]) };
+      const midOnly: Availability = { employee: "Kai", maxWeekHours: 40, windows: all([600, 1020]) };
+      const need = mins.map((t) => (t < 390 ? 0 : t < 600 ? 1 : t < 930 ? 2 : t < 1230 ? 1 : 0));
+      const t = training({ Kai: [1, 1, 1] });
+      const out = draftDay({ iso, mins, onFloor: zeros, need, roster: [pro, midOnly], weekHours: new Map(), busy: new Set(), training: t });
+      expect(out.find((s) => s.employee === "Kai")).toMatchObject({ kind: "mid" });
+      expect(t.left.get("Kai")?.mid).toBe(0);
+    });
+
+    it("refills a mid left open for training once experienced staff are on", () => {
+      const blockedMid: DraftShift = {
+        date: iso, kind: "mid", startMin: 510, endMin: 870, hours: 6, employee: null, trimmed: false,
+        slot: `${iso}|f|510|0`, blocked: [{ employee: "Kai", reason: TRAINING_MID }],
+      };
+      const refill = (midTrainers: [number, number][]) =>
+        fillClearedTrainees({
+          iso, shifts: [blockedMid], roster: [kai], weekHours: new Map(), busy: new Set(),
+          training: training({ Kai: [1, 1, 1] }, [], midTrainers),
+        })[0]!;
+      expect(refill([])).toBe(blockedMid);
+      expect(refill([[390, 930]])).toMatchObject({ employee: "Kai", startMin: 510, endMin: 870 });
+    });
   });
 
   describe("fillClearedTrainees", () => {

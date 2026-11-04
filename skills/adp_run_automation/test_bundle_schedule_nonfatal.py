@@ -35,7 +35,7 @@ class BundleScheduleFailure(unittest.TestCase):
         tc = root / "Timecard.xlsx"
         gaps = root / "TimecardsUI.json"
         self.stubs = {
-            "timecard": mock.MagicMock(return_value=tc),
+            "timecard": mock.MagicMock(return_value=(tc, [])),
             "schedule": mock.MagicMock(side_effect=RuntimeError(ANCHOR_ERR)),
             "gaps": mock.MagicMock(return_value={"rows": []}),
             "upload": mock.MagicMock(return_value="gs://bhaga-scrape-cache/2026-11-01/evidence/s.png"),

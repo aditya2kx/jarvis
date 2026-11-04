@@ -235,6 +235,34 @@ def sync_timecard_load_end(
     return refresh_date
 
 
+def _listed_pay_period_ranges(
+    options: list[tuple[object, str]],
+) -> list[tuple[datetime.date, datetime.date]]:
+    """Parse every date-range option (skips Select All / Current labels)."""
+    out: list[tuple[datetime.date, datetime.date]] = []
+    for _, name in options:
+        bounds = _parse_pay_period_range(name)
+        if bounds:
+            out.append(bounds)
+    out.sort()
+    return out
+
+
+def _window_uncovered_by_periods(
+    periods: list[tuple[datetime.date, datetime.date]],
+    window_start: datetime.date,
+    window_end: datetime.date,
+) -> list[datetime.date]:
+    """Dates in ``window_start``..``window_end`` not inside any selected period."""
+    missing: list[datetime.date] = []
+    d = window_start
+    while d <= window_end:
+        if not any(s <= d <= e for s, e in periods):
+            missing.append(d)
+        d += datetime.timedelta(days=1)
+    return missing
+
+
 def _select_pay_period_for_target(
     frame,
     page,
@@ -242,14 +270,20 @@ def _select_pay_period_for_target(
     target_date: datetime.date,
     store: str,
     through_date: Optional[datetime.date] = None,
-) -> None:
+) -> list[tuple[datetime.date, datetime.date]]:
     """Click Pay Period option(s) covering ``target_date``..``through_date``.
 
     Enumerates options in Python (Playwright ``name=`` filters miss ADP's
     custom accessible names). When ``through_date`` is after ``target_date``
     and a new biweekly period has started, selects every option whose range
     intersects the window (multi-select) so Sync ADP does not miss today's
-    open period. Falls back to Select All only as last resort.
+    open period. Returns the selected (or Select-All-listed) date ranges so
+    callers can clamp BQ ``load_end`` when ADP has not yet listed the open
+    period (day 1–2 lag: Select All only exports closed options).
+
+    Falls back to Select All only when *no* intersecting option exists —
+    never after a partial hit, so a closed-period click is not drowned by a
+    full-history export that still omits the open window.
     """
     options = _enumerate_pay_period_options(frame)
     names = [n for _, n in options if n]
@@ -275,7 +309,16 @@ def _select_pay_period_for_target(
             f"[adp_timecard] selected pay period(s) {spans} "
             f"(window {window_start.isoformat()}..{window_end.isoformat()})"
         )
-        return
+        missing = _window_uncovered_by_periods(selected, window_start, window_end)
+        if missing:
+            print(
+                "BREADCRUMB adp_pay_period_missing_open "
+                f"window={window_start.isoformat()}..{window_end.isoformat()} "
+                f"missing_dates={[d.isoformat() for d in missing]} "
+                f"options_seen={names!r} — ADP has not listed the open period; "
+                "skipping Select All (closed-period export only)"
+            )
+        return selected
 
     # 2) Click by store-profile-derived biweekly bounds (unpadded + padded).
     try:
@@ -284,7 +327,7 @@ def _select_pay_period_for_target(
         anchor = datetime.date.fromisoformat(adp["pay_periods_anchor_end_date"])
         period_len = _period_len_from_frequency(adp.get("pay_frequency", "Biweekly"))
         want_dates = {window_start, window_end}
-        clicked_any = False
+        clicked: list[tuple[datetime.date, datetime.date]] = []
         for want in sorted(want_dates):
             want_start, want_end = _biweekly_period_bounds(
                 want, anchor_end=anchor, period_len=period_len
@@ -297,15 +340,23 @@ def _select_pay_period_for_target(
             for opt, name in options:
                 if any(needle in name for needle in needles):
                     opt.click()
-                    clicked_any = True
+                    clicked.append((want_start, want_end))
                     print(
                         f"[adp_timecard] selected pay period via profile bounds "
                         f"{want_start.isoformat()} → {want_end.isoformat()} "
                         f"(for {want.isoformat()})"
                     )
                     break
-        if clicked_any:
-            return
+        if clicked:
+            missing = _window_uncovered_by_periods(clicked, window_start, window_end)
+            if missing:
+                print(
+                    "BREADCRUMB adp_pay_period_missing_open "
+                    f"window={window_start.isoformat()}..{window_end.isoformat()} "
+                    f"missing_dates={[d.isoformat() for d in missing]} "
+                    f"options_seen={names!r}"
+                )
+            return clicked
     except Exception as exc:  # noqa: BLE001
         print(f"[adp_timecard] WARN: profile period bounds failed: {exc}")
 
@@ -318,14 +369,26 @@ def _select_pay_period_for_target(
                 f"{target_date.isoformat()}; selected current-period option "
                 f"{name!r}"
             )
-            return
+            # Coverage unknown from the label alone — caller keeps load_end.
+            return []
 
     # 4) Select All last — large export; download timeout is raised to match.
+    # Coverage is only the *listed* closed periods (Select All never invents
+    # an open window ADP has not exposed yet).
+    listed = _listed_pay_period_ranges(options)
     print(
         f"[adp_timecard] WARN: no closed/current pay period for "
         f"{target_date.isoformat()}; falling back to Select All. "
         f"options_seen={names!r}"
     )
+    missing = _window_uncovered_by_periods(listed, window_start, window_end)
+    if missing:
+        print(
+            "BREADCRUMB adp_pay_period_missing_open "
+            f"window={window_start.isoformat()}..{window_end.isoformat()} "
+            f"missing_dates={[d.isoformat() for d in missing]} "
+            f"options_seen={names!r} — Select All still omits these dates"
+        )
     try:
         frame.get_by_role("option", name=re.compile(r"^Select All$", re.I)).first.click()
     except Exception:  # noqa: BLE001
@@ -335,6 +398,7 @@ def _select_pay_period_for_target(
                 break
         else:
             print("[adp_timecard] WARN: Select All option not clickable")
+    return listed
 
 
 # ── Credentials ────────────────────────────────────────────────────
@@ -1271,7 +1335,9 @@ def download_timecard(
         slow_mo_ms=slow_mo_ms,
         keep_open_on_error=keep_open_on_error,
     ) as (ctx, page):
-        path = _timecard_within_session(page, target_date=target_date, store=store)
+        path, _periods = _timecard_within_session(
+            page, target_date=target_date, store=store
+        )
         _write_target_meta(path, target_date)
         return path
 
@@ -1286,7 +1352,7 @@ def _timecard_within_session(
     target_date: Optional[datetime.date] = None,
     store: str = "palmetto",
     through_date: Optional[datetime.date] = None,
-) -> pathlib.Path:
+) -> tuple[pathlib.Path, list[tuple[datetime.date, datetime.date]]]:
     """Run the Timecard scrape on an already-authenticated ADP dashboard page.
 
     Extracted from download_timecard so the bundle helper can drive both
@@ -1296,6 +1362,10 @@ def _timecard_within_session(
     ``through_date`` (inclusive) extends Pay Period multi-select past
     ``target_date`` when a new biweekly period has started — see
     ``sync_timecard_load_end``.
+
+    Returns ``(xlsx_path, pay_periods_selected)`` — the second value lists
+    date ranges actually available in the export (empty when unknown, e.g.
+    Current Pay Period label with no parseable bounds).
 
     Pre-condition: `page` is on the v2 ADP RUN dashboard (POST_LOGIN_URL_RE).
     """
@@ -1329,15 +1399,17 @@ def _timecard_within_session(
     # Accessible name format on these sdf-inputs is "{Label} {Value}", e.g.
     # "Report Period Pay P..." or "Pay Period 1 Selected". Anchor START so we
     # don't accidentally match Report Period (whose value contains "Pay P").
+    # "N Selected" proves ADP exposes a true multi-select (click accumulates).
     pp_combobox = frame.get_by_role(
         "combobox", name=re.compile(r"^Pay Period\b", re.I)
     ).first
     pp_combobox.click()
     page.wait_for_timeout(800)
 
+    pay_periods: list[tuple[datetime.date, datetime.date]] = []
     if target_date is not None:
         # Nightly/Sync: period(s) covering target_date..through_date (not Select All).
-        _select_pay_period_for_target(
+        pay_periods = _select_pay_period_for_target(
             frame,
             page,
             target_date=target_date,
@@ -1348,6 +1420,8 @@ def _timecard_within_session(
         # Backfill / default mode: select every pay period exposed in the
         # dropdown. The multi-select listbox has a "Select All" checkbox at
         # the top; fall back to per-option clicks if not exposed.
+        options = _enumerate_pay_period_options(frame)
+        pay_periods = _listed_pay_period_ranges(options)
         try:
             select_all = frame.get_by_role(
                 "option", name=re.compile(r"^Select All$", re.I)
@@ -1399,7 +1473,7 @@ def _timecard_within_session(
         rename_to=rename,
         timeout_ms=_TIMECARD_DOWNLOAD_TIMEOUT_MS,
     )
-    return path
+    return path, pay_periods
 
 
 # ── Earnings scrape ────────────────────────────────────────────────
@@ -2795,6 +2869,9 @@ def download_adp_bundle(
         "earnings_xlsx": er_expected if (include_earnings and er_fresh) else None,
         "schedule_json": sched_expected if (include_schedule and sched_fresh) else None,
         "timecards_ui_json": gaps_expected if (include_timecard_gaps and gaps_fresh) else None,
+        # Date ranges the Timecard export actually covers (for Sync load_end clamp
+        # when ADP has not listed the open biweek yet). Empty when unknown.
+        "timecard_pay_periods": [],
         "errors": {},
     }
 
@@ -2836,7 +2913,7 @@ def download_adp_bundle(
 
         if needs_timecard:
             try:
-                path = _timecard_within_session(
+                path, pay_periods = _timecard_within_session(
                     page,
                     target_date=target_date,
                     store=store,
@@ -2844,6 +2921,7 @@ def download_adp_bundle(
                 )
                 _write_target_meta(path, target_date)
                 result["timecard_xlsx"] = path
+                result["timecard_pay_periods"] = pay_periods
                 _mark_run_step_done(
                     "adp_timecard", refresh_date=target_date,
                     note=f"target_date={target_date.isoformat() if target_date else 'none'}",

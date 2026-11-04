@@ -25,11 +25,16 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    (`skills/square_api/ingest.py` + `skills/square_api/kds_reporting.py`) — no browser, no
    CSV files, no OTP. Data flows: Square API → in-memory rows → `map_square_*` → BQ.
 3. **Scrape ADP** timecards / earnings / **team schedule** for overlapping pay periods
-   (`skills/adp_run_automation/`). Timecard nightly mode enumerates Pay Period options and
-   picks the single period covering `target_date` (profile-anchor fallback; Select All last,
-   180s download timeout). 2FA, if challenged, goes through the **OTP gate** (see below).
-   The schedule scrape (forward scheduled hours, current + next week) is **best-effort** — a
-   failure is non-fatal to the nightly run (see `daily_refresh._adp_bundle_then_raise`).
+   (`skills/adp_run_automation/`). Timecard nightly / Sync mode enumerates Pay Period options
+   and multi-selects every listed period intersecting `[target_date, through_date]` (profile-
+   anchor / Current Pay Period fallbacks; Select All only when nothing intersects — never after
+   a partial hit). Sync on a period boundary extends `through_date` / BQ `load_end` via
+   `sync_timecard_load_end`, then clamps to the latest selected closed end when ADP has not
+   yet listed the open biweek (`BREADCRUMB adp_pay_period_missing_open` /
+   `adp_sync_load_end_clamped`). 180s download timeout. 2FA, if challenged, goes through the
+   **OTP gate** (see below). The schedule scrape (forward scheduled hours, current + next week)
+   is **best-effort** — a failure is non-fatal to the nightly run (see
+   `daily_refresh._adp_bundle_then_raise`).
 4. **Load ADP → BigQuery (primary)** (`backfill_from_downloads.py --skip square`, requires
    `BHAGA_DATASTORE=bigquery`): maps ADP parse-output dicts through `map_*` functions and calls
    `load_rows` (MERGE upsert). Square data is written directly by step 2 (no download file). BQ is

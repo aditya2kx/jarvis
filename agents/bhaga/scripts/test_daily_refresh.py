@@ -2180,6 +2180,56 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         self.assertIn("adp_rates", skip)
         self.assertNotIn("adp_liability", skip)
 
+    def test_open_period_missing_clamps_load_end(self):
+        """ADP lag: Sync wanted through today but export only covers the closed biweek."""
+        import pathlib
+        import tempfile
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        argv = ["daily_refresh", "--store", "palmetto", "--date", "2026-11-01", "--no-slack"]
+        profile = {
+            "adp_run": {
+                "pay_periods_anchor_end_date": "2026-05-17",
+                "pay_frequency": "Biweekly",
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            fake_dl = pathlib.Path(td)
+            result = {
+                "timecard_xlsx": fake_dl / "Timecard.xlsx",
+                "schedule_json": fake_dl / "Schedule.json",
+                "timecard_pay_periods": [
+                    (datetime.date(2026, 10, 19), datetime.date(2026, 11, 1)),
+                ],
+                "errors": {},
+            }
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.dict(
+                     os.environ,
+                     {"BHAGA_ADP_SYNC_ALL": "1", "BHAGA_STORE": "palmetto"},
+                     clear=False,
+                 ), \
+                 mock.patch(
+                     "skills.adp_run_automation.runner.DOWNLOADS_DIR", fake_dl,
+                 ), \
+                 mock.patch(
+                     "skills.adp_run_automation.runner.download_adp_bundle",
+                     return_value=result,
+                 ) as dl, \
+                 mock.patch("agents.bhaga.scripts.daily_refresh.subprocess.run") as run, \
+                 mock.patch.object(dr, "_stamp_adp_hours_scraped_at") as stamp, \
+                 mock.patch.object(dr, "_refresh_stale_payroll_drafts"), \
+                 mock.patch.object(dr, "_today_ct", return_value=datetime.date(2026, 11, 2)), \
+                 mock.patch.object(dr, "_load_profile", return_value=profile):
+                rc = dr.main()
+        self.assertEqual(rc, 0)
+        # Period boundary → Sync asked for through_date=today.
+        self.assertEqual(dl.call_args.kwargs.get("through_date"), datetime.date(2026, 11, 2))
+        skip = run.call_args.args[0]
+        # Clamp to closed period end — do not claim Nov 2 landed.
+        self.assertEqual(skip[skip.index("--end") + 1], "2026-11-01")
+        stamp.assert_called_once_with(datetime.date(2026, 10, 19), datetime.date(2026, 11, 1))
+
 
 class TestPunchFixResync(unittest.TestCase):
     """Issue #358: after a console punch fix the resync reloads the latest fix's

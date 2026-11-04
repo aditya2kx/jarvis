@@ -228,7 +228,7 @@ class SelectPayPeriodWindowTests(unittest.TestCase):
         original = runner._enumerate_pay_period_options
         runner._enumerate_pay_period_options = lambda frame: options
         try:
-            _select_pay_period_for_target(
+            got = _select_pay_period_for_target(
                 frame=None,
                 page=None,
                 target_date=_D(2026, 11, 1),
@@ -241,6 +241,10 @@ class SelectPayPeriodWindowTests(unittest.TestCase):
         self.assertEqual(prior.clicks, 1)
         self.assertEqual(current.clicks, 1)
         self.assertEqual(other.clicks, 0)
+        self.assertEqual(
+            got,
+            [(_D(2026, 10, 19), _D(2026, 11, 1)), (_D(2026, 11, 2), _D(2026, 11, 15))],
+        )
 
     def test_single_period_when_through_omitted(self):
         prior = self._Opt("2026-10-19 - 2026-11-01")
@@ -252,7 +256,7 @@ class SelectPayPeriodWindowTests(unittest.TestCase):
         original = runner._enumerate_pay_period_options
         runner._enumerate_pay_period_options = lambda frame: options
         try:
-            _select_pay_period_for_target(
+            got = _select_pay_period_for_target(
                 frame=None,
                 page=None,
                 target_date=_D(2026, 11, 1),
@@ -263,6 +267,37 @@ class SelectPayPeriodWindowTests(unittest.TestCase):
 
         self.assertEqual(prior.clicks, 1)
         self.assertEqual(current.clicks, 0)
+        self.assertEqual(got, [(_D(2026, 10, 19), _D(2026, 11, 1))])
+
+    def test_open_period_missing_keeps_closed_skips_select_all(self):
+        """Day-1 lag: ADP lists only the closed biweek — do not Select All."""
+        prior = self._Opt("2026-10-19 - 2026-11-01")
+        older = self._Opt("2026-10-05 - 2026-10-18")
+        select_all = self._Opt("Select All")
+        options = [
+            (select_all, select_all.name),
+            (prior, prior.name),
+            (older, older.name),
+        ]
+
+        import skills.adp_run_automation.runner as runner
+
+        original = runner._enumerate_pay_period_options
+        runner._enumerate_pay_period_options = lambda frame: options
+        try:
+            got = _select_pay_period_for_target(
+                frame=None,
+                page=None,
+                target_date=_D(2026, 11, 1),
+                store="palmetto",
+                through_date=_D(2026, 11, 2),
+            )
+        finally:
+            runner._enumerate_pay_period_options = original
+
+        self.assertEqual(prior.clicks, 1)
+        self.assertEqual(select_all.clicks, 0)
+        self.assertEqual(got, [(_D(2026, 10, 19), _D(2026, 11, 1))])
 
 
 class TestRegularCheckDates(unittest.TestCase):

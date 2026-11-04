@@ -89,8 +89,14 @@ def _fake_exports(monkeypatch, exports: list[list[dict]]):
     seq = iter(exports)
     downloads: list = []
     ui_json: list = []
-    monkeypatch.setattr(runner, "_timecard_within_session",
-                        lambda page, target_date, store: downloads.append(target_date) or "tc.xlsx")
+    monkeypatch.setattr(
+        runner,
+        "_timecard_within_session",
+        lambda page, target_date, store: (
+            downloads.append(target_date) or "tc.xlsx",
+            [],
+        ),
+    )
     monkeypatch.setattr(runner, "_write_target_meta", lambda path, d: None)
     monkeypatch.setattr(shift_backend, "parse_xlsx", lambda path, employee_aliases=None: next(seq))
     monkeypatch.setattr(runner, "_timecard_gaps_within_session", lambda page: ["gaps"])
@@ -237,7 +243,7 @@ def test_verified_export_is_reused_by_the_resync_without_a_second_login(monkeypa
     def real_named_export(page, target_date, store):
         path = tmp_path / f"Timecard-{datetime.date.today().isoformat()}.xlsx"
         path.write_bytes(b"x" * 20_000)
-        return path
+        return path, []
 
     monkeypatch.setattr(runner, "_timecard_within_session", real_named_export)
     monkeypatch.setattr(shift_backend, "parse_xlsx", lambda path, employee_aliases=None: [_punch(CIMINO)])

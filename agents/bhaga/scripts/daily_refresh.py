@@ -3095,6 +3095,19 @@ def _run_refresh(run_id: str) -> int:
                 f"{result['errors'].get('adp_timecard')}"
             )
         print(f"[adp-timecard-only] wrote {result['timecard_xlsx']}")
+        # ADP Timecard dropdown lag (day 1–2 of a new biweek): the export only
+        # covers listed closed periods. Clamp BQ load/stamp to what we actually
+        # selected so Sync does not claim today's open period landed empty.
+        periods = result.get("timecard_pay_periods") or []
+        if periods:
+            covered_end = max(e for _s, e in periods)
+            if covered_end < load_end:
+                print(
+                    "BREADCRUMB adp_sync_load_end_clamped "
+                    f"wanted={load_end.isoformat()} covered_end={covered_end.isoformat()} "
+                    f"periods={[(s.isoformat(), e.isoformat()) for s, e in periods]}"
+                )
+                load_end = covered_end
         skips = ["square", "square_rollup"]
         # The loader reads the newest file on disk, so a failed scrape must be
         # skipped rather than reload yesterday's export as if it were fresh.
@@ -3139,7 +3152,8 @@ def _run_refresh(run_id: str) -> int:
                 # Default load_end=refresh_date (usually yesterday) so mid-day
                 # Sync does not land in-progress punches. Extended to Chicago
                 # today only when a new biweekly period started after
-                # refresh_date (sync_timecard_load_end).
+                # refresh_date (sync_timecard_load_end). Clamped above when
+                # ADP has not listed the open period yet.
                 "--end",
                 load_end.isoformat(),
             ],

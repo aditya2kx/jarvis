@@ -2841,6 +2841,9 @@ def download_adp_bundle(
     # Layer A is target_date-aware (2026-05-23 fix): a file downloaded earlier
     # today for a DIFFERENT target_date does NOT count as fresh, because it
     # may not cover the current run's window. See _xlsx_fresh_for_target.
+    # Freshness keys on target_date only (not through_date): Sync derives
+    # through_date deterministically from Chicago calendar + store profile, so
+    # a same-day file for the same target_date already covers today's window.
     tc_fresh = _xlsx_fresh_for_target(
         tc_expected, target_date=target_date, min_bytes=10_000,
     )

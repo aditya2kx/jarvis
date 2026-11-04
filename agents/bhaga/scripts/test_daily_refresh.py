@@ -2122,6 +2122,8 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         dl.assert_called_once()
         kw = dl.call_args.kwargs
         self.assertEqual(kw.get("target_date"), datetime.date(2026, 8, 23))
+        # Mid-period: sync_timecard_load_end keeps load_end=refresh_date → no through_date.
+        self.assertIsNone(kw.get("through_date"))
         self.assertIs(kw.get("include_earnings"), False)
         self.assertIs(kw.get("include_schedule"), True)
         self.assertIs(kw.get("include_extras"), False)

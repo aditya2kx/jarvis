@@ -1743,10 +1743,14 @@ correctly selects **full scrape** (not recompute-only) on a `Retry-Dates` rerun.
 code) and then land on `ngapps.adp.com/apps/run/errorPage` ("We can't find the page") or
 `hpayroll.adp.com/.../notauthenticated.aspx`. Every rerun of 2026-10-05 hit this. The cause was the
 browser, not a second sign-in (Issue #372, below). `_confirm_dashboard` (end of `_ensure_logged_in`) reopens
-`runpayrollmain.adp.com/@<adp_run.tenant_uuid>/v2/` once. If ADP still won't show the
-dashboard, it raises one error with screenshots instead of saving the error page as the session
-and timing out on every step. Grep `BREADCRUMB adp_off_dashboard` (followed by
-`step=dashboard-recovered` when the reopen worked).
+`runpayrollmain.adp.com/@<adp_run.tenant_uuid>/v2/` once (ADP may land on
+`runpayrollmain2` — `POST_LOGIN_URL_RE` / `is_adp_run_dashboard_url` accept both). If ADP still
+won't show the dashboard, it raises one error with screenshots instead of saving the error page as
+the session and timing out on every step. Grep `BREADCRUMB adp_off_dashboard` (followed by
+`step=dashboard-recovered` when the reopen worked). A 2026-11-06 Sync ADP false-authfail
+(`bhaga-daily-refresh-8trf8`) was waiting only for `runpayrollmain` while already on
+`runpayrollmain2/.../v2/` — fixed by accepting the digit-suffixed host without trusting arbitrary
+ADP URLs.
 
 **The cloud image pins Chrome (Issue #372, 2026-10-06).** The image used to take whatever Chrome
 was current at build time. The 19:08Z build on 2026-10-06 moved it from 154.0.8037.97 to

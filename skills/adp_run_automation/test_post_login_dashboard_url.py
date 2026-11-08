@@ -12,11 +12,11 @@ from unittest import mock
 from skills.adp_run_automation import runner as r
 
 
-# Exact landing URL from the Nov 6 9:30 PM CT Cloud Run failure.
+# Landing URL shape from the Nov 6 Cloud Run failure (tenant UUID fabricated).
 NOV6_MAIN2_DASHBOARD = (
-    "https://runpayrollmain2.adp.com/@836d254c-789b-41b8-8052-d48a639e95d8/v2/"
+    "https://runpayrollmain2.adp.com/@00000000-0000-0000-0000-000000000000/v2/"
 )
-MAIN_DASHBOARD = "https://runpayrollmain.adp.com/@836d254c-789b-41b8-8052-d48a639e95d8/v2/"
+MAIN_DASHBOARD = "https://runpayrollmain.adp.com/@00000000-0000-0000-0000-000000000000/v2/"
 MAIN_HASH_HOME = "https://runpayrollmain.adp.com/rpm/v2/#/home"
 
 
@@ -61,7 +61,7 @@ class IsAdpRunDashboardUrl(unittest.TestCase):
         # Mid-redirect URL from the same Nov 6 nav chain — host is main2 but
         # path is not the v2 shell yet.
         mid = (
-            "https://runpayrollmain2.adp.com/@836d254c-789b-41b8-8052-d48a639e95d8/"
+            "https://runpayrollmain2.adp.com/@00000000-0000-0000-0000-000000000000/"
             "registered/cmninit.aspx?IID=29808083&target=https://runpayrollmain2.adp.com/"
             "cmnMainFrame.aspx&ProvisioningProfileID=65988852&Stc=True"
         )
@@ -78,7 +78,7 @@ class IsAdpRunDashboardUrl(unittest.TestCase):
     def test_rejects_main_host_without_v2_path(self):
         self.assertFalse(
             r.is_adp_run_dashboard_url(
-                "https://runpayrollmain.adp.com/@836d254c-789b-41b8-8052-d48a639e95d8/"
+                "https://runpayrollmain.adp.com/@00000000-0000-0000-0000-000000000000/"
             )
         )
 

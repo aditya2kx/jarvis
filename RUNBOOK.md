@@ -1750,7 +1750,9 @@ the session and timing out on every step. Grep `BREADCRUMB adp_off_dashboard` (f
 `step=dashboard-recovered` when the reopen worked). A 2026-11-06 Sync ADP false-authfail
 (`bhaga-daily-refresh-8trf8`) was waiting only for `runpayrollmain` while already on
 `runpayrollmain2/.../v2/` — fixed by accepting the digit-suffixed host without trusting arbitrary
-ADP URLs.
+ADP URLs. It failed every run from Nov 6 10:52 AM CT (Issue #504). Every "reopen the dashboard"
+(`_confirm_dashboard`, `_click_tempus_anchor`) goes through `run_dashboard_url`, which stays on the
+`runpayrollmainN` host the session is already on (falls back to `runpayrollmain` off a RUN host).
 
 **The cloud image pins Chrome (Issue #372, 2026-10-06).** The image used to take whatever Chrome
 was current at build time. The 19:08Z build on 2026-10-06 moved it from 154.0.8037.97 to

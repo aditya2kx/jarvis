@@ -53,6 +53,12 @@ class ClickTempusAnchor(unittest.TestCase):
         r._click_tempus_anchor(page, "TEMPUS_WEEKLY_SCHEDULE", label="Team Schedule", waits_s=(5, 5))
         self.assertEqual(page.gotos, ["https://runpayrollmain.adp.com/@t-1/v2/"])
 
+    def test_reopen_stays_on_the_main2_host_the_session_is_on(self):
+        page = FakePage(present_after=6)
+        page.url = "https://runpayrollmain2.adp.com/@t-1/v2/"
+        r._click_tempus_anchor(page, "TEMPUS_WEEKLY_SCHEDULE", label="Team Schedule", waits_s=(5, 5))
+        self.assertEqual(page.gotos, ["https://runpayrollmain2.adp.com/@t-1/v2/"])
+
     def test_never_present_raises_with_evidence(self):
         page = FakePage(present_after=None)
         with mock.patch.object(r, "_raise_with_evidence", side_effect=RuntimeError("gone")) as rwe:

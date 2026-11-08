@@ -108,6 +108,20 @@ def is_adp_run_dashboard_url(url: str) -> bool:
     return not any(marker in low for marker in _POST_LOGIN_BLOCKED_URL_MARKERS)
 
 
+_RUN_HOST_RE = re.compile(r"^https://(runpayrollmain\d*\.adp\.com)/", re.I)
+
+
+def run_dashboard_url(current_url: str, tenant: str) -> str:
+    """Dashboard URL on the RUN host this session is already on (main, main2, …).
+
+    The session's cookies belong to the host ADP routed it to, so reopening the
+    dashboard on a different ``mainN`` host can bounce back to sign-in.
+    """
+    m = _RUN_HOST_RE.match(current_url or "")
+    host = m.group(1).lower() if m else "runpayrollmain.adp.com"
+    return f"https://{host}/@{tenant}/v2/"
+
+
 def _login_form_still_visible(page) -> bool:
     """True when the User ID / Password sign-in fields are still on screen.
 
@@ -485,8 +499,7 @@ def _confirm_dashboard(page, *, store: str, wait_ms: int = 20_000) -> None:
     print(f"[adp_login] BREADCRUMB adp_off_dashboard url={page.url} tenant={tenant or 'unset'}")
     if tenant:
         try:
-            # Canonical host; ADP may 302 to runpayrollmain2 — wait accepts both.
-            page.goto(f"https://runpayrollmain.adp.com/@{tenant}/v2/",
+            page.goto(run_dashboard_url(page.url, tenant),
                       wait_until="domcontentloaded", timeout=60_000)
             page.wait_for_url(POST_LOGIN_URL_RE, timeout=wait_ms)
             _assert_post_login_dashboard(page, store=store)
@@ -1870,7 +1883,7 @@ def _click_tempus_anchor(page, anchor_id: str, *, label: str, store: str = "palm
             print(f"[adp_tempus] BREADCRUMB anchor_missing id={anchor_id} attempt={attempt - 1}/{len(waits_s)} "
                   f"url={page.url} — reopening the dashboard")
             if tenant:
-                page.goto(f"https://runpayrollmain.adp.com/@{tenant}/v2/",
+                page.goto(run_dashboard_url(page.url, tenant),
                           wait_until="domcontentloaded", timeout=60_000)
             else:
                 page.reload(wait_until="domcontentloaded", timeout=60_000)

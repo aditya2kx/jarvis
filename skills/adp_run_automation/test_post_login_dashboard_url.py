@@ -87,6 +87,28 @@ class IsAdpRunDashboardUrl(unittest.TestCase):
         self.assertFalse(r.is_adp_run_dashboard_url(None))  # type: ignore[arg-type]
 
 
+class RunDashboardUrl(unittest.TestCase):
+    def test_keeps_main2_host(self):
+        self.assertEqual(
+            r.run_dashboard_url("https://runpayrollmain2.adp.com/@x/v2/#/home", "t-1"),
+            "https://runpayrollmain2.adp.com/@t-1/v2/",
+        )
+
+    def test_keeps_main_host(self):
+        self.assertEqual(
+            r.run_dashboard_url(MAIN_HASH_HOME, "t-1"),
+            "https://runpayrollmain.adp.com/@t-1/v2/",
+        )
+
+    def test_off_run_host_falls_back_to_canonical(self):
+        for url in ("https://ngapps.adp.com/apps/run/errorPage",
+                    "https://online.adp.com/signin/v1/", "", None):
+            self.assertEqual(
+                r.run_dashboard_url(url, "t-1"),  # type: ignore[arg-type]
+                "https://runpayrollmain.adp.com/@t-1/v2/",
+            )
+
+
 class FakeLoginFormPage:
     """Page stub: URL + optional visible User ID / Password roles."""
 

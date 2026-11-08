@@ -69,5 +69,42 @@ class FlowTests(unittest.TestCase):
         self.assertIn("github-bot-pat unavailable — no socket", err.getvalue())
 
 
+class ReadTests(unittest.TestCase):
+    def test_bq_rows_are_typed_dicts(self):
+        seen: list = []
+        body = {"jobComplete": True, "jobReference": {"jobId": "j"},
+                "schema": {"fields": [{"name": "run_date", "type": "DATE"}, {"name": "exit_code", "type": "INTEGER"},
+                                      {"name": "ok", "type": "BOOLEAN"}]},
+                "rows": [{"f": [{"v": "2026-11-07"}, {"v": "1"}, {"v": "false"}]}]}
+        with mock.patch.object(G.urllib.request, "urlopen", side_effect=_fake({"/queries": body}, seen)):
+            rows = G.bq_query("SELECT 1", "sa")
+        self.assertEqual(rows, [{"run_date": "2026-11-07", "exit_code": 1, "ok": False}])
+        self.assertFalse(json.loads(seen[0].data)["useLegacySql"])
+
+    def test_logs_filter_scopes_to_job_window_and_message(self):
+        now = G.datetime.datetime(2026, 11, 8, 5, 0, tzinfo=G.datetime.timezone.utc)
+        f = G.logs_filter(job="bhaga-daily-refresh", service=None, since="2d", grep="authfail",
+                          extra=None, now=now)
+        self.assertIn('timestamp>="2026-11-06T05:00:00Z"', f)
+        self.assertIn('resource.labels.job_name="bhaga-daily-refresh"', f)
+        self.assertIn('textPayload=~"authfail"', f)
+
+    def test_bad_since_is_rejected(self):
+        with self.assertRaises(ValueError):
+            G.logs_filter(job=None, service=None, since="yesterday", grep=None, extra=None)
+
+    def test_gcs_get_quotes_the_object_path(self):
+        seen: list = []
+
+        def urlopen(req, timeout=0):
+            seen.append(req)
+            return _Resp(b"png")
+        with mock.patch.object(G.urllib.request, "urlopen", side_effect=urlopen), \
+             mock.patch("builtins.open", mock.mock_open()) as m:
+            self.assertEqual(G.gcs_get("gs://bhaga-scrape-cache/2026-11-07/evidence/a.png", "/tmp/a.png", "sa"), 3)
+        self.assertIn("/b/bhaga-scrape-cache/o/2026-11-07%2Fevidence%2Fa.png?alt=media", seen[0].full_url)
+        m().write.assert_called_once_with(b"png")
+
+
 if __name__ == "__main__":
     unittest.main()

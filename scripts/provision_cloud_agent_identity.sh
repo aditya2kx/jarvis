@@ -5,8 +5,9 @@
 # gateway secrets. Run from an owner ADC surface (Cloud Shell / laptop):
 #   bash scripts/provision_cloud_agent_identity.sh
 # Trust is limited to Cloud Agents owned by the operator's Cursor user on aditya2kx/jarvis. The SA
-# holds secretAccessor on github-bot-pat and slack-bot-token (operator_ping.py) only; previews add it to their IAP list
-# (operator-console-preview.yml) — never prod. docs/contributing/gcp-access.md recipe F.
+# holds secretAccessor on github-bot-pat and slack-bot-token (operator_ping.py), read-only viewer roles for
+# prod diagnosis (logs, BigQuery, Cloud Run, Firestore, scrape-cache), and previews add it to their IAP list
+# (operator-console-preview.yml) — never prod IAP, never a write role. docs/contributing/gcp-access.md recipe F.
 set -euo pipefail
 
 P=jarvis-bhaga-prod
@@ -61,5 +62,16 @@ bind github-bot-pat "serviceAccount:$AGENT_SA" roles/secretmanager.secretAccesso
 # scripts/operator_ping.py: Slack DM the operator for a 2-Step tap / code / click (Hard Lesson #7).
 bind slack-bot-token "serviceAccount:$AGENT_SA" roles/secretmanager.secretAccessor
 
+# Read-only prod diagnosis straight from the VM (scripts/cloud_agent_gcp.py bq / logs / gcs-get / run),
+# so investigations don't wait on PR comments. Nothing here can write data or change a job;
+# prod changes stay on /prod-ops (CI identity).
+for role in roles/logging.viewer roles/bigquery.dataViewer roles/bigquery.jobUser roles/run.viewer \
+            roles/datastore.viewer; do
+  gcloud projects add-iam-policy-binding $P --member="serviceAccount:$AGENT_SA" --role=$role \
+    --condition=None >/dev/null
+done
+gcloud storage buckets add-iam-policy-binding gs://bhaga-scrape-cache \
+  --member="serviceAccount:$AGENT_SA" --role=roles/storage.objectViewer >/dev/null
+
 echo "cloud-agent identity: pool=$POOL provider=$PROVIDER aud=$AUD"
-echo "cloud-agent identity: $PRINCIPALS → $AGENT_SA (secretAccessor on github-bot-pat)"
+echo "cloud-agent identity: $PRINCIPALS → $AGENT_SA (secretAccessor on github-bot-pat, slack-bot-token; read-only prod logs/BQ/Run/Firestore/scrape-cache)"

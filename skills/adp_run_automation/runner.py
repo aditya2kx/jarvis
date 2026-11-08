@@ -72,7 +72,93 @@ ADP_SESSION_LOCAL = DOWNLOADS_DIR.parent / "adp-session.json"
 # self-supplied productId. Using enrollment.aspx lets ADP resolve the current
 # productId rather than hardcoding a value that can rotate.
 LOGIN_URL = "https://runpayroll.adp.com/enrollment.aspx"
-POST_LOGIN_URL_RE = re.compile(r"runpayrollmain\.adp\.com/.*/v2/")
+# RUN v2 app shell hosts. ADP sometimes lands on ``runpayrollmain2`` after
+# login (prod 2026-11-06 Sync ADP ``bhaga-daily-refresh-8trf8``); the digit
+# suffix is optional so ``main`` and ``main2`` (and future ``mainN``) match.
+# Requires a ``/v2/`` path — never bare enrollment / federation hosts.
+POST_LOGIN_URL_RE = re.compile(r"runpayrollmain\d*\.adp\.com/.*/v2/")
+# Paths that can appear under a RUN host during federation / challenge and
+# must NOT count as "reached the dashboard" even if the host matched.
+_POST_LOGIN_BLOCKED_URL_MARKERS = (
+    "/signin",
+    "sorry.adp.",
+    "auth.aspx",
+    "cmninit.aspx",
+    "/registered/",
+    "/maintenance",
+    "enrollment.aspx",
+    "errorpage",
+    "mobile_collection",
+    "step-up",
+)
+
+
+def is_adp_run_dashboard_url(url: str) -> bool:
+    """True only for the signed-in RUN v2 app shell — not arbitrary ADP hosts.
+
+    Accepts known ``runpayrollmain`` / ``runpayrollmain2`` (etc.) hosts with a
+    ``/v2/`` path. Rejects mid-federation, sign-in SPA, throttle, and challenge
+    URLs even when they share an ADP domain. Does not bypass 2FA handling:
+    callers still detect verify/challenge pages before treating a miss as
+    hard auth failure.
+    """
+    if not url or not POST_LOGIN_URL_RE.search(url):
+        return False
+    low = url.lower()
+    return not any(marker in low for marker in _POST_LOGIN_BLOCKED_URL_MARKERS)
+
+
+_RUN_HOST_RE = re.compile(r"^https://(runpayrollmain\d*\.adp\.com)/", re.I)
+
+
+def run_dashboard_url(current_url: str, tenant: str) -> str:
+    """Dashboard URL on the RUN host this session is already on (main, main2, …).
+
+    The session's cookies belong to the host ADP routed it to, so reopening the
+    dashboard on a different ``mainN`` host can bounce back to sign-in.
+    """
+    m = _RUN_HOST_RE.match(current_url or "")
+    host = m.group(1).lower() if m else "runpayrollmain.adp.com"
+    return f"https://{host}/@{tenant}/v2/"
+
+
+def _login_form_still_visible(page) -> bool:
+    """True when the User ID / Password sign-in fields are still on screen.
+
+    Used after the URL looks like the RUN v2 shell so we do not treat a
+    mis-routed or half-loaded page as a successful login (URL alone is not
+    enough when ADP recycles path shapes).
+    """
+    for name in (r"^User ID$", r"^Password$"):
+        try:
+            if page.get_by_role("textbox", name=re.compile(name, re.I)).first.is_visible(
+                timeout=500
+            ):
+                return True
+        except Exception:  # noqa: BLE001 — absent / not visible = signed in
+            continue
+    return False
+
+
+def _assert_post_login_dashboard(page, *, store: str) -> None:
+    """Confirm URL + page state look like the RUN dashboard, else raise with evidence."""
+    url = page.url
+    if not is_adp_run_dashboard_url(url):
+        _raise_with_evidence(
+            page,
+            store=store,
+            reason=f"ADP login did not reach dashboard. Current URL: {url}",
+        )
+    if _login_form_still_visible(page):
+        _raise_with_evidence(
+            page,
+            store=store,
+            reason=(
+                "ADP URL looks like the RUN v2 shell but the sign-in form is still "
+                f"visible (not a completed login). Current URL: {url}"
+            ),
+        )
+
 
 # Match ADP's "Current Pay Period" / "Current" / "This Pay Period" dropdown
 # entry that covers the IN-FLIGHT payroll window. Closed pay-period entries
@@ -407,15 +493,16 @@ def _confirm_dashboard(page, *, store: str, wait_ms: int = 20_000) -> None:
     landing (ngapps ``errorPage``, hpayroll ``notauthenticated``) would otherwise be
     persisted as the session and replayed by every later step, each timing out.
     """
-    if POST_LOGIN_URL_RE.search(page.url):
+    if is_adp_run_dashboard_url(page.url) and not _login_form_still_visible(page):
         return
     tenant = (_load_store_profile(store).get("adp_run") or {}).get("tenant_uuid", "")
     print(f"[adp_login] BREADCRUMB adp_off_dashboard url={page.url} tenant={tenant or 'unset'}")
     if tenant:
         try:
-            page.goto(f"https://runpayrollmain.adp.com/@{tenant}/v2/",
+            page.goto(run_dashboard_url(page.url, tenant),
                       wait_until="domcontentloaded", timeout=60_000)
             page.wait_for_url(POST_LOGIN_URL_RE, timeout=wait_ms)
+            _assert_post_login_dashboard(page, store=store)
             print(f"[adp_login] step=dashboard-recovered url={page.url}")
             return
         except Exception as exc:  # noqa: BLE001 — fall through to the evidence raise
@@ -499,7 +586,7 @@ def _login(page, *, store: str, timeout_ms: int = 60_000) -> None:
     """
     _load_login_page(page, timeout_ms=timeout_ms)
 
-    if POST_LOGIN_URL_RE.search(page.url):
+    if is_adp_run_dashboard_url(page.url) and not _login_form_still_visible(page):
         return  # Already authenticated (shouldn't happen in ephemeral, but defensive).
 
     # Step 1: User ID. sdf-input wraps a real <input>; get_by_role finds it.
@@ -554,6 +641,7 @@ def _login(page, *, store: str, timeout_ms: int = 60_000) -> None:
             _handle_adp_two_factor(page, store=store)
             # Handler returned: re-confirm we reached the dashboard.
             page.wait_for_url(POST_LOGIN_URL_RE, timeout=timeout_ms)
+            _assert_post_login_dashboard(page, store=store)
             return
         # Check for the inline "incorrect credentials" banner.
         try:
@@ -599,6 +687,8 @@ def _login(page, *, store: str, timeout_ms: int = 60_000) -> None:
             page, store=store,
             reason=f"ADP login did not reach dashboard. Current URL: {page.url}",
         )
+    # URL matched a known RUN host+/v2/ path — confirm it is not a half-login shell.
+    _assert_post_login_dashboard(page, store=store)
 
 
 def _dismiss_adp_channel_collection(page) -> bool:
@@ -681,10 +771,12 @@ def _handle_adp_two_factor(page, *, store: str) -> None:
         # if so there's no OTP to enter and we're done.
         try:
             page.wait_for_url(POST_LOGIN_URL_RE, timeout=15_000)
-            print("[adp 2fa] reached dashboard after skipping mobile-verify; no OTP needed.")
-            return
         except Exception:  # noqa: BLE001 — not on dashboard yet → continue OTP flow
             print("[adp 2fa] mobile-verify skipped; continuing to OTP challenge.")
+        else:
+            _assert_post_login_dashboard(page, store=store)
+            print("[adp 2fa] reached dashboard after skipping mobile-verify; no OTP needed.")
+            return
 
     # Step 1: pick text-message delivery. ADP's picker varies between sdf-radio
     # and clickable sdf-card. Try several patterns.
@@ -1791,7 +1883,7 @@ def _click_tempus_anchor(page, anchor_id: str, *, label: str, store: str = "palm
             print(f"[adp_tempus] BREADCRUMB anchor_missing id={anchor_id} attempt={attempt - 1}/{len(waits_s)} "
                   f"url={page.url} — reopening the dashboard")
             if tenant:
-                page.goto(f"https://runpayrollmain.adp.com/@{tenant}/v2/",
+                page.goto(run_dashboard_url(page.url, tenant),
                           wait_until="domcontentloaded", timeout=60_000)
             else:
                 page.reload(wait_until="domcontentloaded", timeout=60_000)

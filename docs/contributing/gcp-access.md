@@ -149,6 +149,7 @@ no project roles — only per-resource grants:
 | `secretAccessor` on `github-bot-pat` | `cloud_git_identity.sh`: git + `gh` as `jarvis-agent-bot328` |
 | `secretAccessor` on `slack-bot-token` | `operator_ping.py`: Slack DM the operator for a 2-Step tap / code / click |
 | `iap.httpsResourceAccessor` on each **preview** (`operator-console-preview.yml`) | `console_preview.py`: open / screenshot a PR or `preview/**` branch preview with an ID token — never prod |
+| Project `logging.viewer`, `bigquery.dataViewer` + `bigquery.jobUser`, `run.viewer`, `datastore.viewer`; `storage.objectViewer` on `bhaga-scrape-cache` (Issue #504) | `cloud_agent_gcp.py bq / logs / run / gcs-get`: read prod BigQuery, Cloud Run logs and executions, Firestore, failure screenshots directly from the VM — no `/prod-read` comment. Read-only; no write role |
 
 One-time, idempotent, from an owner ADC surface (an agent can drive Cloud Shell, signing in with
 `skills/vault`):
@@ -170,9 +171,15 @@ On the VM (stdlib only: OIDC → STS → SA):
 python3 scripts/cloud_agent_gcp.py secret github-bot-pat
 python3 scripts/cloud_agent_gcp.py id-token            # audience = console IAP OAuth client
 python3 scripts/console_preview.py --pr 385 /home /inventory --shots /tmp/shots [--mobile]
+python3 scripts/cloud_agent_gcp.py bq "SELECT status, error FROM \`jarvis-bhaga-prod.bhaga.pipeline_runs\` ORDER BY started_at_utc DESC LIMIT 5"
+python3 scripts/cloud_agent_gcp.py logs --job bhaga-daily-refresh --since 1d --grep "authfail|Traceback"
+python3 scripts/cloud_agent_gcp.py gcs-get gs://bhaga-scrape-cache/<date>/evidence/<file>.png /tmp/shot.png
+python3 scripts/cloud_agent_gcp.py run jobs/bhaga-daily-refresh/executions
 ```
 
-Widen per resource, never project-wide; prod changes stay on `/prod-ops` (CI identity, audited per PR).
+Read access is project-wide (viewer roles only, operator decision 2026-11-07, Issue #504: prod
+diagnosis must not wait on PR comments); write access is never granted here — prod changes stay
+on `/prod-ops` (CI identity, audited per PR).
 
 ---
 

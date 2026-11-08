@@ -1,3 +1,7 @@
+## 2026-11-07 — Nightly ADP down since Nov 6 (Issue #504); Cloud Agents read prod directly
+
+**Scope:** every `bhaga-daily-refresh` run from Nov 6 10:52 AM CT through the Nov 7 nightly failed at `failed_step=adp` with the `runpayrollmain2` false authfail below — the failure screenshot is the signed-in RUN "Companies" list, so the login itself was fine. Same fix (PR #505, supersedes #502) plus `run_dashboard_url`: dashboard reopens stay on the session's `runpayrollmainN` host. **Access:** `cursor-cloud-agent` now has read-only project viewer roles (logs, BigQuery, Cloud Run, Firestore) + object read on `bhaga-scrape-cache`; `scripts/cloud_agent_gcp.py bq / logs / run / gcs-get` replaces `/prod-read` comments for diagnosis (operator decision; `gcp-access.md` recipe F). Writes stay on `/prod-ops`.
+
 ## 2026-11-06 — Sync ADP false-authfail on runpayrollmain2 dashboard host
 
 **Symptom:** Console Sync ADP Austin ~9:30 PM CT Nov 6 — Cloud Run `bhaga-daily-refresh-8trf8` exit 1; `pipeline_runs` `pulls=0`. **Cause:** after login ADP landed on `runpayrollmain2.adp.com/@…/v2/` but `POST_LOGIN_URL_RE` only matched `runpayrollmain` (no digit), so `wait_for_url` timed out and raised a false authfail. **Fix:** accept `runpayrollmain\d*` + `/v2/` via `is_adp_run_dashboard_url`, still reject federation/signin/throttle paths, and require the sign-in form not to still be visible. No live Sync retry in the fix PR (operator-gated).

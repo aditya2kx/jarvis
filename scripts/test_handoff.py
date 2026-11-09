@@ -133,6 +133,63 @@ class InTests(unittest.TestCase):
             data = json.loads(path.read_text())
         self.assertEqual((data["done"], data["handed_off_to"]), (["specify", "setup"], None))
 
+    def test_mac_open_uses_glass_argv(self):
+        import start_pr_session as S
+
+        with tempfile.TemporaryDirectory() as tmp:
+            main = _repo(tmp)
+            pr = {
+                "headRefName": "fix/c",
+                "body": "Closes #42",
+                "url": "https://example/pr/388",
+                "comments": [{"body": f"{H.MARKER} to=mac from=cloud sha=abc -->\npick up"}],
+            }
+            gh = {("pr", "view"): pr, ("issue", "view"): {"body": ISSUE_BODY}}
+            cursor = Path("/fake/cursor")
+            popens: list[list[str]] = []
+
+            def fake_popen(argv, *a, **kw):
+                popens.append(list(argv))
+                return mock.Mock()
+
+            with mock.patch.object(H, "_checkout", return_value=main), \
+                 mock.patch.object(H, "_gh_json", side_effect=lambda *a: gh[a[:2]]), \
+                 mock.patch.object(H, "surface", return_value="mac"), \
+                 mock.patch.object(S, "find_cursor_cli", return_value=cursor), \
+                 mock.patch.object(S, "cursor_open_argv",
+                                   return_value=[str(cursor), "--glass", "-n", str(main)]) as open_argv, \
+                 mock.patch("subprocess.Popen", side_effect=fake_popen), \
+                 mock.patch("subprocess.run"):
+                H.cmd_in(388, open_cursor=True)
+            open_argv.assert_called_once_with(cursor, main, reuse=False)
+            self.assertEqual(popens[0][:3], [str(cursor), "--glass", "-n"])
+
+    def test_mac_open_oserror_prints_breadcrumb(self):
+        import start_pr_session as S
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            main = _repo(tmp)
+            pr = {
+                "headRefName": "fix/c",
+                "body": "Closes #42",
+                "url": "u",
+                "comments": [],
+            }
+            gh = {("pr", "view"): pr, ("issue", "view"): {"body": ISSUE_BODY}}
+            err = io.StringIO()
+            with mock.patch.object(H, "_checkout", return_value=main), \
+                 mock.patch.object(H, "_gh_json", side_effect=lambda *a: gh[a[:2]]), \
+                 mock.patch.object(H, "surface", return_value="mac"), \
+                 mock.patch.object(S, "find_cursor_cli", return_value=Path("/fake/cursor")), \
+                 mock.patch.object(S, "cursor_open_argv",
+                                   return_value=["/fake/cursor", "--glass", "-n", str(main)]), \
+                 mock.patch("subprocess.Popen", side_effect=OSError("boom")), \
+                 mock.patch("subprocess.run"), \
+                 mock.patch("sys.stderr", err):
+                H.cmd_in(388, open_cursor=True)
+            self.assertIn("jarvis-handoff: handoff.in open failed", err.getvalue())
+
 
 class RoundTripTests(unittest.TestCase):
     """Mac `out --to cloud` then Cloud `in`, against a real bare remote; only gh is faked."""

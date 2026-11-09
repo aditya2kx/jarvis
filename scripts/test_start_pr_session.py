@@ -152,6 +152,23 @@ class TestStartPrSession(unittest.TestCase):
         mock_run.assert_called()
         self.assertEqual(mock_run.call_args[0][0], ["open", str(launch.resolve())])
 
+    @patch("subprocess.Popen")
+    @patch.object(S, "cursor_supports_glass", return_value=True)
+    @patch.object(S, "find_cursor_cli")
+    def test_attach_worktree_here_uses_glass_reuse(
+        self, mock_find, _mock_glass, mock_popen,
+    ):
+        cursor = Path("/fake/cursor")
+        mock_find.return_value = cursor
+        folder = Path(self._tmpdir.name) / "wt-attach"
+        folder.mkdir()
+        brief = Path(self._tmpdir.name) / "brief.md"
+        brief.write_text("# brief")
+        S.attach_worktree_here(folder=folder, brief=brief, issue_url="https://example/issues/187")
+        mock_popen.assert_called_once()
+        argv = mock_popen.call_args[0][0]
+        self.assertEqual(argv, [str(cursor), "--glass", "-r", str(folder.resolve())])
+
     def test_seed_prompt_is_short(self):
         req = (
             "Dashboard on a free visualization tool (Looker Studio / Chartio) — "

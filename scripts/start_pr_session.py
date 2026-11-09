@@ -453,28 +453,6 @@ def prefer_attach_here(env: dict | None = None) -> bool:
 CONTINUE_IN_THIS_CHAT_MARKER = "CONTINUE_IN_THIS_CHAT=1"
 
 
-def attach_worktree_here(*, folder: Path, brief: Path, issue_url: str | None = None) -> None:
-    """Best-effort rebind + print machine-readable continue marker for the skill."""
-    folder = folder.resolve()
-    cursor = find_cursor_cli()
-    if cursor is not None:
-        # Reuse the focused window on the new worktree when the CLI allows it.
-        try:
-            subprocess.Popen([str(cursor), "-r", str(folder)])
-        except OSError as exc:
-            print(f"(attach: cursor -r failed non-fatal: {exc})", file=sys.stderr)
-    print("\n─── ATTACH HERE (Agents Window) ───")
-    print(CONTINUE_IN_THIS_CHAT_MARKER)
-    print(f"Worktree: {folder}")
-    print(f"Brief:    {brief}")
-    if issue_url:
-        print(f"Tracking issue: {issue_url}")
-    print(
-        "Do NOT open a second Cursor window. Continue the jam in THIS chat: "
-        f"read the brief, restate requirements, draft §4."
-    )
-
-
 _CURSOR_CANDIDATES = (
     "cursor",
     "/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
@@ -498,6 +476,72 @@ def find_cursor_cli() -> Path | None:
     return None
 
 
+def cursor_supports_glass(cursor: Path | None = None) -> bool:
+    """True when the Cursor CLI advertises ``--glass`` (Agents Window).
+
+    Issue #187 / #508: older handoffs opened classic IDE via ``cursor -n`` then
+    tried a ``cursor://…/glass`` deeplink — that split fails on private-worker /
+    Agents Window sessions. Prefer the native flag when present.
+    """
+    cli = cursor if cursor is not None else find_cursor_cli()
+    if cli is None:
+        return False
+    try:
+        out = subprocess.check_output(
+            [str(cli), "--help"],
+            text=True,
+            stderr=subprocess.STDOUT,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return re.search(r"(?m)^\s*--glass\b", out) is not None
+
+
+def cursor_open_argv(
+    cursor: Path,
+    folder: Path,
+    *,
+    reuse: bool = False,
+    glass: bool | None = None,
+) -> list[str]:
+    """Build argv to open ``folder`` in Cursor (Agents Window when supported)."""
+    use_glass = cursor_supports_glass(cursor) if glass is None else glass
+    window = "-r" if reuse else "-n"
+    argv = [str(cursor)]
+    if use_glass:
+        argv.append("--glass")
+    argv.extend([window, str(folder)])
+    return argv
+
+
+def attach_worktree_here(*, folder: Path, brief: Path, issue_url: str | None = None) -> None:
+    """Best-effort rebind + print machine-readable continue marker for the skill."""
+    folder = folder.resolve()
+    cursor = find_cursor_cli()
+    if cursor is not None:
+        # Reuse the focused Agents Window on the new worktree when the CLI allows it.
+        argv = cursor_open_argv(cursor, folder, reuse=True)
+        try:
+            subprocess.Popen(argv)
+        except OSError as exc:
+            # Breadcrumb: greppable from any machine / Cloud Run log paste.
+            print(
+                f"jarvis-handoff: attach failed argv={argv!r} err={exc}",
+                file=sys.stderr,
+            )
+    print("\n─── ATTACH HERE (Agents Window) ───")
+    print(CONTINUE_IN_THIS_CHAT_MARKER)
+    print(f"Worktree: {folder}")
+    print(f"Brief:    {brief}")
+    if issue_url:
+        print(f"Tracking issue: {issue_url}")
+    print(
+        "Do NOT open a second Cursor window. Continue the jam in THIS chat: "
+        f"read the brief, restate requirements, draft §4."
+    )
+
+
 def open_cursor_handoff(
     *,
     folder: Path,
@@ -506,11 +550,12 @@ def open_cursor_handoff(
     delay_sec: float = 3.5,
     mode: str = DEFAULT_HANDOFF_MODE,
 ) -> None:
-    """Open ``folder``, prefer Agents Window, then seed chat via deeplink.
+    """Open ``folder`` in Agents Window (``--glass``), then seed chat via deeplink.
 
-    Order matters: open the worktree folder **first**, focus Agents Window
-    (``/glass``), then fire the ``/prompt`` deeplink so the new chat attaches
-    to that workspace (not whichever editor window was focused).
+    Prefer ``cursor --glass -n <folder>`` (Issue #187) so the new worktree lands
+    in the Agents Window — not classic IDE. Older CLIs without ``--glass`` fall
+    back to ``cursor -n`` + the ``/glass`` deeplink. On CLI failure, open the
+    HTML launcher and leave a greppable breadcrumb.
     """
     import time
 
@@ -524,19 +569,35 @@ def open_cursor_handoff(
             f"    {folder}\n"
             f"    {launch_html}"
         )
+        print(
+            f"jarvis-handoff: open failed reason=no_cli folder={folder} launch={launch_html}",
+            file=sys.stderr,
+        )
         subprocess.run(["open", str(launch_html)], check=False)
         return
 
-    print(f"Opening Cursor → {folder}")
-    subprocess.Popen([str(cursor), "-n", str(folder)])
+    use_glass = cursor_supports_glass(cursor)
+    argv = cursor_open_argv(cursor, folder, reuse=False, glass=use_glass)
+    print(f"Opening Cursor{' (glass)' if use_glass else ''} → {folder}")
+    try:
+        subprocess.Popen(argv)
+    except OSError as exc:
+        print(
+            f"jarvis-handoff: open failed argv={argv!r} err={exc} launch={launch_html}",
+            file=sys.stderr,
+        )
+        subprocess.run(["open", str(launch_html)], check=False)
+        return
+
     time.sleep(delay_sec)
-    # Prefer Agents Window so /remote-control and Remote Control default apply.
-    print("Opening Agents Window (glass)…")
-    subprocess.run(["open", make_glass_deeplink()], check=False)
-    time.sleep(min(1.5, delay_sec))
+    if not use_glass:
+        # Legacy CLI: open Agents Window via deeplink after classic window.
+        print("Opening Agents Window (glass deeplink fallback)…")
+        subprocess.run(["open", make_glass_deeplink()], check=False)
+        time.sleep(min(1.5, delay_sec))
     print(f"Seeding {mode} chat (approve Cursor's deeplink dialog if prompted)…")
     subprocess.run(["open", deeplink], check=False)
-    # launch_html is the fallback for when the deeplink or Cursor CLI fails;
+    # launch_html is the fallback for when the deeplink fails later;
     # don't open it automatically when Cursor already launched successfully.
 
 

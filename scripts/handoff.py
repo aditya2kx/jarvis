@@ -177,7 +177,14 @@ def cmd_in(pr: int, open_cursor: bool = True) -> str:
 
         cursor = S.find_cursor_cli()
         if cursor:
-            subprocess.Popen([str(cursor), "-n", str(wt)])
+            argv = S.cursor_open_argv(cursor, wt, reuse=False)
+            try:
+                subprocess.Popen(argv)
+            except OSError as exc:
+                print(
+                    f"jarvis-handoff: handoff.in open failed argv={argv!r} err={exc}",
+                    file=sys.stderr,
+                )
             prompt = (f"Continue PR #{pr} ({meta['url']}). Run `python3 scripts/handoff.py in --pr {pr} "
                       "--no-open` and pick up from the handoff note it prints.")
             subprocess.run(["open", S.make_deeplink(prompt, mode="agent")], check=False)

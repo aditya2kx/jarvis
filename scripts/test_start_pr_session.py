@@ -77,6 +77,98 @@ class TestStartPrSession(unittest.TestCase):
     def test_make_glass_deeplink(self):
         self.assertEqual(S.make_glass_deeplink(), "cursor://anysphere.cursor-deeplink/glass")
 
+    def test_cursor_open_argv_glass_new_window(self):
+        cursor = Path("/Applications/Cursor.app/Contents/Resources/app/bin/cursor")
+        folder = Path("/tmp/wt")
+        argv = S.cursor_open_argv(cursor, folder, reuse=False, glass=True)
+        self.assertEqual(argv, [str(cursor), "--glass", "-n", str(folder)])
+
+    def test_cursor_open_argv_glass_reuse(self):
+        cursor = Path("/fake/cursor")
+        folder = Path("/tmp/wt")
+        argv = S.cursor_open_argv(cursor, folder, reuse=True, glass=True)
+        self.assertEqual(argv, [str(cursor), "--glass", "-r", str(folder)])
+
+    def test_cursor_open_argv_legacy_no_glass(self):
+        cursor = Path("/fake/cursor")
+        folder = Path("/tmp/wt")
+        argv = S.cursor_open_argv(cursor, folder, reuse=False, glass=False)
+        self.assertEqual(argv, [str(cursor), "-n", str(folder)])
+
+    def test_cursor_supports_glass_parses_help(self):
+        with patch.object(S, "find_cursor_cli", return_value=Path("/fake/cursor")), \
+             patch("subprocess.check_output", return_value="  --glass   Open the Agent Window\n"):
+            self.assertTrue(S.cursor_supports_glass(Path("/fake/cursor")))
+        with patch("subprocess.check_output", return_value="  -n --new-window\n"):
+            self.assertFalse(S.cursor_supports_glass(Path("/fake/cursor")))
+
+    @patch("subprocess.run")
+    @patch("subprocess.Popen")
+    @patch.object(S, "cursor_supports_glass", return_value=True)
+    @patch.object(S, "find_cursor_cli")
+    def test_open_cursor_handoff_uses_glass_flag(
+        self, mock_find, _mock_glass, mock_popen, mock_run,
+    ):
+        cursor = Path("/fake/cursor")
+        mock_find.return_value = cursor
+        folder = Path(self._tmpdir.name) / "wt"
+        folder.mkdir()
+        launch = Path(self._tmpdir.name) / "launch.html"
+        launch.write_text("<html></html>")
+        with patch("time.sleep"):
+            S.open_cursor_handoff(
+                folder=folder,
+                deeplink="cursor://anysphere.cursor-deeplink/prompt?text=hi",
+                launch_html=launch,
+                delay_sec=0.01,
+            )
+        mock_popen.assert_called_once()
+        argv = mock_popen.call_args[0][0]
+        self.assertEqual(argv[:3], [str(cursor), "--glass", "-n"])
+        # No legacy /glass deeplink when --glass is supported.
+        opened = [c[0][0] for c in mock_run.call_args_list]
+        self.assertTrue(any("prompt" in str(c) for c in opened))
+        self.assertFalse(any(str(c) == S.make_glass_deeplink() for c in opened))
+
+    @patch("subprocess.run")
+    @patch("subprocess.Popen", side_effect=OSError("boom"))
+    @patch.object(S, "cursor_supports_glass", return_value=True)
+    @patch.object(S, "find_cursor_cli")
+    def test_open_cursor_handoff_falls_back_to_launch_html(
+        self, mock_find, _mock_glass, _mock_popen, mock_run,
+    ):
+        mock_find.return_value = Path("/fake/cursor")
+        folder = Path(self._tmpdir.name) / "wt2"
+        folder.mkdir()
+        launch = Path(self._tmpdir.name) / "launch2.html"
+        launch.write_text("<html></html>")
+        with patch("time.sleep"):
+            S.open_cursor_handoff(
+                folder=folder,
+                deeplink="cursor://x",
+                launch_html=launch,
+                delay_sec=0.01,
+            )
+        mock_run.assert_called()
+        self.assertEqual(mock_run.call_args[0][0], ["open", str(launch.resolve())])
+
+    @patch("subprocess.Popen")
+    @patch.object(S, "cursor_supports_glass", return_value=True)
+    @patch.object(S, "find_cursor_cli")
+    def test_attach_worktree_here_uses_glass_reuse(
+        self, mock_find, _mock_glass, mock_popen,
+    ):
+        cursor = Path("/fake/cursor")
+        mock_find.return_value = cursor
+        folder = Path(self._tmpdir.name) / "wt-attach"
+        folder.mkdir()
+        brief = Path(self._tmpdir.name) / "brief.md"
+        brief.write_text("# brief")
+        S.attach_worktree_here(folder=folder, brief=brief, issue_url="https://example/issues/187")
+        mock_popen.assert_called_once()
+        argv = mock_popen.call_args[0][0]
+        self.assertEqual(argv, [str(cursor), "--glass", "-r", str(folder.resolve())])
+
     def test_seed_prompt_is_short(self):
         req = (
             "Dashboard on a free visualization tool (Looker Studio / Chartio) — "

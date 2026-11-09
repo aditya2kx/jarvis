@@ -1,3 +1,7 @@
+## 2026-11-08 — Last 90 days Period + assigned shift → open shift (Issue #508)
+
+**Scope:** Operator Console Period gains **Last 90 days** (Home goals on 90d = 3 × monthly); day charts thin two-line date ticks past ~a month of bars. Labor shift drawer Person → **Open shift (unassigned)** stages one tray **Unassign** (`shift-to-open`); Apply adds + publishes the open shift, confirms it, then deletes the assigned shift. Live round trip on Dolce Nov 29 1:30–8:30 PM (unassign → assign back) ended with ADP matching the start. PR #509.
+
 ## 2026-11-07 — Nightly ADP down since Nov 6 (Issue #504); Cloud Agents read prod directly
 
 **Scope:** every `bhaga-daily-refresh` run from Nov 6 10:52 AM CT through the Nov 7 nightly failed at `failed_step=adp` with the `runpayrollmain2` false authfail below — the failure screenshot is the signed-in RUN "Companies" list, so the login itself was fine. Same fix (PR #505, supersedes #502) plus `run_dashboard_url`: dashboard reopens stay on the session's `runpayrollmainN` host. **Access:** `cursor-cloud-agent` now has read-only project viewer roles (logs, BigQuery, Cloud Run, Firestore) + object read on `bhaga-scrape-cache`; `scripts/cloud_agent_gcp.py bq / logs / run / gcs-get` replaces `/prod-read` comments for diagnosis (operator decision; `gcp-access.md` recipe F). Writes stay on `/prod-ops`.

@@ -8,6 +8,7 @@
 export type RangePreset =
   | "7d"
   | "30d"
+  | "90d"
   | "this_week"
   | "this_month"
   | "last_week"
@@ -17,6 +18,7 @@ export type RangePreset =
 export const RANGE_PRESETS: { value: RangePreset; label: string }[] = [
   { value: "7d", label: "Last 7 days" },
   { value: "30d", label: "Last 30 days" },
+  { value: "90d", label: "Last 90 days" },
   { value: "this_week", label: "This week" },
   { value: "this_month", label: "This month" },
   { value: "last_week", label: "Last week" },
@@ -88,10 +90,15 @@ export interface DateWindow {
   preset: RangePreset;
 }
 
-/** 30d/this_month/last_month behave like "a month" for goal selection
+/** 30d/90d/this_month/last_month behave like "a month" for goal selection
  *  (Home scorecard picks the monthly vs weekly `store_config` goal by this). */
 export function isMonthLike(preset: RangePreset): boolean {
-  return preset === "30d" || preset === "this_month" || preset === "last_month";
+  return preset === "30d" || preset === "90d" || preset === "this_month" || preset === "last_month";
+}
+
+/** How many monthly goals a month-like preset is measured against (90 days ≈ a quarter). */
+export function goalMonths(preset: RangePreset): number {
+  return preset === "90d" ? 3 : 1;
 }
 
 function pad2(n: number): string {
@@ -191,6 +198,10 @@ export function resolveRange(
     }
     case "30d": {
       const start = addDays(today.y, today.m, today.d, -29);
+      return { start: fmt(start.y, start.m, start.d), end: fmt(today.y, today.m, today.d), label, preset };
+    }
+    case "90d": {
+      const start = addDays(today.y, today.m, today.d, -89);
       return { start: fmt(start.y, start.m, start.d), end: fmt(today.y, today.m, today.d), label, preset };
     }
     case "this_week": {

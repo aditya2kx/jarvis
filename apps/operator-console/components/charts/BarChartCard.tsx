@@ -29,6 +29,9 @@ import {
 
 export type BarValueFormat = "dollars" | "percent" | "number";
 
+/** Most two-line day ticks (date + weekday) that fit side by side on a desktop chart. */
+const MAX_EVERY_DAY_TICKS = 31;
+
 /** Per-bar fill from the signed value (e.g. cash flow green/red). */
 export type SignedValueColors = {
   dataKey: string;
@@ -169,8 +172,10 @@ export function BarChartCard({
   signedValueColors?: SignedValueColors;
 }) {
   const multilineX = data.some((row) => String(row[xKey] ?? "").includes("\n"));
-  // Every multi-line day tick fits on desktop; at 390px a month of them overlaps.
+  // Every multi-line day tick fits on desktop up to about a month of bars; past that, and at
+  // 390px, they overlap, so Recharts skips ticks to keep a gap.
   const phone = useIsPhone();
+  const thinX = phone || data.length > MAX_EVERY_DAY_TICKS;
   // SVG url(#id) breaks on useId's colons; one chart can render twice per page.
   const patternPrefix = `hatch-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   const hatched = series.filter((s) => s.pattern === "hatch");
@@ -232,8 +237,8 @@ export function BarChartCard({
               tickLine={false}
               axisLine={false}
               height={multilineX ? 36 : undefined}
-              interval={multilineX ? (phone ? "preserveStartEnd" : 0) : undefined}
-              minTickGap={multilineX ? (phone ? 6 : 0) : undefined}
+              interval={multilineX ? (thinX ? "preserveStartEnd" : 0) : undefined}
+              minTickGap={multilineX ? (thinX ? 6 : 0) : undefined}
             />
             <YAxis
               tick={{ fontSize: 12 }}

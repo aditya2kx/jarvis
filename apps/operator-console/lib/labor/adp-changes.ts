@@ -26,7 +26,9 @@ export type ShiftChange =
   /** A draft ADP already has, made live; the run deletes the draft and adds the same shift published. */
   | ({ kind: "shift-publish"; date: string; employee: string } & Times)
   /** ADP can't reassign an assigned shift: the run deletes it, then adds the same hours for `toEmployee`. */
-  | ({ kind: "shift-reassign"; date: string; employee: string; toEmployee: string } & Times);
+  | ({ kind: "shift-reassign"; date: string; employee: string; toEmployee: string } & Times)
+  /** ADP can't unassign a shift: the run adds an open shift at the same hours, then deletes this one. */
+  | ({ kind: "shift-to-open"; date: string; employee: string } & Times);
 
 export type AdpChange = { area: "shift"; c: ShiftChange } | { area: "unavailability"; c: StagedChange };
 
@@ -52,6 +54,7 @@ export function shiftKey(c: ShiftChange): string {
     case "shift-delete":
     case "shift-reassign":
     case "shift-publish":
+    case "shift-to-open":
       return `shift|${c.employee}|${c.date}|${span(c)}`;
     default: {
       const never: never = c;
@@ -102,6 +105,8 @@ export function shiftText(c: ShiftChange): string {
       return `${c.employee} · ${when} → ${timeText(c.to)}`;
     case "shift-reassign":
       return `${when} · ${c.employee} → ${c.toEmployee}`;
+    case "shift-to-open":
+      return `${when} · ${c.employee} → Open shift`;
     default: {
       const never: never = c;
       return never;
@@ -119,6 +124,7 @@ export const SHIFT_LABEL: Record<ShiftChange["kind"], string> = {
   "shift-delete": "Delete",
   "shift-reassign": "Reassign",
   "shift-publish": "Publish",
+  "shift-to-open": "Unassign",
 };
 
 function timesError(t: Times, what: string): string | null {
@@ -147,6 +153,7 @@ export function shiftError(c: ShiftChange, todayIso: string): string | null {
     case "shift-add":
     case "shift-delete":
     case "shift-publish":
+    case "shift-to-open":
     case "open-delete":
       return "employee" in c && !c.employee.trim() ? "Pick a person." : null;
     case "shift-reassign":
@@ -180,6 +187,7 @@ function parseShift(raw: Record<string, unknown>): ShiftChange {
     case "shift-add":
     case "shift-delete":
     case "shift-publish":
+    case "shift-to-open":
       return { kind, ...base, employee: str(raw.employee) };
     case "shift-edit":
       return { kind, ...base, employee: str(raw.employee), to };
@@ -373,6 +381,7 @@ export function pruneQueue(
       case "shift-delete":
       case "shift-reassign":
       case "shift-publish":
+      case "shift-to-open":
         return now.hasShift(c.employee, c.date, c);
       default: {
         const never: never = c;

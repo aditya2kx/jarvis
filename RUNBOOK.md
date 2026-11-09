@@ -1942,7 +1942,11 @@ counts ADP shifts whose delete is already in the tray (`N shifts in your changes
 (`Delete all schedules …`) or the unavailability's: the job centres the shift and waits until it stops moving
 before clicking; a wrong pane is closed untouched and the shift's host is DOM-clicked at a jittered point
 (up to 11 more tries; the error names what the click hit). A reassign whose add fails says
-`removed <name>'s shift but could not add it for <name> … — add it again`. A `shift-publish` (or a
+`removed <name>'s shift but could not add it for <name> … — add it again`. A `shift-to-open` (Issue #508,
+drawer Person → **Open shift (unassigned)**, tray **Unassign**) adds and publishes an open shift at the same
+times, confirms it from the open-shift counts, and only then deletes the assigned shift: an unconfirmed open
+shift fails with `… <name>'s shift was not deleted`; a failed delete says `added the open shift but could not
+delete <name>'s shift … — delete it in ADP` (never retried). A `shift-publish` (or a
 `shift-add` whose exact shift ADP shows as a draft) deletes that draft and adds the same shift published;
 already live → `skipped`; its add failing says `removed <name>'s draft but could not add it published`. Applied rows append to
 `adp_shift_events` / `adp_unavailability_events` (append-only). The job ends by re-reading the touched weeks

@@ -90,6 +90,17 @@ describe("validateAdpChanges", () => {
     expect(() => validateAdpChanges([], TODAY)).toThrow(/Nothing to apply/);
   });
 
+  it("unassign: keeps the person, replaces any other staged change on that shift, one tray line", () => {
+    const open: ShiftChange = { kind: "shift-to-open", date: "2026-10-31", employee: "Lee, Ana", ...T };
+    expect(validateAdpChanges([shift({ ...open, extra: 1 } as ShiftChange)], TODAY)).toEqual([shift(open)]);
+    expect(() => validateAdpChanges([shift({ ...open, employee: " " })], TODAY)).toThrow(/Pick a person/);
+    expect(() => validateAdpChanges([shift({ ...open, date: TODAY })], TODAY)).toThrow(/tomorrow/);
+    const q = stageAdp(stageAdp([], shift(edit)), shift(open));
+    expect(q).toEqual([shift(open)]);
+    expect(trayLines(q).map((l) => [l.label, l.destructive])).toEqual([["Unassign", false]]);
+    expect(changePeople(q)).toBe(1);
+  });
+
   it("two identical open-shift changes on one day stay two rows", () => {
     const a = { kind: "open-delete", slot: "s0", date: "2026-10-31", ...T };
     expect(validateAdpChanges([shift(a as ShiftChange), shift({ ...a, slot: "s1" } as ShiftChange)], TODAY)).toHaveLength(2);
@@ -117,6 +128,7 @@ describe("trayLines", () => {
 
   it("describes each kind in plain words", () => {
     expect(shiftText({ kind: "shift-reassign", date: "2026-10-31", employee: "A", toEmployee: "B", ...T })).toMatch(/A → B$/);
+    expect(shiftText({ kind: "shift-to-open", date: "2026-10-31", employee: "A", ...T })).toMatch(/· A → Open shift$/);
     expect(shiftText({ kind: "open-add", date: "2026-10-31", count: 2, ...T })).toMatch(/^Open shift · .* · 2 of them$/);
     expect(shiftText(edit)).toMatch(/→ 8 AM–1 PM$/);
   });

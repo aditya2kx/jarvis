@@ -97,6 +97,32 @@ describe("EntrySheet — shifts", () => {
     expect(p.onStageShift).toHaveBeenCalledWith({ kind: "shift-reassign", employee: "Lee, Ana", ...base, toEmployee: "Bo, Kim" });
   });
 
+  it("a shift: Open shift stages make-open and says ADP adds the open shift, then deletes", async () => {
+    const p = sheet(SHIFT);
+    await pick("Open shift (unassigned)");
+    expect(screen.getByText(/adds an open shift at these times, then deletes Lee, Ana's/)).toBeTruthy();
+    fireEvent.click(save());
+    expect(p.onStageShift).toHaveBeenCalledWith({ kind: "shift-to-open", employee: "Lee, Ana", ...base });
+  });
+
+  it("a shift: Open shift with new times = delete + an open shift at the new times", async () => {
+    const p = sheet(SHIFT);
+    await pick("Open shift (unassigned)");
+    fireEvent.change(screen.getByLabelText("Ends"), { target: { value: "14:00" } });
+    fireEvent.click(save());
+    expect(p.onStageShift.mock.calls.map((c) => c[0])).toEqual([
+      { kind: "shift-delete", employee: "Lee, Ana", ...base },
+      { kind: "open-add", date: "2026-10-30", count: 1, startMin: 420, endMin: 840 },
+    ]);
+  });
+
+  it("an open shift's picker has no Open shift choice", async () => {
+    sheet({ mode: "open-shift", slot: "2026-10-30|adp|420|780", ...base, options: ["Bo, Kim"], suggested: "Bo, Kim" });
+    fireEvent.click(screen.getByRole("combobox"));
+    const opts = await screen.findAllByRole("option");
+    expect(opts.some((o) => o.textContent?.includes("Open shift"))).toBe(false);
+  });
+
   it("a shift: new person and new times = delete + a new shift", async () => {
     const p = sheet(SHIFT);
     await pick("Bo, Kim");

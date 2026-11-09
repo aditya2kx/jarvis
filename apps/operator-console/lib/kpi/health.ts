@@ -10,7 +10,7 @@ import {
   type StoreConfigRow,
 } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
-import { chicagoTodayIso, isMonthLike, type DateWindow } from "@/lib/filters/range";
+import { chicagoTodayIso, goalMonths, isMonthLike, type DateWindow } from "@/lib/filters/range";
 import { RISKY_DAYS_LEFT } from "@/lib/inventory/daysLeft";
 import type { GoalKey } from "@/lib/bq/writes";
 import type { GoalStatus } from "@/lib/kpi/health-types";
@@ -113,7 +113,10 @@ function periodGoal(
   monthly: GoalKey,
 ): { key: GoalKey; value: number | null; raw: string | undefined } {
   const key = isMonthLike(win.preset) ? monthly : weekly;
-  return { key, value: goalValue(config, key), raw: goalRaw(config, key) };
+  const value = goalValue(config, key);
+  // `raw` stays the stored goal: the inline editor edits that key, not the scaled target.
+  const months = key === monthly ? goalMonths(win.preset) : 1;
+  return { key, value: value == null ? null : value * months, raw: goalRaw(config, key) };
 }
 
 export interface HealthScorecard {
@@ -257,7 +260,7 @@ export async function loadHealthScorecard(
       lowerIsBetter: false,
       deltaFormatted: deltaLabel(netSales, gSales.value, false, "dollars"),
       info: isMonthLike(win.preset)
-        ? "Square POS net sales vs goal_net_sales_monthly."
+        ? `Square POS net sales vs ${goalMonths(win.preset) > 1 ? `${goalMonths(win.preset)} × ` : ""}goal_net_sales_monthly.`
         : "Square POS net sales vs goal_net_sales_weekly.",
     }),
     metric({

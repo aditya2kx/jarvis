@@ -313,6 +313,7 @@ const SHIFT_DAYS = 14;
 function stagedShiftText(c: ShiftChange): string {
   if (c.kind === "shift-edit") return `Will change to ${timeText(c.to)}`;
   if (c.kind === "shift-reassign") return `Will go to ${c.toEmployee}`;
+  if (c.kind === "shift-to-open") return "Will become an open shift";
   return c.kind === "shift-delete" ? "Will delete" : SHIFT_LABEL[c.kind];
 }
 
@@ -828,15 +829,21 @@ function ShiftTimes({ value, onChange }: { value: Times; onChange: (t: Times) =>
   );
 }
 
+/** Person-picker value that turns an assigned shift into an open shift. */
+const OPEN_SHIFT = "__open_shift__";
+const OPEN_SHIFT_LABEL = "Open shift (unassigned)";
+
 function PersonSelect({
   value,
   roster,
   label = "Person",
+  openOption = false,
   onChange,
 }: {
   value: string | null;
   roster: string[];
   label?: string;
+  openOption?: boolean;
   onChange: (v: string) => void;
 }) {
   return (
@@ -844,9 +851,18 @@ function PersonSelect({
       <Label>{label}</Label>
       <Select value={value} onValueChange={(v) => v && onChange(String(v))}>
         <SelectTrigger className="w-full" aria-label={label}>
-          <SelectValue placeholder="Pick a person" />
+          {openOption ? (
+            <SelectValue>{(v: string) => (v === OPEN_SHIFT ? <span className="italic">{OPEN_SHIFT_LABEL}</span> : v)}</SelectValue>
+          ) : (
+            <SelectValue placeholder="Pick a person" />
+          )}
         </SelectTrigger>
         <SelectContent>
+          {openOption ? (
+            <SelectItem value={OPEN_SHIFT} className="italic">
+              {OPEN_SHIFT_LABEL}
+            </SelectItem>
+          ) : null}
           {roster.map((n) => (
             <SelectItem key={n} value={n}>
               {n}
@@ -980,11 +996,16 @@ function ShiftBody({
     );
   }
   const retimed = times.startMin !== shift.startMin || times.endMin !== shift.endMin;
-  const to = isOpen ? employee : employee !== target.employee ? employee : null;
+  const toOpen = !isOpen && employee === OPEN_SHIFT;
+  const to = toOpen ? null : isOpen ? employee : employee !== target.employee ? employee : null;
   const remove: ShiftChange = isOpen ? { kind: "open-delete", slot: target.slot, ...base } : { kind: "shift-delete", employee: target.employee, ...base };
   // ADP can't retime and hand over a shift in one step, so both at once is delete + a new shift.
   const changes: ShiftChange[] =
-    to && retimed
+    toOpen
+      ? retimed
+        ? [remove, { kind: "open-add", date: shift.date, count: 1, ...times }]
+        : [{ kind: "shift-to-open", employee: target.employee, ...base }]
+      : to && retimed
       ? [remove, { kind: "shift-add", date: shift.date, employee: to, ...times }]
       : to
         ? [
@@ -1003,12 +1024,14 @@ function ShiftBody({
       <div className="flex flex-col gap-4 px-4">
         <ShiftTimes value={times} onChange={setTimes} />
         {people.length ? (
-          <PersonSelect value={employee} roster={people} label={isOpen ? "Assign to" : "Person"} onChange={setEmployee} />
+          <PersonSelect value={employee} roster={people} label={isOpen ? "Assign to" : "Person"} openOption={!isOpen} onChange={setEmployee} />
         ) : (
           <p className="text-sm text-muted-foreground">Nobody fits your rules for this shift.</p>
         )}
         <p className="text-xs text-muted-foreground">
-          {to && !isOpen
+          {toOpen
+            ? `ADP can't unassign a shift, so this adds an open shift at these times, then deletes ${target.employee}'s. `
+            : to && !isOpen
             ? `ADP can't hand an assigned shift to someone else, so this deletes it and adds it for ${to}. `
             : isOpen
               ? "Only people your scheduling rules allow are listed. "

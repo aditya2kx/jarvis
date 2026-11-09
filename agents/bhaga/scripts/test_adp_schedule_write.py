@@ -590,6 +590,49 @@ class RunApply(unittest.TestCase):
         self.assertIn("removed Huynh, Hillary's shift but could not add it for Denton, Cimino", fq.updates[0][3])
         self.refresh.assert_called_once()
 
+    def test_make_open_adds_the_open_shift_before_deleting_the_assigned_one(self):
+        fq = FakeApplyQuery([_change("mo", "shift-to-open", employee="Johnson, Dolce J")])
+        adp = FakeApplyAdp(assigned={("Johnson, Dolce J", "2026-11-03", 540, 900)})
+        self.assertEqual(self._run(fq, adp), 0)
+        self.assertEqual(fq.updates[0][1:3], ("mo", "applied"))
+        self.assertEqual([c[0] for c in adp.calls], ["create_open_shift", "delete_any_shift"])
+        self.assertEqual((adp.assigned, adp.open[self.SLOT]), (set(), 1))
+        self.notify.assert_called_once_with("palmetto", [datetime.date(2026, 11, 2)], fresh=True)
+
+    def test_make_open_whose_open_shift_is_not_confirmed_deletes_nothing(self):
+        fq = FakeApplyQuery([_change("mo", "shift-to-open", employee="Johnson, Dolce J")])
+        adp = FakeApplyAdp(assigned={("Johnson, Dolce J", "2026-11-03", 540, 900)}, lose_open_adds=1)
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertEqual(fq.updates[0][2], "failed")
+        self.assertIn("ADP does not show the new open shift; Johnson, Dolce J's shift was not deleted", fq.updates[0][3])
+        self.assertEqual([c[0] for c in adp.calls], ["create_open_shift"])
+        self.assertIn(("Johnson, Dolce J", "2026-11-03", 540, 900), adp.assigned)
+
+    def test_make_open_whose_delete_fails_names_the_shift_left_in_adp_and_is_not_retried(self):
+        fq = FakeApplyQuery([_change("mo", "shift-to-open", employee="Johnson, Dolce J")])
+        adp = FakeApplyAdp(assigned={("Johnson, Dolce J", "2026-11-03", 540, 900)},
+                           fail={"delete_any_shift": wb.ScheduleWriteError("details pane is not open")})
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertEqual(fq.updates[0][2], "failed")
+        self.assertIn("added the open shift but could not delete Johnson, Dolce J's shift", fq.updates[0][3])
+        self.assertIn("delete it in ADP", fq.updates[0][3])
+        self.assertEqual([c[0] for c in adp.calls], ["create_open_shift", "delete_any_shift"])
+        self.assertEqual(adp.open[self.SLOT], 1)
+
+    def test_make_open_for_a_shift_gone_from_adp_clicks_nothing(self):
+        fq = FakeApplyQuery([_change("mo", "shift-to-open", employee="Johnson, Dolce J")])
+        adp = FakeApplyAdp()
+        self.assertEqual(self._run(fq, adp), 1)
+        self.assertIn("no longer in ADP", fq.updates[0][3])
+        self.assertEqual(adp.calls, [])
+
+    def test_make_open_dry_run_walks_both_steps_and_saves_nothing(self):
+        fq = FakeApplyQuery([_change("mo", "shift-to-open", employee="Johnson, Dolce J")])
+        adp = FakeApplyAdp(assigned={("Johnson, Dolce J", "2026-11-03", 540, 900)})
+        self.assertEqual(self._run(fq, adp, dry_run=True), 0)
+        self.assertEqual([c[0] for c in adp.calls], ["create_open_shift", "delete_any_shift"])
+        self.assertEqual((adp.assigned, adp.open[self.SLOT], fq.updates), ({("Johnson, Dolce J", "2026-11-03", 540, 900)}, 0, []))
+
     def test_open_add_adp_only_partly_shows_is_failed_with_the_count(self):
         fq = FakeApplyQuery([_change("oadd", "open-add", count=2)])
         self.assertEqual(self._run(fq, FakeApplyAdp(lose_open_adds=1)), 1)
@@ -733,6 +776,9 @@ class QueueChanges(unittest.TestCase):
         self.assertEqual(rows[0]["count"], 2)
         self.assertEqual((rows[1]["to_start_min"], rows[1]["to_end_min"]), (660, 900))
         self.assertEqual((rows[2]["employee"], rows[2]["to_employee"]), ("Doe, Alex", "Lee, Kim"))
+        (mo,) = w.parse_changes("shift-to-open 2026-11-05 7:00-13:00 employee=Johnson,_Dolce_J", self.TODAY)
+        self.assertEqual((mo["kind"], mo["employee"], mo["start_min"], mo["end_min"]),
+                         ("shift-to-open", "Johnson, Dolce J", 420, 780))
 
     def test_refuses_what_the_console_refuses(self):
         for spec in (
@@ -742,6 +788,7 @@ class QueueChanges(unittest.TestCase):
             "open-edit 2026-11-03 10:00-14:00 to=10:00-14:00",  # no change
             "shift-delete 2026-11-03 10:00-14:00",              # no person
             "shift-reassign 2026-11-03 10:00-14:00 employee=A to_employee=A",
+            "shift-to-open 2026-11-03 10:00-14:00",             # no person
             "open-add 2026-11-03 10:00-14:00 colour=red",
             "approve 2026-11-03 10:00-14:00",
             "open-add 2026-11-03",

@@ -21,7 +21,7 @@ Two operator-confirmed modes, each started by one console click:
            shift to its person (Issue #412), then re-reads the changed weeks.
   apply    ... --apply-batch <batch_id>
            Applies one console "Apply to ADP" (Issue #434): every queued
-           ``adp_shift_changes`` row (add / edit / delete / reassign a shift, add /
+           ``adp_shift_changes`` row (add / edit / delete / reassign a shift or make it open, add /
            edit / delete / assign an open shift — each published on its own, never
            the week's drafts) and ``adp_unavailability_changes`` approve row. Each is
            confirmed by re-reading ADP, never retried, then the changed weeks are re-read.
@@ -532,7 +532,7 @@ UNAVAIL_TABLE = "adp_unavailability_changes"
 # Within a week: free slots first so adds and reassigns don't collide with what they replace.
 APPLY_ORDER = {
     "shift-delete": 0, "open-delete": 0, "shift-edit": 1, "open-edit": 1,
-    "shift-reassign": 2, "shift-add": 3, "shift-publish": 3, "open-add": 3, "open-assign": 4,
+    "shift-reassign": 2, "shift-to-open": 2, "shift-add": 3, "shift-publish": 3, "open-add": 3, "open-assign": 4,
 }
 
 
@@ -551,7 +551,9 @@ _MAX_CHANGES = 160  # four suggested weeks (~40 shifts each) in one Apply
 _MAX_MESSAGE_WEEKS = 6
 _MAX_OPEN_COUNT = 10
 _SPAN = re.compile(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})")
-_NEEDS_EMPLOYEE = {"open-assign", "shift-add", "shift-delete", "shift-edit", "shift-reassign", "shift-publish"}
+_NEEDS_EMPLOYEE = {
+    "open-assign", "shift-add", "shift-delete", "shift-edit", "shift-reassign", "shift-publish", "shift-to-open",
+}
 
 
 def _span(text: str, where: str) -> tuple[int, int]:
@@ -700,6 +702,39 @@ def _apply_open(frame, page, row: dict, open_now: Counter, *, dry_run: bool) -> 
     return name, after
 
 
+def _make_open(frame, page, row: dict, open_now: Counter, *, dry_run: bool) -> Counter:
+    """An assigned shift becomes an open shift at the same times: the open shift is added and
+    confirmed first, then the assigned one is deleted, so a failure part-way leaves the slot
+    covered twice, never empty. Returns the open shifts re-read after the add. Raises on failure."""
+    emp, d = row["employee"], row["date"].isoformat()
+    times = {"date_iso": d, "start_min": row["start_min"], "end_min": row["end_min"]}
+    slot = (d, row["start_min"], row["end_min"])
+    if not wb.shift_in_grid(frame, page, employee=emp, **times):
+        raise wb.ScheduleWriteError("the shift is no longer in ADP")
+    shown = wb.create_open_shift(frame, page, **times, publish=True, dry_run=dry_run)
+    if dry_run:
+        wb.delete_any_shift(frame, page, employee=emp, **times, dry_run=True)
+        return open_now
+    try:
+        after = wb.read_open_shifts(page, frame, week_start_of(row["date"]))
+    except Exception as exc:  # noqa: BLE001 — unknown outcome; never retried
+        raise wb.UnconfirmedSave(
+            f"could not re-read ADP's open shifts ({type(exc).__name__}: {exc}); {emp}'s shift was not deleted"
+        ) from exc
+    if after[slot] <= open_now[slot]:
+        raise wb.UnconfirmedSave(
+            f"ADP does not show the new open shift; {emp}'s shift was not deleted"
+            f" (after Publish ADP said: {(shown or '')[:200]!r})"
+        )
+    try:
+        wb.delete_any_shift(frame, page, employee=emp, **times)
+    except Exception as exc:
+        raise wb.ScheduleWriteError(
+            f"added the open shift but could not delete {emp}'s shift ({type(exc).__name__}: {exc}) — delete it in ADP"
+        ) from exc
+    return after
+
+
 def _publish_draft(frame, page, emp: str, times: dict, *, dry_run: bool) -> str | None:
     """Make one ADP draft live: delete it, then add the same shift published (that shift only)."""
     if dry_run:
@@ -823,6 +858,8 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
                 try:
                     if row["kind"].startswith("open-"):
                         name, open_now = _apply_open(frame, page, row, open_now, dry_run=dry_run)
+                    elif row["kind"] == "shift-to-open":
+                        name, open_now = None, _make_open(frame, page, row, open_now, dry_run=dry_run)
                     else:
                         name = _apply_assigned(frame, page, row, dry_run=dry_run)
                 except ApplySkip as why:
@@ -838,7 +875,7 @@ def run_apply(store: str, batch_id: str, *, headless: bool, dry_run: bool, rows:
                         retry.append({**row, "_first": exc})
                     else:
                         fail(row, SHIFT_TABLE, msg if "_first" not in row else f"{msg} (after one retry)")
-                    if row["kind"].startswith("open-") and not dry_run:
+                    if (row["kind"].startswith("open-") or row["kind"] == "shift-to-open") and not dry_run:
                         try:
                             open_now = wb.read_open_shifts(page, frame, week)
                         except Exception:  # noqa: BLE001 — the next open change fails on its own read

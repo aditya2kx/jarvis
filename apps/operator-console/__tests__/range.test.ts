@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RANGE_PRESETS, isMonthLike, resolveRange, wantsCustom } from "@/lib/filters/range";
+import { RANGE_PRESETS, goalMonths, isMonthLike, resolveRange, wantsCustom } from "@/lib/filters/range";
 
 // Fixed "now" for every test: Thu 2026-07-02, 13:00 Central (18:00Z) — safely
 // mid-day so the America/Chicago "today" lookup can't straddle midnight.
@@ -38,6 +38,17 @@ describe("resolveRange — 7d/30d (rolling, end = today)", () => {
         end: "2026-07-02",
         label: "Last 30 days",
         preset: "30d",
+      });
+    });
+  });
+
+  it("90d is a 90-day window ending today", () => {
+    withNow(THURSDAY, () => {
+      expect(resolveRange("90d")).toEqual({
+        start: "2026-04-04",
+        end: "2026-07-02",
+        label: "Last 90 days",
+        preset: "90d",
       });
     });
   });
@@ -166,8 +177,9 @@ describe("resolveRange — fallback + input handling", () => {
 });
 
 describe("isMonthLike", () => {
-  it("is true for 30d/this_month/last_month", () => {
+  it("is true for 30d/90d/this_month/last_month", () => {
     expect(isMonthLike("30d")).toBe(true);
+    expect(isMonthLike("90d")).toBe(true);
     expect(isMonthLike("this_month")).toBe(true);
     expect(isMonthLike("last_month")).toBe(true);
   });
@@ -179,11 +191,21 @@ describe("isMonthLike", () => {
   });
 });
 
+describe("goalMonths", () => {
+  it("measures 90 days against three monthly goals and every other preset against one", () => {
+    expect(goalMonths("90d")).toBe(3);
+    for (const p of ["7d", "30d", "this_week", "this_month", "last_week", "last_month", "custom"] as const) {
+      expect(goalMonths(p)).toBe(1);
+    }
+  });
+});
+
 describe("RANGE_PRESETS", () => {
-  it("has exactly the 7 operator-facing presets in display order", () => {
+  it("has exactly the 8 operator-facing presets in display order", () => {
     expect(RANGE_PRESETS.map((p) => p.value)).toEqual([
       "7d",
       "30d",
+      "90d",
       "this_week",
       "this_month",
       "last_week",

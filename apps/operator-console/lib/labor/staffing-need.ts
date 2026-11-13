@@ -28,6 +28,45 @@ export function floorAt(t: number, floor: FloorWindow[] = DEFAULT_LABOR_FLOOR): 
   return w ? w.min : null;
 }
 
+/** One person may work alone only in hours with at least this few orders, for at least `minMin`. */
+export type SoloRule = { maxOrders: number; minMin: number };
+
+function hourlyOrders(iso: string, demand: DemandCell[]): Map<number, number> {
+  const dow = isoWeekdayMon0(iso);
+  const byHour = new Map<number, number>();
+  for (const c of demand) if (c.dow === dow) byHour.set(c.hour, c.orders);
+  return byHour;
+}
+
+/**
+ * Staff-safety floor per step (0 while closed). With a solo rule, two are on the floor unless the
+ * hour's typical orders are at most `maxOrders`; a solo stretch shorter than `minMin` gets the second person.
+ */
+export function floorSeries(
+  iso: string,
+  points: Pick<OccupancyPoint, "min">[],
+  demand: DemandCell[],
+  floor: FloorWindow[] = DEFAULT_LABOR_FLOOR,
+  solo?: SoloRule | null,
+  stepMin = 15,
+): number[] {
+  const byHour = hourlyOrders(iso, demand);
+  const out = points.map(({ min }) => {
+    const f = floorAt(min, floor);
+    if (f == null) return 0;
+    if (!solo) return f;
+    return (byHour.get(Math.floor(min / 60)) ?? 0) <= solo.maxOrders ? f : Math.max(f, 2);
+  });
+  if (!solo) return out;
+  for (let i = 0; i < out.length; ) {
+    let j = i;
+    while (j < out.length && out[j] === 1) j++;
+    if (j > i && (j - i) * stepMin < solo.minMin) out.fill(2, i, j);
+    i = Math.max(j, i + 1);
+  }
+  return out;
+}
+
 /** Needed headcount per occupancy step, aligned with `points` (same `min` values). */
 export function needSeries(
   iso: string,
@@ -35,16 +74,14 @@ export function needSeries(
   demand: DemandCell[],
   ordersPerPerson: number = DEFAULT_ORDERS_PER_PERSON,
   floor: FloorWindow[] = DEFAULT_LABOR_FLOOR,
+  solo?: SoloRule | null,
 ): number[] {
-  const dow = isoWeekdayMon0(iso);
-  const byHour = new Map<number, number>();
-  for (const c of demand) if (c.dow === dow) byHour.set(c.hour, c.orders);
+  const byHour = hourlyOrders(iso, demand);
   const opp = ordersPerPerson > 0 ? ordersPerPerson : DEFAULT_ORDERS_PER_PERSON;
-  return points.map(({ min }) => {
-    const f = floorAt(min, floor);
-    if (f == null) return 0;
-    const orders = byHour.get(Math.floor(min / 60)) ?? 0;
-    return Math.max(f, Math.ceil(orders / opp));
+  const base = floorSeries(iso, points, demand, floor, solo);
+  return points.map(({ min }, i) => {
+    if (floorAt(min, floor) == null) return 0;
+    return Math.max(base[i]!, Math.ceil((byHour.get(Math.floor(min / 60)) ?? 0) / opp));
   });
 }
 

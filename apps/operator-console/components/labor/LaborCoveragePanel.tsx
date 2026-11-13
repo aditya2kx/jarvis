@@ -41,8 +41,11 @@ import {
   shortNarrative,
   shortPersonHours,
   shortWindows,
+  floorSeries,
   type DemandCell,
+  type SoloRule,
 } from "@/lib/labor/staffing-need";
+import { forecastWeek, scaleDemand, trendFactor, weekCap, type TrendDay } from "@/lib/labor/demand-trend";
 import { addDay, emptyBreakdown, requiredByRule } from "@/lib/labor/draft-breakdown";
 import { newShifts } from "@/lib/labor/day-strip";
 import { DayStripTags } from "@/components/labor/DayStripTags";
@@ -164,6 +167,8 @@ function withOpenHours(b: { startMin: number; endMin: number }, s: StaffingBasic
 type NeedCtx = { staffing: StaffingBasics; dayRules: DayRule[]; deliveries: ReadonlySet<string> };
 
 const floorOf = (s: StaffingBasics) => [{ fromMin: s.openMin, toMin: s.closeMin, min: s.minPeople }];
+const soloOf = (s: StaffingBasics): SoloRule | null =>
+  s.soloMaxOrders == null ? null : { maxOrders: s.soloMaxOrders, minMin: s.soloMinMin };
 
 function dayCoverage(
   iso: string,
@@ -178,7 +183,7 @@ function dayCoverage(
     ? applyDayRules(
         iso,
         points.map((p) => p.min),
-        needSeries(iso, points, demand, ctx.staffing.ordersPerPerson, floorOf(ctx.staffing)),
+        needSeries(iso, points, demand, ctx.staffing.ordersPerPerson, floorOf(ctx.staffing), soloOf(ctx.staffing)),
         ctx.dayRules,
         ctx.deliveries,
       )
@@ -205,6 +210,7 @@ const NO_RULES_HISTORY: RulesVersion[] = [];
 const NO_UNAVAILABILITY: UnavailabilityRow[] = [];
 const NO_BLOCKS: LaneOff[] = [];
 const NO_PUSH_ROWS: PushRow[] = [];
+const NO_TREND: TrendDay[] = [];
 
 function chipLabel(iso: string): { weekday: string; monthDay: string } {
   const [y, m, d] = iso.split("-").map(Number);
@@ -1074,6 +1080,7 @@ export function LaborCoveragePanel({
   laborTypes,
   todayIso = chicagoTodayIso(),
   demand,
+  trendDays = NO_TREND,
   goalHoursWeek,
   deliveryDates,
   rulesHistory = NO_RULES_HISTORY,
@@ -1096,6 +1103,8 @@ export function LaborCoveragePanel({
   todayIso?: string;
   /** Median orders per weekday × hour (last 8 weeks); enables the Needed line. */
   demand?: DemandCell[];
+  /** Daily orders / sales / labor for the last 8 weeks — trend and labor % cap. */
+  trendDays?: TrendDay[];
   goalHoursWeek?: number;
   /** Upcoming frozen delivery dates (restock schedule). */
   deliveryDates?: string[];
@@ -1184,6 +1193,22 @@ export function LaborCoveragePanel({
     setEditedRules(null);
   }
   const rules = editedRules ?? savedRules;
+  // Each rules version brings its own trend weights and cap, so saved vs edited drafts compare fairly.
+  const forecastFor = useCallback(
+    (s: StaffingBasics) => {
+      const factor = trendFactor(trendDays, todayIso, s.trendWeights);
+      const week = forecastWeek(trendDays, todayIso, factor);
+      return {
+        factor,
+        demand: demand && scaleDemand(demand, factor),
+        week,
+        cap: weekCap(s.laborCapPct, week, goalHoursWeek),
+      };
+    },
+    [demand, trendDays, todayIso, goalHoursWeek],
+  );
+  const forecast = useMemo(() => forecastFor(rules.staffing), [forecastFor, rules.staffing]);
+  const needDemand = forecast.demand;
   const inputs = useMemo<NeedCtx>(
     () => ({ staffing: rules.staffing, dayRules: rules.dayRules, deliveries: new Set(deliveryDates ?? []) }),
     [rules.staffing, rules.dayRules, deliveryDates],
@@ -1301,13 +1326,13 @@ export function LaborCoveragePanel({
     const summaries = strip.map((iso) => {
       const lanes = lanesFor(iso);
       if (iso >= todayIso) {
-        const cov = dayCoverage(iso, lanes, demand, inputs);
+        const cov = dayCoverage(iso, lanes, needDemand, inputs);
         if (cov.need) short.set(iso, shortPersonHours(cov.points, cov.need));
       }
       return dayChipSummary(iso, lanes);
     });
     return { chips: summaries, shortHours: short };
-  }, [strip, lanesFor, demand, inputs, todayIso]);
+  }, [strip, lanesFor, needDemand, inputs, todayIso]);
 
   const activeDay = day ?? initial;
 
@@ -1321,10 +1346,10 @@ export function LaborCoveragePanel({
       dayCoverage(
         activeDay ?? "",
         people,
-        activeDay && activeDay >= todayIso ? demand : undefined,
+        activeDay && activeDay >= todayIso ? needDemand : undefined,
         inputs,
       ),
-    [activeDay, people, demand, inputs, todayIso],
+    [activeDay, people, needDemand, inputs, todayIso],
   );
   const dayOff = useMemo(() => (activeDay ? laneBlocks(offRows, activeDay) : new Map<string, LaneOff[]>()), [offRows, activeDay]);
   const daySpans = useMemo(() => {
@@ -1417,6 +1442,7 @@ export function LaborCoveragePanel({
   );
 
   const buildDrafts = useCallback((r: ScheduleRules) => {
+    const { demand, cap } = forecastFor(r.staffing);
     if (!demand?.length) return null;
     const meal: MealRule = { afterMin: r.staffing.mealAfterMin, unpaidMin: r.staffing.unpaidMealMin };
     const unavail = [...unavailability, ...ruleUnavailability(r.staffRules)];
@@ -1511,7 +1537,7 @@ export function LaborCoveragePanel({
           const dayPeople = peopleByDay.get(iso)!;
           const cov = dayCoverage(iso, dayPeople.filter(countsTowardNeed(iso)), demand, inputs);
           const mins = cov.points.map((p) => p.min);
-          const floorOnly = needSeries(iso, cov.points, [], inputs.staffing.ordersPerPerson, floorOf(inputs.staffing));
+          const floorOnly = floorSeries(iso, cov.points, demand, floorOf(inputs.staffing), soloOf(inputs.staffing));
           return {
             iso,
             mins,
@@ -1620,10 +1646,11 @@ export function LaborCoveragePanel({
         addDay(breakdown, split, drafted.reduce((a, s) => a + s.hours, 0));
       }
       done.clear();
-      // Pass 2: spend what's left of the goal on the largest order-driven gaps.
+      // Pass 2: spend what's left under the cap (labor % of forecast sales, else the hours goal)
+      // on the largest order-driven gaps.
       let budget =
-        goalHoursWeek != null
-          ? goalHoursWeek -
+        cap != null
+          ? cap.hours -
             existingHours -
             state.reduce((a, d) => a + newShifts(d.shifts).reduce((b, s) => b + s.hours, 0), 0)
           : Infinity;
@@ -1753,6 +1780,7 @@ export function LaborCoveragePanel({
         peakLeftHours: plan ? 0 : peakLeftHours,
         breakdown: plan ? undefined : breakdown,
         locked: plan != null,
+        cap,
       };
     };
     const weeks = new Map(weekStarts.map((w) => [w, draftWeek(w)]));
@@ -1760,7 +1788,7 @@ export function LaborCoveragePanel({
     for (const w of weeks.values()) for (const [iso, s] of w.byDay) byDay.set(iso, s);
     return { weeks, byDay };
   }, [
-    demand,
+    forecastFor,
     strip,
     todayIso,
     lanesFor,
@@ -1769,7 +1797,6 @@ export function LaborCoveragePanel({
     laborTypes,
     deliveryDates,
     baseRoster,
-    goalHoursWeek,
     unavailability,
     plans,
     picks,
@@ -2100,7 +2127,8 @@ export function LaborCoveragePanel({
               employees={baseRoster.map((a) => a.employee).sort()}
               trainees={[...progress.values()]}
               deliveryDates={deliveryDates ?? []}
-              goalHoursWeek={goalHoursWeek}
+              cap={forecast.cap}
+              trend={{ factor: forecast.factor, sales: forecast.week.sales, costPerHour: forecast.week.costPerHour }}
               forecast={weekForecast}
             />
           ) : null}
@@ -2211,7 +2239,7 @@ export function LaborCoveragePanel({
               peakLeftHours={weekDraft.peakLeftHours}
               breakdown={weekDraft.breakdown}
               dayRules={rules.dayRules}
-              goalHoursWeek={goalHoursWeek}
+              cap={weekDraft.cap}
               locked={weekDraft.locked}
               pickCount={weekDraft.pickCount}
               droppedPicks={weekDraft.droppedPicks}
@@ -2263,7 +2291,7 @@ export function LaborCoveragePanel({
               <>
                 <span
                   className="inline-flex items-center gap-1.5"
-                  title={`Larger of the minimum (${rules.staffing.minPeople}) and typical (median) orders for this weekday+hour over the last 8 weeks ÷ ${rules.staffing.ordersPerPerson} per person, rounded up, then your day & time rules`}
+                  title={`Larger of the staffing minimum and typical (median) orders for this weekday+hour over the last 8 weeks${forecast.factor !== 1 ? ` × ${forecast.factor.toFixed(2)} recent trend` : ""} ÷ ${rules.staffing.ordersPerPerson} per person, rounded up, then your day & time rules`}
                 >
                   <span
                     className="inline-block h-0.5 w-3 rounded-full"

@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/table";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
 import { formatClockMin } from "@/lib/labor/coverage-model";
+import { capLabel, type WeekCap } from "@/lib/labor/demand-trend";
 import type { HoursBreakdown } from "@/lib/labor/draft-breakdown";
 import { daysLabel, type DayRule } from "@/lib/labor/schedule-inputs";
 import type { Availability, DraftShift } from "@/lib/labor/shift-draft";
@@ -29,18 +30,21 @@ function weekLabel(iso: string): string {
   return new Date(y!, m! - 1, d!).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+const capWord = (cap?: WeekCap | null) => (cap?.kind === "labor" ? "cap" : "goal");
+
 const fmtH = (h: number) => `${h < 0 ? "−" : ""}${Math.abs(h).toFixed(1)}h`;
 
 /** Where the week's hours come from, largest lever first after what's already in ADP. */
 function HoursBreakdownList({
   breakdown: b,
   dayRules,
-  goalHoursWeek,
+  cap,
 }: {
   breakdown: HoursBreakdown;
   dayRules: DayRule[];
-  goalHoursWeek?: number;
+  cap?: WeekCap | null;
 }) {
+  const word = capWord(cap);
   const rules = dayRules
     .map((r, i) => ({ r, i, hours: b.rules.find((x) => x.id === r.id)?.hours ?? 0 }))
     .filter((x) => Math.abs(x.hours) >= 0.25);
@@ -59,7 +63,7 @@ function HoursBreakdownList({
       hint: "shortest shift, shift times, overlap",
       hours: b.shape,
     },
-    { key: "peak", label: "Busy-order shifts", hint: "only while under the goal", hours: b.peak },
+    { key: "peak", label: "Busy-order shifts", hint: `only while under the ${word}`, hours: b.peak },
     ...(b.training >= 0.25
       ? [
           {
@@ -76,7 +80,7 @@ function HoursBreakdownList({
   ];
   const total = lines.reduce((a, l) => a + l.hours, 0);
   const max = Math.max(...lines.map((l) => Math.abs(l.hours)), 1);
-  const over = goalHoursWeek != null ? total - goalHoursWeek : 0;
+  const over = cap ? total - cap.hours : 0;
   return (
     <div
       data-testid="hours-breakdown"
@@ -88,7 +92,7 @@ function HoursBreakdownList({
           <span className={cn("font-semibold", over > 0.5 ? "text-rose-600 dark:text-rose-400" : "text-foreground")}>
             {total.toFixed(0)}h
           </span>
-          {goalHoursWeek != null ? <span className="text-muted-foreground"> of {goalHoursWeek}h goal</span> : null}
+          {cap ? <span className="text-muted-foreground"> of {capLabel(cap)}</span> : null}
         </span>
       </div>
       <ul className="flex flex-col gap-2">
@@ -121,7 +125,7 @@ function HoursBreakdownList({
       </ul>
       {over > 0.5 ? (
         <p className="border-t pt-2 text-xs text-muted-foreground">
-          <span className="font-medium text-rose-600 dark:text-rose-400">{over.toFixed(0)}h over the goal.</span> Loosen the biggest lines in Scheduling rules above — the
+          <span className="font-medium text-rose-600 dark:text-rose-400">{over.toFixed(0)}h over the {word}.</span> Loosen the biggest lines in Scheduling rules above — the
           draft and this list update as you edit, before you save.
         </p>
       ) : null}
@@ -140,7 +144,7 @@ export function ShiftDraftSummary({
   peakLeftHours,
   breakdown,
   dayRules,
-  goalHoursWeek,
+  cap,
   locked = false,
   pickCount = 0,
   droppedPicks = 0,
@@ -166,10 +170,12 @@ export function ShiftDraftSummary({
   peakLeftHours: number;
   breakdown?: HoursBreakdown;
   dayRules?: DayRule[];
-  goalHoursWeek?: number;
+  /** Ceiling on drafted hours: labor % of forecast sales, else the weekly hours goal. */
+  cap?: WeekCap | null;
 }) {
   const total = existingHours + draftHours;
-  const over = goalHoursWeek != null && total > goalHoursWeek;
+  const over = cap != null && total > cap.hours;
+  const word = capWord(cap);
   const byName = new Map(roster.map((a) => [a.employee, a]));
   // The coverage chart already draws every shift ADP has; list only what needs a pick or ADP fix.
   // An ADP open shift nobody can take stays in the open-shift list above, with its reasons.
@@ -182,7 +188,7 @@ export function ShiftDraftSummary({
       <span className={cn("font-medium tabular-nums", over ? "text-rose-600 dark:text-rose-400" : "text-foreground")}>
         {total.toFixed(0)}h
       </span>
-      {goalHoursWeek != null ? ` of ${goalHoursWeek}h goal` : ""}
+      {cap ? ` of ${capLabel(cap)}` : ""}
     </>
   );
   if (!rows.length && !breakdown && !over && !(peakLeftHours > 0) && !pickCount && !droppedPicks) {
@@ -217,14 +223,14 @@ export function ShiftDraftSummary({
           <p className="text-xs text-muted-foreground">{weekLine}</p>
           {over ? (
             <p className="text-xs text-rose-600 dark:text-rose-400">
-              Over the goal: the labor floor and your day rules need these shifts, so no
+              Over the {word}: the staffing minimum{dayRules?.length ? " and your day rules need" : " needs"} these shifts, so no
               peak-order shifts were added
               {peakLeftHours > 0 ? ` (${peakLeftHours.toFixed(1)}h of peak demand uncovered)` : ""}.
             </p>
           ) : peakLeftHours > 0 ? (
             <p className="text-xs text-muted-foreground">
-              Goal reached — {peakLeftHours.toFixed(1)}h of peak-order demand left uncovered. Raise
-              the weekly hours goal to draft more.
+              {word === "goal" ? "Goal" : "Cap"} reached — {peakLeftHours.toFixed(1)}h of peak-order demand left uncovered. Raise
+              {word === "goal" ? " the weekly hours goal" : " the labor cap in Scheduling rules"} to draft more.
             </p>
           ) : null}
           {!locked && (pickCount > 0 || droppedPicks > 0) ? (
@@ -254,7 +260,7 @@ export function ShiftDraftSummary({
       </div>
 
       {breakdown ? (
-        <HoursBreakdownList breakdown={breakdown} dayRules={dayRules ?? []} goalHoursWeek={goalHoursWeek} />
+        <HoursBreakdownList breakdown={breakdown} dayRules={dayRules ?? []} cap={cap} />
       ) : null}
 
       {rows.length ? (

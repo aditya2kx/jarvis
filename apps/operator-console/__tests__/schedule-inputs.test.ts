@@ -480,3 +480,34 @@ describe("shift_windows staff rule", () => {
     ]);
   });
 });
+
+describe("parseScheduleRules guardrails (Issue #512)", () => {
+  const withStaffing = (patch: object) =>
+    parseScheduleRules({ dayRules: [], staffRules: [], staffing: { ...DEFAULT_STAFFING, ...patch } }).staffing;
+
+  it("loads versions saved before the guardrails with them off", () => {
+    const { soloMaxOrders, soloMinMin, laborCapPct, trendWeights, ...legacy } = DEFAULT_STAFFING;
+    void soloMaxOrders;
+    void soloMinMin;
+    void laborCapPct;
+    void trendWeights;
+    const s = withStaffing({});
+    const old = parseScheduleRules({ dayRules: [], staffRules: [], staffing: legacy }).staffing;
+    expect(old).toEqual(s);
+    expect([old.soloMaxOrders, old.soloMinMin, old.laborCapPct, old.trendWeights]).toEqual([null, 60, null, null]);
+  });
+
+  it("keeps the solo rule, labor cap and recent-week weights", () => {
+    const s = withStaffing({ soloMaxOrders: 2, soloMinMin: 60, laborCapPct: 0.4, trendWeights: [0.4, 0.3, 0.2, 0.1] });
+    expect([s.soloMaxOrders, s.soloMinMin, s.laborCapPct, s.trendWeights]).toEqual([2, 60, 0.4, [0.4, 0.3, 0.2, 0.1]]);
+  });
+
+  it("rejects out-of-range values", () => {
+    expect(() => withStaffing({ laborCapPct: 1.5 })).toThrow(/Labor cap/);
+    expect(() => withStaffing({ laborCapPct: 0 })).toThrow(/Labor cap/);
+    expect(() => withStaffing({ soloMaxOrders: 40 })).toThrow(/alone/);
+    expect(() => withStaffing({ soloMinMin: 50 })).toThrow(/alone/);
+    expect(() => withStaffing({ trendWeights: [0, 0] })).toThrow(/weights/);
+    expect(() => withStaffing({ trendWeights: [] })).toThrow(/weights/);
+  });
+});

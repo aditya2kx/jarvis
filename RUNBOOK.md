@@ -1826,6 +1826,16 @@ shortest draft shift (4.5 h — ADP's shortest regular shift). The **Needed** li
 ⌈median orders for that weekday + hour over the last 8 weeks ÷ orders per person⌉, never below the
 minimum, then day & time rules replace it in their window (e.g. closing duties: 2 people 7:30–8:30 PM).
 The weekly hours goal is a ceiling for order-driven draft shifts, not a target. Drafts start tomorrow.
+**Guardrails (Issue #512, all off in versions saved before them):** *Two on the floor unless it's quiet*
+(`staffing.soloMaxOrders` / `soloMinMin`) makes the minimum two people except in hours whose typical
+orders are at most N, and never leaves anyone alone for less than the set minutes (default 60) — this
+floor is always drafted. *Cap labor at a share of forecast sales* (`staffing.laborCapPct`) replaces the
+weekly hours goal as the ceiling on order-driven shifts: cap hours = cap % × next week's forecast net
+sales ÷ labor $ per paid hour (last 4 weeks, `vw_labor_daily_live`); when the floor alone is over it the
+draft still schedules the floor and says so. *Follow recent weeks* (`staffing.trendWeights`, e.g.
+40/30/20/10 newest first) scales the 8-week hourly pattern and the sales forecast by the weighted recent
+orders-per-open-day ÷ the 8-week average (closed days ignored); the factor shows in the Staffing-basics
+hint and the **Needed** tooltip. Weeks already saved to ADP are never re-drafted.
 ADP open shifts count once (as coverage and hours); the draft only suggests who should take each one
 (free for the whole slot, within hour/shift caps). The suggested-week card never re-creates them;
 they're assigned from the **Changes to ADP** tray (below).

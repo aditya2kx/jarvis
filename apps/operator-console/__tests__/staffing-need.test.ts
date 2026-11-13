@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  floorSeries,
   isoWeekdayMon0,
   needSeries,
   shortNarrative,
@@ -70,5 +71,33 @@ describe("shortfall", () => {
 
   it("counts ADP open slots as coverage", () => {
     expect(shortWindows([{ min: 600, actual: 0, scheduled: 1, open: 1 }], [2])).toEqual([]);
+  });
+});
+
+describe("floorSeries solo rule (Issue #512)", () => {
+  const MON = "2026-11-16";
+  const solo = { maxOrders: 2, minMin: 60 };
+  const day = (byHour: Record<number, number>): DemandCell[] =>
+    Object.entries(byHour).map(([h, orders]) => ({ dow: 0, hour: Number(h), orders }));
+
+  it("pairs every hour above 2 orders and lets one person work a quiet stretch of an hour or more", () => {
+    const demand = day({ 6: 0, 7: 1, 8: 4, 9: 12, 10: 3 });
+    // 6:30–8:00 alone (90 min, ≤2 orders), then two.
+    expect(floorSeries(MON, pts(390, 660), demand, undefined, solo)).toEqual([1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]);
+    // 12 orders at 9 AM ÷ 5 per person → a third person on top of the pair.
+    expect(needSeries(MON, pts(540, 600), demand, 5, undefined, solo)).toEqual([3, 3, 3, 3]);
+  });
+
+  it("never leaves anyone alone for less than the minimum stretch", () => {
+    // 6:30–7:00 quiet but only 30 min, and 8:00–8:30 PM after the last order.
+    const demand = day({ 6: 0, 7: 4, 19: 5, 20: 0 });
+    expect(floorSeries(MON, pts(390, 450), demand, undefined, solo)).toEqual([2, 2, 2, 2]);
+    expect(floorSeries(MON, pts(1140, 1260), demand, undefined, solo)).toEqual([2, 2, 2, 2, 2, 2, 0, 0]);
+  });
+
+  it("keeps the plain minimum when the rule is off (older rule versions)", () => {
+    const demand = day({ 7: 4, 8: 9 });
+    expect(floorSeries(MON, pts(420, 540), demand)).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(needSeries(MON, pts(420, 540), demand, 4)).toEqual([1, 1, 1, 1, 3, 3, 3, 3]);
   });
 });

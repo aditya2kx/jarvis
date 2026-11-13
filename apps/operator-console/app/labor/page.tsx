@@ -10,6 +10,7 @@ import {
   laborByGrain,
   laborConcurrentByGrain,
   laborDemandProfile,
+  laborTrendDays,
   laborHoursPerPersonDaily,
   laborOpenShiftDays,
   laborOpenShiftHoursByGrain,
@@ -32,6 +33,7 @@ import { dateSortKey, formatCents } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { FEATURES } from "@/lib/config/features";
 import type { DemandCell } from "@/lib/labor/staffing-need";
+import type { TrendDay } from "@/lib/labor/demand-trend";
 import { HoursPerPersonCard } from "@/components/labor/HoursPerPersonCard";
 import { OpenShiftsCard } from "@/components/labor/OpenShiftsCard";
 import { CollapsibleSection } from "@/components/shell/CollapsibleSection";
@@ -214,6 +216,7 @@ export default async function LaborPage({
   let coverageOpen: LaborOpenShiftDayRow[] = [];
   let punchGaps: PunchGap[] = [];
   let coverageDemand: DemandCell[] = [];
+  let trendDays: TrendDay[] = [];
   let deliveryDates: string[] = [];
   let rulesHistory: RulesVersion[] = [];
   let unavailability: UnavailabilityRow[] = [];
@@ -306,6 +309,7 @@ export default async function LaborPage({
       unavailEvents,
       hires,
       pastShifts,
+      trend,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(DEFAULT_STORE),
@@ -375,7 +379,9 @@ export default async function LaborPage({
             preset: "custom",
           }).catch(() => [])
         : Promise.resolve([]),
+      laborTrendDays(todayIso).catch(() => []),
     ]);
+    trendDays = trend;
     hireDates = hires;
     trainingActuals = pastShifts;
     unavailabilityEvents = unavailEvents;
@@ -870,6 +876,7 @@ export default async function LaborPage({
               open={coverageOpen}
               laborTypes={laborTypes}
               demand={coverageDemand}
+              trendDays={trendDays}
               goalHoursWeek={goalLaborHoursWeek}
               deliveryDates={deliveryDates}
               rulesHistory={rulesHistory}

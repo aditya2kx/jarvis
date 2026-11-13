@@ -6,6 +6,7 @@ import {
   type LaborForwardSummary,
 } from "@/lib/kpi/labor-forward";
 import type { PunchDayRow, PunchGapRow } from "@/lib/labor/punch-gaps";
+import type { TrendDay } from "@/lib/labor/demand-trend";
 
 export type { LaborForwardSummary };
 
@@ -2377,6 +2378,26 @@ export function laborDemandProfile(
      )
      SELECT DISTINCT dow, hour, orders FROM cells WHERE orders > 0`,
     { asOf: dateParam(asOfIso), days: intParam(weeks * 7) },
+  );
+}
+
+/**
+ * Daily orders, net sales and labor (cost + paid hours, same basis as Labor %) for the
+ * `days` before `asOfIso` — the staffing forecast's recent trend and labor % cap. Issue #512.
+ */
+export function laborTrendDays(asOfIso: string, days = 56): Promise<TrendDay[]> {
+  return q<TrendDay>(
+    `SELECT
+       CAST(date AS STRING) AS date,
+       SUM(IFNULL(orders, 0)) AS orders,
+       SUM(IFNULL(net_sales, 0)) AS net_sales,
+       SUM(IFNULL(total_labor_cost, 0)) AS labor_cost,
+       SUM(IFNULL(hourly_hours, 0) + IFNULL(fulltime_hours, 0)) AS hours
+     FROM ${fq("vw_labor_daily_live")}
+     WHERE date BETWEEN DATE_SUB(@asOf, INTERVAL @days DAY) AND DATE_SUB(@asOf, INTERVAL 1 DAY)
+     GROUP BY date
+     ORDER BY date`,
+    { asOf: dateParam(asOfIso), days: intParam(days) },
   );
 }
 

@@ -1,0 +1,27 @@
+{
+  "name": "poker-night",
+  "version": "1.0.0",
+  "description": "Shared chip, blinds and score tracker for a home poker game played with physical cards",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build && node scripts/migrate.mjs",
+    "start": "next start",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "next": "^15.5.29",
+    "pg": "^8.23.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "private": true
+}

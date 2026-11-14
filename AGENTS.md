@@ -37,6 +37,14 @@ Read these first, derive proposals from them, cite what you used.
 | **pup-watch** | Email when the pup is let out alone in the daycare yard | Cloud Run, scale-to-zero + Cloud Scheduler tick | `cloud/pup_watch/README.md` + `RUNBOOK.md` § pup-watch |
 | **jarvis-dev-gateway** | Start / check Jarvis dev tasks from Siri, Grok (MCP) or HTTP | Cloud Run, scale-to-zero, bearer auth | `cloud/jarvis_dev_gateway/README.md` |
 
+### Personal apps (not Palmetto, not BHAGA)
+
+Self-contained; they share no code, config, data, CI or deploy path with the Operator Console or any agent. Do not import across them.
+
+| App | Purpose | Deployment | Read |
+|---|---|---|---|
+| **poker-night** | Home poker night: shared chips / blinds / scoreboard table, real or in-app cards | Cursor app hosting (own Postgres) | `apps/poker-night/README.md` |
+
 ---
 
 ## Repo-wide rules (all agents, all machines)

@@ -1,5 +1,7 @@
 # Poker Night
 
+> **Personal app — not part of Palmetto, BHAGA or the Operator Console.** It is fully self-contained: its own `package.json`, database, styles and deploy target, and it must not import from (or be imported by) anything outside `apps/poker-night/`. `__tests__/isolation.test.ts` enforces this.
+
 Shared Texas Hold'em table for a home game. Everyone opens the same link on their phone. You can deal **real cards** at the table or let the **app deal** (each phone only sees its own cards; the winner is found automatically).
 
 ## Features

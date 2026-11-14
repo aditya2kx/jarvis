@@ -3034,23 +3034,37 @@ def _run_refresh(run_id: str) -> int:
     sync_all = _env_skip("BHAGA_ADP_SYNC_ALL")
     if sync_all or _env_skip("BHAGA_ADP_TIMECARD_ONLY"):
         args.store = os.environ.get("BHAGA_STORE") or args.store
-        print(
-            f"[adp-timecard-only] store={args.store} sync_all={sync_all} "
-            f"target_date={refresh_date.isoformat()} — "
-            f"{'all ADP reads' if sync_all else 'timecard + BQ hours only'}"
-        )
-        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        today_ct = _today_ct()
         from skills.adp_run_automation.runner import (  # noqa: PLC0415
             DOWNLOADS_DIR,
             download_adp_bundle,
+            sync_timecard_load_end,
         )
-        today_xlsx = DOWNLOADS_DIR / f"Timecard-{_today_ct().isoformat()}.xlsx"
+        # Mid-week Sync keeps load_end=yesterday (in-progress punches must not
+        # flip actual→schedule). On the first day of a new biweekly period,
+        # yesterday is the prior period — extend through today so the open
+        # period is ingested (2026-11-02 Sync with target=11-01 missed Nov 2).
+        # Punch-fix resync already set load_end to max(argv date, fix date)
+        # for the period that holds the write — do not widen it to "today".
+        if not after_punch_fix:
+            load_end = sync_timecard_load_end(
+                refresh_date,
+                today=today_ct,
+                store_profile=_load_profile(args.store),
+            )
+        print(
+            f"[adp-timecard-only] store={args.store} sync_all={sync_all} "
+            f"target_date={refresh_date.isoformat()} load_end={load_end.isoformat()} — "
+            f"{'all ADP reads' if sync_all else 'timecard + BQ hours only'}"
+        )
+        os.environ.setdefault("BHAGA_DATASTORE", "bigquery")
+        today_xlsx = DOWNLOADS_DIR / f"Timecard-{today_ct.isoformat()}.xlsx"
         meta = today_xlsx.with_suffix(today_xlsx.suffix + ".target-meta.json")
-        today_sched = DOWNLOADS_DIR / f"Schedule-{_today_ct().isoformat()}.json"
-        today_gaps = DOWNLOADS_DIR / f"TimecardsUI-{_today_ct().isoformat()}.json"
+        today_sched = DOWNLOADS_DIR / f"Schedule-{today_ct.isoformat()}.json"
+        today_gaps = DOWNLOADS_DIR / f"TimecardsUI-{today_ct.isoformat()}.json"
         cached_exports = [today_xlsx, meta, today_sched, today_gaps]
         if sync_all:
-            cached_exports.append(DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{_today_ct().isoformat()}.xlsx")
+            cached_exports.append(DOWNLOADS_DIR / f"Earnings-and-Hours-V1-{today_ct.isoformat()}.xlsx")
         if keep_punch_fix_export:
             print("[adp-timecard-only] reusing the write job's post-write export (no second login)")
         else:
@@ -3069,6 +3083,7 @@ def _run_refresh(run_id: str) -> int:
         result = download_adp_bundle(
             store=args.store,
             target_date=refresh_date,
+            through_date=load_end if load_end != refresh_date else None,
             include_earnings=sync_all,
             include_schedule=not after_punch_fix,
             include_extras=sync_all,
@@ -3080,6 +3095,19 @@ def _run_refresh(run_id: str) -> int:
                 f"{result['errors'].get('adp_timecard')}"
             )
         print(f"[adp-timecard-only] wrote {result['timecard_xlsx']}")
+        # ADP Timecard dropdown lag (day 1–2 of a new biweek): the export only
+        # covers listed closed periods. Clamp BQ load/stamp to what we actually
+        # selected so Sync does not claim today's open period landed empty.
+        periods = result.get("timecard_pay_periods") or []
+        if periods:
+            covered_end = max(e for _s, e in periods)
+            if covered_end < load_end:
+                print(
+                    "BREADCRUMB adp_sync_load_end_clamped "
+                    f"wanted={load_end.isoformat()} covered_end={covered_end.isoformat()} "
+                    f"periods={[(s.isoformat(), e.isoformat()) for s, e in periods]}"
+                )
+                load_end = covered_end
         skips = ["square", "square_rollup"]
         # The loader reads the newest file on disk, so a failed scrape must be
         # skipped rather than reload yesterday's export as if it were fresh.
@@ -3121,9 +3149,11 @@ def _run_refresh(run_id: str) -> int:
                 *[a for s in skips for a in ("--skip", s)],
                 "--refresh-date",
                 refresh_date.isoformat(),
-                # The Timecard export runs through today; a daytime sync must not
-                # land today's in-progress punches (they flip the console's
-                # actual→schedule handoff and hide today's schedule).
+                # Default load_end=refresh_date (usually yesterday) so mid-day
+                # Sync does not land in-progress punches. Extended to Chicago
+                # today only when a new biweekly period started after
+                # refresh_date (sync_timecard_load_end). Clamped above when
+                # ADP has not listed the open period yet.
                 "--end",
                 load_end.isoformat(),
             ],
@@ -3132,7 +3162,7 @@ def _run_refresh(run_id: str) -> int:
             env=bq_env,
         )
         stamp_start = refresh_date - datetime.timedelta(days=13)
-        _stamp_adp_hours_scraped_at(stamp_start, refresh_date)
+        _stamp_adp_hours_scraped_at(stamp_start, load_end)
         print("[adp-timecard-only] BQ upsert complete")
         _refresh_stale_payroll_drafts(args.store)
         return 0

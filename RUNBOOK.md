@@ -1765,16 +1765,32 @@ Chrome: bump `CHROME_VERSION`, deploy, then run
 `python3 scripts/trigger_dated_refresh.py --date <yesterday> --force-scrape` and confirm
 `earnings prep: session alive` and `schedule OK`. If the session dies, revert the bump.
 
-**ADP Timecard pay-period selection (2026-07-17).** Nightly mode must select the **single**
-pay period that contains `target_date` — not Select All. The runner enumerates Pay Period
-dropdown options in Python (Playwright `name=` filters miss ADP's custom accessible names),
-matches an embedded date range (`YYYY-MM-DD - YYYY-MM-DD` as live ADP exposes, or
-`M/D/YYYY - M/D/YYYY`), then falls back to store-profile biweekly
+**ADP Timecard pay-period selection (2026-07-17; Sync window 2026-11-02).** Nightly /
+Sync mode selects every Pay Period whose range intersects
+`[target_date, through_date]` (``through_date`` defaults to ``target_date``; Sync ADP
+passes Chicago today when a new biweekly period started after yesterday) — not Select
+All. Mid-week Sync still loads BQ only through yesterday so in-progress punches do not
+flip the console's actual→schedule handoff; on the first day of a new period,
+`sync_timecard_load_end` extends the load through today (2026-11-02: Sync with
+target=11-01 had selected 10-19→11-01 only and left Nov 2 out of BQ). The runner
+enumerates Pay Period dropdown options in Python (Playwright `name=` filters miss ADP's
+custom accessible names), matches an embedded date range (`YYYY-MM-DD - YYYY-MM-DD` as
+live ADP exposes, or `M/D/YYYY - M/D/YYYY`), then falls back to store-profile biweekly
 bounds (`adp_run.pay_periods_anchor_end_date`), then a "Current Pay Period" label (including
-date-suffixed forms), and only then Select All. Select All of full history can exceed a 60s
-download wait (Slack `failure_alert` on 2026-07-15/16); the Timecard export timeout is 180s
-as a safety net. If punches/shifts are missing for dates, add
-`Retry-Dates: YYYY-MM-DD[, …]` to the fix PR so deploy full-scrapes the gap.
+date-suffixed forms), and only then Select All — and only when *no* intersecting option
+exists (a partial hit must not fall through to Select All). The Pay Period control is a
+true multi-select (accessible name `Pay Period N Selected`; Select All is a checkbox).
+**Open-period lag (day 1–2+):** ADP often omits the brand-new biweek from the Timecard
+Reports dropdown (2026-11-02/03: options stopped at `10-19 → 11-01`, no `11-02 → 11-15`).
+Select All only exports listed closed periods, so Nov 2 punches stay out of BQ until ADP
+lists the open option — then Sync / `run-job` with `REFRESH_DATE` in that window. While
+the open window is missing the runner emits `BREADCRUMB adp_pay_period_missing_open` and
+Sync clamps BQ `load_end` / the scraped_at stamp to the latest selected closed end
+(`BREADCRUMB adp_sync_load_end_clamped`) so the console does not claim today landed.
+Select All of full history can exceed a 60s download wait (Slack `failure_alert` on
+2026-07-15/16); the Timecard export timeout is 180s as a safety net. If punches/shifts
+are missing for dates, add `Retry-Dates: YYYY-MM-DD[, …]` to the fix PR so deploy
+full-scrapes the gap.
 If Timecard **Select All** (or a closed period) loads with **zero** `adp_shifts` rows for
 `refresh_date`, `clear_adp_reports_if_shifts_missing` **clears** Firestore `adp_reports`
 (`BREADCRUMB adp_shifts_missing_refresh_date`) so the next run retries ADP instead of skipping. Operator Console Labor overlays Team Schedule

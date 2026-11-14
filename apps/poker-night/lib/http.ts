@@ -15,6 +15,12 @@ export function tokenFrom(request: Request) {
   return request.headers.get("x-player-token");
 }
 
+/** Poll cursor from `?v=`. Missing/blank must be NaN so version-0 rooms still return a body. */
+export function pollSince(raw: string | null) {
+  if (raw === null || raw === "") return Number.NaN;
+  return Number(raw);
+}
+
 export async function readJson(request: Request): Promise<Record<string, unknown>> {
   const text = await request.text();
   if (text.length > 10_000) throw new GameError("Request too large");

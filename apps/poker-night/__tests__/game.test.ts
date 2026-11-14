@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { act, addPlayer, cancelHand, createRoom, pots, rebuy, resolveShowdown, startHand, type Room } from "@/lib/game";
 
 function table(names: string[], chips = 1000): Room {
-  const room = createRoom("r", { id: names[0], name: names[0] }, { startingChips: chips, smallBlind: 10, bigBlind: 20 });
+  const room = createRoom("r", { id: names[0], name: names[0] }, { startingChips: chips, smallBlind: 10, bigBlind: 20, dealMode: "physical", blindLevelMinutes: 0 });
   for (const n of names.slice(1)) addPlayer(room, { id: n, name: n });
   return room;
 }
@@ -77,7 +77,7 @@ describe("betting", () => {
     act(room, "B", { type: "fold" });
     expect(room.hand).toBeNull();
     expect(room.players.find((p) => p.id === "C")!.chips).toBe(1010);
-    expect(room.lastResult).toMatch(/C wins 30/);
+    expect(room.lastResult?.text).toMatch(/C wins 30/);
   });
 
   it("plays a full hand through every street to showdown", () => {

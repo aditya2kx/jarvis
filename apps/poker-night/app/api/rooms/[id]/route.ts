@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { bad, handleError, tokenFrom } from "@/lib/http";
 import { loadRoom, playerIdFor } from "@/lib/store";
+import { viewFor } from "@/lib/view";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +12,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (!row) return bad("Table not found", 404);
     const since = Number(new URL(request.url).searchParams.get("v"));
     const you = playerIdFor(row, tokenFrom(request));
-    if (since === row.version) return NextResponse.json({ unchanged: true, version: row.version, you });
-    return NextResponse.json({ room: row.state, version: row.version, you });
+    if (since === row.version) return NextResponse.json({ unchanged: true, version: row.version, you, now: Date.now() });
+    return NextResponse.json({ room: viewFor(row.state, you), version: row.version, you, now: Date.now() });
   } catch (error) {
     return handleError(error);
   }

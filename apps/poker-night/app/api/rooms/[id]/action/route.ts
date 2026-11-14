@@ -4,17 +4,20 @@ import {
   adjustChips,
   cancelHand,
   GameError,
+  react,
   rebuy,
   removePlayer,
   resolveShowdown,
   setSittingOut,
+  showCards,
   startHand,
-  updateBlinds,
+  updateSettings,
   type Action,
   type Room,
 } from "@/lib/game";
 import { bad, handleError, int, readJson, str, tokenFrom } from "@/lib/http";
 import { mutateRoom, playerIdFor } from "@/lib/store";
+import { viewFor } from "@/lib/view";
 
 function parseAction(body: Record<string, unknown>): Action {
   const move = str(body.move);
@@ -44,12 +47,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const { id } = await params;
     const body = await readJson(request);
     const token = tokenFrom(request);
-    const { row } = await mutateRoom(id, (row) => {
+    const { row, result: me } = await mutateRoom(id, (row) => {
       const me = playerIdFor(row, token);
       if (!me || !row.state.players.some((p) => p.id === me)) throw new GameError("Join the table first");
       apply(row.state, me, body);
+      return me;
     });
-    return NextResponse.json({ room: row.state, version: row.version, you: playerIdFor(row, token) });
+    return NextResponse.json({ room: viewFor(row.state, me), version: row.version, you: me, now: Date.now() });
   } catch (error) {
     if (error instanceof GameError && error.message === "Join the table first") return bad(error.message, 403);
     return handleError(error);
@@ -71,6 +75,10 @@ function apply(room: Room, me: string, body: Record<string, unknown>) {
       return act(room, target, parseAction(body));
     case "showdown":
       return resolveShowdown(room, parseWinners(body.winners));
+    case "show":
+      return showCards(room, me);
+    case "react":
+      return react(room, me, str(body.emoji));
     case "rebuy":
       if (target !== me) requireHost();
       return rebuy(room, target);
@@ -86,9 +94,14 @@ function apply(room: Room, me: string, body: Record<string, unknown>) {
     case "remove":
       requireHost();
       return removePlayer(room, target);
-    case "blinds":
+    case "settings":
       requireHost();
-      return updateBlinds(room, int(body.smallBlind, "Small blind", 1, 1e7), int(body.bigBlind, "Big blind", 1, 1e7));
+      return updateSettings(room, {
+        smallBlind: int(body.smallBlind, "Small blind", 1, 1e7),
+        bigBlind: int(body.bigBlind, "Big blind", 1, 1e7),
+        dealMode: body.dealMode === "app" ? "app" : "physical",
+        blindLevelMinutes: int(body.blindLevelMinutes ?? 0, "Blind level", 0, 240),
+      });
     default:
       throw new GameError("Unknown request");
   }

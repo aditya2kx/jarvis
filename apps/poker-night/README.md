@@ -1,20 +1,24 @@
 # Poker Night
 
-Shared chip tracker for a home Texas Hold'em game played with physical cards. One person opens a table and shares the link; everyone bets from their own phone.
+Shared Texas Hold'em table for a home game. Everyone opens the same link on their phone. You can deal **real cards** at the table or let the **app deal** (each phone only sees its own cards; the winner is found automatically).
 
-- Blinds post and the dealer button rotates automatically; heads-up rules apply with two players.
-- Turn order, minimum raises, all-ins and side pots are enforced by `lib/game.ts`.
-- At showdown players tap the winner of each pot (tap several to split).
-- Scoreboard shows chips, net versus buy-ins (rebuys included) and hands won.
-- Host tools: change blinds, set a stack, rebuy / sit out / remove a player, cancel a hand (refunds every bet), act for someone whose phone died.
-- Optional lounge music is generated in the browser with Web Audio (no audio files).
+## Features
+
+- Blinds, dealer button, turn order, min-raises, all-ins and side pots
+- **Real cards** or **app deals** (switch between hands)
+- Optional blind levels that double on a timer (turbo)
+- Coach mode: win chance, pot odds and plain-English tips (toggle with 🎓)
+- Hand rankings sheet (`?`) and a "How to play" tab for beginners
+- Leaderboard with net vs buy-ins, streaks, awards, VPIP and sparkline history
+- Emoji reactions, lounge music, chip / deal / win sound effects
+- Host tools: blinds, dealing mode, set stack, rebuy / sit out / remove, cancel hand, act for a player
 
 ## Run
 
 ```bash
 npm install
-npm run dev     # in-memory PGlite database when DATABASE_URL is unset
-npm test        # game engine tests
+npm run test
+npm run dev     # in-memory PGlite when DATABASE_URL is unset
 ```
 
-Published on Cursor app hosting with its own Postgres (`cursor-app.json`); migrations in `migrations/` run after `next build`. Each table is one `rooms` row; writes use optimistic locking on `version`, and clients poll every 1.5 s. Players are identified by a random token kept in `localStorage` (stored hashed server-side). Tables idle for 30 days are deleted.
+Published with its own Postgres (`cursor-app.json`). One `rooms` row per table; optimistic locking on `version`; clients poll ~1.2s. Player tokens live in `localStorage` and are stored hashed. Idle tables (30 days) are deleted. Hole cards never leave the server except to their owner (and at showdown / when someone chooses to show).

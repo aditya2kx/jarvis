@@ -1,12 +1,28 @@
+import { evaluate, fullDeck, shuffle, type Card } from "./cards";
+
 export type Street = "preflop" | "flop" | "turn" | "river" | "showdown";
+export type DealMode = "physical" | "app";
+
+export type Stats = {
+  handsPlayed: number;
+  vpip: number;
+  allIns: number;
+  biggestPot: number;
+  streak: number;
+  bestStreak: number;
+  bestHand: string | null;
+  bestHandScore: number;
+};
 
 export type Player = {
   id: string;
   name: string;
+  avatar: string;
   chips: number;
   boughtIn: number;
   handsWon: number;
   sittingOut: boolean;
+  stats: Stats;
 };
 
 export type Hand = {
@@ -20,26 +36,58 @@ export type Hand = {
   contributed: Record<string, number>;
   folded: string[];
   acted: string[];
+  vpip: string[];
   toAct: string | null;
+  turnStartedAt: number;
   currentBet: number;
   minRaise: number;
+  /** In-app dealing only. The view layer strips everything a viewer may not see. */
+  deck?: Card[];
+  holes?: Record<string, Card[]>;
+  board?: Card[];
 };
 
 export type Pot = { amount: number; eligible: string[] };
 
+export type Result = {
+  hand: number;
+  at: number;
+  text: string;
+  uncontested: boolean;
+  winners: { id: string; amount: number; handName?: string }[];
+  shown: { id: string; cards: Card[]; handName: string }[];
+  board: Card[];
+  pot: number;
+};
+
 export type LogEntry = { at: number; text: string };
+export type Reaction = { id: string; playerId: string; emoji: string; at: number };
+
+export type Settings = {
+  startingChips: number;
+  smallBlind: number;
+  bigBlind: number;
+  dealMode: DealMode;
+  blindLevelMinutes: number;
+};
 
 export type Room = {
   id: string;
   createdAt: number;
   hostId: string;
-  settings: { startingChips: number; smallBlind: number; bigBlind: number };
+  settings: Settings;
+  blindLevel: number;
+  levelStartedAt: number;
   players: Player[];
   hand: Hand | null;
   handCount: number;
   lastDealerId: string | null;
-  lastResult: string | null;
+  lastResult: Result | null;
+  /** Server-only: last hand's hole cards so a winner can choose to show them. */
+  lastHoles?: Record<string, Card[]>;
   log: LogEntry[];
+  reactions: Reaction[];
+  history: { hand: number; stacks: Record<string, number> }[];
 };
 
 export type Action =
@@ -50,7 +98,11 @@ export type Action =
   | { type: "allin" };
 
 export const MAX_PLAYERS = 10;
-const MAX_LOG = 60;
+export const AVATARS = ["🦊", "🐯", "🐼", "🦁", "🐸", "🐙", "🦄", "🐻", "🐵", "🐨", "🐲", "🤠", "😎", "👑", "🦈", "🐺"];
+export const REACTIONS = ["😂", "🔥", "😱", "👏", "🤡", "💀", "😤", "🫡"];
+export const BOARD_CARDS: Record<Street, number> = { preflop: 0, flop: 3, turn: 4, river: 5, showdown: 5 };
+const MAX_LOG = 80;
+const MAX_HISTORY = 150;
 const STREETS: Street[] = ["preflop", "flop", "turn", "river", "showdown"];
 
 export class GameError extends Error {}
@@ -72,42 +124,58 @@ export function nameOf(room: Room, id: string) {
   return room.players.find((p) => p.id === id)?.name ?? "?";
 }
 
-export function createRoom(
-  id: string,
-  host: { id: string; name: string },
-  settings: Room["settings"],
-): Room {
+const freshStats = (): Stats => ({
+  handsPlayed: 0,
+  vpip: 0,
+  allIns: 0,
+  biggestPot: 0,
+  streak: 0,
+  bestStreak: 0,
+  bestHand: null,
+  bestHandScore: -1,
+});
+
+export function createRoom(id: string, host: { id: string; name: string; avatar?: string }, settings: Settings): Room {
+  const now = Date.now();
   const room: Room = {
     id,
-    createdAt: Date.now(),
+    createdAt: now,
     hostId: host.id,
     settings,
+    blindLevel: 1,
+    levelStartedAt: now,
     players: [],
     hand: null,
     handCount: 0,
     lastDealerId: null,
     lastResult: null,
     log: [],
+    reactions: [],
+    history: [],
   };
   addPlayer(room, host);
   return room;
 }
 
-export function addPlayer(room: Room, p: { id: string; name: string }) {
+export function addPlayer(room: Room, p: { id: string; name: string; avatar?: string }) {
   if (room.players.length >= MAX_PLAYERS) fail(`Table is full (${MAX_PLAYERS} max)`);
   const name = cleanName(p.name);
   if (room.players.some((x) => x.name.toLowerCase() === name.toLowerCase())) {
     fail("Someone at the table already has that name");
   }
+  const taken = new Set(room.players.map((x) => x.avatar));
+  const avatar = p.avatar && AVATARS.includes(p.avatar) ? p.avatar : (AVATARS.find((a) => !taken.has(a)) ?? AVATARS[0]);
   room.players.push({
     id: p.id,
     name,
+    avatar,
     chips: room.settings.startingChips,
     boughtIn: room.settings.startingChips,
     handsWon: 0,
     sittingOut: false,
+    stats: freshStats(),
   });
-  log(room, `${name} joined with ${room.settings.startingChips}`);
+  log(room, `${avatar} ${name} sat down with ${room.settings.startingChips}`);
 }
 
 export function cleanName(raw: string) {
@@ -142,17 +210,37 @@ function pay(room: Room, h: Hand, id: string, amount: number) {
   return paid;
 }
 
+export function nextDealerId(room: Room): string | null {
+  const seated = room.players.filter((p) => !p.sittingOut && p.chips > 0).map((p) => p.id);
+  if (seated.length === 0) return null;
+  const allIds = room.players.map((p) => p.id);
+  const prev = room.lastDealerId;
+  return prev && allIds.includes(prev) ? nextAfter(allIds, prev, (id) => seated.includes(id)) : seated[0];
+}
+
+/** Minutes until blinds go up, or null when levels are off. */
+export function blindsUpAt(room: Room) {
+  const m = room.settings.blindLevelMinutes;
+  return m > 0 ? room.levelStartedAt + m * 60_000 : null;
+}
+
+function maybeRaiseBlinds(room: Room) {
+  const at = blindsUpAt(room);
+  if (at === null || Date.now() < at) return;
+  room.settings.smallBlind *= 2;
+  room.settings.bigBlind *= 2;
+  room.blindLevel += 1;
+  room.levelStartedAt = Date.now();
+  log(room, `⏫ Blinds up! Level ${room.blindLevel}: ${room.settings.smallBlind}/${room.settings.bigBlind}`);
+}
+
 export function startHand(room: Room) {
   if (room.hand) fail("A hand is already in progress");
   const seated = room.players.filter((p) => !p.sittingOut && p.chips > 0).map((p) => p.id);
   if (seated.length < 2) fail("Need at least 2 players with chips");
+  maybeRaiseBlinds(room);
 
-  const allIds = room.players.map((p) => p.id);
-  const prev = room.lastDealerId;
-  const dealerId =
-    prev && allIds.includes(prev)
-      ? nextAfter(allIds, prev, (id) => seated.includes(id))!
-      : seated[0];
+  const dealerId = nextDealerId(room)!;
   const order = [...seated];
   const headsUp = order.length === 2;
   const sbId = headsUp ? dealerId : nextAfter(order, dealerId, () => true)!;
@@ -169,18 +257,30 @@ export function startHand(room: Room) {
     contributed: {},
     folded: [],
     acted: [],
+    vpip: [],
     toAct: null,
+    turnStartedAt: Date.now(),
     currentBet: room.settings.bigBlind,
     minRaise: room.settings.bigBlind,
   };
+  if (room.settings.dealMode === "app") {
+    const deck = shuffle(fullDeck());
+    const fromDealer = [...order.slice(order.indexOf(dealerId) + 1), ...order.slice(0, order.indexOf(dealerId) + 1)];
+    h.holes = {};
+    for (const id of fromDealer) h.holes[id] = [deck.pop()!, deck.pop()!];
+    h.board = [deck.pop()!, deck.pop()!, deck.pop()!, deck.pop()!, deck.pop()!];
+    h.deck = deck;
+  }
   room.hand = h;
   room.handCount = h.number;
   room.lastDealerId = dealerId;
   room.lastResult = null;
+  room.lastHoles = undefined;
+  for (const id of order) player(room, id).stats.handsPlayed += 1;
   pay(room, h, sbId, room.settings.smallBlind);
   pay(room, h, bbId, room.settings.bigBlind);
   h.currentBet = Math.max(room.settings.bigBlind, ...Object.values(h.bets));
-  log(room, `Hand #${h.number} — ${nameOf(room, dealerId)} deals`);
+  log(room, `🃏 Hand #${h.number} — ${nameOf(room, dealerId)} has the button`);
 
   h.toAct = nextAfter(order, bbId, (id) => canAct(room, h, id));
   settleIfNoActionNeeded(room);
@@ -193,6 +293,8 @@ export function act(room: Room, actorId: string, action: Action) {
   const p = player(room, actorId);
   const mine = h.bets[actorId] ?? 0;
   const owe = h.currentBet - mine;
+  const chipsBefore = p.chips;
+  let voluntary = false;
 
   switch (action.type) {
     case "fold":
@@ -206,7 +308,8 @@ export function act(room: Room, actorId: string, action: Action) {
     case "call": {
       if (owe <= 0) fail("Nothing to call — check instead");
       const paid = pay(room, h, actorId, owe);
-      log(room, `${p.name} calls ${paid}${p.chips === 0 ? " (all in)" : ""}`);
+      voluntary = true;
+      log(room, `${p.name} calls ${paid}${p.chips === 0 ? " — ALL IN" : ""}`);
       break;
     }
     case "raise":
@@ -215,10 +318,11 @@ export function act(room: Room, actorId: string, action: Action) {
       const to = action.type === "allin" ? max : Math.floor(action.to);
       if (!Number.isFinite(to) || to <= 0) fail("Enter an amount");
       if (to > max) fail(`You only have ${p.chips}`);
+      voluntary = true;
       if (to <= h.currentBet) {
         if (to !== max) fail(`Raise must be more than ${h.currentBet}`);
         pay(room, h, actorId, to - mine);
-        log(room, `${p.name} calls ${to - mine} (all in)`);
+        log(room, `${p.name} calls ${to - mine} — ALL IN`);
         break;
       }
       const raiseBy = to - h.currentBet;
@@ -232,7 +336,7 @@ export function act(room: Room, actorId: string, action: Action) {
         h.acted = [];
       }
       h.currentBet = to;
-      log(room, `${p.name} ${verb} ${to}${p.chips === 0 ? " (all in)" : ""}`);
+      log(room, `${p.name} ${verb} ${to}${p.chips === 0 ? " — ALL IN" : ""}`);
       break;
     }
     default: {
@@ -240,6 +344,8 @@ export function act(room: Room, actorId: string, action: Action) {
       fail(`Unknown action ${JSON.stringify(never)}`);
     }
   }
+  if (voluntary && h.street === "preflop" && !h.vpip.includes(actorId)) h.vpip.push(actorId);
+  if (chipsBefore > 0 && p.chips === 0) p.stats.allIns += 1;
   if (!h.acted.includes(actorId)) h.acted.push(actorId);
   advance(room, actorId);
 }
@@ -261,11 +367,12 @@ function advance(room: Room, lastId: string) {
 
 function settleIfNoActionNeeded(room: Room) {
   const h = room.hand!;
+  h.turnStartedAt = Date.now();
   while (h.toAct === null || !needsToAct(room, h, h.toAct)) {
     h.toAct = nextAfter(h.order, h.toAct ?? h.dealerId, (id) => needsToAct(room, h, id));
     if (h.toAct !== null) return;
     endStreet(room);
-    if (h.street === "showdown") return;
+    if (room.hand !== h || h.street === "showdown") return;
   }
 }
 
@@ -280,7 +387,11 @@ function endStreet(room: Room) {
   h.street = stillBetting.length < 2 ? "showdown" : next;
   if (h.street === "showdown") {
     h.toAct = null;
-    log(room, "Showdown — flip your cards");
+    if (room.settings.dealMode === "app" && h.holes && h.board) {
+      autoShowdown(room);
+      return;
+    }
+    log(room, "🂠 Showdown — flip your cards");
     return;
   }
   log(room, `— ${h.street} —`);
@@ -312,15 +423,92 @@ function sameSet(a: string[], b: string[]) {
   return a.length === b.length && a.every((x) => b.includes(x));
 }
 
+function finishHand(room: Room, result: Omit<Result, "hand" | "at" | "pot" | "board"> & { board?: Card[] }) {
+  const h = room.hand!;
+  const pot = potTotal(h);
+  const winnerIds = new Set(result.winners.map((w) => w.id));
+  for (const id of h.order) {
+    const p = player(room, id);
+    if (h.vpip.includes(id)) p.stats.vpip += 1;
+    if (winnerIds.has(id)) {
+      p.handsWon += 1;
+      p.stats.streak += 1;
+      p.stats.bestStreak = Math.max(p.stats.bestStreak, p.stats.streak);
+      p.stats.biggestPot = Math.max(p.stats.biggestPot, result.winners.find((w) => w.id === id)!.amount);
+    } else {
+      p.stats.streak = 0;
+    }
+  }
+  room.lastResult = { ...result, board: result.board ?? [], hand: h.number, at: Date.now(), pot };
+  room.lastHoles = h.holes;
+  room.history.push({ hand: h.number, stacks: Object.fromEntries(room.players.map((p) => [p.id, p.chips])) });
+  if (room.history.length > MAX_HISTORY) room.history.splice(0, room.history.length - MAX_HISTORY);
+  log(room, `🏆 ${result.text}`);
+  room.hand = null;
+}
+
 function awardUncontested(room: Room, winnerId: string) {
   const h = room.hand!;
   const total = potTotal(h);
   const w = player(room, winnerId);
   w.chips += total;
-  w.handsWon += 1;
-  room.lastResult = `${w.name} wins ${total} (everyone folded)`;
-  log(room, room.lastResult);
-  room.hand = null;
+  finishHand(room, {
+    text: `${w.name} wins ${total} — everyone folded`,
+    uncontested: true,
+    winners: [{ id: winnerId, amount: total }],
+    shown: [],
+    board: h.board?.slice(0, BOARD_CARDS[h.street]),
+  });
+}
+
+/** Splits every pot among its winners; odd chips go to the first winners left of the dealer. */
+function distribute(h: Hand, ps: Pot[], winnersPerPot: string[][]) {
+  const won = new Map<string, number>();
+  const dealerAt = h.order.indexOf(h.dealerId);
+  const fromDealer = [...h.order.slice(dealerAt + 1), ...h.order.slice(0, dealerAt + 1)];
+  ps.forEach((pot, i) => {
+    const winners = [...new Set(winnersPerPot[i])];
+    if (winners.length === 0) fail(`Pick a winner for pot ${i + 1}`);
+    if (winners.some((w) => !pot.eligible.includes(w))) fail("That player isn't in this pot");
+    const share = Math.floor(pot.amount / winners.length);
+    let odd = pot.amount - share * winners.length;
+    for (const id of fromDealer.filter((x) => winners.includes(x))) {
+      const extra = odd > 0 ? 1 : 0;
+      odd -= extra;
+      won.set(id, (won.get(id) ?? 0) + share + extra);
+    }
+  });
+  return won;
+}
+
+function autoShowdown(room: Room) {
+  const h = room.hand!;
+  const board = h.board!;
+  const live = h.order.filter((id) => isLive(h, id));
+  const values = new Map(live.map((id) => [id, evaluate([...h.holes![id], ...board])]));
+  const ps = pots(h);
+  const winnersPerPot = ps.map((pot) => {
+    const best = Math.max(...pot.eligible.map((id) => values.get(id)!.score));
+    return pot.eligible.filter((id) => values.get(id)!.score === best);
+  });
+  const won = distribute(h, ps, winnersPerPot);
+  for (const [id, amount] of won) player(room, id).chips += amount;
+  for (const id of live) {
+    const v = values.get(id)!;
+    const s = player(room, id).stats;
+    if (v.score > s.bestHandScore) {
+      s.bestHandScore = v.score;
+      s.bestHand = v.name;
+    }
+  }
+  const winners = [...won].map(([id, amount]) => ({ id, amount, handName: values.get(id)!.name }));
+  finishHand(room, {
+    text: winners.map((w) => `${nameOf(room, w.id)} wins ${w.amount} with ${w.handName}`).join(" · "),
+    uncontested: false,
+    winners,
+    shown: live.map((id) => ({ id, cards: h.holes![id], handName: values.get(id)!.name })),
+    board,
+  });
 }
 
 export function resolveShowdown(room: Room, winnersPerPot: string[][]) {
@@ -328,39 +516,34 @@ export function resolveShowdown(room: Room, winnersPerPot: string[][]) {
   if (h.street !== "showdown") fail("Finish the betting first");
   const ps = pots(h);
   if (winnersPerPot.length !== ps.length) fail("Pick a winner for every pot");
-  const won = new Map<string, number>();
-  ps.forEach((pot, i) => {
-    const winners = [...new Set(winnersPerPot[i])];
-    if (winners.length === 0) fail(`Pick a winner for pot ${i + 1}`);
-    if (winners.some((w) => !pot.eligible.includes(w))) fail("That player isn't in this pot");
-    const ordered = h.order.filter((id) => winners.includes(id));
-    const share = Math.floor(pot.amount / ordered.length);
-    let odd = pot.amount - share * ordered.length;
-    const fromDealer = [...h.order.slice(h.order.indexOf(h.dealerId) + 1), ...h.order.slice(0, h.order.indexOf(h.dealerId) + 1)];
-    for (const id of fromDealer.filter((x) => ordered.includes(x))) {
-      const extra = odd > 0 ? 1 : 0;
-      odd -= extra;
-      won.set(id, (won.get(id) ?? 0) + share + extra);
-    }
+  const won = distribute(h, ps, winnersPerPot);
+  for (const [id, amount] of won) player(room, id).chips += amount;
+  const winners = [...won].map(([id, amount]) => ({ id, amount }));
+  finishHand(room, {
+    text: winners.map((w) => `${nameOf(room, w.id)} wins ${w.amount}`).join(" · "),
+    uncontested: false,
+    winners,
+    shown: [],
   });
-  const parts: string[] = [];
-  for (const [id, amount] of won) {
-    const p = player(room, id);
-    p.chips += amount;
-    p.handsWon += 1;
-    parts.push(`${p.name} wins ${amount}`);
-  }
-  room.lastResult = parts.join(" · ");
-  log(room, room.lastResult);
-  room.hand = null;
+}
+
+/** Lets a player flip their last-hand cards for everyone (e.g. to show a bluff). */
+export function showCards(room: Room, id: string) {
+  const r = room.lastResult ?? fail("Nothing to show");
+  const cards = room.lastHoles?.[id] ?? fail("You have no cards to show");
+  if (r.shown.some((s) => s.id === id)) fail("Already shown");
+  const handName = evaluate([...cards, ...r.board]).name;
+  r.shown.push({ id, cards, handName });
+  log(room, `👀 ${nameOf(room, id)} shows ${handName.toLowerCase()}`);
 }
 
 export function cancelHand(room: Room) {
   const h = room.hand ?? fail("No hand in progress");
   for (const [id, amount] of Object.entries(h.contributed)) player(room, id).chips += amount;
+  for (const id of h.order) player(room, id).stats.handsPlayed -= 1;
   room.hand = null;
-  room.lastResult = `Hand #${h.number} cancelled — chips returned`;
-  log(room, room.lastResult);
+  room.lastResult = null;
+  log(room, `Hand #${h.number} cancelled — chips returned`);
 }
 
 export function rebuy(room: Room, id: string) {
@@ -368,7 +551,7 @@ export function rebuy(room: Room, id: string) {
   if (room.hand?.order.includes(id)) fail("Wait for the hand to finish");
   p.chips += room.settings.startingChips;
   p.boughtIn += room.settings.startingChips;
-  log(room, `${p.name} rebuys ${room.settings.startingChips}`);
+  log(room, `💸 ${p.name} rebuys ${room.settings.startingChips}`);
 }
 
 export function setSittingOut(room: Room, id: string, sittingOut: boolean) {
@@ -393,11 +576,27 @@ export function removePlayer(room: Room, id: string) {
   log(room, `${p.name} left the table`);
 }
 
-export function updateBlinds(room: Room, smallBlind: number, bigBlind: number) {
+export function updateSettings(room: Room, next: Pick<Settings, "smallBlind" | "bigBlind" | "dealMode" | "blindLevelMinutes">) {
+  const { smallBlind, bigBlind, dealMode, blindLevelMinutes } = next;
   if (!Number.isInteger(smallBlind) || !Number.isInteger(bigBlind) || smallBlind < 1 || bigBlind < smallBlind || bigBlind > 1e7) {
     fail("Blinds must be whole numbers with big ≥ small");
   }
-  room.settings.smallBlind = smallBlind;
-  room.settings.bigBlind = bigBlind;
-  log(room, `Blinds are now ${smallBlind}/${bigBlind}`);
+  if (dealMode !== room.settings.dealMode && room.hand) fail("Change the dealing mode between hands");
+  const s = room.settings;
+  if (s.smallBlind !== smallBlind || s.bigBlind !== bigBlind) log(room, `Blinds are now ${smallBlind}/${bigBlind}`);
+  if (s.dealMode !== dealMode) log(room, dealMode === "app" ? "📱 The app deals the cards now" : "🃏 Real cards from now on");
+  if (s.blindLevelMinutes !== blindLevelMinutes) {
+    room.levelStartedAt = Date.now();
+    log(room, blindLevelMinutes ? `⏱ Blinds double every ${blindLevelMinutes} min` : "⏱ Blind levels off");
+  }
+  room.settings = { ...s, smallBlind, bigBlind, dealMode, blindLevelMinutes };
+}
+
+export function react(room: Room, id: string, emoji: string) {
+  if (!REACTIONS.includes(emoji)) fail("Unknown reaction");
+  const now = Date.now();
+  const mine = room.reactions.filter((r) => r.playerId === id && now - r.at < 3000);
+  if (mine.length >= 3) fail("Easy there — one sec");
+  room.reactions.push({ id: `${now}-${id}`, playerId: id, emoji, at: now });
+  room.reactions = room.reactions.filter((r) => now - r.at < 20_000).slice(-24);
 }

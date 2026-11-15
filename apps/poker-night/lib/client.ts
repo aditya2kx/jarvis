@@ -21,6 +21,27 @@ export function saveToken(roomId: string, token: string) {
   localStorage.setItem(key(roomId), token);
 }
 
+export function forgetToken(roomId: string) {
+  localStorage.removeItem(key(roomId));
+  localStorage.removeItem(`${key(roomId)}:claim`);
+}
+
+/** The seat this phone asked for, so a refresh while waiting keeps showing the request. */
+export type PendingClaim = { claimId: string; playerId: string };
+
+export function savedClaim(roomId: string): PendingClaim | null {
+  try {
+    return JSON.parse(localStorage.getItem(`${key(roomId)}:claim`) ?? "null");
+  } catch {
+    return null;
+  }
+}
+
+export function saveClaim(roomId: string, claim: PendingClaim | null) {
+  if (claim) localStorage.setItem(`${key(roomId)}:claim`, JSON.stringify(claim));
+  else localStorage.removeItem(`${key(roomId)}:claim`);
+}
+
 export function loadPref(name: string, fallback: boolean) {
   if (typeof window === "undefined") return fallback;
   const v = localStorage.getItem(`poker-night:pref:${name}`);

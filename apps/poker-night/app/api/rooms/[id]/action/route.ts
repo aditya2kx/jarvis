@@ -8,6 +8,7 @@ import {
   react,
   rebuy,
   removePlayer,
+  resolveClaim,
   resolveShowdown,
   setSittingOut,
   showCards,
@@ -17,7 +18,7 @@ import {
   type Room,
 } from "@/lib/game";
 import { bad, handleError, int, readJson, str, tokenFrom } from "@/lib/http";
-import { mutateRoom, playerIdFor } from "@/lib/store";
+import { mutateRoom, playerIdFor, settleClaimToken } from "@/lib/store";
 import { viewFor } from "@/lib/view";
 
 function parseAction(body: Record<string, unknown>): Action {
@@ -51,7 +52,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const { row, result: me } = await mutateRoom(id, (row) => {
       const me = playerIdFor(row, token);
       if (!me || !row.state.players.some((p) => p.id === me)) throw new GameError("Join the table first");
-      apply(row.state, me, body);
+      if (str(body.kind) === "seat") {
+        const allow = body.allow === true;
+        settleClaimToken(row, resolveClaim(row.state, me, str(body.claimId), allow), allow);
+      } else {
+        apply(row.state, me, body);
+      }
       return me;
     });
     return NextResponse.json({ room: viewFor(row.state, me), version: row.version, you: me, now: Date.now() });

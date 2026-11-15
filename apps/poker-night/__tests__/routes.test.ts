@@ -6,7 +6,7 @@ import { GET as poll } from "@/app/api/rooms/[id]/route";
 import { POST as create } from "@/app/api/rooms/route";
 
 /** Calls the real route handlers against the app's in-process Postgres (no DATABASE_URL in tests). */
-type Res = Record<string, unknown> & { status: number; room?: { hostId: string; players: { id: string; name: string }[]; hand: { street: string; toAct: string } | null } };
+type Res = Record<string, unknown> & { status: number; room?: { hostId: string; players: { id: string; name: string }[]; hand: { street: string; toAct: string } | null; hostKey?: string } };
 
 async function call(handler: (req: Request, ctx: never) => Promise<Response>, path: string, body?: unknown, token?: string, id = "") {
   const req = new Request(`http://test${path}`, {
@@ -23,15 +23,19 @@ let host = "";
 let ron = "";
 let hostId = "";
 let ronId = "";
+let hostKey = "";
 
 beforeAll(async () => {
   const c = await call(create as never, "/api/rooms", { name: "Harry", startingChips: 1000, smallBlind: 10, bigBlind: 20, dealMode: "physical" });
   rid = c.roomId as string;
   host = c.token as string;
+  hostKey = c.hostKey as string;
+  expect(hostKey).toBeTruthy();
   const j = await call(join as never, `/api/rooms/${rid}/join`, { name: "Ron" }, undefined, rid);
   ron = j.token as string;
   ronId = j.you as string;
   hostId = j.room!.hostId;
+  expect(j.room!.hostKey).toBeUndefined();
   expect((await call(act as never, "/action", { kind: "start" }, host, rid)).status).toBe(200);
 }, 30_000);
 
@@ -41,40 +45,53 @@ describe("routes enforce who may do what", () => {
     expect(r).toMatchObject({ status: 400, error: "You already have a seat at this table" });
   });
 
-  it("a stranger who sits down can't approve their own request for the host's seat", async () => {
-    const mallory = (await call(join as never, "/join", { name: "Mallory" }, undefined, rid)).token as string;
-    const req = await call(claim as never, "/claim", { playerId: hostId }, undefined, rid);
-    const r = await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, mallory, rid);
-    expect(r).toMatchObject({ status: 400, error: "Only someone from the first hand can let them in" });
-    expect((await call(poll as never, "", undefined, req.token as string, rid)).you).toBeNull();
-
-    const ok = await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: false }, ron, rid);
-    expect(ok.status).toBe(200);
+  it("poll responses never include the host key", async () => {
+    const v = await call(poll as never, "", undefined, host, rid);
+    expect(v.room!.hostKey).toBeUndefined();
   });
 
-  it("someone dealt in before the request can let the real owner back in", async () => {
-    const req = await call(claim as never, "/claim", { playerId: hostId }, undefined, rid);
-    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, ron, rid)).status).toBe(200);
-    expect((await call(poll as never, "", undefined, req.token as string, rid)).you).toBe(hostId);
-  });
-
-  it("one founder with two phones can't take the host seat when three opened together", async () => {
+  it("a lobby dual-joiner can't approve a request for the host's seat", async () => {
     const c = await call(create as never, "/api/rooms", { name: "Harry", startingChips: 1000, smallBlind: 10, bigBlind: 20, dealMode: "physical" });
     const id = c.roomId as string;
     const harry = c.token as string;
-    const ronTok = (await call(join as never, "/join", { name: "Ron" }, undefined, id)).token as string;
-    const malTok = (await call(join as never, "/join", { name: "Mallory" }, undefined, id)).token as string;
+    const m1 = (await call(join as never, "/join", { name: "M1" }, undefined, id)).token as string;
+    const m2 = (await call(join as never, "/join", { name: "M2" }, undefined, id)).token as string;
     expect((await call(act as never, "/action", { kind: "start" }, harry, id)).status).toBe(200);
     const hid = (await call(poll as never, "", undefined, harry, id)).room!.hostId;
     const req = await call(claim as never, "/claim", { playerId: hid }, undefined, id);
-    // Mallory's first phone says yes — not enough alone.
-    const half = await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, malTok, id);
-    expect(half.status).toBe(200);
+    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, m1, id))).toMatchObject({
+      status: 400,
+      error: "Only the host can let them in",
+    });
+    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, m2, id))).toMatchObject({
+      status: 400,
+      error: "Only the host can let them in",
+    });
     expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBeNull();
-    expect((half.room as unknown as { claims: { approvals: string[] }[] }).claims[0].approvals).toHaveLength(1);
-    // Ron's yes completes it — the real-owner path still works.
-    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, ronTok, id)).status).toBe(200);
-    expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBe(hid);
+  });
+
+  it("the host can let a friend back in", async () => {
+    const req = await call(claim as never, "/claim", { playerId: ronId }, undefined, rid);
+    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, host, rid)).status).toBe(200);
+    expect((await call(poll as never, "", undefined, req.token as string, rid)).you).toBe(ronId);
+  });
+
+  it("the host key reclaims the host seat without a vouch", async () => {
+    const req = await call(claim as never, "/claim", { playerId: hostId, hostKey }, undefined, rid);
+    expect(req.status).toBe(200);
+    expect(req.you).toBe(hostId);
+    expect((req.room as { claims?: unknown[] } | undefined)?.claims ?? []).toEqual([]);
+  });
+
+  it("a wrong host key still leaves the request waiting", async () => {
+    const c = await call(create as never, "/api/rooms", { name: "Host", startingChips: 1000, smallBlind: 10, bigBlind: 20, dealMode: "physical" });
+    const id = c.roomId as string;
+    await call(join as never, "/join", { name: "Friend" }, undefined, id);
+    expect((await call(act as never, "/action", { kind: "start" }, c.token as string, id)).status).toBe(200);
+    const hid = (await call(poll as never, "", undefined, c.token as string, id)).room!.hostId;
+    const req = await call(claim as never, "/claim", { playerId: hid, hostKey: "nope" }, undefined, id);
+    expect(req.you).toBeNull();
+    expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBeNull();
   });
 
   it("only the host can pay out a showdown", async () => {

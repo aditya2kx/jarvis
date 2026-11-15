@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { AvatarPicker, DealModePicker } from "@/components/pickers";
-import { api, saveToken } from "@/lib/client";
+import { api, saveHostKey, saveToken } from "@/lib/client";
 import { AVATARS, type DealMode } from "@/lib/game";
 import PlayingCard from "@/components/playing-card";
 
@@ -33,11 +33,12 @@ export default function Home() {
     setBusy(true);
     setError(null);
     try {
-      const res = await api<{ roomId: string; token: string }>("/api/rooms", {
+      const res = await api<{ roomId: string; token: string; hostKey: string }>("/api/rooms", {
         method: "POST",
         body: { name, avatar, dealMode: mode, startingChips: chips, smallBlind: sb, bigBlind: bb, blindLevelMinutes: level },
       });
       saveToken(res.roomId, res.token);
+      saveHostKey(res.roomId, res.hostKey);
       router.push(`/t/${res.roomId}`);
     } catch (err) {
       setError((err as Error).message);

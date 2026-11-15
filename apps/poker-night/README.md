@@ -17,7 +17,7 @@ Shared Texas Hold'em table for a home game. Everyone opens the same link on thei
 - Emoji reactions, lounge music, chip / deal / win / chat sound effects
 - On a phone (portrait or landscape), tablet or laptop, the felt, every seat and your controls stay in the first screen while you're playing — no scrolling the table away
 - Deploys don't interrupt a game: tables live in Postgres, seats in each phone's localStorage, and open tables reload once onto the new version when it's safe (not your turn, nothing typed); music resumes on the next tap
-- Lost your seat (cleared browser, different browser or phone)? Tap your name on the join screen — someone from the opening hand taps "Let them in" (two of them when three or more of you started together). Chips, cards and host role come back; requests expire after 3 minutes
+- Lost your seat (cleared browser, different browser or phone)? Tap your name on the join screen — the **host** taps "Let them in" (anyone seated can tap No). The host reclaiming their own seat uses a create-time host key kept on that phone. Chips, cards and host role come back; requests expire after 3 minutes
 - At showdown the host taps the winner and pays out
 - Host tools: blinds, dealing mode, set stack, rebuy / sit out / remove, cancel hand, act for a player
 

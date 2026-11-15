@@ -11,6 +11,7 @@ import {
   safeToReload,
   saveClaim,
   savedClaim,
+  savedHostKey,
   savedToken,
   savePref,
   saveToken,
@@ -18,7 +19,7 @@ import {
   type RoomResponse,
 } from "@/lib/client";
 import { AvatarPicker } from "@/components/pickers";
-import { AVATARS, blindsUpAt, canVouch, votesNeeded, type Room } from "@/lib/game";
+import { AVATARS, blindsUpAt, canVouch, type Room } from "@/lib/game";
 import Dock, { type Send } from "./dock";
 import Felt from "./felt";
 import Side, { HandRankings } from "./side";
@@ -229,13 +230,23 @@ export default function Table({ roomId }: { roomId: string }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await api<RoomResponse & { token: string; claimId: string }>(`/api/rooms/${roomId}/claim`, { method: "POST", body: { playerId } });
-      const pending = { claimId: res.claimId, playerId };
+      const hostKey = savedHostKey(roomId);
+      const res = await api<RoomResponse & { token: string; claimId: string }>(`/api/rooms/${roomId}/claim`, {
+        method: "POST",
+        body: { playerId, ...(hostKey ? { hostKey } : {}) },
+      });
       saveToken(roomId, res.token);
-      saveClaim(roomId, pending);
       tokenRef.current = res.token;
       setToken(res.token);
-      setClaim(pending);
+      if (res.you) {
+        // Host key (or already settled) — seated immediately.
+        saveClaim(roomId, null);
+        setClaim(null);
+      } else {
+        const pending = { claimId: res.claimId, playerId };
+        saveClaim(roomId, pending);
+        setClaim(pending);
+      }
       applyResponse(res);
     } catch (err) {
       setError((err as Error).message);
@@ -434,16 +445,13 @@ function SeatRequests({ room, you, busy, send }: { room: Room; you: string; busy
       {claims.map((c) => {
         const p = room.players.find((x) => x.id === c.playerId);
         if (!p) return null;
-        const got = c.approvals?.length ?? 0;
-        const need = votesNeeded(room, c);
-        const progress = need > 1 ? ` · ${got}/${need} yes` : "";
         return (
           <div key={c.id} className="card seat-request" role="alert">
             <span className="seat-request-text">
               🙋{" "}
               {c.playerId === you
                 ? "Someone is asking for your seat — not you? Tap No."
-                : `${p.avatar} ${p.name} wants their seat back (refreshed or new phone)${progress}`}
+                : `${p.avatar} ${p.name} wants their seat back (refreshed or new phone)`}
             </span>
             <span className="seat-request-actions">
               {canVouch(room, you, c) && (
@@ -464,18 +472,20 @@ function SeatRequests({ room, you, busy, send }: { room: Room; you: string; busy
 
 function WaitingForSeat({ room, claim, onCancel }: { room: Room; claim: PendingClaim; onCancel: () => void }) {
   const p = room.players.find((x) => x.id === claim.playerId);
+  const waitingOnHost = claim.playerId !== room.hostId;
   return (
     <div className="card panel join">
       <h2>
         {p?.avatar} Getting {p?.name ?? "your"}&apos;s seat back…
       </h2>
       <p className="muted">
-        Ask someone from the opening hand to tap <b className="cream">Let them in</b> on their phone
-        {(() => {
-          const live = room.claims?.find((c) => c.id === claim.claimId);
-          return live && votesNeeded(room, live) > 1 ? " — two of them, when three or more of you started together" : "";
-        })()}
-        . Your chips, cards and host controls come back with the seat.
+        {waitingOnHost ? (
+          <>
+            Ask the host to tap <b className="cream">Let them in</b> on their phone. Your chips, cards and seat come back with it.
+          </>
+        ) : (
+          <>Waiting for the host key on this phone — if you opened the table here, tap your name again after a refresh.</>
+        )}
       </p>
       <div className="inline">
         <div className="spinner tiny-spin" aria-label="Waiting for the table" />

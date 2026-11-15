@@ -19,8 +19,10 @@ export async function POST(request: Request) {
       { startingChips, smallBlind, bigBlind, dealMode, blindLevelMinutes },
     );
     const token = newToken();
+    const hostKey = newToken();
+    room.hostKey = hostKey;
     await insertRoom(room, { [hashToken(token)]: hostId });
-    return NextResponse.json({ roomId: room.id, token });
+    return NextResponse.json({ roomId: room.id, token, hostKey });
   } catch (error) {
     return handleError(error);
   }

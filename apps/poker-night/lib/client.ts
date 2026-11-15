@@ -24,6 +24,15 @@ export function saveToken(roomId: string, token: string) {
 export function forgetToken(roomId: string) {
   localStorage.removeItem(key(roomId));
   localStorage.removeItem(`${key(roomId)}:claim`);
+  // Keep hostKey so the host can reclaim after clearing the seat token.
+}
+
+export function savedHostKey(roomId: string) {
+  return typeof window === "undefined" ? null : localStorage.getItem(`${key(roomId)}:hostKey`);
+}
+
+export function saveHostKey(roomId: string, hostKey: string) {
+  localStorage.setItem(`${key(roomId)}:hostKey`, hostKey);
 }
 
 /** The seat this phone asked for, so a refresh while waiting keeps showing the request. */

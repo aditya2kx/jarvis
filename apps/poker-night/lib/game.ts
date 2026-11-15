@@ -102,10 +102,15 @@ export type Room = {
   chat?: ChatMessage[];
   claims?: SeatClaim[];
   /**
-   * Players dealt into the table's first hand. Only they can vouch for a lost seat — a visitor who
-   * joins later, even after playing a hand, can't. Optional for rooms that started before this field.
+   * Players dealt into the table's first hand (legacy / diagnostics). Seat reclaim is host-only now;
+   * optional for rooms that started before this field.
    */
   trustedIds?: string[];
+  /**
+   * Secret returned only when the table is created. Lets the host reclaim their own seat after
+   * losing the browser token — never sent in poll/view responses. Optional for older rooms.
+   */
+  hostKey?: string;
   history: { hand: number; stacks: Record<string, number> }[];
 };
 
@@ -658,7 +663,7 @@ export function liveClaims(room: Room, now = Date.now()) {
   return (room.claims ?? []).filter((c) => now - c.at < CLAIM_TTL_MS && room.players.some((p) => p.id === c.playerId));
 }
 
-/** Who may vouch: the first hand's players, frozen once. Legacy rooms freeze everyone who's already played. */
+/** Opening-hand roster (frozen on first deal). Kept for older rooms; reclaim no longer uses it. */
 export function trustedIds(room: Room): string[] {
   if (room.trustedIds?.length) return room.trustedIds;
   if (room.handCount >= 1) {
@@ -668,37 +673,45 @@ export function trustedIds(room: Room): string[] {
   return [];
 }
 
-/** How many distinct trusted players (other than the lost seat) must tap Let them in. */
-export function votesNeeded(room: Room, claim: SeatClaim) {
-  const others = trustedIds(room).filter((id) => id !== claim.playerId && room.players.some((p) => p.id === id));
-  return Math.min(2, Math.max(1, others.length));
+/** Host approval is always one yes — multi-friend voting let a lobby dual-join finish its own takeover. */
+export function votesNeeded(_room: Room, _claim: SeatClaim) {
+  return 1;
 }
 
 export function requestSeat(room: Room, claimId: string, playerId: string) {
   const p = player(room, playerId);
   const claims = liveClaims(room);
   if (claims.length >= MAX_CLAIMS) fail("Too many seat requests right now — try again in a minute");
-  if (!trustedIds(room).length) fail("Play a hand first — then someone from that hand can let you back in");
+  if (room.handCount < 1 && !room.trustedIds?.length) fail("Play a hand first — then the host can let you back in");
   claims.push({ id: claimId, playerId, at: Date.now(), approvals: [] });
   room.claims = claims;
   log(room, `🙋 Someone asked to take ${p.name}'s seat back`);
 }
 
 /**
- * Only a player from the table's first hand can vouch, and only if they sat down before this request.
- * A visitor who joins later (even after playing) can't. When two or more such players are at the
- * table, two of them must agree — so one person with two phones can't approve their own request.
+ * Only the current host can Let them in. A visitor who joins twice before the first hand used to
+ * land in trustedIds and approve their own request; host-only closes that. The host reclaiming
+ * their own seat uses hostKey (see redeemWithHostKey), not a self-vouch.
  */
 export function canVouch(room: Room, voterId: string, claim: SeatClaim) {
-  const voter = room.players.find((p) => p.id === voterId);
-  if (!voter || voter.id === claim.playerId) return false;
-  if ((voter.joinedAt ?? 0) >= claim.at) return false;
-  if (!trustedIds(room).includes(voterId)) return false;
+  if (voterId !== room.hostId || voterId === claim.playerId) return false;
+  if (!room.players.some((p) => p.id === voterId)) return false;
   if ((claim.approvals ?? []).includes(voterId)) return false;
   return true;
 }
 
-/** Any seated player can turn a request away. Letting someone in needs canVouch, and may need a second vote. */
+/** Host who lost their browser token: prove the create-time hostKey and the claim settles now. */
+export function redeemWithHostKey(room: Room, claimId: string, hostKey: string): SeatClaim | null {
+  if (!room.hostKey || hostKey !== room.hostKey) return null;
+  const claims = liveClaims(room);
+  const claim = claims.find((c) => c.id === claimId);
+  if (!claim || claim.playerId !== room.hostId) return null;
+  room.claims = claims.filter((c) => c.id !== claimId);
+  log(room, `✅ Host key let ${player(room, claim.playerId).name} back in`);
+  return claim;
+}
+
+/** Any seated player can turn a request away. Letting someone in is host-only (one yes). */
 export function resolveClaim(room: Room, by: string, claimId: string, allow: boolean): { claim: SeatClaim; done: boolean } {
   const voter = player(room, by);
   const claims = liveClaims(room);
@@ -709,14 +722,7 @@ export function resolveClaim(room: Room, by: string, claimId: string, allow: boo
     log(room, `🚫 ${voter.name} turned away a request for ${p.name}'s seat`);
     return { claim, done: true };
   }
-  if (!canVouch(room, by, claim)) fail("Only someone from the first hand can let them in");
-  claim.approvals = [...(claim.approvals ?? []), by];
-  const need = votesNeeded(room, claim);
-  if (claim.approvals.length < need) {
-    log(room, `👍 ${voter.name} said yes for ${p.name} (${claim.approvals.length}/${need}) — need one more`);
-    room.claims = claims;
-    return { claim, done: false };
-  }
+  if (!canVouch(room, by, claim)) fail("Only the host can let them in");
   room.claims = claims.filter((c) => c.id !== claimId);
   log(room, `✅ ${voter.name} let ${p.name} back in`);
   return { claim, done: true };

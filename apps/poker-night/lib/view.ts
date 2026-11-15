@@ -7,6 +7,7 @@ import { BOARD_CARDS, liveClaims, type Room } from "./game";
 export function viewFor(room: Room, viewerId: string | null): Room {
   const view: Room = structuredClone(room);
   delete view.lastHoles;
+  delete view.hostKey;
   view.chat ??= [];
   view.claims = liveClaims(room);
   const h = view.hand;

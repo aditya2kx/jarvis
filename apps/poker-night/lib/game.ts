@@ -23,6 +23,8 @@ export type Player = {
   handsWon: number;
   sittingOut: boolean;
   stats: Stats;
+  /** Optional because players seated before seat recovery existed don't have it. */
+  joinedAt?: number;
 };
 
 export type Hand = {
@@ -190,6 +192,7 @@ export function addPlayer(room: Room, p: { id: string; name: string; avatar?: st
     handsWon: 0,
     sittingOut: false,
     stats: freshStats(),
+    joinedAt: Date.now(),
   });
   log(room, `${avatar} ${name} sat down with ${room.settings.startingChips}`);
 }
@@ -657,11 +660,22 @@ export function requestSeat(room: Room, claimId: string, playerId: string) {
   log(room, `🙋 Someone asked to take ${p.name}'s seat back`);
 }
 
-/** Any seated player can vouch for (or turn away) a seat request; returns the resolved claim. */
+/**
+ * Only someone who was already playing when the request came in can vouch for it: seated before the
+ * request and dealt at least one hand. Whoever sends the request can sit down first, so a seat taken
+ * after the request (or one that hasn't played yet) must never be able to approve it.
+ */
+export function canVouch(room: Room, voterId: string, claim: SeatClaim) {
+  const voter = room.players.find((p) => p.id === voterId);
+  return !!voter && (voter.joinedAt ?? 0) < claim.at && voter.stats.handsPlayed > 0;
+}
+
+/** Any seated player can turn a seat request away; only an established player can let it in. */
 export function resolveClaim(room: Room, by: string, claimId: string, allow: boolean): SeatClaim {
   const voter = player(room, by);
   const claims = liveClaims(room);
   const claim = claims.find((c) => c.id === claimId) ?? fail("That request already expired");
+  if (allow && !canVouch(room, by, claim)) fail("Only someone who was already playing before this request can let them in");
   room.claims = claims.filter((c) => c.id !== claimId);
   const p = player(room, claim.playerId);
   log(room, allow ? `✅ ${voter.name} let ${p.name} back in` : `🚫 ${voter.name} turned away a request for ${p.name}'s seat`);

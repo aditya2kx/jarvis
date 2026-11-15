@@ -26,7 +26,11 @@ export default function Dock(props: Props) {
     <section className="dock">
       {h ? (
         h.street === "showdown" ? (
-          <Showdown room={room} hand={h} busy={busy} send={send} />
+          props.isHost ? (
+            <Showdown room={room} hand={h} busy={busy} send={send} />
+          ) : (
+            <AwaitingPayout room={room} />
+          )
         ) : (
           <InHand {...props} hand={h} />
         )
@@ -256,6 +260,20 @@ function MoveButton({ label, help, className = "", disabled, onClick }: { label:
       <span>{label}</span>
       {help && <small>{help}</small>}
     </button>
+  );
+}
+
+function AwaitingPayout({ room }: { room: Room }) {
+  const host = room.players.find((p) => p.id === room.hostId);
+  return (
+    <div className="actions">
+      <div className="act-head">
+        <span className="act-title">Showdown 🏆</span>
+        <span className="muted small">
+          Show your cards — {host?.avatar} {host?.name ?? "the host"} pays out the winner.
+        </span>
+      </div>
+    </div>
   );
 }
 

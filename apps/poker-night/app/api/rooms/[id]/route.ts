@@ -14,7 +14,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (!row) return bad("Table not found", 404);
     const since = pollSince(new URL(request.url).searchParams.get("v"));
     const you = playerIdFor(row, tokenFrom(request));
-    if (you && you === row.state.hostId) await markSeen(id, you);
+    if (you) await markSeen(id, you);
     // Voice presence lives outside the versioned room state, so it rides along even on "unchanged".
     const voice = (await voiceMembers(id)).map(({ id, muted }) => ({ id, muted }));
     if (Number.isFinite(since) && since === row.version) {

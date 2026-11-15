@@ -51,7 +51,7 @@ describe("routes enforce who may do what", () => {
     expect(v.room!.hostKey).toBeUndefined();
   });
 
-  it("lobby dual-joiners can't take the host seat while the host is at the table; a really locked-out host gets vouched back", async () => {
+  it("lobby dual-joiners can't take the host seat while the host is at the table; a really locked-out host gets let back in", async () => {
     const c = await call(create as never, "/api/rooms", { name: "Harry", startingChips: 1000, smallBlind: 10, bigBlind: 20, dealMode: "physical" });
     const id = c.roomId as string;
     const harry = c.token as string;
@@ -68,11 +68,9 @@ describe("routes enforce who may do what", () => {
     }
     expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBeNull();
 
-    // Harry's old phone stops polling for over a minute: both first-hand players must vouch.
-    await sql("update seat_seen set seen_at = now() - interval '2 minutes' where room_id = $1", [id]);
+    // Harry's old phone stops polling for over a minute: one yes from a player is enough.
+    await sql("update seat_seen set seen_at = now() - interval '2 minutes' where room_id = $1 and player_id = $2", [id, hid]);
     expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, m1, id)).status).toBe(200);
-    expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBeNull();
-    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, m2, id)).status).toBe(200);
     expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBe(hid);
   });
 

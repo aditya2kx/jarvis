@@ -658,14 +658,14 @@ export function chat(room: Room, id: string, raw: string) {
 
 export const CLAIM_TTL_MS = 3 * 60_000;
 const MAX_CLAIMS = 4;
-/** The host's own seat can only be vouched back once their old phone has stopped polling this long. */
-export const HOST_AWAY_MS = 60_000;
+/** A seat can only be handed to a new phone once its old phone has stopped polling this long. */
+export const SEAT_AWAY_MS = 60_000;
 
 export function liveClaims(room: Room, now = Date.now()) {
   return (room.claims ?? []).filter((c) => now - c.at < CLAIM_TTL_MS && room.players.some((p) => p.id === c.playerId));
 }
 
-/** Opening-hand roster, frozen on first deal: the players who can vouch for a locked-out host. */
+/** Opening-hand roster, frozen on first deal (diagnostics). */
 export function trustedIds(room: Room): string[] {
   if (room.trustedIds?.length) return room.trustedIds;
   if (room.handCount >= 1) {
@@ -679,26 +679,21 @@ export function requestSeat(room: Room, claimId: string, playerId: string) {
   const p = player(room, playerId);
   const claims = liveClaims(room);
   if (claims.length >= MAX_CLAIMS) fail("Too many seat requests right now — try again in a minute");
-  if (room.handCount < 1 && !room.trustedIds?.length) fail("Play a hand first — then the host can let you back in");
+  if (room.handCount < 1 && !room.trustedIds?.length) fail("Play a hand first — then the table can let you back in");
   claims.push({ id: claimId, playerId, at: Date.now(), approvals: [] });
   room.claims = claims;
   log(room, `🙋 Someone asked to take ${p.name}'s seat back`);
 }
 
-/** Everyone still seated from the first hand, except the host: all of them must vouch for a locked-out host. */
-export function hostSeatVouchers(room: Room) {
-  return trustedIds(room).filter((id) => id !== room.hostId && room.players.some((p) => p.id === id));
-}
-
 /**
- * The host lets anyone back in. The host's own seat (lost browser, no hostKey on the new phone) needs
- * every other first-hand player, and only once the host's old phone has gone quiet (resolveClaim):
- * two lobby phones of one visitor can't take the seat while the real host is still at the table.
+ * Anyone seated who has played a hand can let a player back in (one yes), the host included. Except for
+ * the host, that only works once the seat's old phone has gone quiet (resolveClaim), so one visitor
+ * with two phones can't take a seat while its owner is still playing.
  */
 export function canVouch(room: Room, voterId: string, claim: SeatClaim) {
-  if (voterId === claim.playerId || !room.players.some((p) => p.id === voterId)) return false;
-  if ((claim.approvals ?? []).includes(voterId)) return false;
-  return claim.playerId === room.hostId ? hostSeatVouchers(room).includes(voterId) : voterId === room.hostId;
+  if (voterId === claim.playerId) return false;
+  const voter = room.players.find((p) => p.id === voterId);
+  return !!voter && (voterId === room.hostId || voter.stats.handsPlayed > 0);
 }
 
 /** Host who lost their browser token: prove the create-time hostKey and the claim settles now. */
@@ -712,8 +707,8 @@ export function redeemWithHostKey(room: Room, claimId: string, hostKey: string):
   return claim;
 }
 
-/** Any seated player can turn a request away. `hostSeenAt` is when the host's current phone last polled. */
-export function resolveClaim(room: Room, by: string, claimId: string, allow: boolean, hostSeenAt = 0): { claim: SeatClaim; done: boolean } {
+/** Any seated player can turn a request away. `seenAt` is when each seat's current phone last polled (epoch ms). */
+export function resolveClaim(room: Room, by: string, claimId: string, allow: boolean, seenAt: Record<string, number> = {}): { claim: SeatClaim; done: boolean } {
   const voter = player(room, by);
   const claims = liveClaims(room);
   const claim = claims.find((c) => c.id === claimId) ?? fail("That request already expired");
@@ -723,17 +718,9 @@ export function resolveClaim(room: Room, by: string, claimId: string, allow: boo
     log(room, `🚫 ${voter.name} turned away a request for ${p.name}'s seat`);
     return { claim, done: true };
   }
-  const forHost = claim.playerId === room.hostId;
-  if (!canVouch(room, by, claim)) fail(forHost ? "Only players from the first hand can vouch for the host" : "Only the host can let them in");
-  if (forHost) {
-    if (Date.now() - hostSeenAt < HOST_AWAY_MS) fail(`${p.name}'s old phone is still at the table — use that one, or try again in a minute`);
-    claim.approvals = [...(claim.approvals ?? []), by];
-    const left = hostSeatVouchers(room).filter((id) => !claim.approvals!.includes(id));
-    if (left.length) {
-      room.claims = claims;
-      log(room, `👍 ${voter.name} vouched for ${p.name} — ${left.length} more to go`);
-      return { claim, done: false };
-    }
+  if (!canVouch(room, by, claim)) fail(by === claim.playerId ? "You can't let yourself in" : "Play a hand first — then you can let people back in");
+  if (by !== room.hostId && Date.now() - (seenAt[claim.playerId] ?? 0) < SEAT_AWAY_MS) {
+    fail(`${p.name}'s old phone is still at the table — use that one, or try again in a minute`);
   }
   room.claims = claims.filter((c) => c.id !== claimId);
   log(room, `✅ ${voter.name} let ${p.name} back in`);

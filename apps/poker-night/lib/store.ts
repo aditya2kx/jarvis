@@ -34,24 +34,22 @@ export async function insertRoom(room: Room, tokens: Record<string, string>) {
   ]);
 }
 
+/** Polls are every ~1.2s; refreshing seen_at every 15s is plenty for a 60s away check. */
 export async function markSeen(roomId: string, playerId: string) {
   await sql(
-    "insert into seat_seen (room_id, player_id) values ($1, $2) on conflict (room_id, player_id) do update set seen_at = now()",
+    `insert into seat_seen (room_id, player_id) values ($1, $2)
+     on conflict (room_id, player_id) do update set seen_at = now() where seat_seen.seen_at < now() - interval '15 seconds'`,
     [roomId, playerId],
   );
 }
 
-/**
- * Epoch ms of the host's last poll at this table, 0 if never seen. 0 is safe: the host polls from the
- * moment they create the table, and a host-seat claim needs a dealt hand first.
- */
-export async function hostSeenAt(roomId: string) {
-  const rows = await sql<{ ms: number }>(
-    `select (extract(epoch from s.seen_at) * 1000)::float8 as ms from seat_seen s
-     join rooms r on r.id = s.room_id and r.state->>'hostId' = s.player_id where s.room_id = $1`,
+/** Epoch ms of each seat's last poll at this table. A seat missing here has never polled, i.e. is away. */
+export async function seenTimes(roomId: string): Promise<Record<string, number>> {
+  const rows = await sql<{ id: string; ms: number }>(
+    "select player_id as id, (extract(epoch from seen_at) * 1000)::float8 as ms from seat_seen where room_id = $1",
     [roomId],
   );
-  return rows[0]?.ms ?? 0;
+  return Object.fromEntries(rows.map((r) => [r.id, r.ms]));
 }
 
 const CLAIM_PREFIX = "claim:";

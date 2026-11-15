@@ -51,6 +51,8 @@ export default function Table({ roomId }: { roomId: string }) {
   const tokenRef = useRef<string | null>(null);
   const soundRef = useRef(true);
   const live = useRef({ myTurn: false, busy: false, music: false });
+  const shell = useRef<HTMLDivElement | null>(null);
+  const topbar = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const sound = loadPref("sound", true);
@@ -162,6 +164,18 @@ export default function Table({ roomId }: { roomId: string }) {
     setToken(null);
     setError("Nobody confirmed it was you — ask someone at the table to tap “Let them in”, then try again");
   }, [claim, room, you, roomId, play]);
+
+  // The play column is sized to the viewport minus the top bar, whose height changes with wrapping pills.
+  const hasRoom = room !== null;
+  useEffect(() => {
+    const bar = topbar.current;
+    if (!bar) return;
+    const sync = () => shell.current?.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, [hasRoom]);
 
   useEffect(() => {
     if (sessionStorage.getItem(RESUME_MUSIC) !== "1") return;
@@ -302,8 +316,8 @@ export default function Table({ roomId }: { roomId: string }) {
   const left = upAt ? Math.max(0, upAt - now) : null;
 
   return (
-    <div className={`app ${myTurn ? "my-turn" : ""}`}>
-      <header className="topbar">
+    <div ref={shell} className={`app ${myTurn ? "my-turn" : ""}`}>
+      <header ref={topbar} className="topbar">
         <div className="brand">
           <span className="brand-suit">♠</span>
           <div className="brand-meta">
@@ -361,8 +375,10 @@ export default function Table({ roomId }: { roomId: string }) {
       )}
 
       <main className="layout">
-        <div className="col-main">
-          <Felt room={room} you={you} now={now} />
+        <div className={`col-main ${me ? "fit" : ""}`}>
+          <div className="felt-box">
+            <Felt room={room} you={you} now={now} />
+          </div>
           {me && <SeatRequests room={room} you={me.id} busy={busy} send={send} />}
           {me ? (
             <Dock room={room} you={me.id} isHost={isHost} busy={busy} coach={coach} lastCards={lastCards && room.lastResult?.hand === lastCards.hand ? lastCards.cards : null} send={send} />

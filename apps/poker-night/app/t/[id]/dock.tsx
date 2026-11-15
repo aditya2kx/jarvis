@@ -37,14 +37,7 @@ export default function Dock(props: Props) {
       ) : (
         <BetweenHands {...props} />
       )}
-      <div className="reactions">
-        {REACTIONS.map((e) => (
-          <button key={e} className="react-btn" onClick={() => send({ kind: "react", emoji: e })} aria-label={`React ${e}`}>
-            {e}
-          </button>
-        ))}
-        {room.players.find((p) => p.id === you)?.sittingOut && <span className="muted small away-note">You&apos;re sitting out</span>}
-      </div>
+      {room.players.find((p) => p.id === you)?.sittingOut && <span className="muted small away-note">You&apos;re sitting out</span>}
       <ChatBar send={send} />
     </section>
   );
@@ -52,22 +45,32 @@ export default function Dock(props: Props) {
 
 function ChatBar({ send }: { send: Send }) {
   const [text, setText] = useState("");
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState<"lines" | "emoji" | null>(null);
   const [sending, setSending] = useState(false);
+  const toggle = (panel: "lines" | "emoji") => setOpen(open === panel ? null : panel);
 
   async function say(line: string) {
     if (!line.trim() || sending) return;
     setSending(true);
     if (await send({ kind: "chat", text: line })) {
       setText("");
-      setOpen(false);
+      setOpen(null);
     }
     setSending(false);
   }
 
   return (
     <div className="chatbar">
-      {open && (
+      {open === "emoji" && (
+        <div className="reactions" role="list" aria-label="Reactions">
+          {REACTIONS.map((e) => (
+            <button key={e} type="button" role="listitem" className="react-btn" onClick={() => send({ kind: "react", emoji: e })} aria-label={`React ${e}`}>
+              {e}
+            </button>
+          ))}
+        </div>
+      )}
+      {open === "lines" && (
         <div className="quick-lines" role="list" aria-label="Quick lines">
           {QUICK_CHAT.map((line) => (
             <button key={line} type="button" role="listitem" className="quick-line" disabled={sending} onClick={() => say(line)}>
@@ -83,7 +86,10 @@ function ChatBar({ send }: { send: Send }) {
           void say(text);
         }}
       >
-        <button type="button" className={`btn ghost icon quick-toggle ${open ? "lit" : ""}`} onClick={() => setOpen(!open)} aria-expanded={open} aria-label="Quick trash talk" title="Quick trash talk">
+        <button type="button" className={`btn ghost icon quick-toggle ${open === "emoji" ? "lit" : ""}`} onClick={() => toggle("emoji")} aria-expanded={open === "emoji"} aria-label="Reactions" title="Reactions">
+          😂
+        </button>
+        <button type="button" className={`btn ghost icon quick-toggle ${open === "lines" ? "lit" : ""}`} onClick={() => toggle("lines")} aria-expanded={open === "lines"} aria-label="Quick trash talk" title="Quick trash talk">
           🔥
         </button>
         <input

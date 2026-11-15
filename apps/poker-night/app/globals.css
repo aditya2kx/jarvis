@@ -841,19 +841,196 @@ select:focus {
   }
   .col-side {
     position: sticky;
-    top: 74px;
+    top: var(--topbar-h, 74px);
+    max-height: calc(100dvh - var(--topbar-h, 74px) - 8px);
+    overflow-y: auto;
   }
 }
 
 /* ───────── Table ───────── */
 
 .felt2 {
+  --felt-ratio: 1.6;
   position: relative;
   width: 100%;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: var(--felt-ratio);
   /* The 12 o'clock seat (with its hole cards) rises above the felt box; keep it clear of the sticky top bar. */
   margin: 32px 0 6px;
 }
+
+/* While seated, the table, your cards and your controls all fit in one screen: the column is the
+   viewport minus the top bar, the felt gets at least half, and the dock takes the rest. */
+.col-main.fit {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--topbar-h, 72px));
+  min-height: 280px;
+  gap: 6px;
+  padding-bottom: 6px;
+  overflow: hidden;
+}
+
+.col-main.fit .felt-box {
+  flex: 1 1 55%;
+  min-height: 0;
+  /* Seats hang outside the oval — pad so they stay inside this flex item (and clear the dock). */
+  padding: 36px 44px;
+  box-sizing: border-box;
+  container-type: size;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* The oval stretches to the padded box, within --fit-min/--fit-max (width ÷ height). */
+.col-main.fit .felt2 {
+  --fit-min: 1.15;
+  --fit-max: 1.85;
+  width: min(100cqw, 100cqh * var(--fit-max));
+  height: min(100cqh, 100cqw / var(--fit-min));
+  aspect-ratio: auto;
+  margin: 0;
+  flex: none;
+}
+
+.col-main.fit .dock {
+  position: relative;
+  bottom: auto;
+  flex: 0 1 auto;
+  max-height: 42%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.col-main.fit .seat-requests {
+  flex: none;
+  max-height: 20%;
+  overflow-y: auto;
+}
+
+@media (max-width: 640px) {
+  .col-main.fit .felt-box {
+    padding: 32px 28px;
+  }
+  .col-main.fit .felt2 {
+    --fit-min: 0.7;
+    --fit-max: 1.25;
+  }
+}
+
+/* Short screens: the table wins the space. Move hints and big cards are the first to give way. */
+@media (max-height: 940px) {
+  .col-main.fit .btn.move small {
+    display: none;
+  }
+  .col-main.fit .btn.move {
+    min-height: 44px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .col-main.fit .coach {
+    padding: 6px 10px;
+    font-size: 0.8rem;
+  }
+  .col-main.fit .dock {
+    max-height: 40%;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+}
+
+@media (max-height: 820px) {
+  .col-main.fit .dock {
+    max-height: 38%;
+    gap: 6px;
+    padding: 8px 10px;
+  }
+  .col-main.fit .my-cards .pc-lg {
+    width: 40px;
+    height: 56px;
+    --s: 40px;
+  }
+  .col-main.fit .act-head {
+    margin-bottom: 2px;
+  }
+  .col-main.fit .raise-panel {
+    gap: 6px;
+  }
+}
+
+@media (max-height: 640px) and (orientation: portrait) {
+  .col-main.fit .dock {
+    max-height: 36%;
+  }
+  .col-main.fit .coach {
+    display: none;
+  }
+}
+
+/* Phones on their side: felt left, controls pinned to the right edge of the play column. */
+@media (orientation: landscape) and (max-height: 520px) {
+  .col-main.fit {
+    position: relative;
+    flex-direction: column;
+    gap: 0;
+  }
+  .col-main.fit .felt-box {
+    flex: 1 1 auto;
+    width: calc(100% - min(280px, 36%));
+    /* Bottom/top seats hang past the oval — keep them inside this pane. */
+    padding: 52px 36px 56px;
+  }
+  .col-main.fit .felt2 {
+    --fit-min: 1.35;
+    --fit-max: 2.4;
+  }
+  .col-main.fit .dock {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(280px, 36%);
+    max-height: none;
+    margin: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .col-main.fit .seat-requests {
+    position: absolute;
+    right: min(280px, 36%);
+    top: 0;
+    max-width: 160px;
+    z-index: 5;
+  }
+  .col-main.fit .seat2 {
+    width: 64px;
+  }
+  .col-main.fit .seat-cards {
+    height: 22px;
+    margin-bottom: -8px;
+  }
+  .col-main.fit .avatar-wrap {
+    width: 36px;
+    height: 36px;
+  }
+  .col-main.fit .avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 1rem;
+  }
+  .col-main.fit .my-hand {
+    padding-top: 10px;
+  }
+  .col-main.fit .my-cards .pc-lg {
+    width: 36px;
+    height: 50px;
+    --s: 36px;
+  }
+  .col-main.fit .coach {
+    display: none;
+  }
+}
+
 
 .rail {
   position: absolute;
@@ -2326,7 +2503,7 @@ select:focus {
     display: none;
   }
   .felt2 {
-    aspect-ratio: 10 / 12;
+    --felt-ratio: 0.8333;
     margin-bottom: 4px;
   }
   .rail {

@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TableAudio } from "@/lib/audio";
-import { api, fmt, loadPref, savedToken, savePref, saveToken, type RoomResponse } from "@/lib/client";
+import { BUILD } from "@/lib/build";
+import { api, fmt, loadPref, safeToReload, savedToken, savePref, saveToken, type RoomResponse } from "@/lib/client";
 import { AvatarPicker } from "@/components/pickers";
 import { AVATARS, blindsUpAt, type Room } from "@/lib/game";
 import Dock, { type Send } from "./dock";
@@ -10,6 +11,8 @@ import Felt from "./felt";
 import Side, { HandRankings } from "./side";
 
 const POLL_MS = 1200;
+const RESUME_MUSIC = "poker-night:resume-music";
+const RELOADED_FOR = "poker-night:reloaded-for";
 
 export default function Table({ roomId }: { roomId: string }) {
   const [room, setRoom] = useState<Room | null>(null);
@@ -33,6 +36,7 @@ export default function Table({ roomId }: { roomId: string }) {
   const audio = useRef<TableAudio | null>(null);
   const tokenRef = useRef<string | null>(null);
   const soundRef = useRef(true);
+  const live = useRef({ myTurn: false, busy: false, music: false });
 
   useEffect(() => {
     const sound = loadPref("sound", true);
@@ -97,7 +101,14 @@ export default function Table({ roomId }: { roomId: string }) {
     async function poll() {
       try {
         const res = await api<RoomResponse>(`/api/rooms/${roomId}?v=${version.current}`, { token: tokenRef.current });
-        if (!stopped) applyResponse(res);
+        if (stopped) return;
+        applyResponse(res);
+        // Once per new build: a cached page or a half-rolled-out deploy must not cause a reload loop.
+        if (res.build && res.build !== BUILD && sessionStorage.getItem(RELOADED_FOR) !== res.build && safeToReload(live.current)) {
+          sessionStorage.setItem(RELOADED_FOR, res.build);
+          if (live.current.music) sessionStorage.setItem(RESUME_MUSIC, "1");
+          window.location.reload();
+        }
       } catch (err) {
         if ((err as Error).message === "Table not found") setMissing(true);
       }
@@ -116,6 +127,21 @@ export default function Table({ roomId }: { roomId: string }) {
   }, [roomId, applyResponse]);
 
   const myTurn = !!room?.hand && room.hand.toAct === you && you !== null && room.hand.street !== "showdown";
+  live.current = { myTurn, busy, music: musicOn };
+
+  useEffect(() => {
+    if (sessionStorage.getItem(RESUME_MUSIC) !== "1") return;
+    sessionStorage.removeItem(RESUME_MUSIC);
+    // Browsers only allow audio after a gesture, so pick the music back up on the first tap.
+    const resume = () => {
+      audio.current ??= new TableAudio();
+      audio.current.start();
+      setMusicOn(true);
+    };
+    window.addEventListener("pointerdown", resume, { once: true });
+    return () => window.removeEventListener("pointerdown", resume);
+  }, []);
+
   useEffect(() => {
     document.title = myTurn ? "● Your move — Poker Night" : "Poker Night";
   }, [myTurn]);

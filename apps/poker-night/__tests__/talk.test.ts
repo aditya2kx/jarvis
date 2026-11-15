@@ -87,6 +87,24 @@ describe("chat", () => {
     expect(room.chat![0].text).toBe("m10");
   });
 
+  it("a hand already in progress when the new version deploys plays on", () => {
+    const room = table(["A", "B", "C"]);
+    startHand(room);
+    act(room, "A", { type: "call" });
+    const saved = JSON.parse(JSON.stringify(room)) as Room;
+    delete saved.chat;
+    delete saved.hand!.moves;
+    delete saved.hand!.lastMove;
+
+    expect(viewFor(saved, "B").hand!.moves).toBeUndefined();
+    act(saved, "B", { type: "call" });
+    expect(saved.hand!.moves).toEqual({ B: expect.objectContaining({ kind: "call", amount: 10 }) });
+    act(saved, "C", { type: "check" });
+    expect(saved.hand!.street).toBe("flop");
+    chat(saved, "A", "still here");
+    expect(saved.players.map((p) => p.chips)).toEqual([980, 980, 980]);
+  });
+
   it("rooms saved before chat existed still load with an empty feed", () => {
     const room = table(["A"]);
     delete room.chat;

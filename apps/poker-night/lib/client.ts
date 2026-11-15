@@ -2,7 +2,14 @@
 
 import type { Room } from "./game";
 
-export type RoomResponse = { room?: Room; version: number; you: string | null; now: number; unchanged?: boolean; error?: string };
+export type RoomResponse = { room?: Room; version: number; you: string | null; now: number; unchanged?: boolean; error?: string; build?: string };
+
+/** A newer deploy is live. Reload only when nothing local would be lost: not your turn, nothing typed, no request in flight. */
+export function safeToReload(opts: { myTurn: boolean; busy: boolean }) {
+  if (opts.myTurn || opts.busy) return false;
+  const el = document.activeElement;
+  return !(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) || el.value.trim() === "";
+}
 
 const key = (roomId: string) => `poker-night:${roomId}`;
 

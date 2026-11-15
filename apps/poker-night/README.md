@@ -15,6 +15,7 @@ Shared Texas Hold'em table for a home game. Everyone opens the same link on thei
 - Table chat: speech bubbles over the seat, quick trash-talk lines, a Chat tab with unread badge (140 chars, light anti-spam)
 - Scores tab with net vs buy-ins, streaks, awards, VPIP and sparkline history
 - Emoji reactions, lounge music, chip / deal / win / chat sound effects
+- Deploys don't interrupt a game: tables live in Postgres, seats in each phone's localStorage, and open tables reload once onto the new version when it's safe (not your turn, nothing typed); music resumes on the next tap
 - Host tools: blinds, dealing mode, set stack, rebuy / sit out / remove, cancel hand, act for a player
 
 ## Run

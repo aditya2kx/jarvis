@@ -9,6 +9,7 @@ import {
   DEFAULT_STAFFING,
   DEFAULT_TRAINING,
   parseScheduleRules,
+  rulesFromPatch,
   minToTime,
   ruleUnavailability,
   staffLimits,
@@ -509,5 +510,23 @@ describe("parseScheduleRules guardrails (Issue #512)", () => {
     expect(() => withStaffing({ soloMinMin: 50 })).toThrow(/alone/);
     expect(() => withStaffing({ trendWeights: [0, 0] })).toThrow(/weights/);
     expect(() => withStaffing({ trendWeights: [] })).toThrow(/weights/);
+  });
+});
+
+describe("rulesFromPatch (preview ?rules= link)", () => {
+  const enc = (o: object) => btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_");
+
+  it("layers staffing fields and rule lists on the saved rules", () => {
+    const r = rulesFromPatch(DEFAULT_RULES, enc({ staffing: { ordersPerPerson: 5, laborCapPct: 0.4 }, dayRules: [] }))!;
+    expect(r.staffing.ordersPerPerson).toBe(5);
+    expect(r.staffing.laborCapPct).toBe(0.4);
+    expect(r.staffing.minPeople).toBe(DEFAULT_RULES.staffing.minPeople);
+    expect(r.dayRules).toEqual([]);
+    expect(r.staffRules).toEqual(DEFAULT_RULES.staffRules);
+  });
+
+  it("ignores links that don't decode or would fail a save", () => {
+    expect(rulesFromPatch(DEFAULT_RULES, "not-json")).toBeNull();
+    expect(rulesFromPatch(DEFAULT_RULES, enc({ staffing: { laborCapPct: 3 } }))).toBeNull();
   });
 });

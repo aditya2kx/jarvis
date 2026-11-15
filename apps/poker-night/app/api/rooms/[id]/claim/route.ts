@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { requestSeat } from "@/lib/game";
-import { bad, handleError, rateLimited, readJson, str } from "@/lib/http";
-import { addClaimToken, mutateRoom, newId, newToken } from "@/lib/store";
+import { GameError, requestSeat } from "@/lib/game";
+import { bad, handleError, rateLimited, readJson, str, tokenFrom } from "@/lib/http";
+import { addClaimToken, mutateRoom, newId, newToken, playerIdFor } from "@/lib/store";
 import { viewFor } from "@/lib/view";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -12,6 +12,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const token = newToken();
     const claimId = newId(10);
     const { row } = await mutateRoom(id, (row) => {
+      if (playerIdFor(row, tokenFrom(request))) throw new GameError("You already have a seat at this table");
       requestSeat(row.state, claimId, str(body.playerId));
       addClaimToken(row, token, claimId);
     });

@@ -81,6 +81,7 @@ function apply(room: Room, me: string, body: Record<string, unknown>) {
       if (target !== me) requireHost();
       return act(room, target, parseAction(body));
     case "showdown":
+      requireHost();
       return resolveShowdown(room, parseWinners(body.winners));
     case "show":
       return showCards(room, me);

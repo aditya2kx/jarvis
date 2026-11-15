@@ -18,7 +18,7 @@ import {
   type RoomResponse,
 } from "@/lib/client";
 import { AvatarPicker } from "@/components/pickers";
-import { AVATARS, blindsUpAt, type Room } from "@/lib/game";
+import { AVATARS, blindsUpAt, canVouch, type Room } from "@/lib/game";
 import Dock, { type Send } from "./dock";
 import Felt from "./felt";
 import Side, { HandRankings } from "./side";
@@ -424,9 +424,11 @@ function SeatRequests({ room, you, busy, send }: { room: Room; you: string; busy
               🙋 {c.playerId === you ? "Someone is asking for your seat — not you? Tap No." : `${p.avatar} ${p.name} wants their seat back (refreshed or new phone)`}
             </span>
             <span className="seat-request-actions">
-              <button className="btn primary small-btn" disabled={busy} onClick={() => send({ kind: "seat", claimId: c.id, allow: true })}>
-                Let them in
-              </button>
+              {canVouch(room, you, c) && (
+                <button className="btn primary small-btn" disabled={busy} onClick={() => send({ kind: "seat", claimId: c.id, allow: true })}>
+                  Let them in
+                </button>
+              )}
               <button className="btn ghost small-btn" disabled={busy} onClick={() => send({ kind: "seat", claimId: c.id, allow: false })}>
                 No
               </button>
@@ -446,7 +448,7 @@ function WaitingForSeat({ room, claim, onCancel }: { room: Room; claim: PendingC
         {p?.avatar} Getting {p?.name ?? "your"}&apos;s seat back…
       </h2>
       <p className="muted">
-        Ask anyone sitting at the table to tap <b className="cream">Let them in</b> on their phone. Your chips, cards and host controls come back with
+        Ask someone who&apos;s been playing at the table to tap <b className="cream">Let them in</b> on their phone. Your chips, cards and host controls come back with
         the seat.
       </p>
       <div className="inline">

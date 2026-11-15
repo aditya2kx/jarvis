@@ -41,7 +41,10 @@ export async function markSeen(roomId: string, playerId: string) {
   );
 }
 
-/** Epoch ms of the host's last poll at this table, 0 if never seen. */
+/**
+ * Epoch ms of the host's last poll at this table, 0 if never seen. 0 is safe: the host polls from the
+ * moment they create the table, and a host-seat claim needs a dealt hand first.
+ */
 export async function hostSeenAt(roomId: string) {
   const rows = await sql<{ ms: number }>(
     `select (extract(epoch from s.seen_at) * 1000)::float8 as ms from seat_seen s

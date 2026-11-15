@@ -2,10 +2,65 @@
 
 import { useMemo } from "react";
 import { fmt } from "@/lib/client";
-import { BOARD_CARDS, pots, potTotal, type Hand, type Player, type Room, type Street } from "@/lib/game";
+import { BOARD_CARDS, pots, potTotal, type Hand, type Move, type Player, type Room, type Street } from "@/lib/game";
 import PlayingCard from "@/components/playing-card";
 
 export const SHOT_CLOCK_MS = 30_000;
+const BUBBLE_MS = 6000;
+
+/** Short label for the tag under a seat. */
+function moveTag(m: Move) {
+  const n = m.amount === undefined ? "" : ` ${fmt(m.amount)}`;
+  switch (m.kind) {
+    case "sb":
+      return `SB${n}`;
+    case "bb":
+      return `BB${n}`;
+    case "fold":
+      return "Fold";
+    case "check":
+      return "Check";
+    case "call":
+      return `Call${n}`;
+    case "bet":
+      return `Bet${n}`;
+    case "raise":
+      return `Raise${n}`;
+    case "allin":
+      return `All in${n}`;
+    default: {
+      const never: never = m.kind;
+      return never;
+    }
+  }
+}
+
+/** Sentence for the "what just happened" line in the middle of the table. */
+function moveSentence(m: Move) {
+  const n = m.amount === undefined ? "" : fmt(m.amount);
+  switch (m.kind) {
+    case "sb":
+      return `posts the small blind ${n}`;
+    case "bb":
+      return `posts the big blind ${n}`;
+    case "fold":
+      return "folds";
+    case "check":
+      return "checks";
+    case "call":
+      return `calls ${n}`;
+    case "bet":
+      return `bets ${n}`;
+    case "raise":
+      return `raises to ${n}`;
+    case "allin":
+      return `is ALL IN for ${n}`;
+    default: {
+      const never: never = m.kind;
+      return never;
+    }
+  }
+}
 
 const STREET_LABEL: Record<Street, string> = {
   preflop: "Pre-flop",
@@ -70,8 +125,10 @@ function Center({ room, physical, fresh }: { room: Room; physical: boolean; fres
   if (h) {
     const dealt = BOARD_CARDS[h.street];
     const total = potTotal(h);
-    // Only contested pots count as side pots — SB/BB alone don't create a "side pot" to show.
-    const contestedPots = pots(h).filter((p) => p.eligible.length >= 2).length;
+    // Only contested pots count as side pots — SB/BB alone don't create a "side pot" to show,
+    // and neither do unmatched bets mid-street: a side pot needs someone all in.
+    const someoneAllIn = room.players.some((p) => p.chips === 0 && h.order.includes(p.id) && !h.folded.includes(p.id));
+    const contestedPots = someoneAllIn ? pots(h).filter((p) => p.eligible.length >= 2).length : 1;
     return (
       <div className="center">
         <div className="street-pill">
@@ -90,6 +147,7 @@ function Center({ room, physical, fresh }: { room: Room; physical: boolean; fres
           <span className="pot-amt">{fmt(total)}</span>
           {contestedPots > 1 && <span className="side-note">{contestedPots - 1} side pot{contestedPots > 2 ? "s" : ""}</span>}
         </div>
+        <LastMove room={room} hand={h} />
         {dealerHint(h, physical) && <div className="hint2">{dealerHint(h, physical)}</div>}
       </div>
     );
@@ -124,6 +182,17 @@ function Center({ room, physical, fresh }: { room: Room; physical: boolean; fres
         <span className="red">♦</span>
       </div>
       <div className="win-sub">Waiting for the first deal</div>
+    </div>
+  );
+}
+
+function LastMove({ room, hand }: { room: Room; hand: Hand }) {
+  const m = hand.lastMove;
+  const p = m && room.players.find((x) => x.id === m.id);
+  if (!m || !p) return null;
+  return (
+    <div key={m.at} className={`ticker mv-${m.kind}`} aria-live="polite">
+      <span aria-hidden>{p.avatar}</span> <b>{p.name}</b> {moveSentence(m)}
     </div>
   );
 }
@@ -175,6 +244,8 @@ function Seat({ room, p, you, now, angle }: { room: Room; p: Player; you: string
   const myCards = h?.holes?.[p.id];
   const showBacks = inHand && !folded && room.settings.dealMode === "app";
   const reactions = room.reactions.filter((r) => r.playerId === p.id && now - r.at < 4500);
+  const move = !status ? h?.moves?.[p.id] : undefined;
+  const said = [...(room.chat ?? [])].reverse().find((m) => m.playerId === p.id && now - m.at < BUBBLE_MS);
 
   return (
     <>
@@ -212,9 +283,21 @@ function Seat({ room, p, you, now, angle }: { room: Room; p: Player; you: string
           <div className="stk">{fmt(p.chips)}</div>
         </div>
         {status && <div className={`tag ${status === "All in" ? "hot" : ""}`}>{status}</div>}
+        {move && (
+          <div key={move.at} className={`tag mv mv-${move.kind}`}>
+            {moveTag(move)}
+          </div>
+        )}
         {shown && <div className="tag show">{shown.handName.split(",")[0]}</div>}
         {late && <div className="tag hot">⏰</div>}
       </div>
+      {said && (
+        <div className="bubble-at" style={pos}>
+          <div key={said.id} className={`bubble ${sin < -0.3 ? "below" : ""} ${cos < -0.5 ? "east" : cos > 0.5 ? "west" : ""}`} role="status">
+            {said.text}
+          </div>
+        </div>
+      )}
       {bet > 0 && (
         <div className="bet2" style={betPos}>
           <ChipStack amount={bet} />

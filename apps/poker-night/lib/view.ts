@@ -7,6 +7,7 @@ import { BOARD_CARDS, type Room } from "./game";
 export function viewFor(room: Room, viewerId: string | null): Room {
   const view: Room = structuredClone(room);
   delete view.lastHoles;
+  view.chat ??= [];
   const h = view.hand;
   if (h) {
     delete h.deck;

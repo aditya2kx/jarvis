@@ -62,6 +62,8 @@ export default function Table({ roomId }: { roomId: string }) {
       } else if (fresh.some((t) => /calls|bets|raises|ALL IN|rebuys/.test(t))) play("chip");
       else if (fresh.some((t) => / checks$/.test(t))) play("check");
       else if (fresh.some((t) => / folds$/.test(t))) play("fold");
+      const heardAt = old.chat?.at(-1)?.at ?? 0;
+      if (next.chat?.some((m) => m.at > heardAt && m.playerId !== me)) play("chat");
       const myTurnNow = !!h && h.toAct === me && h.street !== "showdown";
       const myTurnBefore = !!old.hand && old.hand.toAct === me;
       if (myTurnNow && !myTurnBefore) {

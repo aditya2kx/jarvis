@@ -10,9 +10,11 @@ Shared Texas Hold'em table for a home game. Everyone opens the same link on thei
 - **Real cards** or **app deals** (switch between hands)
 - Optional blind levels that double on a timer (turbo)
 - Coach mode: win chance, pot odds and plain-English tips (toggle with 🎓)
-- Hand rankings sheet (`?`) and a "How to play" tab for beginners
-- Leaderboard with net vs buy-ins, streaks, awards, VPIP and sparkline history
-- Emoji reactions, lounge music, chip / deal / win sound effects
+- Hand rankings sheet (`?`) and a "Rules" tab for beginners
+- Every seat shows its last move this street (Call 50, Raise 200, Fold…) plus a "latest action" line on the felt
+- Table chat: speech bubbles over the seat, quick trash-talk lines, a Chat tab with unread badge (140 chars, light anti-spam)
+- Scores tab with net vs buy-ins, streaks, awards, VPIP and sparkline history
+- Emoji reactions, lounge music, chip / deal / win / chat sound effects
 - Host tools: blinds, dealing mode, set stack, rebuy / sit out / remove, cancel hand, act for a player
 
 ## Run

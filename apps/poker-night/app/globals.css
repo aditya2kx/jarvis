@@ -1189,6 +1189,142 @@ select:focus {
   color: #23170a;
 }
 
+/* Latest move this street — colour tells passive vs aggressive at a glance. */
+.tag.mv {
+  animation: tag-pop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+  font-variant-numeric: tabular-nums;
+}
+
+.tag.mv-check,
+.tag.mv-sb,
+.tag.mv-bb {
+  background: rgba(244, 236, 217, 0.14);
+  color: var(--cream);
+}
+
+.tag.mv-call {
+  background: rgba(124, 196, 255, 0.22);
+  color: #cfe8ff;
+}
+
+.tag.mv-bet,
+.tag.mv-raise {
+  background: rgba(231, 189, 98, 0.92);
+  color: #23170a;
+}
+
+.tag.mv-allin {
+  background: rgba(229, 103, 90, 0.92);
+  color: #fff;
+}
+
+@keyframes tag-pop {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+}
+
+.ticker {
+  font-size: 0.82rem;
+  color: rgba(244, 236, 217, 0.9);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(244, 236, 217, 0.1);
+  padding: 5px 12px;
+  border-radius: 999px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: fade-in 0.3s ease-out both;
+}
+
+.ticker b {
+  color: var(--cream);
+}
+
+.ticker.mv-bet,
+.ticker.mv-raise {
+  border-color: rgba(231, 189, 98, 0.5);
+  color: var(--gold);
+}
+
+.ticker.mv-allin {
+  border-color: rgba(229, 103, 90, 0.6);
+  color: #ffc9c2;
+}
+
+/* Sibling of the seat (not a child) so a folded seat's dimming doesn't fade the message. */
+.bubble-at {
+  position: absolute;
+  z-index: 6;
+  width: 0;
+  height: 0;
+}
+
+.bubble {
+  position: absolute;
+  bottom: 44px;
+  left: 0;
+  translate: -50% 0;
+  z-index: 6;
+  width: max-content;
+  max-width: 150px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: var(--cream);
+  color: #1b1408;
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: center;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  box-shadow: 0 10px 22px -8px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+  animation: bubble-life 6s ease-out both;
+}
+
+.bubble.below {
+  bottom: auto;
+  top: 52px;
+}
+
+/* Side seats: grow the bubble toward the felt so it never leaves the screen. */
+.bubble.east {
+  left: -40px;
+  translate: 0 0;
+}
+
+.bubble.west {
+  left: auto;
+  right: -40px;
+  translate: 0 0;
+}
+
+@keyframes bubble-life {
+  0% {
+    opacity: 0;
+    scale: 0.7;
+  }
+  6% {
+    opacity: 1;
+    scale: 1.04;
+  }
+  10% {
+    scale: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 .float-emoji {
   position: absolute;
   top: -8px;
@@ -1577,6 +1713,76 @@ select:focus {
   white-space: nowrap;
 }
 
+.chatbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.chat-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.chat-input {
+  padding: 10px 12px;
+  font-size: 1rem; /* ≥16px keeps iOS from zooming on focus */
+  border-radius: 12px;
+}
+
+.chat-send {
+  min-height: 42px;
+  padding: 8px 14px;
+  font-size: 0.9rem;
+}
+
+.quick-toggle {
+  flex: none;
+}
+
+.quick-lines {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  animation: fade-in 0.2s ease-out both;
+}
+
+.quick-line {
+  appearance: none;
+  flex: none;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--cream);
+  font: 600 0.84rem var(--sans);
+  padding: 8px 12px;
+  min-height: 38px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+
+.quick-line:hover:not(:disabled) {
+  background: rgba(231, 189, 98, 0.12);
+  border-color: rgba(231, 189, 98, 0.45);
+}
+
+.quick-line:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.quick-line:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.quick-line:disabled {
+  opacity: 0.5;
+}
+
 .join .inline {
   margin-top: 14px;
 }
@@ -1789,6 +1995,86 @@ select:focus {
 .log time {
   font-size: 0.74rem;
   flex: none;
+}
+
+.tab .badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  vertical-align: 1px;
+  animation: tag-pop 0.3s ease-out both;
+}
+
+.empty-chat {
+  margin: 4px 0;
+  font-size: 0.9rem;
+}
+
+.chat-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-feed li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.chat-av {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 1.05rem;
+  background: radial-gradient(circle at 35% 30%, #2b4a3b, #12261c);
+  border: 1px solid var(--line-2);
+}
+
+.chat-body {
+  min-width: 0;
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  border-radius: 4px 14px 14px 14px;
+  padding: 7px 11px 8px;
+}
+
+.chat-feed li.me .chat-body {
+  background: rgba(231, 189, 98, 0.1);
+  border-color: rgba(231, 189, 98, 0.25);
+}
+
+.chat-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.78rem;
+}
+
+.chat-meta time {
+  font-size: 0.72rem;
+}
+
+.chat-body p {
+  margin: 2px 0 0;
+  font-size: 0.92rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .rankings {
@@ -2048,6 +2334,13 @@ select:focus {
   }
   .coach {
     font-size: 0.8rem;
+  }
+  .bubble {
+    max-width: 120px;
+    font-size: 0.7rem;
+  }
+  .ticker {
+    font-size: 0.74rem;
   }
   .segmented {
     grid-template-columns: 1fr;

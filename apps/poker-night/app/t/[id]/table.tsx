@@ -17,9 +17,11 @@ import {
   saveToken,
   type PendingClaim,
   type RoomResponse,
+  type VoicePresence,
 } from "@/lib/client";
 import { AvatarPicker } from "@/components/pickers";
 import { AVATARS, blindsUpAt, canVouch, type Room } from "@/lib/game";
+import { VOICE_IDLE, VoiceMesh, type VoiceStatus } from "@/lib/voice-client";
 import Dock, { type Send } from "./dock";
 import Felt from "./felt";
 import Side, { HandRankings } from "./side";
@@ -44,6 +46,9 @@ export default function Table({ roomId }: { roomId: string }) {
   const [sheet, setSheet] = useState(false);
   const [lastCards, setLastCards] = useState<{ hand: number; cards: string[] } | null>(null);
   const [claim, setClaim] = useState<PendingClaim | null>(null);
+  const [voice, setVoice] = useState<VoiceStatus>(VOICE_IDLE);
+  const [roster, setRoster] = useState<VoicePresence[]>([]);
+  const [voiceBusy, setVoiceBusy] = useState(false);
 
   const version = useRef(-1);
   const offset = useRef(0);
@@ -54,6 +59,7 @@ export default function Table({ roomId }: { roomId: string }) {
   const live = useRef({ myTurn: false, busy: false, music: false });
   const shell = useRef<HTMLDivElement | null>(null);
   const topbar = useRef<HTMLElement | null>(null);
+  const mesh = useRef<VoiceMesh | null>(null);
 
   useEffect(() => {
     const sound = loadPref("sound", true);
@@ -99,6 +105,10 @@ export default function Table({ roomId }: { roomId: string }) {
     (res: RoomResponse) => {
       offset.current = res.now - Date.now();
       setYou(res.you);
+      if (res.voice) {
+        const next = res.voice;
+        setRoster((old) => (JSON.stringify(old) === JSON.stringify(next) ? old : next));
+      }
       if (res.unchanged || !res.room) return;
       version.current = res.version;
       const r = res.room;
@@ -191,6 +201,23 @@ export default function Table({ roomId }: { roomId: string }) {
     return () => window.removeEventListener("pointerdown", resume);
   }, []);
 
+  // Leave voice when this phone loses its seat or the page goes away.
+  const seatedId = room?.players.some((p) => p.id === you) ? you : null;
+  useEffect(() => {
+    if (!seatedId) return;
+    return () => {
+      void mesh.current?.leave();
+      mesh.current = null;
+    };
+  }, [seatedId]);
+
+  useEffect(() => {
+    if (!voice.joined) return;
+    const unlock = () => mesh.current?.unlock();
+    window.addEventListener("pointerdown", unlock);
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, [voice.joined]);
+
   useEffect(() => {
     document.title = myTurn ? "● Your move — Poker Night" : "Poker Night";
   }, [myTurn]);
@@ -260,6 +287,33 @@ export default function Table({ roomId }: { roomId: string }) {
     tokenRef.current = null;
     setToken(null);
     setClaim(null);
+  }
+
+  async function tapMic() {
+    if (voiceBusy || !seatedId || !token) return;
+    const live = mesh.current;
+    if (live && voice.joined) {
+      if (voice.listenOnly) setError("Mic is blocked — allow it in your browser settings, then leave and rejoin voice");
+      else void live.setMuted(!voice.muted);
+      return;
+    }
+    setVoiceBusy(true);
+    const m = new VoiceMesh(roomId, seatedId, token, setVoice);
+    try {
+      const listenOnly = await m.join();
+      mesh.current = m;
+      if (listenOnly) setError("Mic is blocked — you can listen. Allow the mic in your browser settings to talk");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setVoiceBusy(false);
+    }
+  }
+
+  async function leaveVoice() {
+    const m = mesh.current;
+    mesh.current = null;
+    await m?.leave();
   }
 
   function toggleMusic() {
@@ -373,6 +427,7 @@ export default function Table({ roomId }: { roomId: string }) {
               />
             )}
           </div>
+          {me && <VoiceControl voice={voice} others={roster.filter((v) => v.id !== me.id).length} busy={voiceBusy} onMic={tapMic} onLeave={leaveVoice} />}
           <button className="btn primary invite" onClick={share}>
             {copied ? "Copied ✓" : "Invite"}
           </button>
@@ -388,7 +443,7 @@ export default function Table({ roomId }: { roomId: string }) {
       <main className="layout">
         <div className={`col-main ${me ? "fit" : ""}`}>
           <div className="felt-box">
-            <Felt room={room} you={you} now={now} />
+            <Felt room={room} you={you} now={now} voice={{ roster, speaking: voice.speaking }} />
           </div>
           {me && <SeatRequests room={room} you={me.id} busy={busy} send={send} />}
           {me ? (
@@ -417,6 +472,37 @@ export default function Table({ roomId }: { roomId: string }) {
             <HandRankings />
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function VoiceControl({ voice, others, busy, onMic, onLeave }: { voice: VoiceStatus; others: number; busy: boolean; onMic: () => void; onLeave: () => void }) {
+  const talking = voice.joined && !voice.muted;
+  const title = !voice.joined
+    ? `Join voice chat${others ? ` · ${others} talking` : ""} — use headphones if you're sitting together`
+    : voice.listenOnly
+      ? "Listening only — mic is blocked"
+      : voice.muted
+        ? "Muted — tap to talk"
+        : "Mic on — tap to mute";
+  return (
+    <div className={`voice ${voice.joined ? "on" : ""}`}>
+      <button
+        className={`btn ghost icon mic ${talking ? "lit live" : ""}`}
+        onClick={onMic}
+        disabled={busy}
+        aria-pressed={talking}
+        aria-label={voice.joined ? (voice.muted ? "Unmute" : "Mute") : "Join voice chat"}
+        title={title}
+      >
+        {voice.joined && voice.muted ? "🔇" : "🎙️"}
+        {!voice.joined && others > 0 && <span className="voice-count">{others}</span>}
+      </button>
+      {voice.joined && (
+        <button className="btn ghost icon voice-leave" onClick={onLeave} aria-label="Leave voice chat" title="Leave voice chat">
+          ✕
+        </button>
       )}
     </div>
   );

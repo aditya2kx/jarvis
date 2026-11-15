@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { fmt } from "@/lib/client";
+import { fmt, type VoicePresence } from "@/lib/client";
 import { BOARD_CARDS, pots, potTotal, type Hand, type Move, type Player, type Room, type Street } from "@/lib/game";
 import PlayingCard from "@/components/playing-card";
 
@@ -86,9 +86,10 @@ function dealerHint(h: Hand, physical: boolean) {
   }
 }
 
-type Props = { room: Room; you: string | null; now: number };
+type Voice = { roster: VoicePresence[]; speaking: string[] };
+type Props = { room: Room; you: string | null; now: number; voice: Voice };
 
-export default function Felt({ room, you, now }: Props) {
+export default function Felt({ room, you, now, voice }: Props) {
   const h = room.hand;
   const physical = room.settings.dealMode === "physical";
   const result = !h ? room.lastResult : null;
@@ -112,7 +113,7 @@ export default function Felt({ room, you, now }: Props) {
       </div>
       {seats.map((p, i) => {
         const angle = Math.PI / 2 + (i * 2 * Math.PI) / n;
-        return <Seat key={p.id} room={room} p={p} you={you} now={now} angle={angle} />;
+        return <Seat key={p.id} room={room} p={p} you={you} now={now} angle={angle} voice={voice} />;
       })}
       {fresh && <Confetti seed={result!.at} />}
     </section>
@@ -208,7 +209,7 @@ export function ChipStack({ amount }: { amount: number }) {
   );
 }
 
-function Seat({ room, p, you, now, angle }: { room: Room; p: Player; you: string | null; now: number; angle: number }) {
+function Seat({ room, p, you, now, angle, voice }: { room: Room; p: Player; you: string | null; now: number; angle: number; voice: Voice }) {
   const h = room.hand;
   const result = !h ? room.lastResult : null;
   const inHand = !!h?.order.includes(p.id);
@@ -245,6 +246,8 @@ function Seat({ room, p, you, now, angle }: { room: Room; p: Player; you: string
   const showBacks = inHand && !folded && room.settings.dealMode === "app";
   const reactions = room.reactions.filter((r) => r.playerId === p.id && now - r.at < 4500);
   const move = !status ? h?.moves?.[p.id] : undefined;
+  const onMic = voice.roster.find((v) => v.id === p.id);
+  const speaking = !!onMic && !onMic.muted && voice.speaking.includes(p.id);
   const said = [...(room.chat ?? [])].reverse().find((m) => m.playerId === p.id && now - m.at < BUBBLE_MS);
 
   return (
@@ -264,13 +267,18 @@ function Seat({ room, p, you, now, angle }: { room: Room; p: Player; you: string
             )
           ) : null}
         </div>
-        <div className="avatar-wrap">
+        <div className={`avatar-wrap ${speaking ? "speaking" : ""}`}>
           {turn && (
             <svg className="ring" viewBox="0 0 48 48" aria-hidden>
               <circle cx="24" cy="24" r="22" pathLength="100" strokeDasharray="100" strokeDashoffset={100 - left * 100} />
             </svg>
           )}
           <div className="avatar">{p.avatar}</div>
+          {onMic && (
+            <span className={`mic-badge ${onMic.muted ? "muted" : ""}`} title={onMic.muted ? "In voice · muted" : "In voice"} aria-label={onMic.muted ? "In voice, muted" : "In voice"}>
+              {onMic.muted ? "🔇" : "🎙️"}
+            </span>
+          )}
           {reactions.map((r) => (
             <span key={r.id} className="float-emoji">
               {r.emoji}

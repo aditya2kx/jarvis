@@ -757,6 +757,72 @@ select:focus {
   border-color: rgba(231, 189, 98, 0.45);
 }
 
+.voice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn.icon.mic {
+  position: relative;
+}
+
+.btn.icon.mic.live {
+  border-color: rgba(111, 211, 154, 0.6);
+  background: rgba(111, 211, 154, 0.12);
+  box-shadow: 0 0 0 3px rgba(111, 211, 154, 0.16);
+}
+
+.voice-count {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--green);
+  color: #062014;
+  font: 700 0.68rem/18px var(--sans);
+}
+
+.voice-leave {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.mic-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -2px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--panel-solid);
+  border: 1px solid rgba(111, 211, 154, 0.55);
+  font-size: 0.66rem;
+  z-index: 2;
+}
+
+.mic-badge.muted {
+  border-color: var(--line-2);
+  opacity: 0.85;
+}
+
+.avatar-wrap.speaking .avatar {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(111, 211, 154, 0.35), 0 0 16px rgba(111, 211, 154, 0.55);
+  animation: talk 0.9s ease-in-out infinite;
+}
+
+@keyframes talk {
+  50% {
+    box-shadow: 0 0 0 5px rgba(111, 211, 154, 0.22), 0 0 22px rgba(111, 211, 154, 0.45);
+  }
+}
+
 .volume {
   width: 74px;
   padding: 0;
@@ -958,6 +1024,41 @@ select:focus {
   }
 }
 
+/* Sizing a bet: the confirm button has to be on screen without scrolling the dock, so chat, the coach
+   tip and the win meter step aside and the dock may take more of the column while the panel is open. */
+.col-main.fit .dock:has(.raise2) {
+  flex-shrink: 0;
+  max-height: 64%;
+}
+
+/* Short screens: your cards are still shown at your seat on the felt. */
+@media (max-height: 820px) {
+  .col-main.fit .dock:has(.raise2) .my-hand {
+    display: none;
+  }
+}
+
+.col-main.fit .dock:has(.raise2) :is(.chatbar, .coach, .meter, .away-note, .my-label) {
+  display: none;
+}
+
+.col-main.fit .raise2 {
+  gap: 8px;
+}
+
+.col-main.fit .raise2 .presets {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.col-main.fit .raise2 .chip-btn {
+  min-height: 38px;
+  padding: 6px 4px;
+  font-size: 0.84rem;
+  white-space: nowrap;
+}
+
 @media (max-height: 640px) and (orientation: portrait) {
   .col-main.fit .dock {
     max-height: 36%;
@@ -994,6 +1095,9 @@ select:focus {
     margin: 0;
     overflow-x: hidden;
     overflow-y: auto;
+  }
+  .col-main.fit .dock:has(.raise2) {
+    max-height: none;
   }
   .col-main.fit .seat-requests {
     position: absolute;
@@ -2485,8 +2589,13 @@ select:focus {
   .brand-suit {
     display: none;
   }
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
   .top-actions {
     gap: 4px;
+    margin-left: auto;
   }
   .btn.icon {
     width: 36px;

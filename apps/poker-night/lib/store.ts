@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { sql } from "./db";
-import { GameError, type Room } from "./game";
+import { GameError, liveClaims, type Room, type SeatClaim } from "./game";
 
 type Row = { state: Room; tokens: Record<string, string>; version: number };
 
@@ -33,9 +33,29 @@ export async function insertRoom(room: Room, tokens: Record<string, string>) {
   ]);
 }
 
+const CLAIM_PREFIX = "claim:";
+
 export function playerIdFor(row: Row, token: string | null) {
   if (!token) return null;
-  return row.tokens[hashToken(token)] ?? null;
+  const id = row.tokens[hashToken(token)];
+  return id && !id.startsWith(CLAIM_PREFIX) ? id : null;
+}
+
+/** A seat-request token only becomes a player token once someone at the table approves it. */
+export function addClaimToken(row: Row, token: string, claimId: string) {
+  const live = new Set(liveClaims(row.state).map((c) => CLAIM_PREFIX + c.id));
+  for (const [hash, value] of Object.entries(row.tokens)) {
+    if (value.startsWith(CLAIM_PREFIX) && !live.has(value)) delete row.tokens[hash];
+  }
+  row.tokens[hashToken(token)] = CLAIM_PREFIX + claimId;
+}
+
+export function settleClaimToken(row: Row, claim: SeatClaim, allow: boolean) {
+  for (const [hash, value] of Object.entries(row.tokens)) {
+    if (value !== CLAIM_PREFIX + claim.id) continue;
+    if (allow) row.tokens[hash] = claim.playerId;
+    else delete row.tokens[hash];
+  }
 }
 
 /** Read-modify-write with optimistic locking so concurrent taps from different phones never overwrite each other. */

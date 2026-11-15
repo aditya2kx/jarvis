@@ -67,6 +67,8 @@ export type Result = {
 export type LogEntry = { at: number; text: string };
 export type Reaction = { id: string; playerId: string; emoji: string; at: number };
 export type ChatMessage = { id: string; playerId: string; text: string; at: number };
+/** A phone that lost its seat (cleared storage, new browser) asking to get it back. */
+export type SeatClaim = { id: string; playerId: string; at: number };
 export type MoveKind = "sb" | "bb" | "fold" | "check" | "call" | "bet" | "raise" | "allin";
 export type Move = { kind: MoveKind; amount?: number; at: number };
 
@@ -96,6 +98,7 @@ export type Room = {
   reactions: Reaction[];
   /** Optional because rooms saved before chat existed don't have it. */
   chat?: ChatMessage[];
+  claims?: SeatClaim[];
   history: { hand: number; stacks: Record<string, number> }[];
 };
 
@@ -174,7 +177,7 @@ export function addPlayer(room: Room, p: { id: string; name: string; avatar?: st
   if (room.players.length >= MAX_PLAYERS) fail(`Table is full (${MAX_PLAYERS} max)`);
   const name = cleanName(p.name);
   if (room.players.some((x) => x.name.toLowerCase() === name.toLowerCase())) {
-    fail("Someone at the table already has that name");
+    fail("Someone at the table already has that name — if it's you, tap your name above to get your seat back");
   }
   const taken = new Set(room.players.map((x) => x.avatar));
   const avatar = p.avatar && AVATARS.includes(p.avatar) ? p.avatar : (AVATARS.find((a) => !taken.has(a)) ?? AVATARS[0]);
@@ -636,4 +639,31 @@ export function chat(room: Room, id: string, raw: string) {
   if (messages.filter((m) => m.playerId === id && now - m.at < 8000).length >= 4) fail("Easy, typing champ — one sec");
   messages.push({ id: `${now}-${id}`, playerId: id, text, at: now });
   if (messages.length > MAX_CHAT) messages.splice(0, messages.length - MAX_CHAT);
+}
+
+export const CLAIM_TTL_MS = 3 * 60_000;
+const MAX_CLAIMS = 4;
+
+export function liveClaims(room: Room, now = Date.now()) {
+  return (room.claims ?? []).filter((c) => now - c.at < CLAIM_TTL_MS && room.players.some((p) => p.id === c.playerId));
+}
+
+export function requestSeat(room: Room, claimId: string, playerId: string) {
+  const p = player(room, playerId);
+  const claims = liveClaims(room);
+  if (claims.length >= MAX_CLAIMS) fail("Too many seat requests right now — try again in a minute");
+  claims.push({ id: claimId, playerId, at: Date.now() });
+  room.claims = claims;
+  log(room, `🙋 Someone asked to take ${p.name}'s seat back`);
+}
+
+/** Any seated player can vouch for (or turn away) a seat request; returns the resolved claim. */
+export function resolveClaim(room: Room, by: string, claimId: string, allow: boolean): SeatClaim {
+  const voter = player(room, by);
+  const claims = liveClaims(room);
+  const claim = claims.find((c) => c.id === claimId) ?? fail("That request already expired");
+  room.claims = claims.filter((c) => c.id !== claimId);
+  const p = player(room, claim.playerId);
+  log(room, allow ? `✅ ${voter.name} let ${p.name} back in` : `🚫 ${voter.name} turned away a request for ${p.name}'s seat`);
+  return claim;
 }

@@ -1,0 +1,22 @@
+import { NextResponse } from "next/server";
+import { requestSeat } from "@/lib/game";
+import { bad, handleError, rateLimited, readJson, str } from "@/lib/http";
+import { addClaimToken, mutateRoom, newId, newToken } from "@/lib/store";
+import { viewFor } from "@/lib/view";
+
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    if (rateLimited(request, 30, 60 * 60 * 1000)) return bad("Too many seat requests — try again later", 429);
+    const { id } = await params;
+    const body = await readJson(request);
+    const token = newToken();
+    const claimId = newId(10);
+    const { row } = await mutateRoom(id, (row) => {
+      requestSeat(row.state, claimId, str(body.playerId));
+      addClaimToken(row, token, claimId);
+    });
+    return NextResponse.json({ token, claimId, room: viewFor(row.state, null), version: row.version, you: null, now: Date.now() });
+  } catch (error) {
+    return handleError(error);
+  }
+}

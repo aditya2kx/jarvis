@@ -3,7 +3,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TableAudio } from "@/lib/audio";
 import { BUILD } from "@/lib/build";
-import { api, fmt, loadPref, safeToReload, savedToken, savePref, saveToken, type RoomResponse } from "@/lib/client";
+import {
+  api,
+  fmt,
+  forgetToken,
+  loadPref,
+  safeToReload,
+  saveClaim,
+  savedClaim,
+  savedToken,
+  savePref,
+  saveToken,
+  type PendingClaim,
+  type RoomResponse,
+} from "@/lib/client";
 import { AvatarPicker } from "@/components/pickers";
 import { AVATARS, blindsUpAt, type Room } from "@/lib/game";
 import Dock, { type Send } from "./dock";
@@ -29,6 +42,7 @@ export default function Table({ roomId }: { roomId: string }) {
   const [copied, setCopied] = useState(false);
   const [sheet, setSheet] = useState(false);
   const [lastCards, setLastCards] = useState<{ hand: number; cards: string[] } | null>(null);
+  const [claim, setClaim] = useState<PendingClaim | null>(null);
 
   const version = useRef(-1);
   const offset = useRef(0);
@@ -97,6 +111,7 @@ export default function Table({ roomId }: { roomId: string }) {
     const t = savedToken(roomId);
     tokenRef.current = t;
     setToken(t);
+    setClaim(savedClaim(roomId));
     let stopped = false;
     async function poll() {
       try {
@@ -132,6 +147,21 @@ export default function Table({ roomId }: { roomId: string }) {
 
   const myTurn = !!room?.hand && room.hand.toAct === you && you !== null && room.hand.street !== "showdown";
   live.current = { myTurn, busy, music: musicOn };
+
+  // A seat request is over once it leaves the room: either the seat is ours now, or it was turned down / expired.
+  useEffect(() => {
+    if (!claim || !room || room.claims?.some((c) => c.id === claim.claimId)) return;
+    setClaim(null);
+    saveClaim(roomId, null);
+    if (you) {
+      play("chip");
+      return;
+    }
+    forgetToken(roomId);
+    tokenRef.current = null;
+    setToken(null);
+    setError("Nobody confirmed it was you — ask someone at the table to tap “Let them in”, then try again");
+  }, [claim, room, you, roomId, play]);
 
   useEffect(() => {
     if (sessionStorage.getItem(RESUME_MUSIC) !== "1") return;
@@ -179,6 +209,32 @@ export default function Table({ roomId }: { roomId: string }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function askForSeat(playerId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api<RoomResponse & { token: string; claimId: string }>(`/api/rooms/${roomId}/claim`, { method: "POST", body: { playerId } });
+      const pending = { claimId: res.claimId, playerId };
+      saveToken(roomId, res.token);
+      saveClaim(roomId, pending);
+      tokenRef.current = res.token;
+      setToken(res.token);
+      setClaim(pending);
+      applyResponse(res);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function cancelSeatRequest() {
+    forgetToken(roomId);
+    tokenRef.current = null;
+    setToken(null);
+    setClaim(null);
   }
 
   function toggleMusic() {
@@ -307,10 +363,13 @@ export default function Table({ roomId }: { roomId: string }) {
       <main className="layout">
         <div className="col-main">
           <Felt room={room} you={you} now={now} />
+          {me && <SeatRequests room={room} you={me.id} busy={busy} send={send} />}
           {me ? (
             <Dock room={room} you={me.id} isHost={isHost} busy={busy} coach={coach} lastCards={lastCards && room.lastResult?.hand === lastCards.hand ? lastCards.cards : null} send={send} />
+          ) : claim ? (
+            <WaitingForSeat room={room} claim={claim} onCancel={cancelSeatRequest} />
           ) : (
-            <JoinCard room={room} busy={busy} onJoin={join} />
+            <JoinCard room={room} busy={busy} onJoin={join} onClaim={askForSeat} />
           )}
         </div>
         <aside className="col-side">
@@ -351,7 +410,66 @@ function Bars() {
   );
 }
 
-function JoinCard({ room, busy, onJoin }: { room: Room; busy: boolean; onJoin: (name: string, avatar: string) => void }) {
+function SeatRequests({ room, you, busy, send }: { room: Room; you: string; busy: boolean; send: Send }) {
+  const claims = room.claims ?? [];
+  if (!claims.length) return null;
+  return (
+    <div className="seat-requests">
+      {claims.map((c) => {
+        const p = room.players.find((x) => x.id === c.playerId);
+        if (!p) return null;
+        return (
+          <div key={c.id} className="card seat-request" role="alert">
+            <span className="seat-request-text">
+              🙋 {c.playerId === you ? "Someone is asking for your seat — not you? Tap No." : `${p.avatar} ${p.name} wants their seat back (refreshed or new phone)`}
+            </span>
+            <span className="seat-request-actions">
+              <button className="btn primary small-btn" disabled={busy} onClick={() => send({ kind: "seat", claimId: c.id, allow: true })}>
+                Let them in
+              </button>
+              <button className="btn ghost small-btn" disabled={busy} onClick={() => send({ kind: "seat", claimId: c.id, allow: false })}>
+                No
+              </button>
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function WaitingForSeat({ room, claim, onCancel }: { room: Room; claim: PendingClaim; onCancel: () => void }) {
+  const p = room.players.find((x) => x.id === claim.playerId);
+  return (
+    <div className="card panel join">
+      <h2>
+        {p?.avatar} Getting {p?.name ?? "your"}&apos;s seat back…
+      </h2>
+      <p className="muted">
+        Ask anyone sitting at the table to tap <b className="cream">Let them in</b> on their phone. Your chips, cards and host controls come back with
+        the seat.
+      </p>
+      <div className="inline">
+        <div className="spinner tiny-spin" aria-label="Waiting for the table" />
+        <button className="btn ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function JoinCard({
+  room,
+  busy,
+  onJoin,
+  onClaim,
+}: {
+  room: Room;
+  busy: boolean;
+  onJoin: (name: string, avatar: string) => void;
+  onClaim: (playerId: string) => void;
+}) {
   const taken = new Set(room.players.map((p) => p.avatar));
   const [name, setName] = useState("");
   const [avatar, setAvatar] = useState(() => AVATARS.find((a) => !taken.has(a)) ?? AVATARS[0]);
@@ -364,6 +482,19 @@ function JoinCard({ room, busy, onJoin }: { room: Room; busy: boolean; onJoin: (
         onJoin(name, avatar);
       }}
     >
+      {room.players.length > 0 && (
+        <div className="rejoin">
+          <div className="rejoin-title">Already playing? Tap your name to get your seat back</div>
+          <div className="rejoin-list">
+            {room.players.map((p) => (
+              <button key={p.id} type="button" className="btn ghost small-btn" disabled={busy} onClick={() => onClaim(p.id)}>
+                {p.avatar} {p.name}
+                {p.id === room.hostId ? " · host" : ""}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <h2>Pull up a chair</h2>
       <p className="muted">
         {host?.avatar} {host?.name ?? "The host"} invited you · you&apos;ll start with <b className="cream">{fmt(room.settings.startingChips)}</b> chips ·{" "}
@@ -371,7 +502,7 @@ function JoinCard({ room, busy, onJoin }: { room: Room; busy: boolean; onJoin: (
       </p>
       <AvatarPicker value={avatar} onChange={setAvatar} taken={taken} />
       <div className="inline">
-        <input name="name" autoComplete="nickname" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" maxLength={20} autoFocus required />
+        <input name="name" autoComplete="nickname" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" maxLength={20} required />
         <button className="btn primary" disabled={busy || !name.trim()}>
           Sit down
         </button>

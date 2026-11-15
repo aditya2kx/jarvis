@@ -864,8 +864,10 @@ confirmed via a DM to the submitting operator, not the modal (which just closes)
 
 ## 9. Deploy (GitHub Actions + WIF)
 
-- Workflow: `.github/workflows/deploy.yml`, triggered on **push to `main`** (and manual
-  `workflow_dispatch` with an optional `rollback_sha`).
+- Workflow: `.github/workflows/deploy.yml`, triggered on **push to `main`** when BHAGA-relevant
+  paths change (`agents/**`, `skills/**`, `core/**`, `Dockerfile`, `cloud/webhook/**`, … — see
+  the workflow `paths:` filter) and on manual `workflow_dispatch` with an optional `rollback_sha`.
+  Poker-night / console-only merges do **not** rebuild BHAGA.
 - Auth: Workload Identity Federation via repo secrets `WIF_PROVIDER` and `WIF_SERVICE_ACCOUNT`
   (no static keys). This is the **only** prod deploy identity. A Cursor Cloud Agent does not
   inherit it — see [docs/contributing/gcp-access.md](docs/contributing/gcp-access.md). 

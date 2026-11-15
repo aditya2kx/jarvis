@@ -3,6 +3,16 @@ name: Build and Deploy BHAGA
 on:
   push:
     branches: [main]
+    # Poker-night / console / garage / docs-only merges must not rebuild BHAGA.
+    # Keep in sync with the orchestrator + webhook Docker COPY sets.
+    paths:
+      - "agents/**"
+      - "skills/**"
+      - "core/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "cloud/webhook/**"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
     inputs:
       rollback_sha:

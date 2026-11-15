@@ -673,11 +673,6 @@ export function trustedIds(room: Room): string[] {
   return [];
 }
 
-/** Host approval is always one yes — multi-friend voting let a lobby dual-join finish its own takeover. */
-export function votesNeeded(_room: Room, _claim: SeatClaim) {
-  return 1;
-}
-
 export function requestSeat(room: Room, claimId: string, playerId: string) {
   const p = player(room, playerId);
   const claims = liveClaims(room);

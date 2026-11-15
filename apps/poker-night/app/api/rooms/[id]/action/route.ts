@@ -54,7 +54,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (!me || !row.state.players.some((p) => p.id === me)) throw new GameError("Join the table first");
       if (str(body.kind) === "seat") {
         const allow = body.allow === true;
-        settleClaimToken(row, resolveClaim(row.state, me, str(body.claimId), allow), allow);
+        const { claim, done } = resolveClaim(row.state, me, str(body.claimId), allow);
+        if (done) settleClaimToken(row, claim, allow);
       } else {
         apply(row.state, me, body);
       }

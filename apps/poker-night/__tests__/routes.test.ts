@@ -45,7 +45,7 @@ describe("routes enforce who may do what", () => {
     const mallory = (await call(join as never, "/join", { name: "Mallory" }, undefined, rid)).token as string;
     const req = await call(claim as never, "/claim", { playerId: hostId }, undefined, rid);
     const r = await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, mallory, rid);
-    expect(r).toMatchObject({ status: 400, error: "Only someone who was already playing before this request can let them in" });
+    expect(r).toMatchObject({ status: 400, error: "Only someone from the first hand can let them in" });
     expect((await call(poll as never, "", undefined, req.token as string, rid)).you).toBeNull();
 
     const ok = await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: false }, ron, rid);
@@ -56,6 +56,25 @@ describe("routes enforce who may do what", () => {
     const req = await call(claim as never, "/claim", { playerId: hostId }, undefined, rid);
     expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, ron, rid)).status).toBe(200);
     expect((await call(poll as never, "", undefined, req.token as string, rid)).you).toBe(hostId);
+  });
+
+  it("one founder with two phones can't take the host seat when three opened together", async () => {
+    const c = await call(create as never, "/api/rooms", { name: "Harry", startingChips: 1000, smallBlind: 10, bigBlind: 20, dealMode: "physical" });
+    const id = c.roomId as string;
+    const harry = c.token as string;
+    const ronTok = (await call(join as never, "/join", { name: "Ron" }, undefined, id)).token as string;
+    const malTok = (await call(join as never, "/join", { name: "Mallory" }, undefined, id)).token as string;
+    expect((await call(act as never, "/action", { kind: "start" }, harry, id)).status).toBe(200);
+    const hid = (await call(poll as never, "", undefined, harry, id)).room!.hostId;
+    const req = await call(claim as never, "/claim", { playerId: hid }, undefined, id);
+    // Mallory's first phone says yes — not enough alone.
+    const half = await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, malTok, id);
+    expect(half.status).toBe(200);
+    expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBeNull();
+    expect((half.room as unknown as { claims: { approvals: string[] }[] }).claims[0].approvals).toHaveLength(1);
+    // Ron's yes completes it — the real-owner path still works.
+    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, ronTok, id)).status).toBe(200);
+    expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBe(hid);
   });
 
   it("only the host can pay out a showdown", async () => {

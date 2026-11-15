@@ -70,7 +70,7 @@ export type LogEntry = { at: number; text: string };
 export type Reaction = { id: string; playerId: string; emoji: string; at: number };
 export type ChatMessage = { id: string; playerId: string; text: string; at: number };
 /** A phone that lost its seat (cleared storage, new browser) asking to get it back. */
-export type SeatClaim = { id: string; playerId: string; at: number };
+export type SeatClaim = { id: string; playerId: string; at: number; approvals?: string[] };
 export type MoveKind = "sb" | "bb" | "fold" | "check" | "call" | "bet" | "raise" | "allin";
 export type Move = { kind: MoveKind; amount?: number; at: number };
 
@@ -101,6 +101,11 @@ export type Room = {
   /** Optional because rooms saved before chat existed don't have it. */
   chat?: ChatMessage[];
   claims?: SeatClaim[];
+  /**
+   * Players dealt into the table's first hand. Only they can vouch for a lost seat — a visitor who
+   * joins later, even after playing a hand, can't. Optional for rooms that started before this field.
+   */
+  trustedIds?: string[];
   history: { hand: number; stacks: Record<string, number> }[];
 };
 
@@ -302,6 +307,8 @@ export function startHand(room: Room) {
   room.lastResult = null;
   room.lastHoles = undefined;
   for (const id of order) player(room, id).stats.handsPlayed += 1;
+  // Freeze who may vouch for a lost seat on the very first deal; late joiners never join this list.
+  if (!room.trustedIds) room.trustedIds = order.slice();
   record(h, sbId, "sb", pay(room, h, sbId, room.settings.smallBlind));
   record(h, bbId, "bb", pay(room, h, bbId, room.settings.bigBlind));
   h.currentBet = Math.max(room.settings.bigBlind, ...Object.values(h.bets));
@@ -651,33 +658,66 @@ export function liveClaims(room: Room, now = Date.now()) {
   return (room.claims ?? []).filter((c) => now - c.at < CLAIM_TTL_MS && room.players.some((p) => p.id === c.playerId));
 }
 
+/** Who may vouch: the first hand's players, frozen once. Legacy rooms freeze everyone who's already played. */
+export function trustedIds(room: Room): string[] {
+  if (room.trustedIds?.length) return room.trustedIds;
+  if (room.handCount >= 1) {
+    room.trustedIds = room.players.filter((p) => p.stats.handsPlayed > 0).map((p) => p.id);
+    return room.trustedIds;
+  }
+  return [];
+}
+
+/** How many distinct trusted players (other than the lost seat) must tap Let them in. */
+export function votesNeeded(room: Room, claim: SeatClaim) {
+  const others = trustedIds(room).filter((id) => id !== claim.playerId && room.players.some((p) => p.id === id));
+  return Math.min(2, Math.max(1, others.length));
+}
+
 export function requestSeat(room: Room, claimId: string, playerId: string) {
   const p = player(room, playerId);
   const claims = liveClaims(room);
   if (claims.length >= MAX_CLAIMS) fail("Too many seat requests right now — try again in a minute");
-  claims.push({ id: claimId, playerId, at: Date.now() });
+  if (!trustedIds(room).length) fail("Play a hand first — then someone from that hand can let you back in");
+  claims.push({ id: claimId, playerId, at: Date.now(), approvals: [] });
   room.claims = claims;
   log(room, `🙋 Someone asked to take ${p.name}'s seat back`);
 }
 
 /**
- * Only someone who was already playing when the request came in can vouch for it: seated before the
- * request and dealt at least one hand. Whoever sends the request can sit down first, so a seat taken
- * after the request (or one that hasn't played yet) must never be able to approve it.
+ * Only a player from the table's first hand can vouch, and only if they sat down before this request.
+ * A visitor who joins later (even after playing) can't. When two or more such players are at the
+ * table, two of them must agree — so one person with two phones can't approve their own request.
  */
 export function canVouch(room: Room, voterId: string, claim: SeatClaim) {
   const voter = room.players.find((p) => p.id === voterId);
-  return !!voter && (voter.joinedAt ?? 0) < claim.at && voter.stats.handsPlayed > 0;
+  if (!voter || voter.id === claim.playerId) return false;
+  if ((voter.joinedAt ?? 0) >= claim.at) return false;
+  if (!trustedIds(room).includes(voterId)) return false;
+  if ((claim.approvals ?? []).includes(voterId)) return false;
+  return true;
 }
 
-/** Any seated player can turn a seat request away; only an established player can let it in. */
-export function resolveClaim(room: Room, by: string, claimId: string, allow: boolean): SeatClaim {
+/** Any seated player can turn a request away. Letting someone in needs canVouch, and may need a second vote. */
+export function resolveClaim(room: Room, by: string, claimId: string, allow: boolean): { claim: SeatClaim; done: boolean } {
   const voter = player(room, by);
   const claims = liveClaims(room);
   const claim = claims.find((c) => c.id === claimId) ?? fail("That request already expired");
-  if (allow && !canVouch(room, by, claim)) fail("Only someone who was already playing before this request can let them in");
-  room.claims = claims.filter((c) => c.id !== claimId);
   const p = player(room, claim.playerId);
-  log(room, allow ? `✅ ${voter.name} let ${p.name} back in` : `🚫 ${voter.name} turned away a request for ${p.name}'s seat`);
-  return claim;
+  if (!allow) {
+    room.claims = claims.filter((c) => c.id !== claimId);
+    log(room, `🚫 ${voter.name} turned away a request for ${p.name}'s seat`);
+    return { claim, done: true };
+  }
+  if (!canVouch(room, by, claim)) fail("Only someone from the first hand can let them in");
+  claim.approvals = [...(claim.approvals ?? []), by];
+  const need = votesNeeded(room, claim);
+  if (claim.approvals.length < need) {
+    log(room, `👍 ${voter.name} said yes for ${p.name} (${claim.approvals.length}/${need}) — need one more`);
+    room.claims = claims;
+    return { claim, done: false };
+  }
+  room.claims = claims.filter((c) => c.id !== claimId);
+  log(room, `✅ ${voter.name} let ${p.name} back in`);
+  return { claim, done: true };
 }

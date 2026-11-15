@@ -18,7 +18,7 @@ import {
   type RoomResponse,
 } from "@/lib/client";
 import { AvatarPicker } from "@/components/pickers";
-import { AVATARS, blindsUpAt, canVouch, type Room } from "@/lib/game";
+import { AVATARS, blindsUpAt, canVouch, votesNeeded, type Room } from "@/lib/game";
 import Dock, { type Send } from "./dock";
 import Felt from "./felt";
 import Side, { HandRankings } from "./side";
@@ -418,10 +418,16 @@ function SeatRequests({ room, you, busy, send }: { room: Room; you: string; busy
       {claims.map((c) => {
         const p = room.players.find((x) => x.id === c.playerId);
         if (!p) return null;
+        const got = c.approvals?.length ?? 0;
+        const need = votesNeeded(room, c);
+        const progress = need > 1 ? ` · ${got}/${need} yes` : "";
         return (
           <div key={c.id} className="card seat-request" role="alert">
             <span className="seat-request-text">
-              🙋 {c.playerId === you ? "Someone is asking for your seat — not you? Tap No." : `${p.avatar} ${p.name} wants their seat back (refreshed or new phone)`}
+              🙋{" "}
+              {c.playerId === you
+                ? "Someone is asking for your seat — not you? Tap No."
+                : `${p.avatar} ${p.name} wants their seat back (refreshed or new phone)${progress}`}
             </span>
             <span className="seat-request-actions">
               {canVouch(room, you, c) && (
@@ -448,8 +454,12 @@ function WaitingForSeat({ room, claim, onCancel }: { room: Room; claim: PendingC
         {p?.avatar} Getting {p?.name ?? "your"}&apos;s seat back…
       </h2>
       <p className="muted">
-        Ask someone who&apos;s been playing at the table to tap <b className="cream">Let them in</b> on their phone. Your chips, cards and host controls come back with
-        the seat.
+        Ask someone from the opening hand to tap <b className="cream">Let them in</b> on their phone
+        {(() => {
+          const live = room.claims?.find((c) => c.id === claim.claimId);
+          return live && votesNeeded(room, live) > 1 ? " — two of them, when three or more of you started together" : "";
+        })()}
+        . Your chips, cards and host controls come back with the seat.
       </p>
       <div className="inline">
         <div className="spinner tiny-spin" aria-label="Waiting for the table" />

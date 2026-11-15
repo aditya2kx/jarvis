@@ -173,7 +173,7 @@ export default function Table({ roomId }: { roomId: string }) {
     forgetToken(roomId);
     tokenRef.current = null;
     setToken(null);
-    setError("Nobody confirmed it was you — ask someone at the table to tap “Let them in”, then try again");
+    setError("Nobody let you in — ask someone at the table to tap “Let them in”, then try again");
   }, [claim, room, you, roomId, play]);
 
   // The play column is sized to the viewport minus the top bar, whose height changes with wrapping pills.
@@ -558,20 +558,14 @@ function SeatRequests({ room, you, busy, send }: { room: Room; you: string; busy
 
 function WaitingForSeat({ room, claim, onCancel }: { room: Room; claim: PendingClaim; onCancel: () => void }) {
   const p = room.players.find((x) => x.id === claim.playerId);
-  const waitingOnHost = claim.playerId !== room.hostId;
   return (
     <div className="card panel join">
       <h2>
         {p?.avatar} Getting {p?.name ?? "your"}&apos;s seat back…
       </h2>
       <p className="muted">
-        {waitingOnHost ? (
-          <>
-            Ask the host to tap <b className="cream">Let them in</b> on their phone. Your chips, cards and seat come back with it.
-          </>
-        ) : (
-          <>Waiting for the host key on this phone — if you opened the table here, tap your name again after a refresh.</>
-        )}
+        Ask anyone at the table to tap <b className="cream">Let them in</b>. Your chips, cards and seat come back with it. Fastest: open the
+        table in the browser you first used — your seat comes straight back.
       </p>
       <div className="inline">
         <div className="spinner tiny-spin" aria-label="Waiting for the table" />

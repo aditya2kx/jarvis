@@ -658,12 +658,14 @@ export function chat(room: Room, id: string, raw: string) {
 
 export const CLAIM_TTL_MS = 3 * 60_000;
 const MAX_CLAIMS = 4;
+/** A seat can only be handed to a new phone once its old phone has stopped polling this long. */
+export const SEAT_AWAY_MS = 60_000;
 
 export function liveClaims(room: Room, now = Date.now()) {
   return (room.claims ?? []).filter((c) => now - c.at < CLAIM_TTL_MS && room.players.some((p) => p.id === c.playerId));
 }
 
-/** Opening-hand roster (frozen on first deal). Kept for older rooms; reclaim no longer uses it. */
+/** Opening-hand roster, frozen on first deal (diagnostics). */
 export function trustedIds(room: Room): string[] {
   if (room.trustedIds?.length) return room.trustedIds;
   if (room.handCount >= 1) {
@@ -677,22 +679,21 @@ export function requestSeat(room: Room, claimId: string, playerId: string) {
   const p = player(room, playerId);
   const claims = liveClaims(room);
   if (claims.length >= MAX_CLAIMS) fail("Too many seat requests right now — try again in a minute");
-  if (room.handCount < 1 && !room.trustedIds?.length) fail("Play a hand first — then the host can let you back in");
+  if (room.handCount < 1 && !room.trustedIds?.length) fail("Play a hand first — then the table can let you back in");
   claims.push({ id: claimId, playerId, at: Date.now(), approvals: [] });
   room.claims = claims;
   log(room, `🙋 Someone asked to take ${p.name}'s seat back`);
 }
 
 /**
- * Only the current host can Let them in. A visitor who joins twice before the first hand used to
- * land in trustedIds and approve their own request; host-only closes that. The host reclaiming
- * their own seat uses hostKey (see redeemWithHostKey), not a self-vouch.
+ * Anyone seated who has played a hand can let a player back in (one yes), the host included. Except for
+ * the host, that only works once the seat's old phone has gone quiet (resolveClaim), so one visitor
+ * with two phones can't take a seat while its owner is still playing.
  */
 export function canVouch(room: Room, voterId: string, claim: SeatClaim) {
-  if (voterId !== room.hostId || voterId === claim.playerId) return false;
-  if (!room.players.some((p) => p.id === voterId)) return false;
-  if ((claim.approvals ?? []).includes(voterId)) return false;
-  return true;
+  if (voterId === claim.playerId) return false;
+  const voter = room.players.find((p) => p.id === voterId);
+  return !!voter && (voterId === room.hostId || voter.stats.handsPlayed > 0);
 }
 
 /** Host who lost their browser token: prove the create-time hostKey and the claim settles now. */
@@ -706,8 +707,8 @@ export function redeemWithHostKey(room: Room, claimId: string, hostKey: string):
   return claim;
 }
 
-/** Any seated player can turn a request away. Letting someone in is host-only (one yes). */
-export function resolveClaim(room: Room, by: string, claimId: string, allow: boolean): { claim: SeatClaim; done: boolean } {
+/** Any seated player can turn a request away. `seenAt` is when each seat's current phone last polled (epoch ms). */
+export function resolveClaim(room: Room, by: string, claimId: string, allow: boolean, seenAt: Record<string, number> = {}): { claim: SeatClaim; done: boolean } {
   const voter = player(room, by);
   const claims = liveClaims(room);
   const claim = claims.find((c) => c.id === claimId) ?? fail("That request already expired");
@@ -717,7 +718,10 @@ export function resolveClaim(room: Room, by: string, claimId: string, allow: boo
     log(room, `🚫 ${voter.name} turned away a request for ${p.name}'s seat`);
     return { claim, done: true };
   }
-  if (!canVouch(room, by, claim)) fail("Only the host can let them in");
+  if (!canVouch(room, by, claim)) fail(by === claim.playerId ? "You can't let yourself in" : "Play a hand first — then you can let people back in");
+  if (by !== room.hostId && Date.now() - (seenAt[claim.playerId] ?? 0) < SEAT_AWAY_MS) {
+    fail(`${p.name}'s old phone is still at the table — use that one, or try again in a minute`);
+  }
   room.claims = claims.filter((c) => c.id !== claimId);
   log(room, `✅ ${voter.name} let ${p.name} back in`);
   return { claim, done: true };

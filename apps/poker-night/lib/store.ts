@@ -26,11 +26,30 @@ export async function loadRoom(id: string): Promise<Row | null> {
 
 export async function insertRoom(room: Room, tokens: Record<string, string>) {
   await sql("delete from rooms where updated_at < now() - interval '30 days'");
+  await sql("delete from seat_seen where seen_at < now() - interval '1 day'");
   await sql("insert into rooms (id, state, tokens) values ($1, $2, $3)", [
     room.id,
     JSON.stringify(room),
     JSON.stringify(tokens),
   ]);
+}
+
+/** Polls are every ~1.2s; refreshing seen_at every 15s is plenty for a 60s away check. */
+export async function markSeen(roomId: string, playerId: string) {
+  await sql(
+    `insert into seat_seen (room_id, player_id) values ($1, $2)
+     on conflict (room_id, player_id) do update set seen_at = now() where seat_seen.seen_at < now() - interval '15 seconds'`,
+    [roomId, playerId],
+  );
+}
+
+/** Epoch ms of each seat's last poll at this table. A seat missing here has never polled, i.e. is away. */
+export async function seenTimes(roomId: string): Promise<Record<string, number>> {
+  const rows = await sql<{ id: string; ms: number }>(
+    "select player_id as id, (extract(epoch from seen_at) * 1000)::float8 as ms from seat_seen where room_id = $1",
+    [roomId],
+  );
+  return Object.fromEntries(rows.map((r) => [r.id, r.ms]));
 }
 
 const CLAIM_PREFIX = "claim:";

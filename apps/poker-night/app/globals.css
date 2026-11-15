@@ -851,7 +851,8 @@ select:focus {
   position: relative;
   width: 100%;
   aspect-ratio: 16 / 10;
-  margin: 8px 0 6px;
+  /* The 12 o'clock seat (with its hole cards) rises above the felt box; keep it clear of the sticky top bar. */
+  margin: 32px 0 6px;
 }
 
 .rail {

@@ -958,14 +958,11 @@ select:focus {
   }
 }
 
-@media (max-height: 640px) {
+@media (max-height: 640px) and (orientation: portrait) {
   .col-main.fit .dock {
     max-height: 36%;
   }
   .col-main.fit .coach {
-    display: none;
-  }
-  .col-main.fit .chatbar .quick-toggle {
     display: none;
   }
 }

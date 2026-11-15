@@ -41,6 +41,10 @@ export type Hand = {
   turnStartedAt: number;
   currentBet: number;
   minRaise: number;
+  /** Each player's latest move on the current street (cleared when the street changes). */
+  moves?: Record<string, Move>;
+  /** The most recent move in the hand, for the "what just happened" ticker. */
+  lastMove?: Move & { id: string };
   /** In-app dealing only. The view layer strips everything a viewer may not see. */
   deck?: Card[];
   holes?: Record<string, Card[]>;
@@ -62,6 +66,9 @@ export type Result = {
 
 export type LogEntry = { at: number; text: string };
 export type Reaction = { id: string; playerId: string; emoji: string; at: number };
+export type ChatMessage = { id: string; playerId: string; text: string; at: number };
+export type MoveKind = "sb" | "bb" | "fold" | "check" | "call" | "bet" | "raise" | "allin";
+export type Move = { kind: MoveKind; amount?: number; at: number };
 
 export type Settings = {
   startingChips: number;
@@ -87,6 +94,8 @@ export type Room = {
   lastHoles?: Record<string, Card[]>;
   log: LogEntry[];
   reactions: Reaction[];
+  /** Optional because rooms saved before chat existed don't have it. */
+  chat?: ChatMessage[];
   history: { hand: number; stacks: Record<string, number> }[];
 };
 
@@ -100,8 +109,11 @@ export type Action =
 export const MAX_PLAYERS = 10;
 export const AVATARS = ["🦊", "🐯", "🐼", "🦁", "🐸", "🐙", "🦄", "🐻", "🐵", "🐨", "🐲", "🤠", "😎", "👑", "🦈", "🐺"];
 export const REACTIONS = ["😂", "🔥", "😱", "👏", "🤡", "💀", "😤", "🫡"];
+export const QUICK_CHAT = ["Nice hand 🙄", "You're bluffing", "Ship it 🚢", "Lucky river", "Easy money 💰", "Fold already 😴", "Respect 🫡", "GG"];
+export const CHAT_MAX_LENGTH = 140;
 export const BOARD_CARDS: Record<Street, number> = { preflop: 0, flop: 3, turn: 4, river: 5, showdown: 5 };
 const MAX_LOG = 80;
+const MAX_CHAT = 60;
 const MAX_HISTORY = 150;
 const STREETS: Street[] = ["preflop", "flop", "turn", "river", "showdown"];
 
@@ -151,6 +163,7 @@ export function createRoom(id: string, host: { id: string; name: string; avatar?
     lastResult: null,
     log: [],
     reactions: [],
+    chat: [],
     history: [],
   };
   addPlayer(room, host);
@@ -208,6 +221,12 @@ function pay(room: Room, h: Hand, id: string, amount: number) {
   h.bets[id] = (h.bets[id] ?? 0) + paid;
   h.contributed[id] = (h.contributed[id] ?? 0) + paid;
   return paid;
+}
+
+function record(h: Hand, id: string, kind: MoveKind, amount?: number) {
+  const move: Move = amount === undefined ? { kind, at: Date.now() } : { kind, amount, at: Date.now() };
+  h.moves = { ...h.moves, [id]: move };
+  h.lastMove = { ...move, id };
 }
 
 export function nextDealerId(room: Room): string | null {
@@ -277,8 +296,8 @@ export function startHand(room: Room) {
   room.lastResult = null;
   room.lastHoles = undefined;
   for (const id of order) player(room, id).stats.handsPlayed += 1;
-  pay(room, h, sbId, room.settings.smallBlind);
-  pay(room, h, bbId, room.settings.bigBlind);
+  record(h, sbId, "sb", pay(room, h, sbId, room.settings.smallBlind));
+  record(h, bbId, "bb", pay(room, h, bbId, room.settings.bigBlind));
   h.currentBet = Math.max(room.settings.bigBlind, ...Object.values(h.bets));
   log(room, `🃏 Hand #${h.number} — ${nameOf(room, dealerId)} has the button`);
 
@@ -299,16 +318,19 @@ export function act(room: Room, actorId: string, action: Action) {
   switch (action.type) {
     case "fold":
       h.folded.push(actorId);
+      record(h, actorId, "fold");
       log(room, `${p.name} folds`);
       break;
     case "check":
       if (owe > 0) fail(`You need to call ${owe}`);
+      record(h, actorId, "check");
       log(room, `${p.name} checks`);
       break;
     case "call": {
       if (owe <= 0) fail("Nothing to call — check instead");
       const paid = pay(room, h, actorId, owe);
       voluntary = true;
+      record(h, actorId, p.chips === 0 ? "allin" : "call", p.chips === 0 ? mine + paid : paid);
       log(room, `${p.name} calls ${paid}${p.chips === 0 ? " — ALL IN" : ""}`);
       break;
     }
@@ -322,6 +344,7 @@ export function act(room: Room, actorId: string, action: Action) {
       if (to <= h.currentBet) {
         if (to !== max) fail(`Raise must be more than ${h.currentBet}`);
         pay(room, h, actorId, to - mine);
+        record(h, actorId, "allin", to);
         log(room, `${p.name} calls ${to - mine} — ALL IN`);
         break;
       }
@@ -336,6 +359,7 @@ export function act(room: Room, actorId: string, action: Action) {
         h.acted = [];
       }
       h.currentBet = to;
+      record(h, actorId, p.chips === 0 ? "allin" : verb === "bets" ? "bet" : "raise", to);
       log(room, `${p.name} ${verb} ${to}${p.chips === 0 ? " — ALL IN" : ""}`);
       break;
     }
@@ -380,6 +404,7 @@ function endStreet(room: Room) {
   const h = room.hand!;
   h.bets = {};
   h.acted = [];
+  h.moves = {};
   h.currentBet = 0;
   h.minRaise = room.settings.bigBlind;
   const stillBetting = h.order.filter((id) => canAct(room, h, id));
@@ -599,4 +624,16 @@ export function react(room: Room, id: string, emoji: string) {
   if (mine.length >= 3) fail("Easy there — one sec");
   room.reactions.push({ id: `${now}-${id}`, playerId: id, emoji, at: now });
   room.reactions = room.reactions.filter((r) => now - r.at < 20_000).slice(-24);
+}
+
+export function chat(room: Room, id: string, raw: string) {
+  player(room, id);
+  // Strip control/format characters (incl. bidi overrides) so a message can't garble the feed.
+  const text = raw.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, CHAT_MAX_LENGTH);
+  if (!text) fail("Type something first");
+  const now = Date.now();
+  const messages = (room.chat ??= []);
+  if (messages.filter((m) => m.playerId === id && now - m.at < 8000).length >= 4) fail("Easy, typing champ — one sec");
+  messages.push({ id: `${now}-${id}`, playerId: id, text, at: now });
+  if (messages.length > MAX_CHAT) messages.splice(0, messages.length - MAX_CHAT);
 }

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { describeStart, evaluate, winChance } from "@/lib/cards";
 import { fmt } from "@/lib/client";
 import { MOVE_HELP, pct, potOddsNeeded, verdict } from "@/lib/coach";
-import { nextDealerId, pots, potTotal, REACTIONS, type Hand, type Room } from "@/lib/game";
+import { CHAT_MAX_LENGTH, nextDealerId, pots, potTotal, QUICK_CHAT, REACTIONS, type Hand, type Room } from "@/lib/game";
 import PlayingCard from "@/components/playing-card";
 
 export type Send = (body: Record<string, unknown>) => Promise<boolean>;
@@ -41,7 +41,63 @@ export default function Dock(props: Props) {
         ))}
         {room.players.find((p) => p.id === you)?.sittingOut && <span className="muted small away-note">You&apos;re sitting out</span>}
       </div>
+      <ChatBar send={send} />
     </section>
+  );
+}
+
+function ChatBar({ send }: { send: Send }) {
+  const [text, setText] = useState("");
+  const [open, setOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  async function say(line: string) {
+    if (!line.trim() || sending) return;
+    setSending(true);
+    if (await send({ kind: "chat", text: line })) {
+      setText("");
+      setOpen(false);
+    }
+    setSending(false);
+  }
+
+  return (
+    <div className="chatbar">
+      {open && (
+        <div className="quick-lines" role="list" aria-label="Quick lines">
+          {QUICK_CHAT.map((line) => (
+            <button key={line} type="button" role="listitem" className="quick-line" disabled={sending} onClick={() => say(line)}>
+              {line}
+            </button>
+          ))}
+        </div>
+      )}
+      <form
+        className="chat-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void say(text);
+        }}
+      >
+        <button type="button" className={`btn ghost icon quick-toggle ${open ? "lit" : ""}`} onClick={() => setOpen(!open)} aria-expanded={open} aria-label="Quick trash talk" title="Quick trash talk">
+          🔥
+        </button>
+        <input
+          name="chat"
+          className="chat-input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Talk some trash…"
+          maxLength={CHAT_MAX_LENGTH}
+          autoComplete="off"
+          enterKeyHint="send"
+          aria-label="Chat message"
+        />
+        <button className="btn primary chat-send" disabled={sending || !text.trim()} aria-label="Send">
+          Send
+        </button>
+      </form>
+    </div>
   );
 }
 

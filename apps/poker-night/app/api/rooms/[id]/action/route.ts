@@ -3,6 +3,7 @@ import {
   act,
   adjustChips,
   cancelHand,
+  chat,
   GameError,
   react,
   rebuy,
@@ -79,6 +80,8 @@ function apply(room: Room, me: string, body: Record<string, unknown>) {
       return showCards(room, me);
     case "react":
       return react(room, me, str(body.emoji));
+    case "chat":
+      return chat(room, me, str(body.text));
     case "rebuy":
       if (target !== me) requireHost();
       return rebuy(room, target);

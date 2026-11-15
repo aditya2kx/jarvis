@@ -82,7 +82,7 @@ export class TableAudio {
   }
 
   /** Short sound effects; they play whether or not the music is on. */
-  sfx(kind: "chip" | "check" | "fold" | "deal" | "turn" | "win" | "bigwin") {
+  sfx(kind: "chip" | "check" | "fold" | "deal" | "turn" | "win" | "bigwin" | "chat") {
     const ctx = this.init();
     const t = ctx.currentTime;
     switch (kind) {
@@ -102,6 +102,9 @@ export class TableAudio {
       case "turn":
         this.bell(t, hz(84), 0.09);
         this.bell(t + 0.12, hz(88), 0.08);
+        return;
+      case "chat":
+        this.bell(t, hz(91), 0.045);
         return;
       case "win":
       case "bigwin": {

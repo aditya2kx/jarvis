@@ -1,20 +1,30 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { fmt } from "@/lib/client";
 import type { Player, Room } from "@/lib/game";
 import type { Send } from "./dock";
 import HostTools from "./host";
 import PlayingCard from "@/components/playing-card";
 
-type Tab = "score" | "log" | "learn" | "host";
+type Tab = "score" | "chat" | "log" | "learn" | "host";
+
+const latestAt = (room: Room) => room.chat?.at(-1)?.at ?? 0;
 
 export default function Side({ room, you, isHost, busy, send }: { room: Room; you: string | null; isHost: boolean; busy: boolean; send: Send }) {
   const [tab, setTab] = useState<Tab>("score");
+  const [seenAt, setSeenAt] = useState(() => latestAt(room));
+  const newest = latestAt(room);
+  useEffect(() => {
+    if (tab === "chat") setSeenAt(newest);
+  }, [tab, newest]);
+  const unread = (room.chat ?? []).filter((m) => m.at > seenAt && m.playerId !== you).length;
+
   const tabs: [Tab, string][] = [
-    ["score", "Leaderboard"],
-    ["log", "Table talk"],
-    ["learn", "How to play"],
+    ["score", "Scores"],
+    ["chat", "Chat"],
+    ["log", "Hand log"],
+    ["learn", "Rules"],
     ...(isHost ? ([["host", "Host"]] as [Tab, string][]) : []),
   ];
   return (
@@ -23,11 +33,17 @@ export default function Side({ room, you, isHost, busy, send }: { room: Room; yo
         {tabs.map(([id, label]) => (
           <button key={id} role="tab" aria-selected={tab === id} className={`tab ${tab === id ? "on" : ""}`} onClick={() => setTab(id)}>
             {label}
+            {id === "chat" && unread > 0 && tab !== "chat" && (
+              <span className="badge" aria-label={`${unread} unread`}>
+                {unread > 9 ? "9+" : unread}
+              </span>
+            )}
           </button>
         ))}
       </div>
       <div className="tab-body">
         {tab === "score" && <Leaderboard room={room} you={you} busy={busy} send={send} />}
+        {tab === "chat" && <Chat room={room} you={you} />}
         {tab === "log" && <Log room={room} />}
         {tab === "learn" && <HowToPlay />}
         {tab === "host" && isHost && <HostTools room={room} busy={busy} send={send} />}
@@ -143,6 +159,34 @@ function Stat({ label, value }: { label: string; value: string }) {
       <span>{label}</span>
       <b>{value}</b>
     </div>
+  );
+}
+
+function Chat({ room, you }: { room: Room; you: string | null }) {
+  const messages = [...(room.chat ?? [])].reverse();
+  if (messages.length === 0) {
+    return <p className="muted empty-chat">No trash talk yet. Use the box under your cards — 🔥 has ready-made lines.</p>;
+  }
+  return (
+    <ul className="chat-feed">
+      {messages.map((m) => {
+        const p = room.players.find((x) => x.id === m.playerId);
+        return (
+          <li key={m.id} className={m.playerId === you ? "me" : ""}>
+            <span className="chat-av" aria-hidden>
+              {p?.avatar ?? "👤"}
+            </span>
+            <div className="chat-body">
+              <div className="chat-meta">
+                <b>{p?.name ?? "Left the table"}</b>
+                <time className="muted">{new Date(m.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>
+              </div>
+              <p>{m.text}</p>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

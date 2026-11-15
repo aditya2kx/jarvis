@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { BUILD } from "@/lib/build";
 import { bad, handleError, pollSince, tokenFrom } from "@/lib/http";
 import { loadRoom, playerIdFor } from "@/lib/store";
 import { viewFor } from "@/lib/view";
@@ -13,9 +14,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const since = pollSince(new URL(request.url).searchParams.get("v"));
     const you = playerIdFor(row, tokenFrom(request));
     if (Number.isFinite(since) && since === row.version) {
-      return NextResponse.json({ unchanged: true, version: row.version, you, now: Date.now() });
+      return NextResponse.json({ unchanged: true, version: row.version, you, now: Date.now(), build: BUILD });
     }
-    return NextResponse.json({ room: viewFor(row.state, you), version: row.version, you, now: Date.now() });
+    return NextResponse.json({ room: viewFor(row.state, you), version: row.version, you, now: Date.now(), build: BUILD });
   } catch (error) {
     return handleError(error);
   }

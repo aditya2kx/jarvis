@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TableAudio } from "@/lib/audio";
-import { api, fmt, loadPref, savedToken, savePref, saveToken, type RoomResponse } from "@/lib/client";
+import { BUILD } from "@/lib/build";
+import { api, fmt, loadPref, safeToReload, savedToken, savePref, saveToken, type RoomResponse } from "@/lib/client";
 import { AvatarPicker } from "@/components/pickers";
 import { AVATARS, blindsUpAt, type Room } from "@/lib/game";
 import Dock, { type Send } from "./dock";
@@ -10,6 +11,8 @@ import Felt from "./felt";
 import Side, { HandRankings } from "./side";
 
 const POLL_MS = 1200;
+const RESUME_MUSIC = "poker-night:resume-music";
+const RELOADED_FOR = "poker-night:reloaded-for";
 
 export default function Table({ roomId }: { roomId: string }) {
   const [room, setRoom] = useState<Room | null>(null);
@@ -33,6 +36,7 @@ export default function Table({ roomId }: { roomId: string }) {
   const audio = useRef<TableAudio | null>(null);
   const tokenRef = useRef<string | null>(null);
   const soundRef = useRef(true);
+  const live = useRef({ myTurn: false, busy: false, music: false });
 
   useEffect(() => {
     const sound = loadPref("sound", true);
@@ -62,6 +66,8 @@ export default function Table({ roomId }: { roomId: string }) {
       } else if (fresh.some((t) => /calls|bets|raises|ALL IN|rebuys/.test(t))) play("chip");
       else if (fresh.some((t) => / checks$/.test(t))) play("check");
       else if (fresh.some((t) => / folds$/.test(t))) play("fold");
+      const heardAt = old.chat?.at(-1)?.at ?? 0;
+      if (next.chat?.some((m) => m.at > heardAt && m.playerId !== me)) play("chat");
       const myTurnNow = !!h && h.toAct === me && h.street !== "showdown";
       const myTurnBefore = !!old.hand && old.hand.toAct === me;
       if (myTurnNow && !myTurnBefore) {
@@ -95,7 +101,18 @@ export default function Table({ roomId }: { roomId: string }) {
     async function poll() {
       try {
         const res = await api<RoomResponse>(`/api/rooms/${roomId}?v=${version.current}`, { token: tokenRef.current });
-        if (!stopped) applyResponse(res);
+        if (stopped) return;
+        applyResponse(res);
+        // Once per build ever seen: a cached page or old and new servers answering in turn mid-rollout
+        // must not cause a reload loop.
+        const seen = (sessionStorage.getItem(RELOADED_FOR) ?? "").split(",");
+        const h = res.room?.hand;
+        const myTurnNow = h ? h.toAct === res.you && res.you !== null && h.street !== "showdown" : live.current.myTurn;
+        if (res.build && res.build !== BUILD && !seen.includes(res.build) && safeToReload({ ...live.current, myTurn: myTurnNow })) {
+          sessionStorage.setItem(RELOADED_FOR, [...seen, BUILD, res.build].filter(Boolean).join(","));
+          if (live.current.music) sessionStorage.setItem(RESUME_MUSIC, "1");
+          window.location.reload();
+        }
       } catch (err) {
         if ((err as Error).message === "Table not found") setMissing(true);
       }
@@ -114,6 +131,21 @@ export default function Table({ roomId }: { roomId: string }) {
   }, [roomId, applyResponse]);
 
   const myTurn = !!room?.hand && room.hand.toAct === you && you !== null && room.hand.street !== "showdown";
+  live.current = { myTurn, busy, music: musicOn };
+
+  useEffect(() => {
+    if (sessionStorage.getItem(RESUME_MUSIC) !== "1") return;
+    sessionStorage.removeItem(RESUME_MUSIC);
+    // Browsers only allow audio after a gesture, so pick the music back up on the first tap.
+    const resume = () => {
+      audio.current ??= new TableAudio();
+      audio.current.start();
+      setMusicOn(true);
+    };
+    window.addEventListener("pointerdown", resume, { once: true });
+    return () => window.removeEventListener("pointerdown", resume);
+  }, []);
+
   useEffect(() => {
     document.title = myTurn ? "● Your move — Poker Night" : "Poker Night";
   }, [myTurn]);

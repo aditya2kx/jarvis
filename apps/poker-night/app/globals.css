@@ -958,6 +958,41 @@ select:focus {
   }
 }
 
+/* Sizing a bet: the confirm button has to be on screen without scrolling the dock, so chat, the coach
+   tip and the win meter step aside and the dock may take more of the column while the panel is open. */
+.col-main.fit .dock:has(.raise2) {
+  flex-shrink: 0;
+  max-height: 64%;
+}
+
+/* Short screens: your cards are still shown at your seat on the felt. */
+@media (max-height: 820px) {
+  .col-main.fit .dock:has(.raise2) .my-hand {
+    display: none;
+  }
+}
+
+.col-main.fit .dock:has(.raise2) :is(.chatbar, .coach, .meter, .away-note, .my-label) {
+  display: none;
+}
+
+.col-main.fit .raise2 {
+  gap: 8px;
+}
+
+.col-main.fit .raise2 .presets {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.col-main.fit .raise2 .chip-btn {
+  min-height: 38px;
+  padding: 6px 4px;
+  font-size: 0.84rem;
+  white-space: nowrap;
+}
+
 @media (max-height: 640px) and (orientation: portrait) {
   .col-main.fit .dock {
     max-height: 36%;
@@ -994,6 +1029,9 @@ select:focus {
     margin: 0;
     overflow-x: hidden;
     overflow-y: auto;
+  }
+  .col-main.fit .dock:has(.raise2) {
+    max-height: none;
   }
   .col-main.fit .seat-requests {
     position: absolute;

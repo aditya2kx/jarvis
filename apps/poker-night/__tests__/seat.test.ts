@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { addPlayer, canVouch, CLAIM_TTL_MS, createRoom, redeemWithHostKey, requestSeat, resolveClaim, startHand, type Room } from "@/lib/game";
+import { addPlayer, canVouch, CLAIM_TTL_MS, createRoom, HOST_AWAY_MS, redeemWithHostKey, requestSeat, resolveClaim, startHand, type Room } from "@/lib/game";
 import { addClaimToken, hashToken, playerIdFor, settleClaimToken } from "@/lib/store";
 import { viewFor } from "@/lib/view";
 
@@ -68,21 +68,18 @@ describe("getting a lost seat back", () => {
     expect(() => requestSeat(r.state, "c9", "ron")).toThrow(/Too many/);
   });
 
-  it("a non-host who joined before the first hand still can't approve (lobby dual-join attack)", () => {
+  it("only the host can let someone into another player's seat", () => {
     const r = row();
     addPlayer(r.state, { id: "mallory", name: "Mallory" });
     r.state.trustedIds = ["harry", "ron", "mallory"];
-    for (const p of r.state.players) p.stats.handsPlayed = 3;
-    vi.advanceTimersByTime(1000);
-    requestSeat(r.state, "c1", "harry");
+    requestSeat(r.state, "c1", "ron");
     addClaimToken(r, "mallory-2", "c1");
     expect(canVouch(r.state, "mallory", r.state.claims![0])).toBe(false);
-    expect(canVouch(r.state, "ron", r.state.claims![0])).toBe(false);
     expect(() => resolveClaim(r.state, "mallory", "c1", true)).toThrow(/Only the host/);
     expect(playerIdFor(r, "mallory-2")).toBeNull();
   });
 
-  it("two lobby phones can't finish a host-seat takeover alone", () => {
+  it("two lobby phones can't take the host seat while the host is still at the table", () => {
     vi.useFakeTimers();
     const state = createRoom("r", { id: "harry", name: "Harry" }, { startingChips: 1000, smallBlind: 10, bigBlind: 20, dealMode: "physical", blindLevelMinutes: 0 });
     state.hostKey = "secret";
@@ -91,9 +88,41 @@ describe("getting a lost seat back", () => {
     startHand(state);
     expect(state.trustedIds).toEqual(["harry", "m1", "m2"]);
     requestSeat(state, "c1", "harry");
-    expect(canVouch(state, "m1", state.claims![0])).toBe(false);
-    expect(canVouch(state, "m2", state.claims![0])).toBe(false);
-    expect(() => resolveClaim(state, "m1", "c1", true)).toThrow(/Only the host/);
+    const hostPolledAt = Date.now() - 5_000;
+    expect(() => resolveClaim(state, "m1", "c1", true, hostPolledAt)).toThrow(/old phone is still at the table/);
+    expect(state.claims![0].approvals).toEqual([]);
+  });
+
+  it("a locked-out host gets back in once every first-hand player vouches", () => {
+    const r = row();
+    addPlayer(r.state, { id: "hermione", name: "Hermione" });
+    r.state.trustedIds = ["harry", "ron", "hermione"];
+    addPlayer(r.state, { id: "late", name: "Late" });
+    const hostPolledAt = Date.now() - HOST_AWAY_MS - 1;
+    requestSeat(r.state, "c1", "harry");
+    addClaimToken(r, "harry-new", "c1");
+    expect(canVouch(r.state, "late", r.state.claims![0])).toBe(false);
+    expect(() => resolveClaim(r.state, "late", "c1", true, hostPolledAt)).toThrow(/first hand can vouch/);
+    expect(resolveClaim(r.state, "ron", "c1", true, hostPolledAt).done).toBe(false);
+    expect(canVouch(r.state, "ron", r.state.claims![0])).toBe(false);
+    expect(playerIdFor(r, "harry-new")).toBeNull();
+    const { claim, done } = resolveClaim(r.state, "hermione", "c1", true, hostPolledAt);
+    expect(done).toBe(true);
+    settleClaimToken(r, claim, true);
+    expect(playerIdFor(r, "harry-new")).toBe("harry");
+    expect(r.state.claims).toEqual([]);
+  });
+
+  it("one No ends a host-seat request even after others vouched", () => {
+    const r = row();
+    addPlayer(r.state, { id: "hermione", name: "Hermione" });
+    r.state.trustedIds = ["harry", "ron", "hermione"];
+    requestSeat(r.state, "c1", "harry");
+    addClaimToken(r, "maybe-harry", "c1");
+    expect(resolveClaim(r.state, "ron", "c1", true).done).toBe(false);
+    expect(settle(r, "hermione", "c1", false)).toBe(true);
+    expect(playerIdFor(r, "maybe-harry")).toBeNull();
+    expect(r.state.claims).toEqual([]);
   });
 
   it("the host key lets the host reclaim without a vouch", () => {

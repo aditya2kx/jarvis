@@ -4,6 +4,7 @@ import { POST as claim } from "@/app/api/rooms/[id]/claim/route";
 import { POST as join } from "@/app/api/rooms/[id]/join/route";
 import { GET as poll } from "@/app/api/rooms/[id]/route";
 import { POST as create } from "@/app/api/rooms/route";
+import { sql } from "@/lib/db";
 
 /** Calls the real route handlers against the app's in-process Postgres (no DATABASE_URL in tests). */
 type Res = Record<string, unknown> & { status: number; room?: { hostId: string; players: { id: string; name: string }[]; hand: { street: string; toAct: string } | null; hostKey?: string } };
@@ -50,7 +51,7 @@ describe("routes enforce who may do what", () => {
     expect(v.room!.hostKey).toBeUndefined();
   });
 
-  it("a lobby dual-joiner can't approve a request for the host's seat", async () => {
+  it("lobby dual-joiners can't take the host seat while the host is at the table; a really locked-out host gets vouched back", async () => {
     const c = await call(create as never, "/api/rooms", { name: "Harry", startingChips: 1000, smallBlind: 10, bigBlind: 20, dealMode: "physical" });
     const id = c.roomId as string;
     const harry = c.token as string;
@@ -59,15 +60,20 @@ describe("routes enforce who may do what", () => {
     expect((await call(act as never, "/action", { kind: "start" }, harry, id)).status).toBe(200);
     const hid = (await call(poll as never, "", undefined, harry, id)).room!.hostId;
     const req = await call(claim as never, "/claim", { playerId: hid }, undefined, id);
-    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, m1, id))).toMatchObject({
-      status: 400,
-      error: "Only the host can let them in",
-    });
-    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, m2, id))).toMatchObject({
-      status: 400,
-      error: "Only the host can let them in",
-    });
+    for (const voter of [m1, m2]) {
+      expect(await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, voter, id)).toMatchObject({
+        status: 400,
+        error: "Harry's old phone is still at the table — use that one, or try again in a minute",
+      });
+    }
     expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBeNull();
+
+    // Harry's old phone stops polling for over a minute: both first-hand players must vouch.
+    await sql("update seat_seen set seen_at = now() - interval '2 minutes' where room_id = $1", [id]);
+    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, m1, id)).status).toBe(200);
+    expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBeNull();
+    expect((await call(act as never, "/action", { kind: "seat", claimId: req.claimId, allow: true }, m2, id)).status).toBe(200);
+    expect((await call(poll as never, "", undefined, req.token as string, id)).you).toBe(hid);
   });
 
   it("the host can let a friend back in", async () => {

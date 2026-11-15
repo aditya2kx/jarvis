@@ -20,7 +20,7 @@ import {
   type VoicePresence,
 } from "@/lib/client";
 import { AvatarPicker } from "@/components/pickers";
-import { AVATARS, blindsUpAt, canVouch, type Room } from "@/lib/game";
+import { AVATARS, blindsUpAt, canVouch, hostSeatVouchers, type Room } from "@/lib/game";
 import { VOICE_IDLE, VoiceMesh, type VoiceStatus } from "@/lib/voice-client";
 import Dock, { type Send } from "./dock";
 import Felt from "./felt";
@@ -531,6 +531,9 @@ function SeatRequests({ room, you, busy, send }: { room: Room; you: string; busy
       {claims.map((c) => {
         const p = room.players.find((x) => x.id === c.playerId);
         if (!p) return null;
+        const forHost = c.playerId === room.hostId;
+        const needed = forHost ? hostSeatVouchers(room).length : 1;
+        const got = c.approvals?.length ?? 0;
         return (
           <div key={c.id} className="card seat-request" role="alert">
             <span className="seat-request-text">
@@ -538,11 +541,12 @@ function SeatRequests({ room, you, busy, send }: { room: Room; you: string; busy
               {c.playerId === you
                 ? "Someone is asking for your seat — not you? Tap No."
                 : `${p.avatar} ${p.name} wants their seat back (refreshed or new phone)`}
+              {forHost && needed > 1 && c.playerId !== you && <span className="muted small"> · {got}/{needed} vouched</span>}
             </span>
             <span className="seat-request-actions">
               {canVouch(room, you, c) && (
                 <button className="btn primary small-btn" disabled={busy} onClick={() => send({ kind: "seat", claimId: c.id, allow: true })}>
-                  Let them in
+                  {forHost ? "Yes, it's them" : "Let them in"}
                 </button>
               )}
               <button className="btn ghost small-btn" disabled={busy} onClick={() => send({ kind: "seat", claimId: c.id, allow: false })}>
@@ -570,7 +574,10 @@ function WaitingForSeat({ room, claim, onCancel }: { room: Room; claim: PendingC
             Ask the host to tap <b className="cream">Let them in</b> on their phone. Your chips, cards and seat come back with it.
           </>
         ) : (
-          <>Waiting for the host key on this phone — if you opened the table here, tap your name again after a refresh.</>
+          <>
+            Ask the players from the first hand to tap <b className="cream">Yes, it&apos;s them</b>. Fastest: open the table in the browser you
+            first used — your seat comes straight back.
+          </>
         )}
       </p>
       <div className="inline">

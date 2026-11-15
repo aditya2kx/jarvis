@@ -26,11 +26,29 @@ export async function loadRoom(id: string): Promise<Row | null> {
 
 export async function insertRoom(room: Room, tokens: Record<string, string>) {
   await sql("delete from rooms where updated_at < now() - interval '30 days'");
+  await sql("delete from seat_seen where seen_at < now() - interval '1 day'");
   await sql("insert into rooms (id, state, tokens) values ($1, $2, $3)", [
     room.id,
     JSON.stringify(room),
     JSON.stringify(tokens),
   ]);
+}
+
+export async function markSeen(roomId: string, playerId: string) {
+  await sql(
+    "insert into seat_seen (room_id, player_id) values ($1, $2) on conflict (room_id, player_id) do update set seen_at = now()",
+    [roomId, playerId],
+  );
+}
+
+/** Epoch ms of the host's last poll at this table, 0 if never seen. */
+export async function hostSeenAt(roomId: string) {
+  const rows = await sql<{ ms: number }>(
+    `select (extract(epoch from s.seen_at) * 1000)::float8 as ms from seat_seen s
+     join rooms r on r.id = s.room_id and r.state->>'hostId' = s.player_id where s.room_id = $1`,
+    [roomId],
+  );
+  return rows[0]?.ms ?? 0;
 }
 
 const CLAIM_PREFIX = "claim:";

@@ -18,7 +18,7 @@ import {
   type Room,
 } from "@/lib/game";
 import { bad, handleError, int, readJson, str, tokenFrom } from "@/lib/http";
-import { mutateRoom, playerIdFor, settleClaimToken } from "@/lib/store";
+import { hostSeenAt, mutateRoom, playerIdFor, settleClaimToken } from "@/lib/store";
 import { viewFor } from "@/lib/view";
 
 function parseAction(body: Record<string, unknown>): Action {
@@ -49,12 +49,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const { id } = await params;
     const body = await readJson(request);
     const token = tokenFrom(request);
+    const seenAt = str(body.kind) === "seat" && body.allow === true ? await hostSeenAt(id) : 0;
     const { row, result: me } = await mutateRoom(id, (row) => {
       const me = playerIdFor(row, token);
       if (!me || !row.state.players.some((p) => p.id === me)) throw new GameError("Join the table first");
       if (str(body.kind) === "seat") {
         const allow = body.allow === true;
-        const { claim, done } = resolveClaim(row.state, me, str(body.claimId), allow);
+        const { claim, done } = resolveClaim(row.state, me, str(body.claimId), allow, seenAt);
         if (done) settleClaimToken(row, claim, allow);
       } else {
         apply(row.state, me, body);

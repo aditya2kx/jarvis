@@ -419,17 +419,24 @@ export function parseScheduleRules(raw: unknown): ScheduleRules {
 }
 
 /**
- * A `?rules=` link (base64url JSON: staffing fields and/or whole rule lists) layered on `base` and
+ * A `?rules=` link (base64url JSON: staffing fields and/or rule lists) layered on `base` and
  * validated like a save; null when it doesn't decode or parse. Lets a read-only preview open with
- * proposed rules as unsaved edits.
+ * proposed rules as unsaved edits. Staff rules in the patch upsert by `id` so the link can stay
+ * short (IAP sign-in on phones drops very long query strings).
  */
 export function rulesFromPatch(base: ScheduleRules, encoded: string): ScheduleRules | null {
   try {
     const json = atob(encoded.replace(/-/g, "+").replace(/_/g, "/"));
     const patch = JSON.parse(json) as Partial<Omit<ScheduleRules, "staffing">> & { staffing?: Partial<StaffingBasics> };
+    let staffRules = base.staffRules;
+    if (patch.staffRules) {
+      const byId = new Map(base.staffRules.map((r) => [r.id, r]));
+      for (const r of patch.staffRules) byId.set(r.id, r);
+      staffRules = [...byId.values()];
+    }
     return parseScheduleRules({
       dayRules: patch.dayRules ?? base.dayRules,
-      staffRules: patch.staffRules ?? base.staffRules,
+      staffRules,
       staffing: { ...base.staffing, ...patch.staffing },
     });
   } catch {

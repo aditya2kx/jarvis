@@ -525,6 +525,30 @@ describe("rulesFromPatch (preview ?rules= link)", () => {
     expect(r.staffRules).toEqual(DEFAULT_RULES.staffRules);
   });
 
+  it("upserts staff rules by id so a short link can change one person", () => {
+    const base = {
+      ...DEFAULT_RULES,
+      staffRules: [
+        { id: "dolce", employee: "Johnson, Dolce", kind: "target_week_hours" as const, value: 40 },
+        { id: "other", employee: "Someone, Else", kind: "target_week_hours" as const, value: 25 },
+      ],
+    };
+    const r = rulesFromPatch(
+      base,
+      enc({
+        staffRules: [
+          { id: "dolce", employee: "Johnson, Dolce", kind: "target_week_hours", value: 35 },
+          { id: "ximena-last", employee: "Ortiz, Ximena", kind: "last_day", value: 0, date: "2026-11-20" },
+        ],
+      }),
+    )!;
+    expect(r.staffRules).toEqual([
+      { id: "dolce", employee: "Johnson, Dolce", kind: "target_week_hours", value: 35 },
+      { id: "other", employee: "Someone, Else", kind: "target_week_hours", value: 25 },
+      { id: "ximena-last", employee: "Ortiz, Ximena", kind: "last_day", value: 0, date: "2026-11-20" },
+    ]);
+  });
+
   it("ignores links that don't decode or would fail a save", () => {
     expect(rulesFromPatch(DEFAULT_RULES, "not-json")).toBeNull();
     expect(rulesFromPatch(DEFAULT_RULES, enc({ staffing: { laborCapPct: 3 } }))).toBeNull();

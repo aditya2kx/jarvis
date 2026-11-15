@@ -119,6 +119,7 @@ import {
   applyDayRules,
   DEFAULT_RULES,
   ruleUnavailability,
+  rulesFromPatch,
   staffLimits,
   type DayRule,
   type RulesVersion,
@@ -1192,6 +1193,13 @@ export function LaborCoveragePanel({
     setRulesBase(savedVersion);
     setEditedRules(null);
   }
+  // Read-only previews can't save, so a `?rules=` link opens with proposed rules as unsaved edits.
+  useEffect(() => {
+    if (shiftApplyBlock !== "preview") return;
+    const encoded = new URLSearchParams(window.location.search).get("rules");
+    const proposed = encoded ? rulesFromPatch(savedRules, encoded) : null;
+    if (proposed) setEditedRules(proposed);
+  }, [shiftApplyBlock, savedRules]);
   const rules = editedRules ?? savedRules;
   // Each rules version brings its own trend weights and cap, so saved vs edited drafts compare fairly.
   const forecastFor = useCallback(

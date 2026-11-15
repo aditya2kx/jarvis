@@ -418,6 +418,25 @@ export function parseScheduleRules(raw: unknown): ScheduleRules {
   return { staffing: parseStaffing(obj.staffing), dayRules, staffRules };
 }
 
+/**
+ * A `?rules=` link (base64url JSON: staffing fields and/or whole rule lists) layered on `base` and
+ * validated like a save; null when it doesn't decode or parse. Lets a read-only preview open with
+ * proposed rules as unsaved edits.
+ */
+export function rulesFromPatch(base: ScheduleRules, encoded: string): ScheduleRules | null {
+  try {
+    const json = atob(encoded.replace(/-/g, "+").replace(/_/g, "/"));
+    const patch = JSON.parse(json) as Partial<Omit<ScheduleRules, "staffing">> & { staffing?: Partial<StaffingBasics> };
+    return parseScheduleRules({
+      dayRules: patch.dayRules ?? base.dayRules,
+      staffRules: patch.staffRules ?? base.staffRules,
+      staffing: { ...base.staffing, ...patch.staffing },
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** Versions saved before staffing basics existed load with the defaults. */
 function parseStaffing(raw: unknown): StaffingBasics {
   if (raw == null) return DEFAULT_STAFFING;

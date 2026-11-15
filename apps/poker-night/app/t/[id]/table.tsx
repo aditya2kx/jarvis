@@ -103,9 +103,13 @@ export default function Table({ roomId }: { roomId: string }) {
         const res = await api<RoomResponse>(`/api/rooms/${roomId}?v=${version.current}`, { token: tokenRef.current });
         if (stopped) return;
         applyResponse(res);
-        // Once per new build: a cached page or a half-rolled-out deploy must not cause a reload loop.
-        if (res.build && res.build !== BUILD && sessionStorage.getItem(RELOADED_FOR) !== res.build && safeToReload(live.current)) {
-          sessionStorage.setItem(RELOADED_FOR, res.build);
+        // Once per build ever seen: a cached page or old and new servers answering in turn mid-rollout
+        // must not cause a reload loop.
+        const seen = (sessionStorage.getItem(RELOADED_FOR) ?? "").split(",");
+        const h = res.room?.hand;
+        const myTurnNow = h ? h.toAct === res.you && res.you !== null && h.street !== "showdown" : live.current.myTurn;
+        if (res.build && res.build !== BUILD && !seen.includes(res.build) && safeToReload({ ...live.current, myTurn: myTurnNow })) {
+          sessionStorage.setItem(RELOADED_FOR, [...seen, BUILD, res.build].filter(Boolean).join(","));
           if (live.current.music) sessionStorage.setItem(RESUME_MUSIC, "1");
           window.location.reload();
         }

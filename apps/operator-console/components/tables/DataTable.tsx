@@ -35,6 +35,7 @@ import {
   Table2Icon,
 } from "lucide-react";
 import { Popover } from "@base-ui/react/popover";
+import dynamic from "next/dynamic";
 import {
   Table,
   TableBody,
@@ -55,7 +56,7 @@ import {
 } from "@/components/ui/select";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
 import { parsePerkReasons } from "@/lib/payroll/perkLabels";
-import { PerkChip, type PerkManage } from "@/components/payroll/PerkChip";
+import type { PerkManage } from "@/components/payroll/PerkChip";
 import type { PeriodPerkRow } from "@/lib/bq/queries";
 import { classifyAdpDiff } from "@/lib/payroll/adpDiff";
 import { formatBucket, type Grain } from "@/lib/filters/range";
@@ -71,6 +72,12 @@ import {
   pinOffsetsEqual,
 } from "@/lib/tables/pin-offsets";
 import { useIsPhone } from "@/components/shell/useIsPhone";
+
+// Loaded only where a perks column is manageable (/payroll), so the shared
+// table never pulls the payroll server actions into every page.
+const PerkChip = dynamic(() =>
+  import("@/components/payroll/PerkChip").then((m) => m.PerkChip),
+);
 
 // Threshold coloring for numeric/pct/dollars columns (Figma: red/amber/green
 // on p95, % late, Days-left, wage-diff). `warn`/`bad` are in the same unit as

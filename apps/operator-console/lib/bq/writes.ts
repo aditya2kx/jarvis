@@ -641,6 +641,7 @@ export async function addEmployeePerk(
        AND T.perk_id = S.perk_id AND IFNULL(T.pay_period, '') = S.pay_period
      WHEN MATCHED THEN UPDATE SET amount_cents = @cents, cadence = @cadence,
        adp_earning_description = @desc,
+       end_period_start = NULL, ended_at = NULL, ended_by = NULL,
        updated_at = CURRENT_TIMESTAMP(), updated_by = @by
      WHEN NOT MATCHED THEN INSERT
        (store, employee, perk_id, amount_cents, cadence, adp_earning_description,
@@ -657,6 +658,50 @@ export async function addEmployeePerk(
       pay_period: payPeriod,
       by,
     },
+  );
+}
+
+/**
+ * Soft-end a perk (migration 098) from an unpaid pay period on: the row stays
+ * for audit, vw_model_payroll_period stops paying it from `periodStart`.
+ * payPeriod is the row's key — '' for recurring (legacy rows hold NULL), or
+ * `start..end` for a one-off, which may only be ended on its own period.
+ * An earlier end is never moved later.
+ */
+export async function endEmployeePerk(
+  store: string,
+  employee: string,
+  perkId: string,
+  payPeriod: string,
+  periodStart: string,
+  by: string,
+): Promise<void> {
+  const { unpaidPayPeriodWindows } = await import("@/lib/bq/queries");
+  const windows = await unpaidPayPeriodWindows();
+  const period = windows.find((w) => w.start === periodStart);
+  if (!period) {
+    throw new Error(
+      `Perks can be removed only from an unpaid pay period; ${periodStart} is not one`,
+    );
+  }
+  if (payPeriod && payPeriod !== `${period.start}..${period.end}`) {
+    throw new Error(`This one-time reimbursement belongs to ${payPeriod}, not ${period.start}..${period.end}`);
+  }
+  await mutate(
+    `UPDATE ${fq("employee_perks")}
+     SET end_period_start = @from, ended_at = CURRENT_TIMESTAMP(), ended_by = @by
+     WHERE store = @store AND employee = @employee AND perk_id = @perk_id
+       AND IFNULL(pay_period, '') = IFNULL(@pay_period, '')
+       AND (end_period_start IS NULL OR end_period_start > @from)`,
+    {
+      store,
+      employee,
+      perk_id: perkId,
+      pay_period: payPeriod,
+      from: dateParam(period.start),
+      by,
+    },
+    { pay_period: "STRING" },
   );
 }
 

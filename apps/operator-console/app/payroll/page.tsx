@@ -12,6 +12,7 @@ import {
   punchFixesNotInHours,
   soloCoverageGap,
   soloPremiumDeltaDollars,
+  periodPerks,
 } from "@/lib/bq/queries";
 import { formatCents, formatDate, formatDollars, formatHours } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -55,6 +56,7 @@ import type {
   PayPeriodOption,
   PayrollSoloPremiumRow,
   PunchFixNotInHoursRow,
+  PeriodPerkRow,
 } from "@/lib/bq/queries";
 import type { PayrollRowWithSolo } from "@/lib/payroll/solo-premium";
 
@@ -137,6 +139,7 @@ export default async function PayrollPage({
   let soloGap: string[] = [];
   let hoursScrapedAt: string | null = null;
   let fixesNotInHours: PunchFixNotInHoursRow[] = [];
+  let perks: PeriodPerkRow[] = [];
   let error: string | undefined;
   try {
     const settled = await Promise.all([
@@ -160,7 +163,7 @@ export default async function PayrollPage({
 
   if (!error && selectedPeriodStart && periodEnd) {
     try {
-      const [periodRowsAll, run, solo, delta, gap] = await Promise.all([
+      const [periodRowsAll, run, solo, delta, gap, perkRows] = await Promise.all([
         payrollPeriod(6),
         FEATURES.adpPayrollDraft
           ? payrollDraftRun(DEFAULT_STORE, selectedPeriodStart, periodEnd)
@@ -172,8 +175,11 @@ export default async function PayrollPage({
         // An unreadable coverage check counts as stale, not as clean: the point is
         // to refuse to vouch for a premium we cannot verify.
         soloCoverageGap(selectedPeriodStart, periodEnd).catch(() => ["unknown"]),
+        // Chips fall back to display-only (perk_reason) if this read fails.
+        periodPerks(DEFAULT_STORE, selectedPeriodStart, periodEnd).catch(() => []),
       ]);
       periods = periodRowsAll;
+      perks = perkRows;
       draftRun = run;
       soloRows = solo;
       soloDelta = delta;
@@ -194,7 +200,10 @@ export default async function PayrollPage({
   // Solo premium (#309) is merged after the labor-type filter so the stat and
   // the table always describe the same set of people.
   const solo = mergeSoloPremium(periodRows, soloRows, soloDelta);
-  const displayRows: PayrollRowWithSolo[] = solo.rows;
+  const displayRows: PayrollRowWithSolo[] = solo.rows.map((r) => ({
+    ...r,
+    perk_items: perks.filter((p) => p.employee === r.employee),
+  }));
   const showSolo = soloRows.length > 0;
   // Remote is annotated per shift in store_config, so most periods have none and
   // the column would be a wall of 0.00. Show it only when it carries information.
@@ -247,6 +256,11 @@ export default async function PayrollPage({
     0,
   );
   const totalPerks = displayRows.reduce((s, p) => s + (Number(p.perks) || 0), 0);
+  const onPayroll = new Set(displayRows.map((r) => r.employee));
+  const terminatedRecurring = perks.filter(
+    (p) => p.terminated && p.pay_period === "" && onPayroll.has(p.employee),
+  ).length;
+  const canEndPerks = FEATURES.writePerks && can("perks") && selectedUnpaid;
   const hoursVsPreview = previewLine(
     totalHours,
     draftRun?.preview_hours,
@@ -321,7 +335,16 @@ export default async function PayrollPage({
     {
       accessorKey: "perks",
       header: "Perks",
-      meta: { format: { kind: "perks" }, wrap: true },
+      meta: {
+        format: {
+          kind: "perks",
+          manage:
+            canEndPerks && selectedPeriodStart
+              ? { periodStart: selectedPeriodStart, periodLabel }
+              : undefined,
+        },
+        wrap: true,
+      },
     },
     { accessorKey: "est_total_pay", header: "Est. total", meta: { format: { kind: "dollars" } } },
     ...(compareToAdp
@@ -530,7 +553,16 @@ export default async function PayrollPage({
                   label="Recognition"
                   display={formatDollars(totalRecognition)}
                 />
-                <HeadlineStat label="Perks" display={formatDollars(totalPerks)} />
+                <HeadlineStat
+                  label="Perks"
+                  display={formatDollars(totalPerks)}
+                  hint={
+                    terminatedRecurring
+                      ? `${terminatedRecurring} recurring for someone terminated in ADP`
+                      : undefined
+                  }
+                  hintWarn={terminatedRecurring > 0}
+                />
                 <HeadlineStat
                   label="Total pay"
                   display={formatDollars(totalPay)}

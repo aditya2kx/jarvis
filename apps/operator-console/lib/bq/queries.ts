@@ -2952,6 +2952,51 @@ export function recognitionBonuses(store: string, periods = 4): Promise<Recognit
   );
 }
 
+/** One employee_perks row as it pays in a single pay period (migrations 059/068/098). */
+export interface PeriodPerkRow {
+  employee: string;
+  perk_id: string;
+  /** '' = every pay period; `start..end` = that period only. */
+  pay_period: string;
+  amount_cents: number;
+  note: string | null;
+  updated_by: string | null;
+  /**
+   * The person's most recent ADP directory status is Terminated. Read per person,
+   * not from the newest snapshot alone: a scrape can drop terminated staff entirely.
+   */
+  terminated: boolean;
+}
+
+/** Perks paying in one period — same match and end filter as vw_model_payroll_period.perks. */
+export function periodPerks(
+  store: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<PeriodPerkRow[]> {
+  return q<PeriodPerkRow>(
+    `WITH status AS (
+       SELECT COALESCE(al.canonical_name, d.employee_name) AS employee, d.employment_status
+       FROM ${fq("adp_directory_status")} d
+       LEFT JOIN ${fq("employee_aliases")} al ON al.store = @store AND al.raw_name = d.employee_name
+       WHERE d.store = @store AND d.employment_status IS NOT NULL
+       QUALIFY ROW_NUMBER() OVER (
+         PARTITION BY COALESCE(al.canonical_name, d.employee_name) ORDER BY d.scraped_at_utc DESC
+       ) = 1
+     )
+     SELECT e.employee, e.perk_id, IFNULL(e.pay_period, '') AS pay_period, e.amount_cents,
+            NULLIF(e.adp_earning_description, 'Misc reimbursement') AS note, e.updated_by,
+            IFNULL(s.employment_status = 'Terminated', FALSE) AS terminated
+     FROM ${fq("employee_perks")} e
+     LEFT JOIN status s ON s.employee = e.employee
+     WHERE e.store = @store
+       AND (IFNULL(e.pay_period, '') = '' OR e.pay_period = @key)
+       AND (e.end_period_start IS NULL OR @start < e.end_period_start)
+     ORDER BY e.employee, e.perk_id, pay_period`,
+    { store, key: `${periodStart}..${periodEnd}`, start: dateParam(periodStart) },
+  );
+}
+
 // ── Plaid Accounting (Issue #158, migration 037) ──────────────────────────
 
 export interface PlaidItemRow {

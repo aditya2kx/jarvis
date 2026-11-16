@@ -36,6 +36,7 @@ export const MUTATING_ACTIONS = [
   { name: "runPayrollDraftAction", page: "payroll", heavy: "adp-payroll-draft", access: ["payroll:adp-draft"] },
   { name: "pollPayrollDraftAction", page: "payroll", heavy: null, access: ["payroll:adp-draft"] },
   { name: "addEmployeePerkAction", page: "payroll", heavy: null, access: ["payroll:perks"] },
+  { name: "endEmployeePerkAction", page: "payroll", heavy: null, access: ["payroll:perks"] },
   // Labor
   { name: "saveScheduleRulesAction", page: "labor", heavy: null, access: ["labor:coverage"] },
   { name: "syncAdpAction", page: "labor", heavy: "adp-sync", access: ["labor", "payroll"] },

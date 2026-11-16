@@ -17,6 +17,12 @@ export const STORE_FIRESTORE_COLLECTION: Record<StoreId, string> = {
   houston: "runs_houston",
 };
 
+/** GCS scrape-cache bucket per store (store profile `gcs_cache_bucket`). */
+export const STORE_GCS_CACHE_BUCKET: Record<StoreId, string> = {
+  palmetto: "bhaga-scrape-cache",
+  houston: "bhaga-scrape-cache-houston",
+};
+
 /** Which store the operator is looking at; shared by every page like the Period cookie. */
 export const STORE_COOKIE = "oc_store";
 

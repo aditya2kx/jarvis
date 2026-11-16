@@ -7,8 +7,8 @@ multi-use and never expire. We store BOTH (plus the app id/secret) as a single
 JSON secret and refresh the access token whenever it is within REFRESH_WINDOW
 of expiry (Square recommends refreshing every <=7 days).
 
-Secret layout — ONE Secret Manager secret per store, ``square_<store>_oauth``,
-JSON payload::
+Secret layout — ONE Secret Manager secret per Square merchant, named by the store
+profile's ``square.oauth_secret`` (default ``square_<store>_oauth``), JSON payload::
 
     {
       "application_id":     "sq0idp-...",
@@ -33,6 +33,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import pathlib
 import sys
 import urllib.error
 import urllib.request
@@ -40,6 +41,9 @@ import urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from skills.credentials import registry as cred_registry
+
+_STORE_PROFILES = (pathlib.Path(__file__).resolve().parents[2]
+                   / "agents" / "bhaga" / "knowledge-base" / "store-profiles")
 
 # Production Connect API host. Override for sandbox via SQUARE_API_BASE.
 DEFAULT_API_BASE = "https://connect.squareup.com"
@@ -56,6 +60,13 @@ class SquareAuthError(RuntimeError):
 
 
 def _secret_name(store: str) -> str:
+    """Secret Manager name for ``store``: profile ``square.oauth_secret``, else
+    ``square_<store>_oauth``. Stores under one Square merchant share a secret."""
+    profile = _STORE_PROFILES / f"{store.lower()}.json"
+    if profile.exists():
+        name = (json.loads(profile.read_text()).get("square") or {}).get("oauth_secret")
+        if name:
+            return name
     return f"square_{store.lower()}_oauth"
 
 

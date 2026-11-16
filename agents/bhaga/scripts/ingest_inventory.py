@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import pathlib
 import re
@@ -36,12 +37,18 @@ import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
-from skills.clickup_tasks.runner import LIST_CLOSING, list_tasks
+from skills.clickup_tasks.runner import list_tasks
 from skills.inventory_parse.parse import FIELD_REGISTRY, parse_qty
 from core.datastore import load_rows, get_client
 
-# ClickUp list hosting all closing-form submissions for Palmetto Austin.
-_LIST_CLOSING = LIST_CLOSING
+_STORE_PROFILES = (pathlib.Path(__file__).resolve().parents[1]
+                   / "knowledge-base" / "store-profiles")
+
+
+def _closing_list_id(store: str) -> str:
+    """The store's ClickUp closing-form list (profile ``clickup.closing_list_id``), or ""."""
+    profile = json.loads((_STORE_PROFILES / f"{store}.json").read_text())
+    return (profile.get("clickup") or {}).get("closing_list_id", "")
 
 # Natural key for idempotent MERGE upsert.
 _MERGE_KEYS = ["store", "source_task_id", "field_id"]
@@ -236,7 +243,11 @@ def ingest(
     print(f"[ingest_inventory] store={store} since_ts_ms={since_ts_ms} "
           f"dry_run={dry_run} run_id={run_id[:8]}...")
 
-    tasks = list_tasks(_LIST_CLOSING, since_ts_ms=since_ts_ms)
+    list_id = _closing_list_id(store)
+    if not list_id:
+        print(f"[ingest_inventory] SKIPPED — store={store} has no clickup.closing_list_id")
+        return 0
+    tasks = list_tasks(list_id, since_ts_ms=since_ts_ms)
     print(f"[ingest_inventory] Fetched {len(tasks)} task(s) from ClickUp.")
 
     all_rows: list[dict] = []

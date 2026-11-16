@@ -62,6 +62,86 @@ class SelectCompany(unittest.TestCase):
         page.clicked.assert_not_called()
 
 
+class CompanyPage:
+    """RUN with one login over several companies: a footer Client ID and a Company List."""
+
+    def __init__(self, active, *, menu=True):
+        self.active, self.menu, self.listing, self.url = active, menu, False, DASHBOARD
+        self.list_opens = 0
+
+    def evaluate(self, js, iid=None):
+        if js == r._FOOTER_CLIENT_ID_JS:
+            return ["29808083"] if self.listing else ([self.active] if self.active else [])
+        if js == r._OPEN_COMPANY_LIST_JS:
+            if self.menu:
+                self.listing, self.list_opens = True, self.list_opens + 1
+            return None
+        if js == r.COMPANY_ROW_JS:
+            self.want = iid
+            return {"list": self.listing, "rows": int(self.listing), "link": self.listing}
+        raise AssertionError(js)
+
+    def locator(self, _sel):
+        loc = mock.MagicMock()
+
+        def click(**_kw):
+            self.active, self.listing = self.want, False
+        loc.first.click = click
+        return loc
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+    def wait_for_load_state(self, _state):
+        pass
+
+
+class EnsureCompany(unittest.TestCase):
+    """One ADP login serves both stores; the tenant URL is shared, so check the Client ID."""
+
+    def setUp(self):
+        p = mock.patch.object(r, "_load_store_profile",
+                              return_value={"adp_run": {"iid": "32653321"}})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_right_company_is_left_alone(self):
+        page = CompanyPage("32653321")
+        r._ensure_company(page, store="houston")
+        self.assertEqual(page.list_opens, 0)
+
+    def test_other_store_open_switches_through_the_company_list(self):
+        page = CompanyPage("30109821")
+        r._ensure_company(page, store="houston")
+        self.assertEqual(page.active, "32653321")
+        self.assertEqual(page.list_opens, 1)
+
+    def test_switch_that_does_not_take_raises_naming_both_ids(self):
+        page = CompanyPage("30109821", menu=False)
+        with mock.patch.object(r, "_raise_with_evidence", side_effect=RuntimeError("wrong")) as rwe, \
+                mock.patch.object(r.time, "monotonic", side_effect=_clock()):
+            with self.assertRaises(RuntimeError):
+                r._ensure_company(page, store="houston")
+        reason = rwe.call_args.kwargs["reason"]
+        self.assertIn("30109821", reason)
+        self.assertIn("32653321", reason)
+
+    def test_no_footer_id_leaves_a_breadcrumb_and_continues(self):
+        page = CompanyPage("")
+        with mock.patch.object(r.time, "monotonic", side_effect=_clock()):
+            r._ensure_company(page, store="houston")
+        self.assertEqual(page.list_opens, 0)
+
+
+def _clock(step=5.0):
+    t = [0.0]
+
+    def tick():
+        t[0] += step
+        return t[0]
+    return tick
+
+
 class LandingPage:
     """A page that ADP leaves on ``url``; ``goto`` lands on ``after_goto``."""
 

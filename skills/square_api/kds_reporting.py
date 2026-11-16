@@ -147,6 +147,7 @@ def _query_kds_view(
     kds_view: dict,
     begin_time: str,
     end_time: str,
+    location_id: str,
 ) -> list[dict]:
     """POST /v1/load for the KDS cube and return all rows as dicts.
 
@@ -193,6 +194,11 @@ def _query_kds_view(
             "timeDimensions": [{
                 "dimension": time_dim,
                 "dateRange": [begin_time, end_time],
+            }],
+            "filters": [{
+                "member": f"{cube}.location_id",
+                "operator": "equals",
+                "values": [location_id],
             }],
             "limit": 50000,
         }
@@ -303,6 +309,16 @@ def _build_kds_csv_rows(api_rows: list[dict], shop_tz: str) -> list[list[str]]:
     return rows
 
 
+def _location_id(store: str) -> str:
+    """The store's Square location; the KDS cube is merchant-wide, so every query filters on it."""
+    from agents.bhaga.scripts.backfill_bigquery import load_store_profile
+
+    location_id = (load_store_profile(store).get("square") or {}).get("location_id")
+    if not location_id:
+        raise RuntimeError(f"store={store} has no square.location_id; refusing a merchant-wide KDS query")
+    return location_id
+
+
 def ingest_window_kds(
     *,
     start_date: datetime.date,
@@ -326,6 +342,7 @@ def ingest_window_kds(
     from core.datastore import load_rows
 
     token = get_access_token(store)
+    location_id = _location_id(store)
 
     if _META_CACHE.exists():
         try:
@@ -349,7 +366,8 @@ def ingest_window_kds(
     cur = start_date
     while cur <= end_date:
         b, e = _rfc3339_bounds(cur, shop_tz)
-        api_rows = _query_kds_view(token=token, kds_view=kds_view, begin_time=b, end_time=e)
+        api_rows = _query_kds_view(token=token, kds_view=kds_view, begin_time=b, end_time=e,
+                                   location_id=location_id)
         all_csv_rows += _build_kds_csv_rows(api_rows, shop_tz)
         print(f"[kds_reporting] {cur}: {len(api_rows)} KDS tickets fetched")
         cur += datetime.timedelta(days=1)
@@ -402,6 +420,7 @@ def export_window_kds(
       ticket grain. This is documented in PROGRESS.md under the WA entry.
     """
     token = get_access_token(store)
+    location_id = _location_id(store)
 
     # Load or fetch the meta to determine available dimensions.
     if _META_CACHE.exists():
@@ -436,7 +455,8 @@ def export_window_kds(
     while current <= end_date:
         begin_time, end_time = _rfc3339_bounds(current, shop_tz)
         api_rows = _query_kds_view(
-            token=token, kds_view=kds_view, begin_time=begin_time, end_time=end_time
+            token=token, kds_view=kds_view, begin_time=begin_time, end_time=end_time,
+            location_id=location_id,
         )
         all_rows.extend(_build_kds_csv_rows(api_rows, shop_tz))
         print(f"[kds_reporting] {current}: {len(api_rows)} KDS tickets fetched")

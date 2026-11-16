@@ -107,6 +107,14 @@ def _silenced() -> bool:
     return bool(os.environ.get(SLACK_DISABLED_ENV))
 
 
+def _store_prefix() -> str:
+    """``*[Houston]* `` on every DM from a non-Austin store's run; Austin DMs unchanged."""
+    store = os.environ.get("BHAGA_STORE", "").strip().lower()
+    if not store or store == "palmetto":
+        return ""
+    return f"*[{store.capitalize()}]* "
+
+
 def _run_prefix() -> str:
     """Sandbox/PR label prepended to EVERY DM from a sandbox live run.
 
@@ -116,10 +124,10 @@ def _run_prefix() -> str:
     Driven by BHAGA_RUN_ENV=sandbox + BHAGA_RUN_LABEL (set by sandbox_live_run).
     """
     if os.environ.get("BHAGA_RUN_ENV", "prod").lower() != "sandbox":
-        return ""
+        return _store_prefix()
     label = os.environ.get("BHAGA_RUN_LABEL", "").strip()
     suffix = f" · {label}" if label else ""
-    return f":test_tube: *[SANDBOX{suffix}]* "
+    return f":test_tube: *[SANDBOX{suffix}]* " + _store_prefix()
 
 
 def _safe_send(text: str) -> Optional[dict]:

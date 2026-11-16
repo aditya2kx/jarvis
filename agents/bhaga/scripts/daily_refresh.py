@@ -153,6 +153,33 @@ def _load_profile(store: str) -> dict:
     return json.loads((STORE_PROFILES / f"{store}.json").read_text())
 
 
+def _assert_store_targets(store: str) -> None:
+    """Refuse to run when the env points this store at another store's data.
+
+    Each store owns a BQ dataset, a Firestore run-state collection and a
+    scrape-cache bucket (store profile). A mismatch would write one store's
+    rows or markers into the other's. Sandbox runs have their own guards.
+    """
+    if os.environ.get("BHAGA_SHEET_MODE", "").lower() == "staging":
+        return
+    # Read directly: _load_profile marks entry into the nightly path for tests.
+    profile = json.loads((STORE_PROFILES / f"{store}.json").read_text())
+    bucket = os.environ.get("BHAGA_GCS_CACHE_BUCKET", "bhaga-scrape-cache")
+    targets = {
+        "dataset": (os.environ.get("BHAGA_BQ_DATASET", "bhaga"),
+                    profile.get("bq_dataset", "bhaga")),
+        "collection": (os.environ.get("BHAGA_FIRESTORE_COLLECTION", "runs"),
+                       profile.get("firestore_collection", "runs")),
+        "bucket": (bucket, profile.get("gcs_cache_bucket", "bhaga-scrape-cache")),
+        "write_bucket": (os.environ.get("BHAGA_GCS_CACHE_WRITE_BUCKET", bucket),
+                         profile.get("gcs_cache_bucket", "bhaga-scrape-cache")),
+    }
+    wrong = {k: v for k, v in targets.items() if v[0] != v[1]}
+    if wrong:
+        detail = " ".join(f"{k}={got} expected={want}" for k, (got, want) in wrong.items())
+        raise SystemExit(f"[daily_refresh] BREADCRUMB store_target_mismatch store={store} {detail}")
+
+
 def _today_ct() -> datetime.date:
     """The current CT date. Used as the inclusive refresh_date.
 
@@ -2833,6 +2860,11 @@ def _run_refresh(run_id: str) -> int:
     args.window_from = args.window_from or os.environ.get("BHAGA_WINDOW_FROM") or None
     args.window_to = args.window_to or os.environ.get("BHAGA_WINDOW_TO") or None
 
+    # Console job launches name the store in BHAGA_STORE over the image's default
+    # --store; check its targets before anything (incl. pipeline_runs) is written.
+    args.store = os.environ.get("BHAGA_STORE") or args.store
+    _assert_store_targets(args.store)
+
     # Scenario scoping via env: a focused sandbox run (e.g. the item-sales-live
     # scenario) sets BHAGA_SKIP_<STEP>=1 to exercise ONLY the surface that failed.
     # Each ORs with the matching --skip-* CLI flag (env can add skips, never unset).
@@ -3311,12 +3343,21 @@ def _run_refresh(run_id: str) -> int:
 
     profile = _load_profile(args.store)
     data_start = datetime.date.fromisoformat(profile["calibration"]["first_data_window"]["start"])
-    spreadsheet_id = resolve_sheet_id("bhaga_model", profile)
+    # Stores opened after the Sheets exit (Houston) have no model sheet.
+    spreadsheet_id = (
+        resolve_sheet_id("bhaga_model", profile)
+        if "bhaga_model" in profile.get("google_sheets", {}) else ""
+    )
+    # process_reviews reads Austin's ClickUp review channel; a store without its
+    # own channel in the profile must not ingest Austin's reviews.
+    if not (profile.get("clickup") or {}).get("review_channel") and not args.skip_reviews:
+        print(f"[review_fetch] SKIPPED — store={args.store} has no clickup.review_channel")
+        args.skip_reviews = True
 
     # Pre-run review_bonus_period row count, for the post-rebuild semantic guard
     # (require credited bonuses to survive the rebuild). Read once up front; soft.
     prev_review_bonus_rows = (
-        0 if args.dry_run
+        0 if args.dry_run or not spreadsheet_id
         else _read_review_bonus_row_count(spreadsheet_id=spreadsheet_id, store=args.store)
     )
 
@@ -4071,7 +4112,11 @@ def _run_refresh(run_id: str) -> int:
     # cases. Fixes the June 13 failure (Sheet-based verify read stale Sheet
     # config tab data; BQ tables are always current).
     model_verified_ok = False
-    if update_model_ran:
+    opening_date = profile.get("opening_date")
+    if update_model_ran and opening_date and refresh_date.isoformat() < opening_date:
+        print(f"[verify_model_bq] BREADCRUMB verify_skipped_pre_opening store={args.store} "
+              f"opening_date={opening_date} — no sales yet, model tables are expected empty")
+    elif update_model_ran:
         expect_kds = not args.skip_kds
         require_adp_period = _latest_closed_period_with_earnings(
             profile=profile, store=args.store, refresh_date=refresh_date,

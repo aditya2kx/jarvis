@@ -94,7 +94,7 @@ describe("store-scoped job runs", () => {
     expect(withStoreEnv(env, "palmetto")).toBe(env);
   });
 
-  it("overrides store, dataset and collection together for Houston", () => {
+  it("overrides store, dataset, collection and cache bucket together for Houston", () => {
     const env = withStoreEnv(
       [
         { name: "REFRESH_DATE", value: "2026-11-23" },
@@ -107,6 +107,7 @@ describe("store-scoped job runs", () => {
       { name: "BHAGA_STORE", value: "houston" },
       { name: "BHAGA_BQ_DATASET", value: "bhaga_houston" },
       { name: "BHAGA_FIRESTORE_COLLECTION", value: "runs_houston" },
+      { name: "BHAGA_GCS_CACHE_BUCKET", value: "bhaga-scrape-cache-houston" },
     ]);
   });
 

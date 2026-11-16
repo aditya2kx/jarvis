@@ -9,6 +9,7 @@ import {
   DEFAULT_STAFFING,
   DEFAULT_TRAINING,
   parseScheduleRules,
+  rulesFromPatch,
   minToTime,
   ruleUnavailability,
   staffLimits,
@@ -478,5 +479,78 @@ describe("shift_windows staff rule", () => {
       { days: rule.days, windows: [[960, 1230], [540, 1020]] },
       { days: [5, 6], windows: [[600, 960]] },
     ]);
+  });
+});
+
+describe("parseScheduleRules guardrails (Issue #512)", () => {
+  const withStaffing = (patch: object) =>
+    parseScheduleRules({ dayRules: [], staffRules: [], staffing: { ...DEFAULT_STAFFING, ...patch } }).staffing;
+
+  it("loads versions saved before the guardrails with them off", () => {
+    const { soloMaxOrders, soloMinMin, laborCapPct, trendWeights, ...legacy } = DEFAULT_STAFFING;
+    void soloMaxOrders;
+    void soloMinMin;
+    void laborCapPct;
+    void trendWeights;
+    const s = withStaffing({});
+    const old = parseScheduleRules({ dayRules: [], staffRules: [], staffing: legacy }).staffing;
+    expect(old).toEqual(s);
+    expect([old.soloMaxOrders, old.soloMinMin, old.laborCapPct, old.trendWeights]).toEqual([null, 60, null, null]);
+  });
+
+  it("keeps the solo rule, labor cap and recent-week weights", () => {
+    const s = withStaffing({ soloMaxOrders: 2, soloMinMin: 60, laborCapPct: 0.4, trendWeights: [0.4, 0.3, 0.2, 0.1] });
+    expect([s.soloMaxOrders, s.soloMinMin, s.laborCapPct, s.trendWeights]).toEqual([2, 60, 0.4, [0.4, 0.3, 0.2, 0.1]]);
+  });
+
+  it("rejects out-of-range values", () => {
+    expect(() => withStaffing({ laborCapPct: 1.5 })).toThrow(/Labor cap/);
+    expect(() => withStaffing({ laborCapPct: 0 })).toThrow(/Labor cap/);
+    expect(() => withStaffing({ soloMaxOrders: 40 })).toThrow(/alone/);
+    expect(() => withStaffing({ soloMinMin: 50 })).toThrow(/alone/);
+    expect(() => withStaffing({ trendWeights: [0, 0] })).toThrow(/weights/);
+    expect(() => withStaffing({ trendWeights: [] })).toThrow(/weights/);
+  });
+});
+
+describe("rulesFromPatch (preview ?rules= link)", () => {
+  const enc = (o: object) => btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_");
+
+  it("layers staffing fields and rule lists on the saved rules", () => {
+    const r = rulesFromPatch(DEFAULT_RULES, enc({ staffing: { ordersPerPerson: 5, laborCapPct: 0.4 }, dayRules: [] }))!;
+    expect(r.staffing.ordersPerPerson).toBe(5);
+    expect(r.staffing.laborCapPct).toBe(0.4);
+    expect(r.staffing.minPeople).toBe(DEFAULT_RULES.staffing.minPeople);
+    expect(r.dayRules).toEqual([]);
+    expect(r.staffRules).toEqual(DEFAULT_RULES.staffRules);
+  });
+
+  it("upserts staff rules by id so a short link can change one person", () => {
+    const base = {
+      ...DEFAULT_RULES,
+      staffRules: [
+        { id: "dolce", employee: "Johnson, Dolce", kind: "target_week_hours" as const, value: 40 },
+        { id: "other", employee: "Someone, Else", kind: "target_week_hours" as const, value: 25 },
+      ],
+    };
+    const r = rulesFromPatch(
+      base,
+      enc({
+        staffRules: [
+          { id: "dolce", employee: "Johnson, Dolce", kind: "target_week_hours", value: 35 },
+          { id: "ximena-last", employee: "Ortiz, Ximena", kind: "last_day", value: 0, date: "2026-11-20" },
+        ],
+      }),
+    )!;
+    expect(r.staffRules).toEqual([
+      { id: "dolce", employee: "Johnson, Dolce", kind: "target_week_hours", value: 35 },
+      { id: "other", employee: "Someone, Else", kind: "target_week_hours", value: 25 },
+      { id: "ximena-last", employee: "Ortiz, Ximena", kind: "last_day", value: 0, date: "2026-11-20" },
+    ]);
+  });
+
+  it("ignores links that don't decode or would fail a save", () => {
+    expect(rulesFromPatch(DEFAULT_RULES, "not-json")).toBeNull();
+    expect(rulesFromPatch(DEFAULT_RULES, enc({ staffing: { laborCapPct: 3 } }))).toBeNull();
   });
 });

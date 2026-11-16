@@ -68,6 +68,20 @@ export type StaffingBasics = {
   ordersPerPerson: number;
   /** Fewest people on the floor while staffed. */
   minPeople: number;
+  /**
+   * Two on the floor unless that hour's typical orders are at most this (then `minPeople`);
+   * null = off (the floor is just `minPeople`).
+   */
+  soloMaxOrders: number | null;
+  /** Shortest stretch anyone works alone; shorter solo stretches get a second person. */
+  soloMinMin: number;
+  /** Weekly cap on labor cost as a share of forecast net sales; null = the weekly hours goal caps the draft. */
+  laborCapPct: number | null;
+  /**
+   * Weights for the last N weeks' order volume (most recent first) vs the 8-week average —
+   * scales the 8-week hourly pattern. null = the plain 8-week median.
+   */
+  trendWeights: number[] | null;
   /** Staffed window (first clock-in → end of closing duties), minute of day. */
   openMin: number;
   closeMin: number;
@@ -152,6 +166,10 @@ export const DEFAULT_TRAINING: TrainingRules = {
 export const DEFAULT_STAFFING: StaffingBasics = {
   ordersPerPerson: 4,
   minPeople: 1,
+  soloMaxOrders: null,
+  soloMinMin: 60,
+  laborCapPct: null,
+  trendWeights: null,
   openMin: 6 * 60 + 30,
   closeMin: 20 * 60 + 30,
   minShiftMin: 270,
@@ -400,6 +418,32 @@ export function parseScheduleRules(raw: unknown): ScheduleRules {
   return { staffing: parseStaffing(obj.staffing), dayRules, staffRules };
 }
 
+/**
+ * A `?rules=` link (base64url JSON: staffing fields and/or rule lists) layered on `base` and
+ * validated like a save; null when it doesn't decode or parse. Lets a read-only preview open with
+ * proposed rules as unsaved edits. Staff rules in the patch upsert by `id` so the link can stay
+ * short (IAP sign-in on phones drops very long query strings).
+ */
+export function rulesFromPatch(base: ScheduleRules, encoded: string): ScheduleRules | null {
+  try {
+    const json = atob(encoded.replace(/-/g, "+").replace(/_/g, "/"));
+    const patch = JSON.parse(json) as Partial<Omit<ScheduleRules, "staffing">> & { staffing?: Partial<StaffingBasics> };
+    let staffRules = base.staffRules;
+    if (patch.staffRules) {
+      const byId = new Map(base.staffRules.map((r) => [r.id, r]));
+      for (const r of patch.staffRules) byId.set(r.id, r);
+      staffRules = [...byId.values()];
+    }
+    return parseScheduleRules({
+      dayRules: patch.dayRules ?? base.dayRules,
+      staffRules,
+      staffing: { ...base.staffing, ...patch.staffing },
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** Versions saved before staffing basics existed load with the defaults. */
 function parseStaffing(raw: unknown): StaffingBasics {
   if (raw == null) return DEFAULT_STAFFING;
@@ -440,9 +484,37 @@ function parseStaffing(raw: unknown): StaffingBasics {
   if (!Number.isInteger(mealAfterMin) || mealAfterMin < 0 || mealAfterMin > 12 * 60) {
     throw new Error("Meal applies to shifts of 0–12 hours");
   }
+  // Issue #512: absent in older versions, which keep the weekly hours goal and the plain 8-week median.
+  const soloMaxOrders = s.soloMaxOrders ?? null;
+  if (soloMaxOrders != null && !(soloMaxOrders >= 0 && soloMaxOrders <= 30)) {
+    throw new Error("Working alone must allow 0–30 orders an hour");
+  }
+  const soloMinMin = s.soloMinMin ?? DEFAULT_STAFFING.soloMinMin;
+  if (!Number.isInteger(soloMinMin) || soloMinMin < 0 || soloMinMin > 240 || soloMinMin % 15) {
+    throw new Error("Shortest time alone must be 0–4 hours in 15-minute steps");
+  }
+  const laborCapPct = s.laborCapPct ?? null;
+  if (laborCapPct != null && !(laborCapPct >= 0.05 && laborCapPct <= 1)) {
+    throw new Error("Labor cap must be 5–100% of forecast sales");
+  }
+  const trendWeights = s.trendWeights ?? null;
+  if (
+    trendWeights != null &&
+    (!Array.isArray(trendWeights) ||
+      trendWeights.length < 1 ||
+      trendWeights.length > 8 ||
+      trendWeights.some((w) => !(Number(w) >= 0)) ||
+      !(trendWeights.reduce((a, w) => a + Number(w), 0) > 0))
+  ) {
+    throw new Error("Recent-week weights must be 1–8 non-negative numbers, not all zero");
+  }
   return {
     ordersPerPerson: opp,
     minPeople: s.minPeople!,
+    soloMaxOrders,
+    soloMinMin,
+    laborCapPct,
+    trendWeights: trendWeights?.map(Number) ?? null,
     openMin: s.openMin,
     closeMin: s.closeMin,
     minShiftMin: s.minShiftMin!,

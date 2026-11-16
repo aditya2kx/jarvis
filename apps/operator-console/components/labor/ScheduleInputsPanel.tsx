@@ -18,6 +18,8 @@ import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { capLabel, type WeekCap } from "@/lib/labor/demand-trend";
 import {
   Select,
   SelectContent,
@@ -365,7 +367,7 @@ function trainingSummary(t: TrainingRules): string {
 }
 
 function staffingSummary(s: StaffingBasics): string {
-  return `${s.ordersPerPerson} orders/person · min ${s.minPeople} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}${s.unpaidMealMin ? ` · ${s.unpaidMealMin}m unpaid meal over ${s.mealAfterMin / 60}h` : ""}${trainingSummary(s.training)}`;
+  return `${s.ordersPerPerson} orders/person · min ${s.minPeople}${s.soloMaxOrders != null ? ` · alone only ≤${s.soloMaxOrders} orders/h for ≥${s.soloMinMin}m` : ""}${s.laborCapPct != null ? ` · cap ${Math.round(s.laborCapPct * 100)}% of sales` : ""}${s.trendWeights ? ` · trend ${s.trendWeights.join("/")}` : ""} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}${s.unpaidMealMin ? ` · ${s.unpaidMealMin}m unpaid meal over ${s.mealAfterMin / 60}h` : ""}${trainingSummary(s.training)}`;
 }
 
 function rulesSummary(v: RulesVersion): string {
@@ -457,6 +459,28 @@ function TimeInput({
       }}
       className="h-7 w-28 text-xs"
       aria-label={label}
+    />
+  );
+}
+
+/** "40 / 30 / 20 / 10" (percent, newest week first) ↔ [0.4, 0.3, 0.2, 0.1]. */
+function WeightsInput({ value, onChange }: { value: number[]; onChange: (w: number[]) => void }) {
+  const shown = value.map((w) => Math.round(w * 100)).join(" / ");
+  const [typing, setTyping] = useState<string | null>(null);
+  return (
+    <Input
+      value={typing ?? shown}
+      onFocus={() => setTyping(shown)}
+      onBlur={() => setTyping(null)}
+      onChange={(e) => {
+        setTyping(e.target.value);
+        const parts = e.target.value.split("/").map((x) => Number(x.trim()));
+        if (parts.length >= 1 && parts.length <= 8 && parts.every((x) => Number.isFinite(x) && x >= 0) && parts.some((x) => x > 0)) {
+          onChange(parts.map((x) => x / 100));
+        }
+      }}
+      className="h-7 w-40 text-xs tabular-nums"
+      aria-label="Recent week weights, newest first"
     />
   );
 }
@@ -592,7 +616,8 @@ export function ScheduleInputsPanel({
   onChange,
   employees,
   deliveryDates,
-  goalHoursWeek,
+  cap,
+  trend,
   dirty,
   onDiscard,
   savedVersion,
@@ -607,7 +632,10 @@ export function ScheduleInputsPanel({
   trainees?: TrainingStatus[];
   /** Upcoming frozen deliveries from the Inventory restock schedule (read-only here). */
   deliveryDates: string[];
-  goalHoursWeek?: number;
+  /** This week's ceiling on drafted hours (labor % cap, else the weekly hours goal). */
+  cap?: WeekCap | null;
+  /** Recent-volume factor and next week's forecast sales / labor cost per hour. */
+  trend?: { factor: number; sales: number | null; costPerHour: number | null };
   /** Rules differ from the saved version (edits preview in the draft until saved). */
   dirty: boolean;
   onDiscard: () => void;
@@ -670,7 +698,7 @@ export function ScheduleInputsPanel({
     `${n} ${n === 1 ? one : many}`;
   const summary = [
     `${rules.staffing.ordersPerPerson} orders/person`,
-    goalHoursWeek != null ? `${goalHoursWeek}h/week cap` : null,
+    cap ? capLabel(cap) : null,
     plural(rules.staffRules.length, "staff rule"),
     inTraining ? plural(inTraining, "new hire in training", "new hires in training") : null,
     plural(rules.dayRules.length, "day rule"),
@@ -723,7 +751,7 @@ export function ScheduleInputsPanel({
           <div className="md:col-span-2">
             <Section
               title="Staffing basics"
-              hint="Needed people each hour = typical orders for that weekday and hour (median of the last 8 weeks) ÷ orders per person, rounded up — never below the minimum while staffed."
+              hint={`Needed people each hour = typical orders for that weekday and hour (median of the last 8 weeks${trend && trend.factor !== 1 ? `, × ${trend.factor.toFixed(2)} for how busy recent weeks were` : ""}) ÷ orders per person, rounded up — never below the minimum while staffed.`}
             >
               <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
                 <NumberField
@@ -741,6 +769,36 @@ export function ScheduleInputsPanel({
                   value={rules.staffing.minPeople}
                   onChange={(v) => setStaffing({ minPeople: Math.round(v) })}
                 />
+                <div className="flex flex-col gap-1" data-testid="solo-rule">
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Switch
+                      checked={rules.staffing.soloMaxOrders != null}
+                      onCheckedChange={(on) => setStaffing({ soloMaxOrders: on ? 2 : null })}
+                      aria-label="Two on the floor unless it's quiet"
+                    />
+                    Two on the floor unless it&apos;s quiet
+                  </label>
+                  {rules.staffing.soloMaxOrders != null ? (
+                    <span className="flex flex-wrap items-end gap-x-4 gap-y-2">
+                      <NumberField
+                        label="Alone only up to"
+                        unit="orders / hour"
+                        step={0.5}
+                        min={0}
+                        value={rules.staffing.soloMaxOrders}
+                        onChange={(v) => setStaffing({ soloMaxOrders: Math.min(30, v) })}
+                      />
+                      <NumberField
+                        label="Alone for at least"
+                        unit="min"
+                        step={15}
+                        min={0}
+                        value={rules.staffing.soloMinMin}
+                        onChange={(v) => setStaffing({ soloMinMin: Math.min(240, Math.round(v / 15) * 15) })}
+                      />
+                    </span>
+                  ) : null}
+                </div>
                 <div className="flex flex-col gap-1">
                   <span className="text-xs text-muted-foreground">
                     Staffed hours (incl. open/close duties)
@@ -832,12 +890,60 @@ export function ScheduleInputsPanel({
           </div>
 
           <Section
-            title="Weekly hours cap"
-            hint="A ceiling, not a target: the draft never adds order-driven shifts past it. Set it in Weekly hours goal above."
+            title="Weekly cap"
+            hint="A ceiling, not a target: order-driven shifts stop at it. The staffing minimum is always drafted, even past it. Without a labor cap, the Weekly hours goal above is the ceiling."
           >
-            <p className="text-sm font-medium tabular-nums text-foreground">
-              {goalHoursWeek != null ? `${goalHoursWeek}h / week` : "Not set"}
-            </p>
+            <div className="flex flex-col gap-2" data-testid="labor-cap">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Switch
+                  checked={rules.staffing.laborCapPct != null}
+                  onCheckedChange={(on) => setStaffing({ laborCapPct: on ? 0.4 : null })}
+                  aria-label="Cap labor at a share of forecast sales"
+                />
+                Cap labor at a share of forecast sales
+              </label>
+              {rules.staffing.laborCapPct != null ? (
+                <NumberField
+                  label="Labor cost at most"
+                  unit="% of forecast net sales"
+                  step={1}
+                  min={5}
+                  value={Math.round(rules.staffing.laborCapPct * 100)}
+                  onChange={(v) => setStaffing({ laborCapPct: Math.min(100, v) / 100 })}
+                />
+              ) : null}
+              <p className="text-sm font-medium tabular-nums text-foreground">{cap ? capLabel(cap) : "Not set"}</p>
+              {rules.staffing.laborCapPct != null && cap?.kind === "goal" ? (
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  No recent sales or labor history to forecast from — the hours goal applies.
+                </p>
+              ) : null}
+              {cap?.kind === "labor" && trend?.costPerHour ? (
+                <p className="text-xs text-muted-foreground">
+                  ${trend.costPerHour.toFixed(2)} labor per paid hour (last 4 weeks)
+                </p>
+              ) : null}
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Switch
+                  checked={rules.staffing.trendWeights != null}
+                  onCheckedChange={(on) => setStaffing({ trendWeights: on ? [0.4, 0.3, 0.2, 0.1] : null })}
+                  aria-label="Follow recent weeks"
+                />
+                Follow recent weeks
+              </label>
+              {rules.staffing.trendWeights != null ? (
+                <span className="flex flex-col gap-1">
+                  <WeightsInput
+                    value={rules.staffing.trendWeights}
+                    onChange={(trendWeights) => setStaffing({ trendWeights })}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Weight of each recent week, newest first, vs the 8-week average
+                    {trend ? ` — now ×${trend.factor.toFixed(2)}` : ""}.
+                  </span>
+                </span>
+              ) : null}
+            </div>
           </Section>
 
           <Section
@@ -1241,7 +1347,7 @@ export function ScheduleInputsPanel({
           </div>
 
           <div className="sticky bottom-0 z-10 -mx-3 -mb-3 flex flex-col gap-2 rounded-b-lg border-t border-border bg-card px-3 py-2.5 md:col-span-2">
-          <HoursImpact forecast={forecast} goal={goalHoursWeek} dirty={dirty} />
+          <HoursImpact forecast={forecast} goal={cap ? Math.round(cap.hours) : undefined} dirty={dirty} />
           <div className="flex flex-wrap items-center gap-2">
             {dirty ? (
               <>

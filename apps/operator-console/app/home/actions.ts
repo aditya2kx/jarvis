@@ -1,7 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
+import { operatorEmail } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { upsertGoal, GOAL_KEYS, type GoalKey } from "@/lib/bq/writes";
 import { asAck, type ActionAck } from "@/lib/actions/types";
 import { actionDenied } from "@/lib/access/server";
@@ -10,12 +11,13 @@ import { actionDenied } from "@/lib/access/server";
 export async function saveGoalsAction(
   values: Partial<Record<GoalKey, string>>,
 ): Promise<ActionAck> {
+  const store = await currentStore();
   const denied = await actionDenied("saveGoalsAction");
   if (denied) return denied;
   return asAck(async () => {
     const by = await operatorEmail();
     const entries = GOAL_KEYS.filter((k) => values[k] !== undefined && values[k] !== "");
-    await Promise.all(entries.map((k) => upsertGoal(DEFAULT_STORE, k, values[k]!, by)));
+    await Promise.all(entries.map((k) => upsertGoal(store, k, values[k]!, by)));
     revalidatePath("/home");
     revalidatePath("/labor");
   }, "Goals saved.");
@@ -29,11 +31,12 @@ export async function saveGoalsAction(
  * `upsertGoal` the bulk GoalsDrawer uses, not a second write path.
  */
 export async function saveGoalAction(key: GoalKey, value: string): Promise<ActionAck> {
+  const store = await currentStore();
   const denied = await actionDenied("saveGoalAction");
   if (denied) return denied;
   return asAck(async () => {
     const by = await operatorEmail();
-    await upsertGoal(DEFAULT_STORE, key, value, by);
+    await upsertGoal(store, key, value, by);
     revalidatePath("/home");
     revalidatePath("/labor");
   }, "Goal saved.");

@@ -1,4 +1,5 @@
 import { kdsBySource, kdsOrderInvestigation, orderQualityByGrain } from "@/lib/bq/queries";
+import { austinOnly } from "@/components/shell/AustinOnly";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
 import { dateSortKey, formatDate } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -64,6 +65,8 @@ export default async function OrderQualityPage({
 }) {
   const denied = await pageDenied("order-quality");
   if (denied) return denied;
+  const only = await austinOnly("Order Quality");
+  if (only) return only;
   const can = await sectionAccess("order-quality");
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);

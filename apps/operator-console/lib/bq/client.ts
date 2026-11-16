@@ -1,7 +1,8 @@
 import "server-only";
 import { BigQuery, BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp } from "@google-cloud/bigquery";
-import { bq, DATASET, PROJECT } from "./bigquery";
+import { bq, DATASET, forStore, PROJECT } from "./bigquery";
 import { noteWrite, readThrough } from "./cache";
+import { currentStore } from "@/lib/config/current-store";
 
 const BQ_WRAPPER_CLASSES = [BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp];
 
@@ -11,9 +12,18 @@ const BQ_WRAPPER_CLASSES = [BigQueryDate, BigQueryDatetime, BigQueryInt, BigQuer
 // `SELECT * FROM vw_*` reads and the same MERGE writes the Slack command uses).
 export { DATASET, PROJECT };
 
-/** Fully-qualified, backtick-quoted `project.dataset.name` for a BQ object. */
+/**
+ * Fully-qualified, backtick-quoted `project.dataset.name` for a BQ object. Always the
+ * default dataset here: `q()` / `mutate()` / `submitQuery()` point the finished statement
+ * at the selected store's dataset (`forStore`), so no query can skip the store.
+ */
 export function fq(name: string): string {
   return `\`${PROJECT}.${DATASET}.${name}\``;
+}
+
+/** The statement as it must run for the store this request is for. */
+async function scoped(sql: string): Promise<string> {
+  return forStore(sql, await currentStore());
 }
 
 // The BQ client returns DATE/TIME/DATETIME/TIMESTAMP/INT64 columns as
@@ -53,8 +63,9 @@ export async function q<T = Record<string, unknown>>(
   sql: string,
   params?: Record<string, unknown>,
 ): Promise<T[]> {
-  return readThrough<T>(sql, params, async () => {
-    const [rows] = await bq().query({ query: sql, params, location: "US" });
+  const query = await scoped(sql);
+  return readThrough<T>(query, params, async () => {
+    const [rows] = await bq().query({ query, params, location: "US" });
     return rows.map((r) => sanitize(r)) as T[];
   });
 }
@@ -93,8 +104,9 @@ export async function mutate(
   params?: Record<string, unknown>,
   types?: Record<string, string>,
 ): Promise<void> {
-  await bq().query({ query: sql, params, types, location: "US" });
-  await noteWrite(sql);
+  const query = await scoped(sql);
+  await bq().query({ query, params, types, location: "US" });
+  await noteWrite(query);
 }
 
 /**
@@ -107,6 +119,6 @@ export async function submitQuery(
   params?: Record<string, unknown>,
   types?: Record<string, string>,
 ): Promise<string> {
-  const [job] = await bq().createQueryJob({ query: sql, params, types, location: "US" });
+  const [job] = await bq().createQueryJob({ query: await scoped(sql), params, types, location: "US" });
   return job.id ?? "";
 }

@@ -11,6 +11,8 @@ import { ActionToastProvider } from "@/lib/actions/ActionToast";
 import { ViewAsBanner } from "@/components/access/ViewAsBanner";
 import { getAccess } from "@/lib/access/server";
 import { allowedHrefs } from "@/lib/access/policy";
+import { currentStore } from "@/lib/config/current-store";
+import { StoreGuard } from "@/components/shell/StoreGuard";
 
 // Inter's optical-size axis gives 12–13px table and chart text the open "text" cut and
 // page titles the tighter "display" cut; figures are tabular where numbers stack.
@@ -55,6 +57,7 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const access = await getAccess();
+  const store = await currentStore();
   const hrefs = access.error ? [] : allowedHrefs(access.grant);
   const navHrefs = access.realIsOwner && !access.viewingAs ? [...hrefs, "/access"] : hrefs;
   return (
@@ -74,11 +77,12 @@ export default async function RootLayout({
       <body className="min-h-full">
         <TooltipProvider>
           <ActionToastProvider>
+            <StoreGuard store={store}>
             <IapLoginBeacon />
             <div className="flex h-dvh overflow-hidden">
               <Sidebar allowedHrefs={navHrefs} />
               <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                <Topbar canViewAs={access.realIsOwner && !access.viewingAs} />
+                <Topbar store={store} canViewAs={access.realIsOwner && !access.viewingAs} />
                 {access.viewingAs ? <ViewAsBanner email={access.viewingAs} /> : null}
                 <HealthBanner />
                 <main className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+1.5rem)] md:p-6">
@@ -87,6 +91,7 @@ export default async function RootLayout({
               </div>
             </div>
             <MobileTabBar allowedHrefs={navHrefs} />
+            </StoreGuard>
           </ActionToastProvider>
         </TooltipProvider>
       </body>

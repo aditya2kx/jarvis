@@ -2,7 +2,8 @@
 
 import { createHash } from "crypto";
 import { revalidatePath } from "next/cache";
-import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
+import { operatorEmail } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { FEATURES } from "@/lib/config/features";
 import {
   createLinkToken,
@@ -66,6 +67,7 @@ async function drainSync(itemId: string, accessToken: string, startCursor: strin
   removed: number;
   cursor: string;
 }> {
+  const store = await currentStore();
   let cursor = startCursor;
   let added = 0;
   let modified = 0;
@@ -91,7 +93,7 @@ async function drainSync(itemId: string, accessToken: string, startCursor: strin
     cursor = page.next_cursor;
     if (!page.has_more) break;
   }
-  await updatePlaidCursor(DEFAULT_STORE, itemId, cursor);
+  await updatePlaidCursor(store, itemId, cursor);
   try {
     const accounts = await fetchAccounts(accessToken);
     for (const a of accounts) {
@@ -193,6 +195,7 @@ export async function exchangePlaidPublicTokenAction(publicToken: string): Promi
     sync: { added: number; modified: number; removed: number };
   }>
 > {
+  const store = await currentStore();
   const denied = await actionDenied("exchangePlaidPublicTokenAction");
   if (denied) return denied;
   return asAck(async () => {
@@ -201,7 +204,7 @@ export async function exchangePlaidPublicTokenAction(publicToken: string): Promi
     const { access_token, item_id } = await exchangePublicToken(publicToken);
     await saveAccessTokenSecret(item_id, access_token);
     const institutionName = await fetchInstitutionName(access_token);
-    await upsertPlaidItem(DEFAULT_STORE, item_id, institutionName, by);
+    await upsertPlaidItem(store, item_id, institutionName, by);
     const sync = await drainSync(item_id, access_token, "");
     revalidatePath("/accounting");
     return { itemId: item_id, sync };
@@ -214,12 +217,13 @@ export async function syncPlaidNowAction(): Promise<
     sync: { added: number; modified: number; removed: number };
   }>
 > {
+  const store = await currentStore();
   const denied = await actionDenied("syncPlaidNowAction");
   if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid sync is disabled");
     await operatorEmail();
-    const items = await plaidItems(DEFAULT_STORE);
+    const items = await plaidItems(store);
     const item = items[0];
     if (!item) throw new Error("No linked Plaid Item — Link a bank first");
     const accessToken = await loadAccessTokenSecret(item.item_id);

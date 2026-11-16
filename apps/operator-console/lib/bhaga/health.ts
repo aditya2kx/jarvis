@@ -1,10 +1,11 @@
 import "server-only";
 import { GoogleAuth } from "google-auth-library";
 import { q, fq } from "@/lib/bq/client";
+import { currentStore } from "@/lib/config/current-store";
+import { STORE_FIRESTORE_COLLECTION } from "@/lib/config/stores";
 
 const PROJECT = process.env.BQ_PROJECT ?? "jarvis-bhaga-prod";
 const FIRESTORE_DB = process.env.BHAGA_FIRESTORE_DB ?? "(default)";
-const FIRESTORE_COLLECTION = process.env.BHAGA_FIRESTORE_COLLECTION ?? "runs";
 const HALT_DOC = "_pipeline_state";
 
 /** Age past which the data window is called stale, in days. */
@@ -69,7 +70,7 @@ export async function readPipelineHalt(): Promise<HaltState> {
   const token = await accessToken("readPipelineHalt");
   const url =
     `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/` +
-    `${encodeURIComponent(FIRESTORE_DB)}/documents/${FIRESTORE_COLLECTION}/${HALT_DOC}`;
+    `${encodeURIComponent(FIRESTORE_DB)}/documents/${STORE_FIRESTORE_COLLECTION[await currentStore()]}/${HALT_DOC}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (res.status === 404) return NOT_HALTED; // never tripped on this deployment
   if (!res.ok) {

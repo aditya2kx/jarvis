@@ -12,7 +12,8 @@ import {
 } from "@/lib/bq/queries";
 import { ensureOrderRecoFresh } from "@/lib/bhaga/orderReco";
 import { ensureRestockHorizon } from "@/lib/bq/writes";
-import { DEFAULT_STORE, operatorEmail } from "@/lib/auth/identity";
+import { operatorEmail } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { FEATURES } from "@/lib/config/features";
 import { storeDisplayName } from "@/lib/config/stores";
 import {
@@ -79,6 +80,7 @@ export default async function InventoryPage({
 }: {
   searchParams: Promise<{ range?: string; from?: string; to?: string }>;
 }) {
+  const store = await currentStore();
   const denied = await pageDenied("inventory");
   if (denied) return denied;
   const can = await sectionAccess("inventory");
@@ -114,29 +116,29 @@ export default async function InventoryPage({
       let horizonAdded: string[] = [];
       if (FEATURES.writeRestock) {
         try {
-          horizonAdded = await ensureRestockHorizon(DEFAULT_STORE);
+          horizonAdded = await ensureRestockHorizon(store);
         } catch (e) {
-          console.error(`restock_horizon_ensure_failed store=${DEFAULT_STORE}: ${String(e)}`);
+          console.error(`restock_horizon_ensure_failed store=${store}: ${String(e)}`);
         }
       }
       recoStatus = (
-        await ensureOrderRecoFresh(DEFAULT_STORE, by, { pageEdited: horizonAdded.length > 0 })
+        await ensureOrderRecoFresh(store, by, { pageEdited: horizonAdded.length > 0 })
       ).status;
     } catch (e) {
-      console.error(`order_reco_status_unavailable store=${DEFAULT_STORE}: ${String(e)}`);
+      console.error(`order_reco_status_unavailable store=${store}: ${String(e)}`);
     }
     const [slotRows, nd, config, estimated, scheduled, audit, actuals, manualQty] =
       await Promise.all([
         orderRecoSlots(),
         nextDates(),
-        storeConfig(DEFAULT_STORE),
-        estimatedScheduleDates(DEFAULT_STORE),
-        scheduledRestockDates(DEFAULT_STORE),
-        usageDayAudit(DEFAULT_STORE),
-        restockActuals(DEFAULT_STORE, win),
+        storeConfig(store),
+        estimatedScheduleDates(store),
+        scheduledRestockDates(store),
+        usageDayAudit(store),
+        restockActuals(store, win),
         // The badge is a hint; a failed read must not blank the order table.
-        currentQtyOverrideItems(DEFAULT_STORE).catch((e) => {
-          console.error(`current_qty_override_items_failed store=${DEFAULT_STORE}: ${String(e)}`);
+        currentQtyOverrideItems(store).catch((e) => {
+          console.error(`current_qty_override_items_failed store=${store}: ${String(e)}`);
           return [] as string[];
         }),
       ]);
@@ -158,7 +160,7 @@ export default async function InventoryPage({
     // empty table — a blank page looks like "nothing to do" at exactly the
     // moment a base may be days from running out.
     if (dates.length === 0) {
-      rows = stockOnlyRows(await inventoryStockLevels(DEFAULT_STORE));
+      rows = stockOnlyRows(await inventoryStockLevels(store));
       stockOnly = rows.length > 0;
     }
     estimateByDate = buildEstimateByDate(paintRows);
@@ -185,7 +187,7 @@ export default async function InventoryPage({
     <div className="flex min-w-0 max-w-full flex-col gap-4">
       <PageHeader
         title="Inventory / Ordering"
-        subtitle={`Order Assistant recommendations · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`Order Assistant recommendations · ${storeDisplayName(store)}`}
         right={
           <>
             <FilterSelect

@@ -2,7 +2,7 @@ import "server-only";
 import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import {
   getCloudRunExecutionStatus,
   triggerPayrollDraft,
@@ -127,7 +127,7 @@ export async function pollPayrollDraft(opts: {
   periodEnd: string;
   store?: string;
 }): Promise<PayrollDraftPoll> {
-  const store = opts.store?.trim() || DEFAULT_STORE;
+  const store = opts.store?.trim() || (await currentStore());
   const bqRun = await payrollDraftRun(store, opts.periodStart, opts.periodEnd);
   const snap = snapshotFromRun(bqRun);
 

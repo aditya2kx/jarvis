@@ -9,7 +9,7 @@ import {
   type LaborDailyRow,
   type StoreConfigRow,
 } from "@/lib/bq/queries";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { chicagoTodayIso, goalMonths, isMonthLike, type DateWindow } from "@/lib/filters/range";
 import { RISKY_DAYS_LEFT } from "@/lib/inventory/daysLeft";
 import type { GoalKey } from "@/lib/bq/writes";
@@ -138,12 +138,13 @@ export async function loadHealthScorecard(
   win: DateWindow,
   _opts: { laborLens?: LaborLens } = {},
 ): Promise<HealthScorecard> {
+  const store = await currentStore();
   // laborLens retained for API compat; Home no longer shows schedule/blended (#189).
   const [rows, config, quality, stock, plaidCats, moneyIn] = await Promise.all([
     laborDaily(win),
-    storeConfig(DEFAULT_STORE),
+    storeConfig(store),
     orderQualityDaily(win),
-    inventoryStockLevels(DEFAULT_STORE),
+    inventoryStockLevels(store),
     plaidSpendByCategory(win).catch(() => []),
     plaidMoneyInTotal(win).catch(() => 0),
   ]);

@@ -1,5 +1,5 @@
 import { salesByGrain, salesSourceOptions, storeConfig } from "@/lib/bq/queries";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { dateSortKey } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import {
@@ -66,6 +66,7 @@ export default async function SalesPage({
     stat?: string;
   }>;
 }) {
+  const store = await currentStore();
   const denied = await pageDenied("sales");
   if (denied) return denied;
   const can = await sectionAccess("sales");
@@ -104,7 +105,7 @@ export default async function SalesPage({
     const [sales, opts, config, priorSales] = await Promise.all([
       salesByGrain(win, grain, sources, breakdown, stat),
       salesSourceOptions(win),
-      storeConfig(DEFAULT_STORE),
+      storeConfig(store),
       prior
         ? salesByGrain(prior, grain, sources, false, stat)
         : Promise.resolve([] as SalesBySourceRow[]),
@@ -256,7 +257,7 @@ export default async function SalesPage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Sales"
-        subtitle={`Net sales, orders, and items sold · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`Net sales, orders, and items sold · ${storeDisplayName(store)}`}
         right={
           <>
             <FilterPills

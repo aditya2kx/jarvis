@@ -6,7 +6,7 @@ import {
   plaidTransactions,
 } from "@/lib/bq/queries";
 import { dedupePlaidTransactions } from "@/lib/bq/writes";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { FEATURES } from "@/lib/config/features";
 import { isConsolePreview } from "@/lib/config/preview";
 import { storeDisplayName } from "@/lib/config/stores";
@@ -36,6 +36,7 @@ export default async function AccountingPage({
 }: {
   searchParams: Promise<{ range?: string; from?: string; to?: string; grain?: string }>;
 }) {
+  const store = await currentStore();
   const denied = await pageDenied("accounting");
   if (denied) return denied;
   const can = await sectionAccess("accounting");
@@ -79,7 +80,7 @@ export default async function AccountingPage({
       });
     }
     const [items, transactions, nodes, ruleRows, labor] = await Promise.all([
-      plaidItems(DEFAULT_STORE),
+      plaidItems(store),
       plaidTransactions(win),
       plaidTaxonomyNodes().catch(() => []),
       plaidCategoryRules().catch(() => []),
@@ -209,7 +210,7 @@ export default async function AccountingPage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Accounting"
-        subtitle={`Linked bank accounts · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`Linked bank accounts · ${storeDisplayName(store)}`}
         right={
           <>
             <AggregationSelect

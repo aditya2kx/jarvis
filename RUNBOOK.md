@@ -192,6 +192,52 @@ The script logs `first_date_covered` / `last_date_covered`. Earliest rows may be
 | Time zone | `America/Chicago` (21:30 CT, ~60 min after the 21:00 store close) |
 | Target | `POST https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/jarvis-bhaga-prod/jobs/bhaga-daily-refresh:run` (OIDC) |
 
+### Houston nightly (second store, Issue #533)
+
+Houston runs the **same image and job** as Austin with per-execution overrides; nothing about Austin's
+`bhaga-nightly` changes. Every store-specific target comes from
+`agents/bhaga/knowledge-base/store-profiles/<store>.json`:
+
+| | Austin (`palmetto`) | Houston (`houston`) |
+|---|---|---|
+| Scheduler | `bhaga-nightly` 21:30 CT | `bhaga-nightly-houston` 22:30 CT (after Austin; both share the `otps/bhaga_adp` OTP doc) |
+| BigQuery dataset | `bhaga` | `bhaga_houston` |
+| Firestore run state | `runs` | `runs_houston` |
+| GCS cache + sessions | `bhaga-scrape-cache` | `bhaga-scrape-cache-houston` |
+| Square location | `L9DDZF3CQS8AK` | `L6AQ95CN5NG4W` (same Square account / `square_palmetto_oauth`) |
+| ADP Client ID (`adp_run.iid`) | 30109821 | 32653321 (same login, same tenant UUID) |
+| Opening date | — | `opening_date` 2026-11-23 |
+
+- **Guard.** `daily_refresh` exits before any write when the env's dataset / collection / bucket
+  don't match the profile: grep `BREADCRUMB store_target_mismatch`. `status --store houston` exits 2
+  unless run with `BHAGA_BQ_DATASET=bhaga_houston`.
+- **Not wired for Houston yet** (skipped, not failed): Google reviews (no `clickup.review_channel`),
+  inventory closing counts (no `clickup.closing_list_id`), Sheets projections (no `google_sheets`).
+  The READY-handshake resume in the webhook only scans `runs`, so Houston relies on inline OTP.
+- **Pre-opening.** With zero Square sales before `opening_date`, materialize and model verify skip
+  (`model_skipped_pre_opening`, `verify_skipped_pre_opening`); raw ADP shifts still land and feed
+  the console's Labor and Home cards.
+- **ADP prerequisite.** Each ADP company needs the saved custom report **Earnings and Hours V1**
+  (Reports → Custom report builder → Payroll; fields Employee Name, Payroll Check Date, Period Start
+  Date, Period End Date, Payroll Earning Hours, Payroll Hourly Earning Rate, Payroll Earning Amount,
+  Payroll Earning Description; "Save and preview"). Houston's was created 2026-11-16.
+- **ADP session.** Houston keeps its own `gs://bhaga-scrape-cache-houston/_session/adp-houston.json`,
+  so its first cloud run costs one SMS code. If Houston asks for a code most nights, share Austin's
+  jar (same login) instead of debugging the scrape.
+
+Provision (idempotent; dataset + schema, bucket + IAM, scheduler):
+
+```bash
+python3 scripts/gcp_access_probe.py
+python3 -m agents.bhaga.scripts.provision_store --store houston --paused --dry-run
+python3 -m agents.bhaga.scripts.provision_store --store houston --paused
+# after the image containing #533 is deployed:
+gcloud scheduler jobs resume bhaga-nightly-houston --location=us-central1
+# freshness
+BHAGA_BQ_DATASET=bhaga_houston BHAGA_FIRESTORE_COLLECTION=runs_houston \
+  python3 -m agents.bhaga.scripts.status --store houston
+```
+
 ### ADP payroll draft (Issue #251)
 
 `bhaga-nightly` stays at 21:30 CT and does **not** Start payroll.
@@ -716,6 +762,13 @@ row whose `Client ID` equals the store profile's `adp_run.iid` (Palmetto Austin 
 `[adp_login] step=select-company iid=…` / `step=company-open`). It waits up to 15 s for the client IDs
 to render and raises with a screenshot when not exactly one row matches — never guesses a company.
 Single-company logins skip the step.
+
+Both companies share one tenant UUID, so the URL can't tell them apart; the only signal is the
+footer "Client ID: N". `runner._ensure_company` runs after every login **and** every reused session:
+it logs `step=company-ok` when the footer matches, otherwise `BREADCRUMB adp_company_mismatch
+active=… want=…`, opens the Company List (re-clicking until it renders) and switches
+(`step=company-switched`). If the footer still disagrees it raises with evidence rather than scrape
+the other store's payroll. No footer at all → `BREADCRUMB adp_company_unverified` and continues.
 
 ### ADP trusted-device session (`_session/adp-palmetto.json`)
 

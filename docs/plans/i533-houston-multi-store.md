@@ -87,13 +87,27 @@ Model: Sonnet; Opus for the dataset guard.
   Add `bq_dataset: "bhaga"` to `palmetto.json`.
 - `skills/square_api/auth.py:58` — secret name from the profile's `square.oauth_secret`
   (one Square account serves both stores), default unchanged.
-- `agents/bhaga/scripts/daily_refresh.py:2769` — before any write, assert
-  `datastore.dataset() == profile["bq_dataset"]` and the Firestore collection matches; fail with
-  `store_dataset_mismatch store=<s> dataset=<d> expected=<e>`.
-- Cloud Scheduler `bhaga-nightly-houston` (21:45 CT) → same job with overrides
-  `BHAGA_STORE=houston`, `BHAGA_BQ_DATASET=bhaga_houston`, `BHAGA_FIRESTORE_COLLECTION=runs_houston`
-  and args `--store houston` (`Dockerfile:54` default stays `palmetto`).
-- `agents/bhaga/scripts/status.py` — `--store houston` reads the Houston dataset.
+- `agents/bhaga/scripts/daily_refresh.py::_assert_store_targets` — before any write, the env's
+  dataset, Firestore collection and GCS cache bucket must equal the profile's; else exit with
+  `BREADCRUMB store_target_mismatch store=<s> <key>=<got> expected=<want>`.
+- GCS scrape cache is keyed `<date>/<category>` only, so Houston gets its own bucket
+  `bhaga-scrape-cache-houston` (`gcs_cache_bucket` in the profile, `BHAGA_GCS_CACHE_BUCKET`).
+- `skills/adp_run_automation/runner.py::_ensure_company` — one ADP login, two companies sharing one
+  tenant UUID; the footer "Client ID" is the only signal, so every login/reuse switches through the
+  Company List to `adp_run.iid` and refuses to scrape the wrong company.
+- `skills/square_api/kds_reporting.py` — the Reporting API KDS cube is merchant-wide; every query
+  filters on the profile's `square.location_id` (found when the first Houston run pulled Austin's tickets).
+- Steps a store doesn't have are skipped, not failed: reviews (no `clickup.review_channel`),
+  inventory (no `clickup.closing_list_id`), Sheets projections (no `google_sheets`).
+- Pre-opening: `opening_date` in the profile; with no Square sales before it, materialize and model
+  verify skip with `model_skipped_pre_opening` / `verify_skipped_pre_opening` breadcrumbs.
+- `agents/bhaga/scripts/provision_store.py --store houston [--paused]` — dataset + schema, bucket +
+  IAM, Cloud Scheduler `bhaga-nightly-houston` at 22:30 CT (Austin's 21:30 run takes 15–25 min and
+  both share the `otps/bhaga_adp` OTP doc) → same job with `--store houston` and the three target
+  env overrides. Created paused; resume after the image with this code is deployed.
+- Prerequisite per store: ADP saved custom report "Earnings and Hours V1" (Payroll category, the
+  8 fields in RUNBOOK) — created in Houston's company 2026-11-16.
+- `agents/bhaga/scripts/status.py` — refuses (exit 2) when the store's dataset isn't the env's.
 
 **Verify (M2):**
 
@@ -167,13 +181,12 @@ receives no schema or data change from this work; append-only history tables sta
 ## Feature flag
 
 Can it silently produce wrong numbers? For Austin, no: the default store and dataset are unchanged
-and the rewrite is a no-op for `palmetto`. Houston is new, so no flag; the switcher lists Houston
-only when `CONSOLE_STORES` includes it (runtime env, default `palmetto,houston`), recorded in
-`docs/FEATURE_FLAGS.md`.
+and the rewrite is a no-op for `palmetto`. Houston is new and has no prior numbers to corrupt, so no
+flag; the Houston nightly is gated by its scheduler being paused until deploy.
 
 ## Docs lock-step
 
-`RUNBOOK.md` (Houston scheduler, dataset, collection, status), `agents/bhaga/scripts/README.md`,
+`RUNBOOK.md` (Houston scheduler, dataset, collection, bucket, status, provisioning, ADP report), `agents/bhaga/scripts/README.md`,
 `docs/operator-console/ARCHITECTURE.md` §1 + new "Stores" section, `.cursor/rules/bhaga.mdc`
 (store profile source of truth), `agents/bhaga/knowledge-base/DOMAIN.md`, `PROGRESS.md`; run
 `python3 scripts/check_doc_freshness.py --base origin/main`.

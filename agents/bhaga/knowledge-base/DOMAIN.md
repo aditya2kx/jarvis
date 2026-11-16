@@ -18,7 +18,9 @@ maps to. It exists so a future agent can understand the *meaning* of the data be
 
 ## 1. The business in one paragraph
 
-BHAGA serves a single coffee/food shop (Palmetto, Austin TX; Houston later). The shop sells through
+BHAGA serves Palmetto's shops — Austin TX (`palmetto`) and, from 2026-11-23, Houston TX (`houston`),
+each with its own store profile, BigQuery dataset, Firestore collection and GCS bucket (RUNBOOK §4
+"Houston nightly"); one Square account (one location each) and one ADP login (one company each). Each shop sells through
 **Square** (POS + KDS), pays staff through **ADP RUN** (time clock + payroll), and collects **Google
 reviews** funneled into **ClickUp**. Every night BHAGA pulls these three sources, and produces: (a) a
 **fair tip allocation** (each day's card-tip pool split by hours worked that day), (b) a **labor

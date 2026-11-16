@@ -374,6 +374,8 @@ GRAFANA_VIEWS: list[Target] = [
     # (FLOAT64 ROUND was $0.01 low on Ximena/Kayah). Same view — no new target.
     # migration 068 (Issue #267): employee_perks.pay_period ('' = recurring;
     # dated = once). Same vw_model_payroll_period — no new target.
+    # migration 098: employee_perks.end_period_start / ended_at / ended_by (console
+    # soft-end); same vw_model_payroll_period drops ended perks — no new target.
     # (067 in prod _schema_migrations is order_reco_write_then_swap.)
     # migration 069 (Issue #267): vw_labor_daily_live + vw_labor_weekly_live
     # (current wage_rates × adp_shifts; Grafana panels 32/36 + console Labor/Home).

@@ -41,6 +41,7 @@ def _capture_png(
     height: int,
     wait_ms: int,
     scroll_to: str | None,
+    store: str | None = None,
 ) -> bytes:
     """Navigate; optionally scroll to selector; return PNG bytes."""
     try:
@@ -56,7 +57,10 @@ def _capture_png(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            page = browser.new_page(viewport={"width": width, "height": height})
+            ctx = browser.new_context(viewport={"width": width, "height": height})
+            if store:
+                ctx.add_cookies([{"name": "oc_store", "value": store, "url": base_url}])
+            page = ctx.new_page()
             page.goto(url, wait_until="networkidle", timeout=60_000)
             if wait_ms > 0:
                 page.wait_for_timeout(wait_ms)
@@ -111,6 +115,8 @@ def main() -> None:
         help="CSS selector to scroll into view and screenshot (element clip). "
         "Use for Tip Exemptions: [data-testid=tip-exemptions-editor]",
     )
+    ap.add_argument("--store", default=None,
+                    help="Console store to capture (sets the oc_store cookie), e.g. houston")
     ap.add_argument(
         "--skip-upload",
         action="store_true",
@@ -135,6 +141,7 @@ def main() -> None:
             print(f"[capture]   scroll-to {args.scroll_to}", file=sys.stderr)
         png = _capture_png(
             args.base_url, path, args.width, args.height, args.wait_ms, args.scroll_to,
+            args.store,
         )
         print(f"[capture]   → {len(png)} bytes", file=sys.stderr)
 

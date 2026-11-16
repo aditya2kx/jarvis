@@ -641,6 +641,7 @@ export async function addEmployeePerk(
        AND T.perk_id = S.perk_id AND IFNULL(T.pay_period, '') = S.pay_period
      WHEN MATCHED THEN UPDATE SET amount_cents = @cents, cadence = @cadence,
        adp_earning_description = @desc,
+       -- Re-adding a stopped perk is how it is un-ended (migration 098).
        end_period_start = NULL, ended_at = NULL, ended_by = NULL,
        updated_at = CURRENT_TIMESTAMP(), updated_by = @by
      WHEN NOT MATCHED THEN INSERT

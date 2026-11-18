@@ -35,6 +35,7 @@ import {
   Table2Icon,
 } from "lucide-react";
 import { Popover } from "@base-ui/react/popover";
+import dynamic from "next/dynamic";
 import {
   Table,
   TableBody,
@@ -55,6 +56,8 @@ import {
 } from "@/components/ui/select";
 import { formatDate, formatDollars, formatCents, formatNumber, formatPct } from "@/lib/format";
 import { parsePerkReasons } from "@/lib/payroll/perkLabels";
+import type { PerkManage } from "@/components/payroll/PerkChip";
+import type { PeriodPerkRow } from "@/lib/bq/queries";
 import { classifyAdpDiff } from "@/lib/payroll/adpDiff";
 import { formatBucket, type Grain } from "@/lib/filters/range";
 import { cn } from "@/lib/utils";
@@ -69,6 +72,12 @@ import {
   pinOffsetsEqual,
 } from "@/lib/tables/pin-offsets";
 import { useIsPhone } from "@/components/shell/useIsPhone";
+
+// Loaded only where a perks column is manageable (/payroll), so the shared
+// table never pulls the payroll server actions into every page.
+const PerkChip = dynamic(() =>
+  import("@/components/payroll/PerkChip").then((m) => m.PerkChip),
+);
 
 // Threshold coloring for numeric/pct/dollars columns (Figma: red/amber/green
 // on p95, % late, Days-left, wage-diff). `warn`/`bad` are in the same unit as
@@ -105,7 +114,8 @@ export type ColumnFormat =
   // Issue #309).
   | { kind: "flag"; trueLabel: string; falseLabel?: string }
   | { kind: "source" }
-  | { kind: "perks"; reasonKey?: string }
+  // `manage` makes each chip (from the row's `perk_items`) open its stop/remove sheet.
+  | { kind: "perks"; reasonKey?: string; manage?: PerkManage }
   | { kind: "adp_diff"; paidKey: string };
 
 declare module "@tanstack/react-table" {
@@ -166,14 +176,35 @@ function thresholdClass(value: number | null | undefined, t: Thresholds): string
 function PerksCell({
   total,
   reason,
+  perks,
+  manage,
 }: {
   total: number | null | undefined;
   reason: string | null | undefined;
+  perks?: PeriodPerkRow[];
+  manage?: PerkManage;
 }) {
   const items = parsePerkReasons(reason);
   const dollars = total ?? 0;
   if (dollars === 0 && items.length === 0) {
     return <span className="text-muted-foreground">—</span>;
+  }
+  if (manage && perks?.length) {
+    return (
+      <div className="flex flex-col items-start gap-1">
+        <span>{formatDollars(dollars)}</span>
+        <div className="flex flex-wrap gap-1">
+          {perks.map((p) => (
+            <PerkChip
+              key={`${p.perk_id}|${p.pay_period}`}
+              perk={p}
+              manage={manage}
+              showAmount={perks.length > 1}
+            />
+          ))}
+        </div>
+      </div>
+    );
   }
   const showAmountOnChip = items.length > 1;
   return (
@@ -266,7 +297,14 @@ function renderFormatted(
     case "perks": {
       const reasonKey = format.reasonKey ?? "perk_reason";
       const reason = row ? (row[reasonKey] as string | null | undefined) : undefined;
-      return <PerksCell total={value as number | null | undefined} reason={reason} />;
+      return (
+        <PerksCell
+          total={value as number | null | undefined}
+          reason={reason}
+          perks={row?.perk_items as PeriodPerkRow[] | undefined}
+          manage={format.manage}
+        />
+      );
     }
     case "adp_diff": {
       const paid = row ? (row[format.paidKey] as number | null | undefined) : undefined;

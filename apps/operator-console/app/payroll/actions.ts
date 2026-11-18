@@ -7,6 +7,7 @@ import {
   addTrainingShift,
   addRecognitionBonus,
   addEmployeePerk,
+  endEmployeePerk,
   applyTipExemptions,
   type TipExemptionDraft,
 } from "@/lib/bq/writes";
@@ -91,6 +92,30 @@ export async function addEmployeePerkAction(
     );
     revalidatePath("/payroll");
     return okAck({ message: "Reimbursement added." });
+  } catch (e) {
+    return failAck(e);
+  }
+}
+
+/**
+ * Stop a perk from the selected unpaid period on (soft-end, migration 098).
+ * payPeriod is the perk's own key: '' recurring, `start..end` one-off.
+ */
+export async function endEmployeePerkAction(
+  employee: string,
+  perkId: string,
+  payPeriod: string,
+  periodStart: string,
+): Promise<ActionAck> {
+  const denied = await actionDenied("endEmployeePerkAction");
+  if (denied) return denied;
+  try {
+    if (!FEATURES.writePerks) throw new Error("Reimbursement write path is disabled");
+    if (!employee.trim() || !perkId.trim()) throw new Error("Employee and perk are required");
+    const by = await operatorEmail();
+    await endEmployeePerk(DEFAULT_STORE, employee, perkId, payPeriod, periodStart, by);
+    revalidatePath("/payroll");
+    return okAck({ message: payPeriod ? "Reimbursement removed." : "Perk stopped from this period on." });
   } catch (e) {
     return failAck(e);
   }

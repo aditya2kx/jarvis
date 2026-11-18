@@ -14,6 +14,8 @@ import {
 import { saveScheduleRulesAction } from "@/app/labor/actions";
 import { NewHireTrainingRules } from "@/components/labor/NewHireTrainingRules";
 import type { TrainingStatus } from "@/lib/labor/new-hire-training";
+import { FIRST_MONTH_FROM, type FirstMonth } from "@/lib/labor/first-month";
+import { shiftCalendarDate } from "@/lib/filters/range";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -367,7 +369,7 @@ function trainingSummary(t: TrainingRules): string {
 }
 
 function staffingSummary(s: StaffingBasics): string {
-  return `${s.ordersPerPerson} orders/person · min ${s.minPeople}${s.soloMaxOrders != null ? ` · alone only ≤${s.soloMaxOrders} orders/h for ≥${s.soloMinMin}m` : ""}${s.laborCapPct != null ? ` · cap ${Math.round(s.laborCapPct * 100)}% of sales` : ""}${s.trendWeights ? ` · trend ${s.trendWeights.join("/")}` : ""} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}${s.unpaidMealMin ? ` · ${s.unpaidMealMin}m unpaid meal over ${s.mealAfterMin / 60}h` : ""}${trainingSummary(s.training)}`;
+  return `${s.ordersPerPerson} orders/person · min ${s.minPeople}${s.soloMaxOrders != null ? ` · alone only ≤${s.soloMaxOrders} orders/h for ≥${s.soloMinMin}m` : ""}${s.laborCapPct != null ? ` · cap ${Math.round(s.laborCapPct * 100)}% of sales` : ""}${s.trendWeights ? ` · trend ${s.trendWeights.join("/")}` : ""} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.firstMonthWeekHours != null ? ` · ≤${s.firstMonthWeekHours}h/week in first month` : ""}${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}${s.unpaidMealMin ? ` · ${s.unpaidMealMin}m unpaid meal over ${s.mealAfterMin / 60}h` : ""}${trainingSummary(s.training)}`;
 }
 
 function rulesSummary(v: RulesVersion): string {
@@ -624,10 +626,13 @@ export function ScheduleInputsPanel({
   history,
   forecast = [],
   trainees = [],
+  firstMonth = [],
 }: {
   rules: ScheduleRules;
   onChange: (next: ScheduleRules) => void;
   employees: string[];
+  /** Everyone in (or not yet started) their first month from their first ADP shift. */
+  firstMonth?: FirstMonth[];
   /** Everyone inside the new-hire window and where their supervised shifts stand. */
   trainees?: TrainingStatus[];
   /** Upcoming frozen deliveries from the Inventory restock schedule (read-only here). */
@@ -994,6 +999,47 @@ export function ScheduleInputsPanel({
                   <span className="text-xs text-muted-foreground">
                     h / week · ADP scheduled + draft, unless a person&apos;s hour target below says otherwise
                   </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2" data-testid="staff-rule-first-month">
+                  <span className="flex h-7 w-48 items-center rounded-md border border-dashed border-border px-2.5 text-xs font-medium">
+                    New staff · first month
+                  </span>
+                  <label className="flex h-7 w-56 items-center gap-2 px-1 text-xs text-muted-foreground">
+                    <Switch
+                      checked={rules.staffing.firstMonthWeekHours != null}
+                      onCheckedChange={(on) => setStaffing({ firstMonthWeekHours: on ? 20 : null })}
+                      aria-label="Cap hours in someone's first month"
+                    />
+                    At most … hours / week
+                  </label>
+                  {rules.staffing.firstMonthWeekHours != null ? (
+                    <Input
+                      type="number"
+                      min={1}
+                      max={80}
+                      value={rules.staffing.firstMonthWeekHours}
+                      onChange={(e) =>
+                        setStaffing({
+                          firstMonthWeekHours: Math.min(80, Math.max(1, Math.round(Number(e.target.value) || 1))),
+                        })
+                      }
+                      className="h-7 w-16 text-xs tabular-nums"
+                      aria-label="Most hours per week in someone's first month"
+                    />
+                  ) : null}
+                  <span className="text-xs text-muted-foreground">
+                    {rules.staffing.firstMonthWeekHours != null ? "h / week · " : "Off · "}
+                    the month from their first ADP shift (not hire date), for first shifts from {dayLabel(FIRST_MONTH_FROM)}
+                    {firstMonth.length && rules.staffing.firstMonthWeekHours != null ? " — now: " : ""}
+                  </span>
+                  {rules.staffing.firstMonthWeekHours != null
+                    ? firstMonth.map((m) => (
+                        <Badge key={m.employee} variant="secondary" className="font-normal">
+                          {m.employee} ·{" "}
+                          {m.until ? `through ${dayLabel(shiftCalendarDate(m.until, "day", -1))}` : "no shift yet"}
+                        </Badge>
+                      ))
+                    : null}
                 </div>
                 <div className="flex flex-wrap items-center gap-2" data-testid="staff-rule-everyone-min">
                   <span className="flex h-7 w-48 items-center rounded-md border border-dashed border-border px-2.5 text-xs font-medium">

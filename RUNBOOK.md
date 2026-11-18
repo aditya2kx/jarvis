@@ -1851,7 +1851,7 @@ default 20; off = switch off; versions saved before it load 20) caps anyone whos
 (clocked or scheduled — not the hire date) is on or after 2026-11-01 (`FIRST_MONTH_FROM` in
 `lib/labor/first-month.ts`) at that many hours a week (ADP scheduled + draft) for every draft week that
 starts before first shift + 1 calendar month; an hour target above it comes down to it. Someone on the
-roster with no ADP shift yet is capped too. The row lists who is in their first month and through when;
+roster with no ADP shift yet starts their month at their first drafted shift. The row lists who is in their first month and through when;
 draft rows show "first month · ≤20h/week". It only limits the draft — it never edits shifts already in ADP.
 **New-hire training (Issue #450)** is part of the same versioned rules (Schedule inputs › **New-hire
 training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hire from now on) trains beside an experienced person

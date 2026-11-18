@@ -48,6 +48,24 @@ export function firstMonths(args: {
 }
 
 /**
+ * Start the month of anyone without an ADP shift at their first drafted shift in `byDay` (one
+ * drafted week), so later weeks stop capping them a month on. Mutates `months`.
+ */
+export function startDraftedMonths(
+  months: Map<string, FirstMonth>,
+  byDay: ReadonlyMap<string, readonly { employee: string | null }[]>,
+): void {
+  for (const iso of [...byDay.keys()].sort()) {
+    for (const s of byDay.get(iso)!) {
+      const m = s.employee ? months.get(s.employee) : undefined;
+      if (m && m.firstShift == null) {
+        months.set(m.employee, { ...m, firstShift: iso, until: shiftCalendarDate(iso, "month", 1) });
+      }
+    }
+  }
+}
+
+/**
  * The week starting `weekStart` (Monday) with first-month people capped at `weekHours` — any week
  * that starts before their first month ends. An hour target above the cap comes down to it.
  */

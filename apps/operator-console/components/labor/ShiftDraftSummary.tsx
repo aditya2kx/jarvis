@@ -320,7 +320,7 @@ export function ShiftDraftSummary({
                         )}
                         {a?.firstMonthCap != null && (a.targetWeekHours ?? a.firstMonthCap) >= a.firstMonthCap ? (
                           <span className="text-xs text-muted-foreground">
-                            first month · ≤{a.firstMonthCap}h/week
+                            first month · ≤{a.maxWeekHours}h/week
                             {a.firstMonthUntil ? ` through ${weekLabel(shiftCalendarDate(a.firstMonthUntil, "day", -1))}` : ""}
                           </span>
                         ) : a?.targetWeekHours != null ? (

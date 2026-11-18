@@ -76,7 +76,7 @@ import {
   trainsKind,
   type TrainingLeft,
 } from "@/lib/labor/new-hire-training";
-import { capFirstMonth, firstMonths } from "@/lib/labor/first-month";
+import { capFirstMonth, firstMonths, startDraftedMonths } from "@/lib/labor/first-month";
 import { StaffTagsContext, TRAINING_TEXT_CLASS, useStaffTag } from "@/components/labor/StaffTag";
 import { savedPlan, type PushRow } from "@/lib/labor/schedule-push";
 import { planShift } from "@/lib/labor/saved-plan-shift";
@@ -1489,6 +1489,8 @@ export function LaborCoveragePanel({
           .map((iso) => shiftCalendarDate(iso, "day", -isoWeekdayMon0(iso))),
       ),
     ].sort();
+    // Someone with no ADP shift yet starts their first month at their first drafted shift.
+    const months = new Map(firstMonth);
     const periodShifts = new Map<string, Map<string, number>>();
     const shiftsInPeriod = (iso: string) => {
       const start = payPeriodStartFor(iso);
@@ -1507,7 +1509,7 @@ export function LaborCoveragePanel({
     const draftWeek = (weekStart: string) => {
       const weekPicks = plans.has(weekStart) ? openShiftPicks(picks[weekStart]) : (picks[weekStart] ?? {});
       const pins = new Map(Object.entries(weekPicks));
-      const roster = capFirstMonth(fullRoster, weekStart, firstMonth, r.staffing.firstMonthWeekHours);
+      const roster = capFirstMonth(fullRoster, weekStart, months, r.staffing.firstMonthWeekHours);
       const days = Array.from({ length: 7 }, (_, i) => shiftCalendarDate(weekStart, "day", i));
       const peopleByDay = new Map(days.map((iso) => [iso, lanesFor(iso)]));
       // Cleared in an earlier week: no longer a new hire. A saved week's draft is discarded, so it counts nothing.
@@ -1779,6 +1781,7 @@ export function LaborCoveragePanel({
           : d.shifts;
         if (shifts.length) byDay.set(d.iso, [...shifts].sort((a, b) => a.startMin - b.startMin));
       }
+      startDraftedMonths(months, byDay);
       const all = newShifts([...byDay.values()].flat());
       const applied = new Set(
         [...byDay.values()].flat().flatMap((s) => (s.picked && s.slot ? [s.slot] : [])),

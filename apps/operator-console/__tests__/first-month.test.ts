@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CoveragePersonDay } from "@/lib/labor/coverage-model";
-import { capFirstMonth, firstMonths, FIRST_MONTH_FROM } from "@/lib/labor/first-month";
+import { shiftCalendarDate } from "@/lib/filters/range";
+import { capFirstMonth, firstMonths, FIRST_MONTH_FROM, startDraftedMonths, type FirstMonth } from "@/lib/labor/first-month";
 import { parseScheduleRules, DEFAULT_STAFFING } from "@/lib/labor/schedule-inputs";
 import { draftDay, weekCap, type Availability } from "@/lib/labor/shift-draft";
 
@@ -76,6 +77,50 @@ describe("capFirstMonth", () => {
     expect(run(roster)[0]!.employee).toBe("New, Nov");
     const capped = run(capFirstMonth(roster, "2026-11-23", months, 20));
     expect(capped.every((s) => s.employee !== "New, Nov" || s.hours <= 5)).toBe(true);
+  });
+});
+
+describe("multi-week draft", () => {
+  const mins: number[] = [];
+  for (let t = 6 * 60; t < 21 * 60; t += 15) mins.push(t);
+  const need = mins.map((t) => (t >= 390 && t < 840 ? 1 : 0)); // one 7.5 h opener a day
+  const roster: Availability[] = [{ employee: "New, Nov", maxWeekHours: 40, windows: all([360, 1260]) }];
+  const draftWeeks = (months: Map<string, FirstMonth>) =>
+    ["2026-11-23", "2026-11-30", "2026-12-07"].map((weekStart) => {
+      const r = capFirstMonth(roster, weekStart, months, 20);
+      const weekHours = new Map<string, number>();
+      const byDay = new Map<string, { employee: string | null; hours: number }[]>();
+      for (let i = 0; i < 7; i++) {
+        const iso = shiftCalendarDate(weekStart, "day", i);
+        const out = draftDay({ iso, mins, onFloor: mins.map(() => 0), need, roster: r, weekHours, busy: new Set() });
+        byDay.set(iso, out);
+      }
+      startDraftedMonths(months, byDay);
+      return weekHours.get("New, Nov") ?? 0;
+    });
+
+  it("keeps every week that starts inside the month at or under 20 h and lifts the cap after", () => {
+    const months = firstMonths({
+      todayIso: "2026-11-22",
+      employees: ["New, Nov"],
+      days: new Map([["2026-11-03", [lane("New, Nov")]]]), // month runs to Dec 2
+    });
+    const [w1, w2, w3] = draftWeeks(months);
+    expect(w1).toBeLessThanOrEqual(20);
+    expect(w2).toBeLessThanOrEqual(20);
+    expect(w3).toBeGreaterThan(20);
+  });
+
+  it("starts the month of someone with no ADP shift at their first drafted shift", () => {
+    const months = firstMonths({
+      todayIso: "2026-11-22",
+      employees: ["New, Nov"],
+      days: new Map([["2026-11-03", [lane("Someone, Else")]]]),
+    });
+    expect(months.get("New, Nov")!.firstShift).toBeNull();
+    const [w1, w2, w3] = draftWeeks(months);
+    expect(months.get("New, Nov")).toEqual({ employee: "New, Nov", firstShift: "2026-11-23", until: "2026-12-23" });
+    expect([w1, w2, w3].every((h) => h > 0 && h <= 20)).toBe(true);
   });
 });
 

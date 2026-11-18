@@ -206,10 +206,15 @@ def _record_agent(pr: int, agent_id: str, model: str, prs: list[int], title: str
         tokens, cost = ZERO_USAGE_BENCHMARK_TOKENS, ZERO_USAGE_BENCHMARK_COST
     meta = {p: _gh_pr(p) if len(prs) > 1 else {} for p in prs}
     shares = split_shares({p: int(m.get("additions") or 0) + int(m.get("deletions") or 0) for p, m in meta.items()})
-    # ts = agent creation time: usage is cumulative, so each push replaces the same row.
-    ts = agent.get("createdAt") or agent_id
+    # ts = agent creation time + PR: usage is cumulative so re-pushes replace the
+    # same row on this PR. Scope by PR so a continued agent (same createdAt) that
+    # already sits on a *merged* PR does not share session_uid with this open PR —
+    # otherwise dedup-sessions --pr strips the only build row and the cost gate fails
+    # (PR #492 vs merged #463, approximate $10.22 benchmark made the collision easy).
+    ts_base = agent.get("createdAt") or agent_id
     parts = []
     for p in prs:
+        ts = f"{ts_base}#pr{p}"
         if p == pr:
             L.set_meta(p, title=title, branch=branch)
         else:

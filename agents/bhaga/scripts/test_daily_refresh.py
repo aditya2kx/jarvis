@@ -2079,6 +2079,15 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         import agents.bhaga.scripts.daily_refresh as dr
 
         argv = ["daily_refresh", "--store", "palmetto", "--date", "2026-08-23", "--no-slack"]
+        # Mid-period today (== refresh_date): sync_timecard_load_end keeps load_end
+        # at yesterday so through_date stays unset. Profile is required for the
+        # period-boundary check even when the answer is "do not extend".
+        profile = {
+            "adp_run": {
+                "pay_periods_anchor_end_date": "2026-05-17",
+                "pay_frequency": "Biweekly",
+            },
+        }
         with tempfile.TemporaryDirectory() as td:
             fake_dl = pathlib.Path(td)
             result = {k: (fake_dl / v if isinstance(v, str) else v)
@@ -2099,9 +2108,8 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
                  mock.patch("agents.bhaga.scripts.daily_refresh.subprocess.run") as run, \
                  mock.patch.object(dr, "_stamp_adp_hours_scraped_at") as stamp, \
                  mock.patch.object(dr, "_refresh_stale_payroll_drafts") as refresh, \
-                 mock.patch.object(
-                     dr, "_load_profile", side_effect=AssertionError("must not load profile"),
-                 ):
+                 mock.patch.object(dr, "_today_ct", return_value=datetime.date(2026, 8, 23)), \
+                 mock.patch.object(dr, "_load_profile", return_value=profile):
                 rc = dr.main()
             self.refresh = refresh
         return rc, dl, run, stamp
@@ -2114,6 +2122,8 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         dl.assert_called_once()
         kw = dl.call_args.kwargs
         self.assertEqual(kw.get("target_date"), datetime.date(2026, 8, 23))
+        # Mid-period: sync_timecard_load_end keeps load_end=refresh_date → no through_date.
+        self.assertIsNone(kw.get("through_date"))
         self.assertIs(kw.get("include_earnings"), False)
         self.assertIs(kw.get("include_schedule"), True)
         self.assertIs(kw.get("include_extras"), False)
@@ -2172,6 +2182,56 @@ class TestTimecardOnlyEarlyExit(unittest.TestCase):
         self.assertIn("adp_rates", skip)
         self.assertNotIn("adp_liability", skip)
 
+    def test_open_period_missing_clamps_load_end(self):
+        """ADP lag: Sync wanted through today but export only covers the closed biweek."""
+        import pathlib
+        import tempfile
+        import agents.bhaga.scripts.daily_refresh as dr
+
+        argv = ["daily_refresh", "--store", "palmetto", "--date", "2026-11-01", "--no-slack"]
+        profile = {
+            "adp_run": {
+                "pay_periods_anchor_end_date": "2026-05-17",
+                "pay_frequency": "Biweekly",
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            fake_dl = pathlib.Path(td)
+            result = {
+                "timecard_xlsx": fake_dl / "Timecard.xlsx",
+                "schedule_json": fake_dl / "Schedule.json",
+                "timecard_pay_periods": [
+                    (datetime.date(2026, 10, 19), datetime.date(2026, 11, 1)),
+                ],
+                "errors": {},
+            }
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.dict(
+                     os.environ,
+                     {"BHAGA_ADP_SYNC_ALL": "1", "BHAGA_STORE": "palmetto"},
+                     clear=False,
+                 ), \
+                 mock.patch(
+                     "skills.adp_run_automation.runner.DOWNLOADS_DIR", fake_dl,
+                 ), \
+                 mock.patch(
+                     "skills.adp_run_automation.runner.download_adp_bundle",
+                     return_value=result,
+                 ) as dl, \
+                 mock.patch("agents.bhaga.scripts.daily_refresh.subprocess.run") as run, \
+                 mock.patch.object(dr, "_stamp_adp_hours_scraped_at") as stamp, \
+                 mock.patch.object(dr, "_refresh_stale_payroll_drafts"), \
+                 mock.patch.object(dr, "_today_ct", return_value=datetime.date(2026, 11, 2)), \
+                 mock.patch.object(dr, "_load_profile", return_value=profile):
+                rc = dr.main()
+        self.assertEqual(rc, 0)
+        # Period boundary → Sync asked for through_date=today.
+        self.assertEqual(dl.call_args.kwargs.get("through_date"), datetime.date(2026, 11, 2))
+        skip = run.call_args.args[0]
+        # Clamp to closed period end — do not claim Nov 2 landed.
+        self.assertEqual(skip[skip.index("--end") + 1], "2026-11-01")
+        stamp.assert_called_once_with(datetime.date(2026, 10, 19), datetime.date(2026, 11, 1))
+
 
 class TestPunchFixResync(unittest.TestCase):
     """Issue #358: after a console punch fix the resync reloads the latest fix's
@@ -2216,7 +2276,8 @@ class TestPunchFixResync(unittest.TestCase):
         cmd = run.call_args.args[0]
         self.assertEqual(cmd[cmd.index("--refresh-date") + 1], "2026-10-04")
         self.assertEqual(cmd[cmd.index("--end") + 1], "2026-10-06")
-        stamp.assert_called_once_with(datetime.date(2026, 9, 21), datetime.date(2026, 10, 4))
+        # Stamp matches load_end (max of argv date and fix date), not just the fix day.
+        stamp.assert_called_once_with(datetime.date(2026, 9, 21), datetime.date(2026, 10, 6))
 
     def test_unverified_write_forces_a_fresh_export(self):
         _rc, dl, _run, _stamp, kept = self._run(

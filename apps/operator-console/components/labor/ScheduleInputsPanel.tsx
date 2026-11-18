@@ -1028,18 +1028,19 @@ export function ScheduleInputsPanel({
                     />
                   ) : null}
                   <span className="text-xs text-muted-foreground">
-                    {rules.staffing.firstMonthWeekHours != null ? "h / week · " : "Off · "}
-                    the month from their first ADP shift (not hire date), for first shifts from {dayLabel(FIRST_MONTH_FROM)}
-                    {firstMonth.length && rules.staffing.firstMonthWeekHours != null ? " — now: " : ""}
+                    {rules.staffing.firstMonthWeekHours != null ? "h / week · " : ""}for a month from their first ADP shift
+                    (not hire date) · first shifts from {dayLabel(FIRST_MONTH_FROM)}
                   </span>
-                  {rules.staffing.firstMonthWeekHours != null
-                    ? firstMonth.map((m) => (
+                  {rules.staffing.firstMonthWeekHours != null && firstMonth.length ? (
+                    <div className="flex w-full flex-wrap items-center gap-1.5 sm:pl-[27rem]" data-testid="first-month-people">
+                      {firstMonth.map((m) => (
                         <Badge key={m.employee} variant="secondary" className="font-normal">
                           {m.employee} ·{" "}
-                          {m.until ? `through ${dayLabel(shiftCalendarDate(m.until, "day", -1))}` : "no shift yet"}
+                          {m.until ? `through ${dayLabel(shiftCalendarDate(m.until, "day", -1))}` : "from first shift"}
                         </Badge>
-                      ))
-                    : null}
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex flex-wrap items-center gap-2" data-testid="staff-rule-everyone-min">
                   <span className="flex h-7 w-48 items-center rounded-md border border-dashed border-border px-2.5 text-xs font-medium">

@@ -76,6 +76,7 @@ import {
   trainsKind,
   type TrainingLeft,
 } from "@/lib/labor/new-hire-training";
+import { capFirstMonth, firstMonths, startDraftedMonths } from "@/lib/labor/first-month";
 import { StaffTagsContext, TRAINING_TEXT_CLASS, useStaffTag } from "@/components/labor/StaffTag";
 import { savedPlan, type PushRow } from "@/lib/labor/schedule-push";
 import { planShift } from "@/lib/labor/saved-plan-shift";
@@ -1328,6 +1329,10 @@ export function LaborCoveragePanel({
   const training = rules.staffing.training;
   const progress = useMemo(() => progressFor(training), [progressFor, training]);
   const tags = useMemo(() => staffTags(training, progress), [training, progress]);
+  const firstMonth = useMemo(
+    () => firstMonths({ todayIso, employees: baseRoster.map((a) => a.employee), days: trainingDays }),
+    [todayIso, baseRoster, trainingDays],
+  );
 
   const { chips, shortHours } = useMemo(() => {
     const short = new Map<string, number>();
@@ -1461,7 +1466,7 @@ export function LaborCoveragePanel({
     };
     const limits = staffLimits(r.staffRules);
     const experienced = new Set(r.staffing.training.experienced);
-    const roster = baseRoster.map((a) => ({
+    const fullRoster = baseRoster.map((a) => ({
       ...a,
       maxWeekHours: r.staffing.maxWeekHours,
       minWeekShifts: r.staffing.minWeekShifts,
@@ -1484,6 +1489,8 @@ export function LaborCoveragePanel({
           .map((iso) => shiftCalendarDate(iso, "day", -isoWeekdayMon0(iso))),
       ),
     ].sort();
+    // Someone with no ADP shift yet starts their first month at their first drafted shift.
+    const months = new Map(firstMonth);
     const periodShifts = new Map<string, Map<string, number>>();
     const shiftsInPeriod = (iso: string) => {
       const start = payPeriodStartFor(iso);
@@ -1502,6 +1509,7 @@ export function LaborCoveragePanel({
     const draftWeek = (weekStart: string) => {
       const weekPicks = plans.has(weekStart) ? openShiftPicks(picks[weekStart]) : (picks[weekStart] ?? {});
       const pins = new Map(Object.entries(weekPicks));
+      const roster = capFirstMonth(fullRoster, weekStart, months, r.staffing.firstMonthWeekHours);
       const days = Array.from({ length: 7 }, (_, i) => shiftCalendarDate(weekStart, "day", i));
       const peopleByDay = new Map(days.map((iso) => [iso, lanesFor(iso)]));
       // Cleared in an earlier week: no longer a new hire. A saved week's draft is discarded, so it counts nothing.
@@ -1773,6 +1781,7 @@ export function LaborCoveragePanel({
           : d.shifts;
         if (shifts.length) byDay.set(d.iso, [...shifts].sort((a, b) => a.startMin - b.startMin));
       }
+      startDraftedMonths(months, byDay);
       const all = newShifts([...byDay.values()].flat());
       const applied = new Set(
         [...byDay.values()].flat().flatMap((s) => (s.picked && s.slot ? [s.slot] : [])),
@@ -1789,6 +1798,7 @@ export function LaborCoveragePanel({
         breakdown: plan ? undefined : breakdown,
         locked: plan != null,
         cap,
+        roster,
       };
     };
     const weeks = new Map(weekStarts.map((w) => [w, draftWeek(w)]));
@@ -1810,6 +1820,7 @@ export function LaborCoveragePanel({
     picks,
     active,
     progressFor,
+    firstMonth,
   ]);
   const drafts = useMemo(() => buildDrafts(rules), [buildDrafts, rules]);
   const savedDrafts = useMemo(
@@ -2134,6 +2145,7 @@ export function LaborCoveragePanel({
               history={rulesHistory}
               employees={baseRoster.map((a) => a.employee).sort()}
               trainees={[...progress.values()]}
+              firstMonth={[...firstMonth.values()]}
               deliveryDates={deliveryDates ?? []}
               cap={forecast.cap}
               trend={{ factor: forecast.factor, sales: forecast.week.sales, costPerHour: forecast.week.costPerHour }}
@@ -2239,7 +2251,7 @@ export function LaborCoveragePanel({
             <ShiftDraftSummary
               dayLabel={`${label.weekday} ${label.monthDay}`}
               shifts={draftShifts}
-              roster={roster}
+              roster={weekDraft.roster}
               weekStart={weekDraft.weekStart}
               existingHours={weekDraft.existingHours}
               draftHours={weekDraft.draftHours}

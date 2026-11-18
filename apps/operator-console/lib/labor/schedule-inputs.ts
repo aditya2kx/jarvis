@@ -99,6 +99,8 @@ export type StaffingBasics = {
   handoverOverlapMin: number;
   /** Most hours anyone is drafted to in a week (scheduled + draft); a person's target rule overrides it. */
   maxWeekHours: number;
+  /** Most hours a week during someone's first month from their first ADP shift (Issue #539); null = off. */
+  firstMonthWeekHours: number | null;
   /** Everyone available gets at least this many shifts a week before regulars take more (0 = off). */
   minWeekShifts: number;
   /** ADP meal policy: shifts longer than `mealAfterMin` lose `unpaidMealMin` of paid time. */
@@ -177,6 +179,7 @@ export const DEFAULT_STAFFING: StaffingBasics = {
   shiftTimes: "history",
   handoverOverlapMin: 0,
   maxWeekHours: 40,
+  firstMonthWeekHours: 20,
   minWeekShifts: 0,
   unpaidMealMin: 30,
   mealAfterMin: 6 * 60,
@@ -472,6 +475,11 @@ function parseStaffing(raw: unknown): StaffingBasics {
   }
   const maxWeekHours = s.maxWeekHours ?? DEFAULT_STAFFING.maxWeekHours;
   if (!(maxWeekHours >= 1 && maxWeekHours <= 80)) throw new Error("Most hours per person must be 1–80");
+  // Issue #539: older versions get the 20h default (the rule applies from its start, not from a save).
+  const firstMonthWeekHours = s.firstMonthWeekHours === undefined ? DEFAULT_STAFFING.firstMonthWeekHours : s.firstMonthWeekHours;
+  if (firstMonthWeekHours != null && !(firstMonthWeekHours >= 1 && firstMonthWeekHours <= 80)) {
+    throw new Error("First-month hours must be 1–80 a week");
+  }
   const minWeekShifts = s.minWeekShifts ?? DEFAULT_STAFFING.minWeekShifts;
   if (!Number.isInteger(minWeekShifts) || minWeekShifts < 0 || minWeekShifts > 7) {
     throw new Error("Fewest shifts per person must be a whole number 0–7");
@@ -522,6 +530,7 @@ function parseStaffing(raw: unknown): StaffingBasics {
     shiftTimes,
     handoverOverlapMin,
     maxWeekHours,
+    firstMonthWeekHours,
     minWeekShifts,
     unpaidMealMin,
     mealAfterMin,

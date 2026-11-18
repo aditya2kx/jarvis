@@ -13,6 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
+import { shiftCalendarDate } from "@/lib/filters/range";
 import { formatClockMin } from "@/lib/labor/coverage-model";
 import { capLabel, type WeekCap } from "@/lib/labor/demand-trend";
 import type { HoursBreakdown } from "@/lib/labor/draft-breakdown";
@@ -317,7 +318,12 @@ export function ShiftDraftSummary({
                             <StaffTagBadge employee={s.employee!} />
                           </>
                         )}
-                        {a?.targetWeekHours != null ? (
+                        {a?.firstMonthCap != null && (a.targetWeekHours ?? a.firstMonthCap) >= a.firstMonthCap ? (
+                          <span className="text-xs text-muted-foreground">
+                            first month · ≤{a.maxWeekHours}h/week
+                            {a.firstMonthUntil ? ` through ${weekLabel(shiftCalendarDate(a.firstMonthUntil, "day", -1))}` : ""}
+                          </span>
+                        ) : a?.targetWeekHours != null ? (
                           <span className="text-xs text-muted-foreground">
                             target {a.targetWeekHours}h/week
                           </span>

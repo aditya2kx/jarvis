@@ -1846,6 +1846,13 @@ their own times and hours so far this week — plus **Leave open**. A pick re-dr
 (caps, unavailability and last days still apply; a pick that stops fitting after a rule edit is skipped and
 flagged). Picks live in that browser's local storage per week until the week is saved to ADP, so they don't
 follow you to another device.
+**First-month hours cap (Issue #539):** Staff rules › **New staff · first month** (`staffing.firstMonthWeekHours`,
+default 20; off = switch off; versions saved before it load 20) caps anyone whose first ADP shift
+(clocked or scheduled — not the hire date) is on or after 2026-11-01 (`FIRST_MONTH_FROM` in
+`lib/labor/first-month.ts`) at that many hours a week (ADP scheduled + draft) for every draft week that
+starts before first shift + 1 calendar month; an hour target above it comes down to it. Someone on the
+roster with no ADP shift yet starts their month at their first drafted shift. The row lists who is in their first month and through when;
+draft rows show "first month · ≤20h/week". It only limits the draft — it never edits shifts already in ADP.
 **New-hire training (Issue #450)** is part of the same versioned rules (Schedule inputs › **New-hire
 training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hire from now on) trains beside an experienced person
 (the operator picks the list in the console, or an agent saves it with `/prod-ops experienced-staff <FirstName> …` — a new rules version, first names resolved against Active ADP Directory staff; empty = gate off) for at least the set overlap (default 3 h) until they've

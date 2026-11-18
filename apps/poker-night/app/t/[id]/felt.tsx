@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { fmt, type VoicePresence } from "@/lib/client";
 import { BOARD_CARDS, pots, potTotal, type Hand, type Move, type Player, type Room, type Street } from "@/lib/game";
 import PlayingCard from "@/components/playing-card";
@@ -101,8 +101,19 @@ export default function Felt({ room, you, now, voice }: Props) {
   }, [room.players, you]);
 
   const n = seats.length;
+  const feltRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const felt = feltRef.current;
+    if (!felt) return;
+    const fit = () => fitBoard(felt);
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(felt);
+    return () => ro.disconnect();
+  }, [n, h?.number, h?.street, !!result]);
+
   return (
-    <section className={`felt2 ${n > 6 ? "crowded" : ""}`}>
+    <section ref={feltRef} className={`felt2 ${n > 6 ? "crowded" : ""}`}>
       <div className="rail">
         <div className="cloth">
           <div className="cloth-logo" aria-hidden>
@@ -118,6 +129,35 @@ export default function Felt({ room, you, now, voice }: Props) {
       {fresh && <Confetti seed={result!.at} />}
     </section>
   );
+}
+
+/** On narrow or short felts the seats around the oval reach the board row. Shrink the board (never below
+ *  60%) and slide it up or down until nothing covers a card, preferring the biggest, least-moved fit. */
+function fitBoard(felt: HTMLElement) {
+  const board = felt.querySelector<HTMLElement>(".board2");
+  if (!board) return;
+  board.style.setProperty("--board-k", "1");
+  board.style.setProperty("--board-dy", "0px");
+  const b = board.getBoundingClientRect();
+  const cx = (b.left + b.right) / 2;
+  const cy = (b.top + b.bottom) / 2;
+  const blockers = [...felt.querySelectorAll(".seat2 :is(.plate, .avatar-wrap, .seat-cards .pc), .center > .pot2, .center > .street-pill")].map((e) => e.getBoundingClientRect());
+  const overlap = (k: number, dy: number) => {
+    const hw = (b.width * k) / 2;
+    const hh = (b.height * k) / 2;
+    return blockers.reduce((a, r) => a + Math.max(0, Math.min(r.right, cx + hw) - Math.max(r.left, cx - hw)) * Math.max(0, Math.min(r.bottom, cy + dy + hh) - Math.max(r.top, cy + dy - hh)), 0);
+  };
+  let best = { k: 1, dy: 0, o: overlap(1, 0) };
+  for (let k = 1; best.o > 0 && k >= 0.6; k -= 0.05) {
+    for (let step = 0; best.o > 0 && step <= 8; step++) {
+      for (const dy of step ? [step, -step] : [0]) {
+        const o = overlap(k, (dy * b.height) / 12);
+        if (o < best.o) best = { k, dy: (dy * b.height) / 12, o };
+      }
+    }
+  }
+  board.style.setProperty("--board-k", best.k.toFixed(2));
+  board.style.setProperty("--board-dy", `${best.dy.toFixed(1)}px`);
 }
 
 function Center({ room, physical, fresh }: { room: Room; physical: boolean; fresh: boolean }) {

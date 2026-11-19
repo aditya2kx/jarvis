@@ -1,5 +1,5 @@
 import "server-only";
-import { BigQuery, type QueryParamTypeStruct, BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp } from "@google-cloud/bigquery";
+import { BigQuery, type Query, BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp } from "@google-cloud/bigquery";
 import { bq, DATASET, PROJECT } from "./bigquery";
 import { noteWrite, readThrough } from "./cache";
 import { assertPreviewWrite, writeTargets } from "@/lib/plaid/tables";
@@ -93,7 +93,7 @@ export function timestampParam(value: Date) {
 export async function mutate(
   sql: string,
   params?: Record<string, unknown>,
-  types?: QueryParamTypeStruct,
+  types?: Query["types"],
 ): Promise<void> {
   assertPreviewWrite(sql);
   await bq().query({ query: sql, params, types, location: "US" });

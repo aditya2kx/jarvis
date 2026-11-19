@@ -732,6 +732,10 @@ export function DataTable<TData>({
     onColumnPinningChange: () => {},
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
+    // No TanStack pagination here (rowLimit does "show more"). Left on, a data change
+    // queues resetPageIndex → internal setState, which looped when Accounting patched a
+    // row in place (category override / rule commit) — React #185, page crash.
+    autoResetPageIndex: false,
     enableColumnFilters,
     defaultColumn: {
       filterFn: filterIncludesString,

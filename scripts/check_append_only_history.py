@@ -24,6 +24,7 @@ APPEND_ONLY = (
     "inventory_edit_log",
     "adp_unavailability_events",
     "adp_shift_events",
+    "plaid_category_rule_events",
 )
 _ROOTS = ("core", "cloud", "agents", "skills", "scripts", "apps/operator-console")
 _SUFFIXES = {".sql", ".py", ".ts", ".tsx"}

@@ -28,6 +28,8 @@ import {
 import { dateSortKey, formatDateTime, formatDollars } from "@/lib/format";
 import { excludedFromAccountingRollup } from "@/lib/plaid/exclude-accounting";
 import { resolveFromTo } from "@/lib/plaid/account-parties";
+import { latestCategorizeJob } from "@/lib/plaid/categorize-jobs";
+import type { CategorizeJob } from "@/lib/plaid/categorize-job-status";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +68,7 @@ export default async function AccountingPage({
   let linked = false;
   let institution: string | null = null;
   let lastSynced: string | null = null;
+  let latestJob: CategorizeJob | null = null;
   let error: string | undefined;
 
   try {
@@ -78,13 +81,16 @@ export default async function AccountingPage({
         );
       });
     }
-    const [items, transactions, nodes, ruleRows, labor] = await Promise.all([
+    const [items, transactions, nodes, ruleRows, labor, job] = await Promise.all([
       plaidItems(DEFAULT_STORE),
       plaidTransactions(win),
       plaidTaxonomyNodes().catch(() => []),
       plaidCategoryRules().catch(() => []),
       laborByGrain(win, grain).catch(() => []),
+      // Migration 098 may not be applied yet on a fresh deploy.
+      latestCategorizeJob().catch(() => null),
     ]);
+    latestJob = job;
     txns = transactions;
     taxonomy = nodes;
     rules = ruleRows;
@@ -196,13 +202,21 @@ export default async function AccountingPage({
 
   const ruleList = rules.map((r) => ({
     id: r.id,
-    priority: r.priority,
+    priority: Number(r.priority),
     match_operator: r.match_operator,
     match_pattern: r.match_pattern,
     amount_sign: r.amount_sign,
+    account_mask: r.account_mask,
     from_mask: r.from_mask,
     to_mask: r.to_mask,
     enabled: r.enabled,
+    category_id: r.category_id,
+    subcategory_id: r.subcategory_id,
+    category_label: r.category_label,
+    subcategory_label: r.subcategory_label,
+    applied_count: Number(r.applied_count ?? 0),
+    notes: r.notes,
+    updated_at: r.updated_at,
   }));
 
   return (
@@ -299,6 +313,7 @@ export default async function AccountingPage({
           rules={ruleList}
           squareNetSalesTotal={squareTotal}
           squareNetSalesByIso={squareByIso}
+          latestJob={latestJob}
         />
       ) : null}
     </div>

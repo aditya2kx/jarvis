@@ -1,4 +1,5 @@
 import "server-only";
+import { plaidFq } from "@/lib/plaid/tables";
 import { dateParam, fq, intParam, q } from "./client";
 import { bucketSql, hourBucketSql, WEEKDAY_ANCHOR_MON, type DateWindow, type Grain } from "@/lib/filters/range";
 import {
@@ -3005,7 +3006,7 @@ export function plaidTxnHintsForItem(itemId: string): Promise<
        transaction_id, account_id, name, merchant_name, amount,
        CAST(date AS STRING) AS date, pfc_primary, pfc_detailed,
        IFNULL(is_internal, FALSE) AS is_internal
-     FROM ${fq("plaid_transactions")}
+     FROM ${plaidFq("plaid_transactions")}
      WHERE item_id=@item_id`,
     { item_id: itemId },
   );
@@ -3069,13 +3070,13 @@ export function plaidTransactions(win: DateWindow): Promise<PlaidTransactionRow[
        r.match_pattern AS rule_pattern,
        r.match_operator AS rule_operator,
        r.priority AS rule_priority
-     FROM ${fq("plaid_transactions")} t
+     FROM ${plaidFq("plaid_transactions")} t
      LEFT JOIN ${fq("plaid_accounts")} a ON a.account_id = t.account_id
-     LEFT JOIN ${fq("plaid_taxonomy_nodes")} c ON c.id = t.category_id
-     LEFT JOIN ${fq("plaid_taxonomy_nodes")} s ON s.id = t.subcategory_id
-     LEFT JOIN ${fq("plaid_taxonomy_nodes")} oc ON oc.id = t.override_category_id
-     LEFT JOIN ${fq("plaid_taxonomy_nodes")} os ON os.id = t.override_subcategory_id
-     LEFT JOIN ${fq("plaid_category_rules")} r ON r.id = t.rule_id
+     LEFT JOIN ${plaidFq("plaid_taxonomy_nodes")} c ON c.id = t.category_id
+     LEFT JOIN ${plaidFq("plaid_taxonomy_nodes")} s ON s.id = t.subcategory_id
+     LEFT JOIN ${plaidFq("plaid_taxonomy_nodes")} oc ON oc.id = t.override_category_id
+     LEFT JOIN ${plaidFq("plaid_taxonomy_nodes")} os ON os.id = t.override_subcategory_id
+     LEFT JOIN ${plaidFq("plaid_category_rules")} r ON r.id = t.rule_id
      WHERE t.date BETWEEN @start AND @end
      QUALIFY ROW_NUMBER() OVER (
        PARTITION BY t.transaction_id
@@ -3137,7 +3138,7 @@ export function plaidTaxonomyNodes(): Promise<TaxonomyNodeRow[]> {
   return q<TaxonomyNodeRow>(
     `SELECT id, parent_id, slug, label, definition, enabled, sort_order,
             exclude_from_accounting
-     FROM ${fq("plaid_taxonomy_nodes")}
+     FROM ${plaidFq("plaid_taxonomy_nodes")}
      WHERE IFNULL(enabled, TRUE) IS TRUE
      ORDER BY sort_order, label`,
   );
@@ -3158,15 +3159,31 @@ export interface CategoryRuleRow {
   confidence: string | null;
   enabled: boolean | null;
   notes: string | null;
+  updated_at: string | null;
+  category_label: string | null;
+  subcategory_label: string | null;
+  /** Transactions currently attributed to this rule. */
+  applied_count: number;
 }
 
 export function plaidCategoryRules(): Promise<CategoryRuleRow[]> {
   return q<CategoryRuleRow>(
-    `SELECT id, priority, match_field, match_operator, match_pattern,
-            amount_sign, account_mask, from_mask, to_mask,
-            category_id, subcategory_id, confidence, enabled, notes
-     FROM ${fq("plaid_category_rules")}
-     ORDER BY priority, id`,
+    `WITH applied AS (
+       SELECT rule_id, COUNT(*) AS n FROM ${plaidFq("plaid_transactions")}
+       WHERE rule_id IS NOT NULL AND override_category_id IS NULL
+       GROUP BY rule_id
+     )
+     SELECT r.id, r.priority, r.match_field, r.match_operator, r.match_pattern,
+            r.amount_sign, r.account_mask, r.from_mask, r.to_mask,
+            r.category_id, r.subcategory_id, r.confidence, r.enabled, r.notes,
+            CAST(r.updated_at AS STRING) AS updated_at,
+            c.label AS category_label, s.label AS subcategory_label,
+            IFNULL(applied.n, 0) AS applied_count
+     FROM ${plaidFq("plaid_category_rules")} r
+     LEFT JOIN ${plaidFq("plaid_taxonomy_nodes")} c ON c.id = r.category_id
+     LEFT JOIN ${plaidFq("plaid_taxonomy_nodes")} s ON s.id = r.subcategory_id
+     LEFT JOIN applied ON applied.rule_id = r.id
+     ORDER BY r.priority, r.id`,
   );
 }
 

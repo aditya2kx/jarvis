@@ -17,8 +17,9 @@ name: Operator Console preview
 #
 # Every preview runs CONSOLE_PREVIEW=1: all non-GET requests are refused in
 # middleware.ts and no secrets are mounted, so it can read prod data but not change it.
-# The one exception is POST /api/access, which writes only this preview's own
-# console_access_grants_<tag> sandbox table and this preview's IAP sign-in list.
+# Two exceptions, each writing only this preview's own sandbox tables: POST /api/access
+# (console_access_grants_<tag> + this preview's IAP sign-in list) and the Accounting
+# categorization actions (plaid_*_<tag> copies; lib/plaid/tables.ts refuses any other write).
 # Never deploy onto the prod `operator-console` service for previews — a revision's
 # env becomes the template the next main deploy inherits (`--update-env-vars`).
 
@@ -134,6 +135,26 @@ jobs:
           bq query --project_id "$PROJECT_ID" --use_legacy_sql=false --quiet \
             "ALTER TABLE \`$PROJECT_ID.bhaga.$ACCESS_TABLE\` SET OPTIONS (expiration_timestamp = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 7 DAY))" >/dev/null
           echo "preview: access sandbox table $ACCESS_TABLE"
+          # Accounting sandbox: per-preview copies of the categorization tables so Reapply,
+          # rule commits and overrides can be tried on real data without writing prod
+          # (lib/plaid/tables.ts refuses any preview write to a non-sandbox table). Created
+          # once per preview from prod (IF NOT EXISTS keeps test state across pushes —
+          # delete the *_<tag> tables to re-copy); 7-day expiry renewed per deploy.
+          PLAID_SANDBOX_SUFFIX="_${TAG//-/_}"
+          for t in plaid_transactions plaid_category_rules plaid_taxonomy_nodes; do
+            bq query --project_id "$PROJECT_ID" --use_legacy_sql=false --quiet \
+              "CREATE TABLE IF NOT EXISTS \`$PROJECT_ID.bhaga.$t$PLAID_SANDBOX_SUFFIX\` COPY \`$PROJECT_ID.bhaga.$t\`" >/dev/null
+          done
+          sed -e "s/\.plaid_categorize_jobs\`/.plaid_categorize_jobs$PLAID_SANDBOX_SUFFIX\`/" \
+              -e "s/\.plaid_category_rule_events\`/.plaid_category_rule_events$PLAID_SANDBOX_SUFFIX\`/" \
+              core/migrations/098_plaid_categorize_jobs.sql \
+            | bq query --project_id "$PROJECT_ID" --use_legacy_sql=false --quiet >/dev/null
+          for t in plaid_transactions plaid_category_rules plaid_taxonomy_nodes plaid_categorize_jobs plaid_category_rule_events; do
+            bq query --project_id "$PROJECT_ID" --use_legacy_sql=false --quiet \
+              "ALTER TABLE \`$PROJECT_ID.bhaga.$t$PLAID_SANDBOX_SUFFIX\` SET OPTIONS (expiration_timestamp = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 7 DAY))" >/dev/null
+          done
+          echo "PLAID_SANDBOX_SUFFIX=$PLAID_SANDBOX_SUFFIX" >> "$GITHUB_ENV"
+          echo "preview: accounting sandbox tables *$PLAID_SANDBOX_SUFFIX"
           # The query cache is only safe while the audit-log feed bumps versions
           # (scripts/provision_console_cache.sh); a preview without it reads BigQuery live.
           QUERY_CACHE=off
@@ -149,7 +170,7 @@ jobs:
             --no-allow-unauthenticated --iap \
             --memory 512Mi --min-instances 0 --max-instances 1 \
             --labels "$LABELS" \
-            --set-env-vars "^|^BQ_PROJECT=$PROJECT_ID|BQ_DATASET=bhaga|CONSOLE_PREVIEW=1|CONSOLE_QUERY_CACHE=$QUERY_CACHE|IAP_SERVICE_NAME=$SERVICE|CONSOLE_ACCESS_TABLE=$ACCESS_TABLE|CONSOLE_OWNER_EMAILS=adi@mypalmetto.co,aditya.2ky@gmail.com,$AGENT_SA"
+            --set-env-vars "^|^BQ_PROJECT=$PROJECT_ID|BQ_DATASET=bhaga|CONSOLE_PREVIEW=1|CONSOLE_QUERY_CACHE=$QUERY_CACHE|IAP_SERVICE_NAME=$SERVICE|CONSOLE_ACCESS_TABLE=$ACCESS_TABLE|PLAID_SANDBOX_SUFFIX=$PLAID_SANDBOX_SUFFIX|CONSOLE_OWNER_EMAILS=adi@mypalmetto.co,aditya.2ky@gmail.com,$AGENT_SA"
 
       # Same Google sign-in and allowlist as prod: IAP's service agent may invoke
       # the service, and the IAP accessor policy is copied from prod each deploy, plus
@@ -220,7 +241,7 @@ jobs:
           ### Operator Console preview
           **[$URL/home]($URL/home)** — commit \`${HEAD_SHA::7}\`
 
-          Read-only (\`CONSOLE_PREVIEW=1\`): prod data, every save refused. Google sign-in with the same allowlist as prod. Deleted when this PR closes.
+          Read-only (\`CONSOLE_PREVIEW=1\`): prod data, every save refused — except Accounting categorization, which writes only this preview's own \`plaid_*_<tag>\` sandbox copies. Google sign-in with the same allowlist as prod. Deleted when this PR closes.
           EOF
           python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
             --marker operator-console-preview --body-file /tmp/body.md

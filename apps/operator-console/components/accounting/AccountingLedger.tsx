@@ -36,6 +36,12 @@ import {
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { okAck } from "@/lib/actions/types";
 import { StatGrid } from "@/components/kpi/StatGrid";
+import { useRouter } from "next/navigation";
+import { CategorizeJobStatus } from "@/components/accounting/CategorizeJobStatus";
+import { TxnCategoryPicker } from "@/components/accounting/TxnCategoryPicker";
+import { useCategorizeJob } from "@/components/accounting/useCategorizeJob";
+import { jobProgressLabel, type CategorizeJob } from "@/lib/plaid/categorize-job-status";
+import { AMOUNT_SIGN_OPTIONS, amountSignFor } from "@/lib/plaid/amount-sign";
 
 export interface AccountingTxnRow {
   transaction_id: string;
@@ -187,7 +193,7 @@ function resetRuleState(row: AccountingTxnRow) {
   return {
     pattern:
       row.transaction_name && row.transaction_name !== "—" ? row.transaction_name : "",
-    amountSign: row.amount > 0 ? "positive" : "negative",
+    amountSign: amountSignFor(row.amount),
     fromMask: row.from_mask || "",
     toMask: row.to_mask || "",
     matches: [] as RuleMatchPreview[],
@@ -216,6 +222,7 @@ export function AccountingLedger({
   rules,
   squareNetSalesTotal,
   squareNetSalesByIso,
+  latestJob = null,
 }: {
   periodLabel: string;
   grain: Grain;
@@ -227,7 +234,12 @@ export function AccountingLedger({
   squareNetSalesTotal: number | null;
   /** Square net sales keyed by the same grain bucket ISO as bank charts. */
   squareNetSalesByIso: Record<string, number>;
+  /** Latest Reapply / Revert job (plaid_categorize_jobs), for progress across tabs. */
+  latestJob?: CategorizeJob | null;
 }) {
+  const router = useRouter();
+  const categorizeJob = useCategorizeJob(latestJob);
+  const jobLive = categorizeJob.live;
   const [rows, setRows] = useState(() => {
     const seen = new Set<string>();
     return initialRows.filter((r) => {
@@ -247,7 +259,6 @@ export function AccountingLedger({
   const [taxonomyState, setTaxonomy] = useState(taxonomy);
   const [explain, setExplain] = useState<AccountingTxnRow | null>(null);
   const { isPending: pending, stage, error, run } = useConsoleAction();
-  const [reapplyMsg, setReapplyMsg] = useState<string | null>(null);
   const [chartUnit, setChartUnit] = useState<ChartUnit>("dollars");
   const [spendChartGrain, setSpendChartGrain] = useState<SpendChartGrain>("category");
 
@@ -371,10 +382,6 @@ export function AccountingLedger({
     </div>
   );
 
-  const parents = useMemo(
-    () => taxonomyState.filter((t) => !t.parent_id),
-    [taxonomyState],
-  );
 
   const openExplain = useCallback((row: AccountingTxnRow) => {
     const reset = resetRuleState(row);
@@ -575,15 +582,18 @@ export function AccountingLedger({
   }
 
   function runReapply() {
-    void run(async () => {
-      const ack = await reapplyPlaidCategoriesAction();
-      if (!ack.ok) return ack;
-      const r = ack.data!;
-      setReapplyMsg(`Reapplied: updated ${r.updated}, unchanged ${r.unchanged}`);
-      return okAck({
-        message: `Reapplied: updated ${r.updated}, unchanged ${r.unchanged}`,
-      });
-    });
+    categorizeJob.watch();
+    void run(
+      async () => {
+        const ack = await reapplyPlaidCategoriesAction();
+        if (!ack.ok) return ack;
+        const { job, started } = ack.data!;
+        categorizeJob.setJob(job);
+        if (started) router.refresh();
+        return okAck({ message: started ? jobProgressLabel(job) : `Already running: ${jobProgressLabel(job)}` });
+      },
+      { saving: "Reapplying rules…" },
+    );
   }
 
   function findRuleMatches() {
@@ -663,24 +673,30 @@ export function AccountingLedger({
       const child = taxonomyState.find((t) => t.id === subId);
       const excluded = resolveExcludedWith(taxonomyState, catId, subId);
       const ruleSummary = `#? ${result.ruleId}: contains '${rulePattern.trim()}'`;
-      // Optimistic ledger refresh for applied matches (skip overrides).
-      setRows((prev) =>
-        prev.map((r) =>
-          selected.has(r.transaction_id) && !r.is_override
-            ? patchTxnCategory(r, {
-                categoryId: catId,
-                subcategoryId: subId,
-                categoryLabel: parent?.label || r.category,
-                subcategoryLabel: child?.label || "—",
-                excluded,
-                ruleId: result.ruleId,
-                ruleSummary,
-                isOverride: false,
-              })
-            : r,
-        ),
-      );
-      const message = `Rule ${result.ruleId}: applied ${result.applied}, skipped override ${result.skipped_override}`;
+      // Optimistic ledger refresh for applied matches (skip overrides). Keep the same
+      // array when nothing changed: a fresh-but-identical rows array sent the charts
+      // into a render loop after a zero-backfill commit (React #185).
+      if (selected.size) {
+        setRows((prev) => {
+          let changed = false;
+          const next = prev.map((r) => {
+            if (!selected.has(r.transaction_id) || r.is_override) return r;
+            changed = true;
+            return patchTxnCategory(r, {
+              categoryId: catId,
+              subcategoryId: subId,
+              categoryLabel: parent?.label || r.category,
+              subcategoryLabel: child?.label || "—",
+              excluded,
+              ruleId: result.ruleId,
+              ruleSummary,
+              isOverride: false,
+            });
+          });
+          return changed ? next : prev;
+        });
+      }
+      const message = `Rule ${result.ruleId}: ${ack.message ?? `applied ${result.applied}`}${result.skipped_override ? ` · ${result.skipped_override} override(s) kept` : ""}`;
       setRuleMsg(message);
       return okAck({ message });
     });
@@ -688,11 +704,12 @@ export function AccountingLedger({
 
   function revertRule() {
     if (!committedRuleId) return;
+    categorizeJob.watch();
     void run(async () => {
       const ack = await revertRuleEvidenceAction(committedRuleId);
       if (!ack.ok) return ack;
-      const result = ack.data!;
-      const message = `Reverted ${committedRuleId}: reapply updated ${result.reapply.updated}, unchanged ${result.reapply.unchanged}`;
+      categorizeJob.setJob(ack.data!.job);
+      const message = jobProgressLabel(ack.data!.job);
       setRuleMsg(message);
       setCommittedRuleId(null);
       return okAck({ message });
@@ -929,29 +946,38 @@ export function AccountingLedger({
           <div className="flex flex-wrap items-center gap-2">
             {canWrite ? (
               <>
-                  <AccountingRulesDrawer
-                    canWrite={canWrite}
-                    ruleCount={rules.length}
-                    taxonomy={taxonomyState}
-                    rules={rules}
-                  />
+                <AccountingRulesDrawer
+                  canWrite={canWrite}
+                  ruleCount={rules.length}
+                  taxonomy={taxonomyState}
+                  rules={rules}
+                  jobLive={jobLive}
+                  onJob={(job) => {
+                    categorizeJob.setJob(job);
+                    router.refresh();
+                  }}
+                  onWatch={categorizeJob.watch}
+                />
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
-                  disabled={pending}
+                  disabled={pending || jobLive}
                   onClick={runReapply}
                 >
-                  Reapply rules
+                  {jobLive ? "Reapplying…" : "Reapply rules"}
                 </Button>
               </>
             ) : null}
           </div>
         </CardHeader>
         <CardContent>
-          {error || reapplyMsg || stage ? (
+          {categorizeJob.job ? (
+            <CategorizeJobStatus job={categorizeJob.job} className="mb-3" />
+          ) : null}
+          {error || (stage && !jobLive) ? (
             <p className={`mb-2 text-xs ${error ? "text-destructive" : "text-muted-foreground"}`}>
-              {error || reapplyMsg || stage}
+              {error || stage}
             </p>
           ) : null}
           {tableData.length ? (
@@ -1033,49 +1059,13 @@ export function AccountingLedger({
             )}
             {canWrite && explain ? (
               <div className="flex flex-col gap-2 border-t pt-3">
-                <p className="text-xs font-medium text-muted-foreground">Category</p>
-                <select
-                  className="rounded border bg-background px-2 py-1.5 text-sm"
-                  value={explain.category_id || ""}
+                <TxnCategoryPicker
+                  taxonomy={taxonomyState}
+                  categoryId={explain.category_id}
+                  subcategoryId={explain.subcategory_id}
                   disabled={pending}
-                  onChange={(e) => {
-                    const catId = e.target.value || null;
-                    const firstChild =
-                      taxonomyState.find((t) => t.parent_id === catId)?.id ?? null;
-                    applyOverride(explain.transaction_id, catId, firstChild);
-                  }}
-                >
-                  <option value="">(clear override / use rules)</option>
-                  {parents.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                      {p.exclude_from_accounting === true ? " (excluded)" : ""}
-                    </option>
-                  ))}
-                </select>
-                {explain.category_id ? (
-                  <select
-                    className="rounded border bg-background px-2 py-1.5 text-sm"
-                    value={explain.subcategory_id || ""}
-                    disabled={pending}
-                    onChange={(e) => {
-                      applyOverride(
-                        explain.transaction_id,
-                        explain.category_id,
-                        e.target.value || null,
-                      );
-                    }}
-                  >
-                    <option value="">(no subcategory)</option>
-                    {taxonomyState
-                      .filter((t) => t.parent_id === explain.category_id)
-                      .map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.label}
-                        </option>
-                      ))}
-                  </select>
-                ) : null}
+                  onChange={(catId, subId) => applyOverride(explain.transaction_id, catId, subId)}
+                />
                 {explain.category_id ? (
                   <label className="flex items-center gap-2 text-xs text-muted-foreground">
                     <input
@@ -1118,6 +1108,20 @@ export function AccountingLedger({
                 <p className="text-[11px] text-muted-foreground">
                   At least one of: name regex, from last-4, to last-4. Empty fields are ignored.
                 </p>
+                <p className="text-xs">
+                  Rule target:{" "}
+                  {explain.category_id ? (
+                    <span className="font-medium">
+                      {taxonomyState.find((t) => t.id === explain.category_id)?.label ?? explain.category_id}
+                      {" › "}
+                      {explain.subcategory_id
+                        ? (taxonomyState.find((t) => t.id === explain.subcategory_id)?.label ?? explain.subcategory_id)
+                        : "no subcategory"}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">pick a category above first</span>
+                  )}
+                </p>
                 <input
                   type="text"
                   className="rounded border bg-background px-2 py-1.5 text-sm"
@@ -1126,20 +1130,28 @@ export function AccountingLedger({
                   disabled={pending || committedRuleId != null}
                   onChange={(e) => setRulePattern(e.target.value)}
                 />
-                <div className="flex gap-2">
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Direction
                   <select
-                    className="rounded border bg-background px-2 py-1.5 text-sm"
+                    aria-label="Direction"
+                    className="rounded border bg-background px-2 py-1.5 text-sm text-foreground"
                     value={ruleAmountSign}
                     disabled={pending || committedRuleId != null}
                     onChange={(e) => setRuleAmountSign(e.target.value)}
                   >
-                    <option value="any">Any sign</option>
-                    <option value="positive">Positive</option>
-                    <option value="negative">Negative</option>
+                    {AMOUNT_SIGN_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
                   </select>
+                </label>
+                <div className="grid grid-cols-2 gap-2">
                   <input
                     type="text"
-                    className="rounded border bg-background px-2 py-1.5 text-sm w-24"
+                    inputMode="numeric"
+                    aria-label="From last 4"
+                    className="min-w-0 rounded border bg-background px-2 py-1.5 text-sm"
                     placeholder="From last4"
                     value={ruleFromMask}
                     disabled={pending || committedRuleId != null}
@@ -1147,7 +1159,9 @@ export function AccountingLedger({
                   />
                   <input
                     type="text"
-                    className="rounded border bg-background px-2 py-1.5 text-sm w-24"
+                    inputMode="numeric"
+                    aria-label="To last 4"
+                    className="min-w-0 rounded border bg-background px-2 py-1.5 text-sm"
                     placeholder="To last4"
                     value={ruleToMask}
                     disabled={pending || committedRuleId != null}
@@ -1228,7 +1242,7 @@ export function AccountingLedger({
                       type="button"
                       size="sm"
                       variant="outline"
-                      disabled={pending}
+                      disabled={pending || jobLive}
                       onClick={revertRule}
                     >
                       Revert
@@ -1240,15 +1254,21 @@ export function AccountingLedger({
                     size="sm"
                     disabled={
                       pending ||
+                      jobLive ||
                       !explain.category_id ||
                       !ruleHasCriteria ||
-                      selectedTxnIds.size === 0
+                      (selectedTxnIds.size === 0 && !applyFuture)
                     }
                     onClick={commitRule}
                   >
-                    Commit rule
+                    {selectedTxnIds.size === 0 ? "Commit rule (future transactions only)" : `Commit rule · apply to ${selectedTxnIds.size}`}
                   </Button>
                 )}
+                {jobLive && !committedRuleId ? (
+                  <p className="text-xs text-muted-foreground">
+                    Reapply is running — commit is paused until it finishes so nothing races it.
+                  </p>
+                ) : null}
                 {error || ruleMsg ? (
                   <p className={`text-xs ${error ? "text-destructive" : "text-muted-foreground"}`}>
                     {error || ruleMsg}

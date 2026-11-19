@@ -1,7 +1,8 @@
 import "server-only";
-import { BigQuery, BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp } from "@google-cloud/bigquery";
+import { BigQuery, type Query, BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp } from "@google-cloud/bigquery";
 import { bq, DATASET, PROJECT } from "./bigquery";
 import { noteWrite, readThrough } from "./cache";
+import { assertPreviewWrite, writeTargets } from "@/lib/plaid/tables";
 
 const BQ_WRAPPER_CLASSES = [BigQueryDate, BigQueryDatetime, BigQueryInt, BigQueryTime, BigQueryTimestamp];
 
@@ -53,6 +54,7 @@ export async function q<T = Record<string, unknown>>(
   sql: string,
   params?: Record<string, unknown>,
 ): Promise<T[]> {
+  if (writeTargets(sql).length) assertPreviewWrite(sql);
   return readThrough<T>(sql, params, async () => {
     const [rows] = await bq().query({ query: sql, params, location: "US" });
     return rows.map((r) => sanitize(r)) as T[];
@@ -91,8 +93,9 @@ export function timestampParam(value: Date) {
 export async function mutate(
   sql: string,
   params?: Record<string, unknown>,
-  types?: Record<string, string>,
+  types?: Query["types"],
 ): Promise<void> {
+  assertPreviewWrite(sql);
   await bq().query({ query: sql, params, types, location: "US" });
   await noteWrite(sql);
 }
@@ -107,6 +110,7 @@ export async function submitQuery(
   params?: Record<string, unknown>,
   types?: Record<string, string>,
 ): Promise<string> {
+  assertPreviewWrite(sql);
   const [job] = await bq().createQueryJob({ query: sql, params, types, location: "US" });
   return job.id ?? "";
 }

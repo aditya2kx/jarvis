@@ -1,4 +1,5 @@
 import "server-only";
+import { plaidFq } from "@/lib/plaid/tables";
 import { dateParam, fq, intParam, mutate, q } from "./client";
 import { logInventoryEdit } from "./editLog";
 import {
@@ -714,7 +715,7 @@ export async function upsertPlaidTransaction(row: PlaidTxnWrite): Promise<void> 
   // Several Plaid fields are routinely null — declare types so the Node BQ
   // client can bind them (avoids "Parameter types must be provided for null").
   await mutate(
-    `MERGE ${fq("plaid_transactions")} T
+    `MERGE ${plaidFq("plaid_transactions")} T
      USING (SELECT @transaction_id AS transaction_id) S
      ON T.transaction_id = S.transaction_id
      WHEN MATCHED THEN UPDATE SET
@@ -761,7 +762,7 @@ export async function upsertPlaidTransaction(row: PlaidTxnWrite): Promise<void> 
 
 export async function deletePlaidTransactions(ids: string[]): Promise<void> {
   if (!ids.length) return;
-  await mutate(`DELETE FROM ${fq("plaid_transactions")} WHERE transaction_id IN UNNEST(@ids)`, {
+  await mutate(`DELETE FROM ${plaidFq("plaid_transactions")} WHERE transaction_id IN UNNEST(@ids)`, {
     ids,
   });
 }
@@ -777,12 +778,12 @@ export async function deletePlaidTransactions(ids: string[]): Promise<void> {
 export async function dedupePlaidTransactions(): Promise<number> {
   const before = await q<{ n: number }>(
     `SELECT COUNT(*) - COUNT(DISTINCT transaction_id) AS n
-     FROM ${fq("plaid_transactions")}`,
+     FROM ${plaidFq("plaid_transactions")}`,
   );
   const extras = Number(before[0]?.n ?? 0);
   if (!(extras > 0)) return 0;
   await mutate(
-    `CREATE OR REPLACE TABLE ${fq("plaid_transactions")} AS
+    `CREATE OR REPLACE TABLE ${plaidFq("plaid_transactions")} AS
      SELECT * EXCEPT (rn)
      FROM (
        SELECT
@@ -791,7 +792,7 @@ export async function dedupePlaidTransactions(): Promise<number> {
            PARTITION BY transaction_id
            ORDER BY updated_at DESC NULLS LAST, TO_JSON_STRING(raw_json)
          ) AS rn
-       FROM ${fq("plaid_transactions")}
+       FROM ${plaidFq("plaid_transactions")}
      )
      WHERE rn = 1`,
   );
@@ -804,7 +805,7 @@ export async function setPlaidTransactionInternal(
   isInternal: boolean,
 ): Promise<void> {
   await mutate(
-    `UPDATE ${fq("plaid_transactions")}
+    `UPDATE ${plaidFq("plaid_transactions")}
      SET is_internal = @is_internal, updated_at = CURRENT_TIMESTAMP()
      WHERE transaction_id = @transaction_id`,
     { transaction_id: transactionId, is_internal: isInternal },
@@ -816,7 +817,7 @@ export async function setPlaidTransactionInternal(
 export async function markPlaidTransactionsInternal(ids: string[]): Promise<number> {
   if (!ids.length) return 0;
   await mutate(
-    `UPDATE ${fq("plaid_transactions")}
+    `UPDATE ${plaidFq("plaid_transactions")}
      SET is_internal = TRUE,
          category_id = 'internal_transfers',
          subcategory_id = NULL,
@@ -841,7 +842,7 @@ export async function setPlaidTransactionOverride(
   overrideSubcategoryId: string | null,
 ): Promise<void> {
   await mutate(
-    `UPDATE ${fq("plaid_transactions")}
+    `UPDATE ${plaidFq("plaid_transactions")}
      SET override_category_id = @override_category_id,
          override_subcategory_id = @override_subcategory_id,
          updated_at = CURRENT_TIMESTAMP()
@@ -865,7 +866,7 @@ export async function setPlaidTransactionCategory(row: {
   rule_id: string | null;
 }): Promise<void> {
   await mutate(
-    `UPDATE ${fq("plaid_transactions")}
+    `UPDATE ${plaidFq("plaid_transactions")}
      SET category_id = @category_id,
          subcategory_id = @subcategory_id,
          rule_id = @rule_id,

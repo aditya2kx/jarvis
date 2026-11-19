@@ -57,6 +57,14 @@ preview deploys and demos; never set it on the prod `operator-console` service. 
 exception is `POST /api/access` when `CONSOLE_ACCESS_TABLE` names a non-prod table (each
 deployed preview gets its own sandbox grants table).
 
+**Accounting sandbox:** with `PLAID_SANDBOX_SUFFIX=_<tag>` (set by the preview workflow) the
+Accounting categorization actions — Reapply, overrides, propose/commit rule, rule
+enable / disable / dry-run / revert, taxonomy edits — run against per-preview copies
+`plaid_{transactions,category_rules,taxonomy_nodes,categorize_jobs,category_rule_events}_<tag>`.
+`lib/plaid/tables.ts` routes those tables and refuses any preview write whose target is not a
+sandbox table (`mutate` / `submitQuery` / write `q`); `actionDenied` refuses every other action
+on a preview; bank link / sync stay refused.
+
 ```bash
 CONSOLE_PREVIEW=1 BYPASS_IAP_EMAIL=you@mypalmetto.co npm run dev
 ```

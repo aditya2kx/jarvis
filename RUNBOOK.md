@@ -2756,7 +2756,10 @@ sweep removes any preview whose PR is no longer open. **Access sandbox:** every 
 branch) saves access to its own `bhaga.console_access_grants_<tag>` table (created from migration
 090, 7-day expiry renewed per deploy) and edits its own IAP sign-in list, so `/access` can be tried
 end to end without touching prod grants — `POST /api/access` is the one write `CONSOLE_PREVIEW=1`
-lets through, and only when `CONSOLE_ACCESS_TABLE` is not the prod table.
+lets through, and only when `CONSOLE_ACCESS_TABLE` is not the prod table. **Accounting sandbox:** the
+categorization actions on `/accounting` also run on a preview, against `plaid_*_<tag>` copies
+(`PLAID_SANDBOX_SUFFIX`, see `docs/contributing/dev-anywhere.md`); any other preview write is
+refused in code.
 
 **Pre-PR branch preview** (Issue #415): push a short `preview/<issue>-<slug>` (that prefix opens
 no PR; the WIF token subject carries the ref and GCP caps it at 127 bytes, so long names fail auth
@@ -2966,6 +2969,16 @@ against the latest policy instead of a cached session decision. Revoke with
   gitignored `local/plaid-taxonomy-seed/` +
   `python3 -c "from skills.plaid_api.taxonomy_seed import seed_taxonomy, extend_corpus_rules; …"`.
   Reapply: `from skills.plaid_api.categorize import reapply_categories` or console **Reapply rules**.
+  Console Reapply is a tracked job (migration 098 `plaid_categorize_jobs`): one read, rules
+  evaluated in memory, changed rows written in ≤400-row MERGEs; the ledger polls
+  `GET /api/accounting/categorize-job` for "N of M rows written". Rule commit / Revert are
+  refused while a job is live; rule commit is one BigQuery transaction (rule + history +
+  backfill, rolled back on error) that reuses an identical enabled rule, and allows zero
+  backfill rows with Apply to future. Rule changes append to `plaid_category_rule_events`
+  (append-only). A committed rule gets the lowest precedence; the commit message names any
+  higher-priority rule that will take its rows back on Reapply / sync. Breadcrumbs:
+  `plaid_categorize_job done|failed job=…`, `plaid_rule_commit ok|failed`,
+  `plaid_bq_serialize_retry label=…`.
   Incremental sync (console Sync + webhook `sync_item`) categorizes upserted rows without clearing
   overrides. View groups by effective category label (alias `pfc_primary` kept for Home sum).
   (checking↔own card payments auto-flagged; operator can Mark/unmark). Click PFC category for

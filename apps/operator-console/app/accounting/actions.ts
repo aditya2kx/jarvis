@@ -1,6 +1,6 @@
 "use server";
 
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { revalidatePath } from "next/cache";
 import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
 import { FEATURES } from "@/lib/config/features";
@@ -27,8 +27,19 @@ import {
 } from "@/lib/bq/writes";
 import { plaidAccountsForItem, plaidItems, plaidTxnHintsForItem } from "@/lib/bq/queries";
 import { suggestInternal } from "@/lib/plaid/internal";
-import { reapplyPlaidCategories } from "@/lib/plaid/reapply-categories";
-import { mutate } from "@/lib/bq/client";
+import {
+  loadRules,
+  loadTxnsForCategorize,
+  reapplyPlaidCategories,
+  toCategoryRule,
+} from "@/lib/plaid/reapply-categories";
+import { mutate, q } from "@/lib/bq/client";
+import { plaidFq } from "@/lib/plaid/tables";
+import { withSerializeRetry } from "@/lib/plaid/bq-retry";
+import { busyMessage, runCategorizeJob } from "@/lib/plaid/categorize-jobs";
+import type { CategorizeJob } from "@/lib/plaid/categorize-job-status";
+import { evaluateRules, ruleMatches } from "@/lib/plaid/category-rules";
+import { commitRuleScript, findIdenticalRule, setRuleEnabledScript } from "@/lib/plaid/rule-commit";
 import { asAck, okAck, failAck, type ActionAck } from "@/lib/actions/types";
 import { actionDenied } from "@/lib/access/server";
 
@@ -142,11 +153,13 @@ async function drainSync(itemId: string, accessToken: string, startCursor: strin
       `plaid suggestInternal failed item=${itemId}: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
-  // Palmetto taxonomy (#160) — categorize touched rows (never clears overrides).
+  // Palmetto taxonomy (#160) — categorize touched rows plus any row a past sync never
+  // categorized (never clears overrides). Mirrors skills/plaid_api/sync.py.
   try {
     const cat = await reapplyPlaidCategories({
       itemId,
       transactionIds: touchedIds.length ? touchedIds : undefined,
+      includeUncategorized: true,
     });
     if (cat.updated) {
       console.info(
@@ -243,23 +256,27 @@ export async function setPlaidInternalAction(
   }, "Internal flag updated.");
 }
 
+/**
+ * Full Reapply as a tracked job (plaid_categorize_jobs). Progress is polled from
+ * GET /api/accounting/categorize-job while this runs; a second click while one is
+ * live returns the running job instead of starting another writer.
+ */
 export async function reapplyPlaidCategoriesAction(): Promise<
-  ActionAck<{
-    updated: number;
-    unchanged: number;
-    skipped_override: number;
-  }>
+  ActionAck<{ job: CategorizeJob; started: boolean }>
 > {
   const denied = await actionDenied("reapplyPlaidCategoriesAction");
   if (denied) return denied;
-  return asAck(async () => {
+  try {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
-    await operatorEmail();
-    const result = await reapplyPlaidCategories();
+    const by = await operatorEmail();
+    const out = await runCategorizeJob({ kind: "reapply", by });
+    if (out.job.status === "failed") return failAck(new Error(`Reapply failed: ${out.job.message}`));
     revalidatePath("/accounting");
     revalidatePath("/home");
-    return result;
-  }, "Categories reapplied.");
+    return okAck({ data: out });
+  } catch (e) {
+    return failAck(e);
+  }
 }
 
 export async function setTxnCategoryOverrideAction(
@@ -277,14 +294,18 @@ export async function setTxnCategoryOverrideAction(
         `plaid dedupe before category override: ${e instanceof Error ? e.message : String(e)}`,
       );
     });
-    await setPlaidTransactionOverride(transactionId, categoryId, subcategoryId);
+    const label = `override txn=${transactionId}`;
+    await withSerializeRetry(
+      () => setPlaidTransactionOverride(transactionId, categoryId, subcategoryId),
+      { label },
+    );
     // If clearing override, restore rule result immediately.
     if (!categoryId) {
       await reapplyPlaidCategories({ transactionIds: [transactionId] });
     } else {
       // Mirror override into display columns for immediate UI consistency.
-      await mutate(
-        `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
+      await withSerializeRetry(() => mutate(
+        `UPDATE ${plaidFq("plaid_transactions")}
          SET category_id = @category_id,
              subcategory_id = @subcategory_id,
              rule_id = NULL,
@@ -297,7 +318,7 @@ export async function setTxnCategoryOverrideAction(
           subcategory_id: subcategoryId,
         },
         { category_id: "STRING", subcategory_id: "STRING" },
-      );
+      ), { label });
     }
     revalidatePath("/accounting");
   }, "Category updated.");
@@ -318,7 +339,7 @@ export async function upsertTaxonomyNodeAction(node: {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
     await mutate(
-      `MERGE \`jarvis-bhaga-prod.bhaga.plaid_taxonomy_nodes\` T
+      `MERGE ${plaidFq("plaid_taxonomy_nodes")} T
        USING (SELECT @id AS id) S
        ON T.id = S.id
        WHEN MATCHED THEN UPDATE SET
@@ -364,7 +385,7 @@ export async function setTaxonomyNodeEnabledAction(
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
     await mutate(
-      `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_taxonomy_nodes\`
+      `UPDATE ${plaidFq("plaid_taxonomy_nodes")}
        SET enabled = @enabled, updated_at = CURRENT_TIMESTAMP()
        WHERE id = @id`,
       { id, enabled },
@@ -374,6 +395,25 @@ export async function setTaxonomyNodeEnabledAction(
   }, enabled ? "Node enabled." : "Node disabled.");
 }
 
+const RULE_TABLES = () => ({
+  rules: plaidFq("plaid_category_rules"),
+  events: plaidFq("plaid_category_rule_events"),
+  txns: plaidFq("plaid_transactions"),
+});
+
+async function setRuleEnabled(id: string, enabled: boolean, action: string, by: string, note: string) {
+  await withSerializeRetry(
+    () =>
+      mutate(
+        setRuleEnabledScript(RULE_TABLES()),
+        { id, enabled, action, note, by, event_id: randomUUID() },
+        { enabled: "BOOL" },
+      ),
+    { label: `rule_${action} id=${id}` },
+  );
+}
+
+/** Enable / disable only — takes effect on the next Reapply or ingest. */
 export async function setCategoryRuleEnabledAction(
   id: string,
   enabled: boolean,
@@ -382,50 +422,80 @@ export async function setCategoryRuleEnabledAction(
   if (denied) return denied;
   return asAck(async () => {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
-    await operatorEmail();
-    await mutate(
-      `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_category_rules\`
-       SET enabled = @enabled, updated_at = CURRENT_TIMESTAMP()
-       WHERE id = @id`,
-      { id, enabled },
-      { enabled: "BOOL" },
-    );
+    const by = await operatorEmail();
+    await setRuleEnabled(id, enabled, enabled ? "enable" : "disable", by, "Rules panel toggle");
     revalidatePath("/accounting");
-  }, enabled ? "Rule enabled." : "Rule disabled.");
+  }, enabled ? "Rule enabled — Reapply to update past transactions." : "Rule disabled — Reapply or Revert to update past transactions.");
 }
 
-export async function dryRunRuleAction(ruleId: string): Promise<ActionAck<number>> {
+export type RuleDryRun = {
+  rule_id: string;
+  /** Rows the rule's criteria match (ignoring priority and overrides). */
+  matches: number;
+  /** Rows this rule would categorize on Reapply (wins priority, no override). */
+  would_apply: number;
+  /** Rows attributed to this rule right now. */
+  currently_applied: number;
+  /** Matching rows held by an operator override. */
+  overrides: number;
+  /** Rows a higher-priority rule takes first. */
+  shadowed: number;
+  sample: { date: string | null; name: string | null; amount: number; status: "applies" | "override" | "shadowed" }[];
+};
+
+/** Exact dry-run: the same evaluator Reapply uses (regex, direction, from/to last-4). */
+export async function dryRunRuleAction(ruleId: string): Promise<ActionAck<RuleDryRun>> {
   const denied = await actionDenied("dryRunRuleAction");
   if (denied) return denied;
   return asAck(async () => {
     await operatorEmail();
-    const rows = await (
-      await import("@/lib/bq/client")
-    ).q<{ n: number }>(
-      `WITH r AS (
-         SELECT match_pattern, match_operator, amount_sign, account_mask
-         FROM \`jarvis-bhaga-prod.bhaga.plaid_category_rules\`
-         WHERE id = @id
-       )
-       SELECT COUNT(*) AS n
-       FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\` t
-       LEFT JOIN \`jarvis-bhaga-prod.bhaga.plaid_accounts\` a ON a.account_id = t.account_id
-       , r
-       WHERE STRPOS(LOWER(CONCAT(IFNULL(t.name,''),' ',IFNULL(t.merchant_name,''))),
-                    LOWER(r.match_pattern)) > 0
-         AND (
-           r.amount_sign IS NULL OR r.amount_sign = 'any'
-           OR (r.amount_sign = 'positive' AND t.amount > 0)
-           OR (r.amount_sign = 'negative' AND t.amount < 0)
-         )
-         AND (
-           r.account_mask IS NULL OR r.account_mask = ''
-           OR RIGHT(REGEXP_REPLACE(IFNULL(a.mask,''), r'[^0-9]', ''), 4)
-              = RIGHT(REGEXP_REPLACE(r.account_mask, r'[^0-9]', ''), 4)
-         )`,
-      { id: ruleId },
-    );
-    return Number(rows[0]?.n ?? 0);
+    const [ruleRows, txns] = await Promise.all([
+      loadRules({ includeDisabled: true }),
+      loadTxnsForCategorize(),
+    ]);
+    const target = ruleRows.find((r) => r.id === ruleId);
+    if (!target) throw new Error(`Rule ${ruleId} not found`);
+    const probe = toCategoryRule(target, true);
+    const active = ruleRows
+      .filter((r) => r.id === ruleId || r.enabled !== false)
+      .map((r) => toCategoryRule(r, r.id === ruleId));
+    const out: RuleDryRun = {
+      rule_id: ruleId,
+      matches: 0,
+      would_apply: 0,
+      currently_applied: 0,
+      overrides: 0,
+      shadowed: 0,
+      sample: [],
+    };
+    txns.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    for (const t of txns) {
+      if (t.rule_id === ruleId) out.currently_applied += 1;
+      const txn = {
+        name: t.name,
+        merchant_name: t.merchant_name,
+        amount: t.amount,
+        account_mask: t.account_mask,
+        counterparty_name: t.counterparty_name,
+      };
+      if (!ruleMatches(txn, probe)) continue;
+      out.matches += 1;
+      let status: RuleDryRun["sample"][number]["status"];
+      if (t.override_category_id) {
+        out.overrides += 1;
+        status = "override";
+      } else if (evaluateRules(txn, active)?.rule_id === ruleId) {
+        out.would_apply += 1;
+        status = "applies";
+      } else {
+        out.shadowed += 1;
+        status = "shadowed";
+      }
+      if (out.sample.length < 8) {
+        out.sample.push({ date: t.date, name: t.name, amount: t.amount, status });
+      }
+    }
+    return out;
   });
 }
 
@@ -475,7 +545,6 @@ export async function previewRuleMatchesAction(
         `plaid dedupe before rule preview: ${e instanceof Error ? e.message : String(e)}`,
       );
     });
-    const { ruleMatches } = await import("@/lib/plaid/category-rules");
     const pattern = (draft.match_pattern || "").trim();
     const amountSign = draft.amount_sign || "any";
     const accountMask = draftMask(draft.account_mask);
@@ -484,9 +553,7 @@ export async function previewRuleMatchesAction(
     const op = draft.match_operator || (pattern ? "regex" : "contains");
 
     // Loose SQL prefilter, then exact eval with directional from/to.
-    const rows = await (
-      await import("@/lib/bq/client")
-    ).q<{
+    const rows = await q<{
       transaction_id: string;
       date: string;
       name: string | null;
@@ -505,7 +572,7 @@ export async function previewRuleMatchesAction(
          a.mask AS account_mask,
          JSON_VALUE(t.raw_json, '$.counterparties[0].name') AS counterparty_name,
          t.override_category_id IS NOT NULL AS has_override
-       FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\` t
+       FROM ${plaidFq("plaid_transactions")} t
        LEFT JOIN \`jarvis-bhaga-prod.bhaga.plaid_accounts\` a ON a.account_id = t.account_id
        WHERE (
            @pattern = ''
@@ -605,169 +672,183 @@ export async function previewRuleMatchesAction(
   });
 }
 
+/** Rows among `ids` (no override) that a higher-priority rule takes from `ruleId` on Reapply. */
+async function shadowingRules(ruleId: string, ids: string[]): Promise<Record<string, number>> {
+  if (!ids.length) return {};
+  const [rules, txns] = await Promise.all([loadRules(), loadTxnsForCategorize({ transactionIds: ids })]);
+  const active = rules.map((r) => toCategoryRule(r));
+  const out: Record<string, number> = {};
+  for (const t of txns) {
+    if (t.override_category_id) continue;
+    const win = evaluateRules(
+      { name: t.name, merchant_name: t.merchant_name, amount: t.amount, account_mask: t.account_mask, counterparty_name: t.counterparty_name },
+      active,
+    )?.rule_id;
+    if (win && win !== ruleId) out[win] = (out[win] ?? 0) + 1;
+  }
+  return out;
+}
+
+/**
+ * Commit a proposed rule — all or nothing. Refused (nothing written) while a Reapply
+ * job is live; otherwise one transaction inserts the rule + history event and backfills
+ * the selected rows, retried on serialization conflicts. An identical enabled rule is
+ * reused, so a retry or double-submit never adds a duplicate. With "Apply to future"
+ * on, a rule may be committed with zero selected rows (single-occurrence merchants).
+ */
 export async function commitRuleFromTxnAction(input: {
   draft: RuleDraft;
   selectedTxnIds: string[];
   applyFuture: boolean;
-}): Promise<ActionAck<{ ruleId: string; applied: number; skipped_override: number }>> {
+}): Promise<
+  ActionAck<{
+    ruleId: string;
+    applied: number;
+    skipped_override: number;
+    reused: boolean;
+    /** Higher-priority rules that take these rows back on Reapply / ingest (rule id → rows). */
+    shadowed: Record<string, number>;
+  }>
+> {
   const denied = await actionDenied("commitRuleFromTxnAction");
   if (denied) return denied;
   try {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
-    await operatorEmail();
+    const by = await operatorEmail();
     const pattern = (input.draft.match_pattern || "").trim();
     if (!input.draft.category_id || !draftHasCriteria(input.draft)) {
       throw new Error("category_id and at least one of name pattern / from / to required");
     }
-    await dedupePlaidTransactions().catch((e) => {
-      console.error(
-        `plaid dedupe before rule commit: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    });
-
     const selectedIds = [...new Set(input.selectedTxnIds.filter(Boolean))];
-    const fromMask = draftMask(input.draft.from_mask) || null;
-    const toMask = draftMask(input.draft.to_mask) || null;
-    const accountMask = draftMask(input.draft.account_mask) || null;
-    const slugSrc = pattern || fromMask || toMask || accountMask || "rule";
+    if (!selectedIds.length && input.applyFuture === false) {
+      throw new Error("Nothing to commit — select matches or turn on Apply to future transactions.");
+    }
+    const busy = await busyMessage("Committing a rule");
+    if (busy) throw new Error(busy);
+
+    const criteria = {
+      match_pattern: pattern,
+      match_operator: input.draft.match_operator || (pattern ? "regex" : "contains"),
+      amount_sign: input.draft.amount_sign || "any",
+      account_mask: draftMask(input.draft.account_mask) || null,
+      from_mask: draftMask(input.draft.from_mask) || null,
+      to_mask: draftMask(input.draft.to_mask) || null,
+      category_id: input.draft.category_id,
+      subcategory_id: input.draft.subcategory_id || null,
+    };
+    const slugSrc = pattern || criteria.from_mask || criteria.to_mask || criteria.account_mask || "rule";
     const slug = slugSrc
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "_")
       .replace(/^_|_$/g, "")
       .slice(0, 40);
-    const ruleId = `op_${slug || "rule"}_${Date.now().toString(36)}`;
-    const amountSign = input.draft.amount_sign || "any";
-    const matchOperator =
-      input.draft.match_operator || (pattern ? "regex" : "contains");
+    const newId = `op_${slug || "rule"}_${Date.now().toString(36)}`;
 
-    const priRows = await (
-      await import("@/lib/bq/client")
-    ).q<{ p: number }>(
-      `SELECT IFNULL(MAX(priority), 0) + 10 AS p
-       FROM \`jarvis-bhaga-prod.bhaga.plaid_category_rules\``,
-    );
-    const priority = Number(priRows[0]?.p ?? 500);
-
-    await mutate(
-      `INSERT INTO \`jarvis-bhaga-prod.bhaga.plaid_category_rules\` (
-         id, priority, match_field, match_operator, match_pattern, amount_sign,
-         account_mask, from_mask, to_mask, category_id, subcategory_id,
-         confidence, enabled, notes, updated_at
-       ) VALUES (
-         @id, @priority, 'name_or_merchant', @match_operator, @match_pattern, @amount_sign,
-         @account_mask, @from_mask, @to_mask, @category_id, @subcategory_id,
-         'medium', @enabled, 'Created from Accounting propose-rule', CURRENT_TIMESTAMP()
-       )`,
-      {
-        id: ruleId,
-        priority,
-        match_operator: matchOperator,
-        match_pattern: pattern,
-        amount_sign: amountSign,
-        account_mask: accountMask,
-        from_mask: fromMask,
-        to_mask: toMask,
-        category_id: input.draft.category_id,
-        subcategory_id: input.draft.subcategory_id ?? null,
-        enabled: input.applyFuture !== false,
-      },
-      {
-        account_mask: "STRING",
-        from_mask: "STRING",
-        to_mask: "STRING",
-        subcategory_id: "STRING",
-        enabled: "BOOL",
-      },
-    );
-
-    let applied = 0;
     let skipped_override = 0;
     if (selectedIds.length) {
-      const skipRows = await (
-        await import("@/lib/bq/client")
-      ).q<{ n: number }>(
+      const skipRows = await q<{ n: number }>(
         `SELECT COUNT(*) AS n
-         FROM \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
+         FROM ${plaidFq("plaid_transactions")}
          WHERE transaction_id IN UNNEST(@ids)
            AND override_category_id IS NOT NULL`,
         { ids: selectedIds },
       );
       skipped_override = Number(skipRows[0]?.n ?? 0);
-
-      await mutate(
-        `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
-         SET category_id = @category_id,
-             subcategory_id = @subcategory_id,
-             rule_id = @rule_id,
-             is_internal = IF(@category_id = 'internal_transfers', TRUE, is_internal),
-             categorized_at = CURRENT_TIMESTAMP(),
-             updated_at = CURRENT_TIMESTAMP()
-         WHERE transaction_id IN UNNEST(@ids)
-           AND override_category_id IS NULL`,
-        {
-          ids: selectedIds,
-          category_id: input.draft.category_id,
-          subcategory_id: input.draft.subcategory_id ?? null,
-          rule_id: ruleId,
-        },
-        {
-          category_id: "STRING",
-          subcategory_id: "STRING",
-          rule_id: "STRING",
-        },
-      );
-      applied = Math.max(0, selectedIds.length - skipped_override);
     }
 
-    await dedupePlaidTransactions().catch((e) => {
-      console.error(
-        `plaid dedupe after rule commit: ${e instanceof Error ? e.message : String(e)}`,
-      );
+    let ruleId = newId;
+    let reused = false;
+    await withSerializeRetry(
+      async () => {
+        const existing = findIdenticalRule(
+          (await loadRules()).map((r) => ({ ...r, priority: Number(r.priority) })),
+          criteria,
+        );
+        reused = Boolean(existing);
+        ruleId = existing?.id ?? newId;
+        await mutate(
+          commitRuleScript(RULE_TABLES()),
+          {
+            ...criteria,
+            create: !existing,
+            id: ruleId,
+            enabled: input.applyFuture !== false,
+            event_id: randomUUID(),
+            by,
+            ids: selectedIds,
+          },
+          {
+            account_mask: "STRING",
+            from_mask: "STRING",
+            to_mask: "STRING",
+            subcategory_id: "STRING",
+            enabled: "BOOL",
+            create: "BOOL",
+            ids: ["STRING"],
+          },
+        );
+      },
+      { label: `rule_commit id=${newId} selected=${selectedIds.length}` },
+    );
+    const applied = Math.max(0, selectedIds.length - skipped_override);
+    const shadowed = await shadowingRules(ruleId, selectedIds).catch((e) => {
+      console.error(`plaid_rule_commit shadow check failed rule=${ruleId}: ${String(e)}`);
+      return {} as Record<string, number>;
     });
-
+    const shadowCount = Object.values(shadowed).reduce((a, b) => a + b, 0);
+    console.info(
+      `plaid_rule_commit ok rule=${ruleId} reused=${reused} applied=${applied} ` +
+        `skipped_override=${skipped_override} future=${input.applyFuture !== false} shadowed=${shadowCount}`,
+    );
     revalidatePath("/accounting");
     revalidatePath("/home");
+    const base = reused
+      ? `Identical rule ${ruleId} already exists — applied it to ${applied}.`
+      : applied
+        ? `Rule committed — applied ${applied}.`
+        : "Rule committed — it will apply to future transactions.";
+    const warn = shadowCount
+      ? ` Heads-up: ${shadowCount} of these also match higher-priority ${Object.keys(shadowed).join(", ")}, which wins on the next Reapply / sync — disable that rule if this one should win.`
+      : "";
     return okAck({
-      data: { ruleId, applied, skipped_override },
-      message: `Rule committed — applied ${applied}.`,
+      data: { ruleId, applied, skipped_override, reused, shadowed },
+      message: base + warn,
     });
   } catch (e) {
+    console.error(`plaid_rule_commit failed: ${e instanceof Error ? e.message : String(e)}`);
     return failAck(e);
   }
 }
 
-/** Disable a rule and reapply categories (evidence revert / undo). */
+/**
+ * Revert a rule: disable it (history event), then re-categorize only the rows it
+ * currently holds — they fall to the next matching rule or back to Uncategorized.
+ */
 export async function revertRuleEvidenceAction(
   ruleId: string,
-): Promise<
-  ActionAck<{
-    disabled: boolean;
-    reapply: { updated: number; unchanged: number; skipped_override: number };
-  }>
-> {
+): Promise<ActionAck<{ job: CategorizeJob; started: boolean }>> {
   const denied = await actionDenied("revertRuleEvidenceAction");
   if (denied) return denied;
-  return asAck(async () => {
+  try {
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
-    await operatorEmail();
-    await mutate(
-      `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_category_rules\`
-       SET enabled = FALSE, updated_at = CURRENT_TIMESTAMP()
-       WHERE id = @id`,
-      { id: ruleId },
-    );
-    // Clear rule_id on txns that still point at this rule, then reapply.
-    await mutate(
-      `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_transactions\`
-       SET rule_id = NULL, updated_at = CURRENT_TIMESTAMP()
-       WHERE rule_id = @id AND override_category_id IS NULL`,
-      { id: ruleId },
-    );
-    const reapply = await reapplyPlaidCategories();
+    const by = await operatorEmail();
+    const out = await runCategorizeJob({
+      kind: "revert_rule",
+      by,
+      ruleId,
+      scope: { ruleId },
+      before: () => setRuleEnabled(ruleId, false, "revert", by, "Revert from console"),
+    });
+    if (!out.started) {
+      return failAck(new Error(await busyMessage("Reverting a rule") ?? "Another job is running."));
+    }
+    if (out.job.status === "failed") return failAck(new Error(`Revert failed: ${out.job.message}`));
     revalidatePath("/accounting");
     revalidatePath("/home");
-    return { disabled: true, reapply };
-  }, "Rule reverted.");
+    return okAck({ data: out, message: `Rule ${ruleId} reverted.` });
+  } catch (e) {
+    return failAck(e);
+  }
 }
 
 export async function setTaxonomyExcludeAction(
@@ -780,7 +861,7 @@ export async function setTaxonomyExcludeAction(
     if (!FEATURES.writePlaidLink) throw new Error("Plaid writes disabled");
     await operatorEmail();
     await mutate(
-      `UPDATE \`jarvis-bhaga-prod.bhaga.plaid_taxonomy_nodes\`
+      `UPDATE ${plaidFq("plaid_taxonomy_nodes")}
        SET exclude_from_accounting = @exclude_from_accounting,
            updated_at = CURRENT_TIMESTAMP()
        WHERE id = @id`,

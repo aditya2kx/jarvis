@@ -23,10 +23,18 @@ export interface CategorizeJob {
 /** A running job whose heartbeat is older than this is treated as dead (instance restart). */
 export const JOB_STALE_MS = 3 * 60_000;
 
-function ts(v: string | null | undefined): number {
+/** Parses BigQuery's CAST(TIMESTAMP AS STRING) form `2026-11-19 11:59:55.123456+00` and ISO. */
+export function parseBqTimestamp(v: string | null | undefined): number {
   if (!v) return NaN;
-  return Date.parse(v.includes("T") ? v : v.replace(" ", "T"));
+  const iso = v
+    .trim()
+    .replace(" ", "T")
+    .replace(/(\.\d{3})\d+/, "$1")
+    .replace(/([+-]\d{2})$/, "$1:00");
+  return Date.parse(iso);
 }
+
+const ts = parseBqTimestamp;
 
 export function isJobLive(job: CategorizeJob | null | undefined, now = Date.now()): boolean {
   if (!job || job.status !== "running") return false;

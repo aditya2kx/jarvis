@@ -86,7 +86,7 @@ BEGIN
       @account_mask, @from_mask, @to_mask, @category_id, @subcategory_id,
       'medium', @enabled, 'Created from Accounting propose-rule', CURRENT_TIMESTAMP()
     );
-    INSERT INTO ${t.events} (event_id, rule_id, action, rule_json, note, by_email, at)
+    INSERT INTO ${t.events} (event_id, rule_id, action, rule_json, note, by_email, event_at)
     SELECT @event_id, r.id, 'create', TO_JSON_STRING(r), 'propose-rule commit', @by, CURRENT_TIMESTAMP()
     FROM ${t.rules} r WHERE r.id = @id;
   END IF;
@@ -112,7 +112,7 @@ export function setRuleEnabledScript(t: { rules: string; events: string }): stri
 BEGIN
   BEGIN TRANSACTION;
   UPDATE ${t.rules} SET enabled = @enabled, updated_at = CURRENT_TIMESTAMP() WHERE id = @id;
-  INSERT INTO ${t.events} (event_id, rule_id, action, rule_json, note, by_email, at)
+  INSERT INTO ${t.events} (event_id, rule_id, action, rule_json, note, by_email, event_at)
   SELECT @event_id, r.id, @action, TO_JSON_STRING(r), @note, @by, CURRENT_TIMESTAMP()
   FROM ${t.rules} r WHERE r.id = @id;
   COMMIT TRANSACTION;

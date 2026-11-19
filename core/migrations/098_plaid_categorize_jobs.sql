@@ -35,5 +35,5 @@ CREATE TABLE IF NOT EXISTS `jarvis-bhaga-prod.bhaga.plaid_category_rule_events` 
   rule_json   STRING,              -- full rule row after the change
   note        STRING,
   by_email    STRING,
-  at          TIMESTAMP NOT NULL
+  event_at    TIMESTAMP NOT NULL
 );

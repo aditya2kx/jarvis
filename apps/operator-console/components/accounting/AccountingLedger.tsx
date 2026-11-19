@@ -673,23 +673,29 @@ export function AccountingLedger({
       const child = taxonomyState.find((t) => t.id === subId);
       const excluded = resolveExcludedWith(taxonomyState, catId, subId);
       const ruleSummary = `#? ${result.ruleId}: contains '${rulePattern.trim()}'`;
-      // Optimistic ledger refresh for applied matches (skip overrides).
-      setRows((prev) =>
-        prev.map((r) =>
-          selected.has(r.transaction_id) && !r.is_override
-            ? patchTxnCategory(r, {
-                categoryId: catId,
-                subcategoryId: subId,
-                categoryLabel: parent?.label || r.category,
-                subcategoryLabel: child?.label || "—",
-                excluded,
-                ruleId: result.ruleId,
-                ruleSummary,
-                isOverride: false,
-              })
-            : r,
-        ),
-      );
+      // Optimistic ledger refresh for applied matches (skip overrides). Keep the same
+      // array when nothing changed: a fresh-but-identical rows array sent the charts
+      // into a render loop after a zero-backfill commit (React #185).
+      if (selected.size) {
+        setRows((prev) => {
+          let changed = false;
+          const next = prev.map((r) => {
+            if (!selected.has(r.transaction_id) || r.is_override) return r;
+            changed = true;
+            return patchTxnCategory(r, {
+              categoryId: catId,
+              subcategoryId: subId,
+              categoryLabel: parent?.label || r.category,
+              subcategoryLabel: child?.label || "—",
+              excluded,
+              ruleId: result.ruleId,
+              ruleSummary,
+              isOverride: false,
+            });
+          });
+          return changed ? next : prev;
+        });
+      }
       const message = `Rule ${result.ruleId}: ${ack.message ?? `applied ${result.applied}`}${result.skipped_override ? ` · ${result.skipped_override} override(s) kept` : ""}`;
       setRuleMsg(message);
       return okAck({ message });

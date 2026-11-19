@@ -1124,9 +1124,11 @@ export function AccountingLedger({
                   disabled={pending || committedRuleId != null}
                   onChange={(e) => setRulePattern(e.target.value)}
                 />
-                <div className="flex gap-2">
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Direction
                   <select
-                    className="rounded border bg-background px-2 py-1.5 text-sm"
+                    aria-label="Direction"
+                    className="rounded border bg-background px-2 py-1.5 text-sm text-foreground"
                     value={ruleAmountSign}
                     disabled={pending || committedRuleId != null}
                     onChange={(e) => setRuleAmountSign(e.target.value)}
@@ -1137,9 +1139,13 @@ export function AccountingLedger({
                       </option>
                     ))}
                   </select>
+                </label>
+                <div className="grid grid-cols-2 gap-2">
                   <input
                     type="text"
-                    className="rounded border bg-background px-2 py-1.5 text-sm w-24"
+                    inputMode="numeric"
+                    aria-label="From last 4"
+                    className="min-w-0 rounded border bg-background px-2 py-1.5 text-sm"
                     placeholder="From last4"
                     value={ruleFromMask}
                     disabled={pending || committedRuleId != null}
@@ -1147,7 +1153,9 @@ export function AccountingLedger({
                   />
                   <input
                     type="text"
-                    className="rounded border bg-background px-2 py-1.5 text-sm w-24"
+                    inputMode="numeric"
+                    aria-label="To last 4"
+                    className="min-w-0 rounded border bg-background px-2 py-1.5 text-sm"
                     placeholder="To last4"
                     value={ruleToMask}
                     disabled={pending || committedRuleId != null}

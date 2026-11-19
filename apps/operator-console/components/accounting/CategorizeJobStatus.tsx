@@ -17,7 +17,7 @@ export function CategorizeJobStatus({ job, className }: { job: CategorizeJob; cl
   const pct = jobPercent(job);
   const failed = job.status === "failed" || stalled;
   return (
-    <div className={cn("flex flex-col gap-1.5", className)} role="status" aria-live="polite">
+    <div className={cn("flex flex-col gap-1.5", className)} role="status" aria-live="polite" data-testid="categorize-job-status">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <Badge variant={failed ? "destructive" : live ? "secondary" : "outline"}>
           {live ? "Running" : failed ? (stalled ? "Stopped" : "Failed") : "Done"}

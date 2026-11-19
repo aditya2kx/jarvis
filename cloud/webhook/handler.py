@@ -1938,6 +1938,12 @@ def _plaid_sync_all_items() -> None:
                 result.removed,
                 result.pages,
             )
+            if result.errors:
+                log.error(
+                    "plaid sync partial item=%s errors=%s",
+                    item_id,
+                    " | ".join(result.errors)[:1000],
+                )
         except Exception as exc:  # noqa: BLE001
             log.error("plaid sync failed item=%s: %s", item_id, exc)
 

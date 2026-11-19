@@ -2966,8 +2966,13 @@ against the latest policy instead of a cached session decision. Revoke with
   gitignored `local/plaid-taxonomy-seed/` +
   `python3 -c "from skills.plaid_api.taxonomy_seed import seed_taxonomy, extend_corpus_rules; …"`.
   Reapply: `from skills.plaid_api.categorize import reapply_categories` or console **Reapply rules**.
-  Incremental sync (console Sync + webhook `sync_item`) categorizes upserted rows without clearing
-  overrides. View groups by effective category label (alias `pfc_primary` kept for Home sum).
+  Incremental sync (console Sync + webhook `sync_item`) categorizes upserted rows **plus every row
+  never categorized** (`categorized_at IS NULL`, no override) without clearing overrides, so a sync
+  whose categorize step failed heals on the next sync / nightly catch-up. Breadcrumbs:
+  `[plaid_api.sync] categorize updated=… scanned=…`, `categorize failed item=…`, and
+  `plaid sync partial item=… errors=…` (webhook) / `[plaid_sync] partial` (nightly). 2026-08-11 →
+  09-14 rows were never categorized at ingest (stale webhook image, #296) and nothing re-swept
+  them until a manual Reapply (Accounting bugs, Nov 2026). View groups by effective category label (alias `pfc_primary` kept for Home sum).
   (checking↔own card payments auto-flagged; operator can Mark/unmark). Click PFC category for
   a short definition sheet. Custom taxonomy / rule engine remains Issue #160.
 - **New goal keys:** `goal_net_sales_weekly`, `goal_net_sales_monthly`,

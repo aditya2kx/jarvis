@@ -1,3 +1,7 @@
+## 2026-11-19 — Plaid ingest categorizes rows a past sync missed (Accounting bugs, CFO report)
+
+**Symptom:** enabled rules (card deposits, payroll, grocery …) never applied to Aug–Sep 2026 rows until a manual Reapply. **Cause (prod BQ time travel, 2026-11-18 21:30 UTC):** 171 rows ingested 2026-08-11 → 09-14 had `categorized_at IS NULL` while a then-enabled rule matched each one; rows after Sep 14 were categorized at ingest. The window is exactly when `bhaga-webhook` served the stale 2026-08-05 preview image (#296). Ingest only ever categorizes the rows a sync upserts, and `SyncResult.errors` was never logged, so nothing surfaced or re-swept them. **Change:** post-sync categorize also sweeps every never-categorized row (no override), applies changes in one MERGE from an array-of-STRUCT param (no shared `_plaid_cat_staging` table to race the double webhook sync on), retries BigQuery serialization conflicts, and webhook / nightly log `plaid sync partial … errors=`.
+
 ## 2026-11-08 — Last 90 days Period + assigned shift → open shift (Issue #508)
 
 **Scope:** Operator Console Period gains **Last 90 days** (Home goals on 90d = 3 × monthly); day charts thin two-line date ticks past ~a month of bars. Labor shift drawer Person → **Open shift (unassigned)** stages one tray **Unassign** (`shift-to-open`); Apply adds + publishes the open shift, confirms it, then deletes the assigned shift. Live round trip on Dolce Nov 29 1:30–8:30 PM (unassign → assign back) ended with ADP matching the start. PR #509.

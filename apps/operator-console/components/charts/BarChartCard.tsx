@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, type ReactNode } from "react";
+import { useCallback, useId, useMemo, useState, type ReactNode } from "react";
 import {
   Bar,
   BarChart,
@@ -28,6 +28,14 @@ import {
 } from "./ChartInteraction";
 
 export type BarValueFormat = "dollars" | "percent" | "number";
+
+/**
+ * Axis props must keep their identity across re-renders: Recharts 3 re-dispatches the
+ * rendered ticks whenever they change, and an inline `tick` / `tickFormatter` made every
+ * parent re-render a new tick set — two charts updating in one commit (Accounting after a
+ * category override) hit React's nested-update limit (#185) and crashed the page.
+ */
+const AXIS_TICK = { fontSize: 12 } as const;
 
 /** Most two-line day ticks (date + weekday) that fit side by side on a desktop chart. */
 const MAX_EVERY_DAY_TICKS = 31;
@@ -142,7 +150,7 @@ function MultilineXTick({
 
 export function BarChartCard({
   title,
-  data,
+  data: dataProp,
   xKey,
   series,
   goal,
@@ -171,6 +179,11 @@ export function BarChartCard({
   /** When set, that series’ bars turn green/red from the signed value. */
   signedValueColors?: SignedValueColors;
 }) {
+  // Same reason as AXIS_TICK: Recharts re-dispatches `data` on every new array, so a
+  // value-equal re-render must hand it the same array.
+  const dataKey = JSON.stringify(dataProp);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on value, not identity
+  const data = useMemo(() => dataProp, [dataKey]);
   const multilineX = data.some((row) => String(row[xKey] ?? "").includes("\n"));
   // Every multi-line day tick fits on desktop up to about a month of bars; past that, and at
   // 390px, they overlap, so Recharts skips ticks to keep a gap.
@@ -181,6 +194,8 @@ export function BarChartCard({
   const hatched = series.filter((s) => s.pattern === "hatch");
   const { hidden, toggle } = useHiddenSeries();
   const [readoutEl, setReadoutEl] = useState<HTMLDivElement | null>(null);
+  const yTickFormatter = useCallback((v: unknown) => formatTick(Number(v), valueFormat), [valueFormat]);
+  const xTick = useMemo(() => (multilineX ? <MultilineXTick /> : AXIS_TICK), [multilineX]);
   const baseColor = (s: Series) => s.color ?? seriesColorAt(series.indexOf(s));
   const colorOf = (s: Series, row: Record<string, unknown>) =>
     signedValueColors?.dataKey === s.key ? signedFill(row[s.key], signedValueColors) : baseColor(s);
@@ -233,7 +248,7 @@ export function BarChartCard({
             <CartesianGrid vertical={false} className="stroke-border/70" />
             <XAxis
               dataKey={xKey}
-              tick={multilineX ? <MultilineXTick /> : { fontSize: 12 }}
+              tick={xTick}
               tickLine={false}
               axisLine={false}
               height={multilineX ? 36 : undefined}
@@ -241,8 +256,8 @@ export function BarChartCard({
               minTickGap={multilineX ? (thinX ? 6 : 0) : undefined}
             />
             <YAxis
-              tick={{ fontSize: 12 }}
-              tickFormatter={(v) => formatTick(Number(v), valueFormat)}
+              tick={AXIS_TICK}
+              tickFormatter={yTickFormatter}
               width={52}
               tickLine={false}
               axisLine={false}

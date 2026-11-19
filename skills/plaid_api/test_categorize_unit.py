@@ -9,17 +9,17 @@ from skills.plaid_api.category_rules import CategoryRule
 
 SQUARE = CategoryRule(
     id="income_square_deposit", priority=10, match_field="name_or_merchant",
-    match_operator="contains", match_pattern="Square Inc", amount_sign="negative",
+    match_operator="contains", match_pattern="SQUARECO", amount_sign="negative",
     category_id="revenue_deposits", subcategory_id="revenue_deposits__square_deposits",
 )
 ADP = CategoryRule(
     id="payroll_adp_wages", priority=100, match_field="name_or_merchant",
-    match_operator="contains", match_pattern="ADP WAGE", amount_sign="positive",
+    match_operator="contains", match_pattern="PAYCO WAGE", amount_sign="positive",
     category_id="payroll_labor", subcategory_id="payroll_labor__adp_wage_pay",
 )
 HEB = CategoryRule(
     id="inventory_heb", priority=260, match_field="name_or_merchant",
-    match_operator="contains", match_pattern="H-e-b", amount_sign="positive",
+    match_operator="contains", match_pattern="GROCERCO", amount_sign="positive",
     category_id="inventory_food_supplies", subcategory_id="inventory_food_supplies__heb_grocery",
 )
 
@@ -27,7 +27,7 @@ HEB = CategoryRule(
 def _txn(tid: str, name: str, amount: float, **kw) -> dict:
     return {
         "transaction_id": tid, "name": name, "merchant_name": None, "amount": amount,
-        "account_mask": "8933", "counterparty_name": None, "category_id": None,
+        "account_mask": "1111", "counterparty_name": None, "category_id": None,
         "subcategory_id": None, "rule_id": None, "override_category_id": None,
         "is_internal": False, **kw,
     }
@@ -35,12 +35,12 @@ def _txn(tid: str, name: str, amount: float, **kw) -> dict:
 
 class TestPlanUpdates(unittest.TestCase):
     def test_uncategorized_aug_sep_rows_get_existing_rules(self):
-        # Shapes of rows ingested 2026-08-11..09-14 that stayed categorized_at NULL.
+        # Shape of rows ingested 2026-08-11..09-14 that stayed categorized_at NULL (synthetic names).
         rows = [
-            _txn("sq", "ORIG CO NAME:Square Inc ORIG ID:9424300002 DESC DATE:260901", -812.4),
-            _txn("adp", "ORIG CO NAME:ADP WAGE PAY ORIG ID:9333006057", 7704.81),
-            _txn("heb", "H-E-B #123 HOUSTON", 42.10, account_mask="6029"),
-            _txn("cava", "10180 CAVA CINCO RANCH", 12.29),
+            _txn("sq", "ORIG CO NAME:SQUARECO SETTLE", -500.0),
+            _txn("adp", "ORIG CO NAME:PAYCO WAGE PAY", 1234.56),
+            _txn("heb", "GROCERCO #123", 42.0, account_mask="2222"),
+            _txn("cava", "SOME CAFE", 12.0),
         ]
         plan = categorize.plan_updates(rows, [SQUARE, ADP, HEB])
         got = {u["transaction_id"]: u["rule_id"] for u in plan["updates"]}
@@ -50,13 +50,13 @@ class TestPlanUpdates(unittest.TestCase):
         self.assertEqual(plan["unchanged"], 1)
 
     def test_override_never_touched(self):
-        rows = [_txn("o", "ADP WAGE PAY", 10.0, override_category_id="personal")]
+        rows = [_txn("o", "PAYCO WAGE PAY", 10.0, override_category_id="personal")]
         plan = categorize.plan_updates(rows, [ADP])
         self.assertEqual(plan["updates"], [])
         self.assertEqual(plan["skipped_override"], 1)
 
     def test_already_correct_is_unchanged(self):
-        rows = [_txn("a", "ADP WAGE PAY", 10.0, category_id="payroll_labor",
+        rows = [_txn("a", "PAYCO WAGE PAY", 10.0, category_id="payroll_labor",
                      subcategory_id="payroll_labor__adp_wage_pay", rule_id="payroll_adp_wages")]
         self.assertEqual(categorize.plan_updates(rows, [ADP])["updates"], [])
 
@@ -76,7 +76,7 @@ def _bq_with_rows(rows: list[dict]) -> MagicMock:
 class TestReapply(unittest.TestCase):
     @patch.object(categorize, "load_rules", return_value=[ADP])
     def test_post_sync_sweeps_never_categorized_rows(self, _rules):
-        bq = _bq_with_rows([_txn("adp", "ADP WAGE PAY", 5.0)])
+        bq = _bq_with_rows([_txn("adp", "PAYCO WAGE PAY", 5.0)])
         out = categorize.categorize_upserted(bq, [], item_id="item1")
         select_sql = bq.query.call_args_list[0].args[0]
         self.assertIn("t.categorized_at IS NULL AND t.override_category_id IS NULL", select_sql)
@@ -96,7 +96,7 @@ class TestReapply(unittest.TestCase):
 
     @patch.object(categorize, "load_rules", return_value=[ADP])
     def test_merge_uses_struct_param_not_shared_staging(self, _rules):
-        bq = _bq_with_rows([_txn("adp", "ADP WAGE PAY", 5.0)])
+        bq = _bq_with_rows([_txn("adp", "PAYCO WAGE PAY", 5.0)])
         categorize.reapply_categories(bq)
         merge_sql = bq.query.call_args_list[1].args[0]
         self.assertIn("UNNEST(@rows)", merge_sql)
@@ -105,7 +105,7 @@ class TestReapply(unittest.TestCase):
 
     @patch.object(categorize, "load_rules", return_value=[ADP])
     def test_no_merge_when_nothing_changes(self, _rules):
-        bq = _bq_with_rows([_txn("c", "CAVA", 5.0)])
+        bq = _bq_with_rows([_txn("c", "SOME CAFE", 5.0)])
         categorize.reapply_categories(bq)
         self.assertEqual(bq.query.call_count, 1)
 

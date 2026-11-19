@@ -99,7 +99,9 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
 9b. **Plaid Accounting catch-up** (`_plaid_sync_linked_items`, Issue #220): best-effort
    `skills.plaid_api.sync.sync_item` for every linked Item. **Non-fatal**, no Firestore marker —
    webhook is primary; this drains missed updates on the existing `bhaga-nightly` cron (no dedicated
-   Plaid scheduler). Manual Sync on `/accounting` remains the backfill path.
+   Plaid scheduler). Manual Sync on `/accounting` remains the backfill path. Each sync also
+   re-categorizes any never-categorized row, and `SyncResult.errors` are logged as
+   `[plaid_sync] partial item=…` instead of being dropped.
 7. **Verify the rebuilt Model** — first **mechanically** (`assert_model_tabs_populated`: tabs non-empty,
    KDS joined), then **semantically** (`model_semantics.assert_model_semantics`: tip-pool conservation,
    a closed period's `adp_paid` reconciles **only when** a covering GCS Earnings export actually carries

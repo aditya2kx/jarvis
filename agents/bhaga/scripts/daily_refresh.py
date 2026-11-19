@@ -2739,6 +2739,12 @@ def _plaid_sync_linked_items(store: str) -> None:
                 f"[plaid_sync] ok item={item_id} added={result.added} "
                 f"modified={result.modified} removed={result.removed} pages={result.pages}"
             )
+            if result.errors:
+                print(
+                    f"[plaid_sync] partial item={item_id} (non-fatal): "
+                    + " | ".join(result.errors)[:1000],
+                    file=sys.stderr,
+                )
         except Exception as exc:  # noqa: BLE001
             print(
                 f"[plaid_sync] failed item={item_id} (non-fatal): {exc}",

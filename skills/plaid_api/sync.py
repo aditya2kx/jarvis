@@ -270,17 +270,23 @@ def sync_item(store: str, item_id: str, *, cursor: str | None = None) -> SyncRes
             print(f"[plaid_api.sync] suggestInternal marked={n} item={item_id}")
     except Exception as exc:  # noqa: BLE001
         result.errors.append(f"suggest_internal: {exc}")
-    # Palmetto taxonomy (#160): categorize upserted rows (never clears overrides).
+    # Palmetto taxonomy (#160): categorize upserted rows plus any row a past sync
+    # failed to categorize (never clears overrides).
     try:
         from skills.plaid_api.categorize import categorize_upserted
 
-        cat = categorize_upserted(bq, categorized_ids)
-        if cat.get("updated"):
-            print(
-                f"[plaid_api.sync] categorize updated={cat['updated']} "
-                f"unchanged={cat['unchanged']} item={item_id}"
-            )
+        cat = categorize_upserted(bq, categorized_ids, item_id=item_id)
+        print(
+            f"[plaid_api.sync] categorize updated={cat['updated']} "
+            f"unchanged={cat['unchanged']} scanned={cat['scanned']} "
+            f"upserted={len(categorized_ids)} item={item_id}"
+        )
     except Exception as exc:  # noqa: BLE001
+        print(
+            f"[plaid_api.sync] categorize failed item={item_id} "
+            f"upserted={len(categorized_ids)}: {exc}",
+            file=sys.stderr,
+        )
         result.errors.append(f"categorize: {exc}")
     try:
         n = _dedupe_transactions(bq)

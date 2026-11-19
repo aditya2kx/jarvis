@@ -241,7 +241,7 @@ jobs:
           ### Operator Console preview
           **[$URL/home]($URL/home)** — commit \`${HEAD_SHA::7}\`
 
-          Read-only (\`CONSOLE_PREVIEW=1\`): prod data, every save refused — except Accounting categorization, which writes only this preview's own `plaid_*_<tag>` sandbox copies. Google sign-in with the same allowlist as prod. Deleted when this PR closes.
+          Read-only (\`CONSOLE_PREVIEW=1\`): prod data, every save refused — except Accounting categorization, which writes only this preview's own \`plaid_*_<tag>\` sandbox copies. Google sign-in with the same allowlist as prod. Deleted when this PR closes.
           EOF
           python3 scripts/sticky_pr_comment.py --repo "$GITHUB_REPOSITORY" --pr "$PR" \
             --marker operator-console-preview --body-file /tmp/body.md

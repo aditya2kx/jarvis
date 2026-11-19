@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -12,7 +13,9 @@ import {
 } from "@/components/ui/sheet";
 import {
   dryRunRuleAction,
+  revertRuleEvidenceAction,
   setCategoryRuleEnabledAction,
+  type RuleDryRun,
   setTaxonomyExcludeAction,
   setTaxonomyNodeEnabledAction,
   upsertTaxonomyNodeAction,
@@ -21,6 +24,11 @@ import type { TaxonomyOption } from "@/components/accounting/AccountingLedger";
 import { effectiveExclude } from "@/lib/plaid/exclude-accounting";
 import { useConsoleAction } from "@/lib/actions/useConsoleAction";
 import { okAck } from "@/lib/actions/types";
+import { amountSignLabel } from "@/lib/plaid/amount-sign";
+import { jobProgressLabel, type CategorizeJob } from "@/lib/plaid/categorize-job-status";
+import { duplicateRuleIds } from "@/lib/plaid/rule-commit";
+import { formatDollars } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 export interface RuleListItem {
   id: string;
@@ -28,9 +36,46 @@ export interface RuleListItem {
   match_operator: string;
   match_pattern: string;
   amount_sign: string | null;
-  from_mask?: string | null;
-  to_mask?: string | null;
+  account_mask: string | null;
+  from_mask: string | null;
+  to_mask: string | null;
   enabled: boolean | null;
+  category_id: string;
+  subcategory_id: string | null;
+  category_label: string | null;
+  subcategory_label: string | null;
+  applied_count: number;
+  notes: string | null;
+  updated_at: string | null;
+}
+
+/** Lower-case text a rule is searched by (id, pattern, target labels, masks). */
+export function ruleSearchText(r: RuleListItem): string {
+  return [
+    r.id,
+    r.match_pattern,
+    r.category_label,
+    r.subcategory_label,
+    r.category_id,
+    r.subcategory_id,
+    r.from_mask,
+    r.to_mask,
+    r.account_mask,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function ruleCriteria(r: RuleListItem): string {
+  const parts = [
+    r.match_pattern ? `${r.match_operator} "${r.match_pattern}"` : "(no name pattern)",
+    amountSignLabel(r.amount_sign),
+  ];
+  if (r.account_mask) parts.push(`account …${r.account_mask}`);
+  if (r.from_mask) parts.push(`from …${r.from_mask}`);
+  if (r.to_mask) parts.push(`to …${r.to_mask}`);
+  return parts.join(" · ");
 }
 
 export function AccountingRulesDrawer({
@@ -38,11 +83,18 @@ export function AccountingRulesDrawer({
   ruleCount,
   taxonomy,
   rules,
+  jobLive = false,
+  onJob,
+  onWatch,
 }: {
   canWrite: boolean;
   ruleCount: number;
   taxonomy: TaxonomyOption[];
   rules: RuleListItem[];
+  /** A Reapply / Revert is running — Revert waits for it. */
+  jobLive?: boolean;
+  onJob?: (job: CategorizeJob) => void;
+  onWatch?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const { isPending: pending, stage, error, run } = useConsoleAction();
@@ -53,6 +105,18 @@ export function AccountingRulesDrawer({
   const [newParentExclude, setNewParentExclude] = useState(false);
 
   const parents = taxonomy.filter((t) => !t.parent_id);
+  const [ruleQuery, setRuleQuery] = useState("");
+  const [showOff, setShowOff] = useState(true);
+  const [openRule, setOpenRule] = useState<string | null>(null);
+  const [dryRuns, setDryRuns] = useState<Record<string, RuleDryRun>>({});
+  const [confirmRevert, setConfirmRevert] = useState<string | null>(null);
+  const dupOf = useMemo(() => duplicateRuleIds(rules), [rules]);
+  const visibleRules = useMemo(() => {
+    const needle = ruleQuery.trim().toLowerCase();
+    return rules.filter(
+      (r) => (showOff || r.enabled !== false) && (!needle || ruleSearchText(r).includes(needle)),
+    );
+  }, [rules, ruleQuery, showOff]);
 
   function addSubcategory() {
     if (!newLabel.trim() || !parentId) return;
@@ -132,13 +196,35 @@ export function AccountingRulesDrawer({
   }
 
   function dryRun(id: string) {
-    void run(async () => {
-      const ack = await dryRunRuleAction(id);
-      if (!ack.ok) return ack;
-      const n = ack.data!;
-      setMsg(`Dry-run ${id}: ${n} matching txns`);
-      return okAck({ message: `Dry-run ${id}: ${n} matching txns` });
-    });
+    void run(
+      async () => {
+        const ack = await dryRunRuleAction(id);
+        if (!ack.ok) return ack;
+        const d = ack.data!;
+        setDryRuns((prev) => ({ ...prev, [id]: d }));
+        setOpenRule(id);
+        const message = `Dry-run ${id}: would apply to ${d.would_apply} (now ${d.currently_applied}) · ${d.matches} match`;
+        setMsg(message);
+        return okAck({ message });
+      },
+      { saving: "Checking every transaction…" },
+    );
+  }
+
+  function revert(id: string) {
+    setConfirmRevert(null);
+    onWatch?.();
+    void run(
+      async () => {
+        const ack = await revertRuleEvidenceAction(id);
+        if (!ack.ok) return ack;
+        onJob?.(ack.data!.job);
+        const message = jobProgressLabel(ack.data!.job);
+        setMsg(message);
+        return okAck({ message });
+      },
+      { saving: `Reverting ${id}…` },
+    );
   }
 
   const feedback = error || stage || msg;
@@ -296,48 +382,148 @@ export function AccountingRulesDrawer({
           </section>
 
           <section className="flex flex-col gap-2">
-            <h3 className="text-sm font-medium">Rules ({ruleCount})</h3>
-            <ul className="max-h-64 space-y-2 overflow-y-auto text-xs">
-              {rules.slice(0, 50).map((r) => (
-                <li key={r.id} className="rounded border p-2">
-                  <div className="font-mono">
-                    #{r.priority} {r.id}
-                    {r.enabled === false ? " (off)" : ""}
-                  </div>
-                  <div className="text-muted-foreground">
-                    {r.match_pattern
-                      ? `${r.match_operator} "${r.match_pattern}"`
-                      : "(no name pattern)"}{" "}
-                    ({r.amount_sign || "any"})
-                    {r.from_mask ? ` · from …${r.from_mask}` : ""}
-                    {r.to_mask ? ` · to …${r.to_mask}` : ""}
-                  </div>
-                  <div className="mt-1 flex gap-1">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-6 text-xs"
-                      disabled={pending}
-                      onClick={() => dryRun(r.id)}
-                    >
-                      Dry-run
-                    </Button>
-                    {canWrite ? (
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-medium">
+                Rules ({visibleRules.length === ruleCount ? ruleCount : `${visibleRules.length} of ${ruleCount}`})
+              </h3>
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <input type="checkbox" checked={showOff} onChange={(e) => setShowOff(e.target.checked)} />
+                Show disabled
+              </label>
+            </div>
+            <input
+              type="search"
+              aria-label="Search rules"
+              className="rounded border bg-background px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              placeholder="Search pattern, category, rule id, last-4…"
+              value={ruleQuery}
+              onChange={(e) => setRuleQuery(e.target.value)}
+            />
+            <ul className="space-y-2 text-xs">
+              {visibleRules.map((r) => {
+                const off = r.enabled === false;
+                const dup = dupOf.get(r.id);
+                const dr = dryRuns[r.id];
+                const expanded = openRule === r.id;
+                return (
+                  <li key={r.id} className={cn("rounded-md border p-2", off && "bg-muted/40")}>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-mono text-[11px] text-muted-foreground">#{r.priority}</span>
+                      <span className="font-mono text-[11px] break-all">{r.id}</span>
+                      {off ? <Badge variant="outline">Off</Badge> : null}
+                      {dup ? <Badge variant="destructive">Duplicate of {dup}</Badge> : null}
+                    </div>
+                    <div className="mt-1 text-sm font-medium text-foreground">
+                      {r.category_label ?? r.category_id}
+                      <span className="text-muted-foreground">
+                        {" › "}
+                        {r.subcategory_id ? (r.subcategory_label ?? r.subcategory_id) : "no subcategory"}
+                      </span>
+                    </div>
+                    <div className="text-muted-foreground break-words">{ruleCriteria(r)}</div>
+                    <div className="text-muted-foreground">
+                      Applied to {r.applied_count.toLocaleString("en-US")} transaction
+                      {r.applied_count === 1 ? "" : "s"}
+                    </div>
+                    {expanded ? (
+                      <div className="mt-2 flex flex-col gap-1 rounded bg-muted/40 p-2">
+                        {r.notes ? <p>{r.notes}</p> : null}
+                        {r.updated_at ? (
+                          <p className="text-muted-foreground">Last changed {r.updated_at.slice(0, 16)} UTC</p>
+                        ) : null}
+                        {dr ? (
+                          <>
+                            <p>
+                              Dry-run: matches <span className="font-medium">{dr.matches}</span> · would apply to{" "}
+                              <span className="font-medium">{dr.would_apply}</span> (now {dr.currently_applied}) ·{" "}
+                              {dr.shadowed} taken by a higher-priority rule · {dr.overrides} override(s) kept
+                            </p>
+                            {dr.sample.length ? (
+                              <ul className="mt-1 space-y-0.5">
+                                {dr.sample.map((m, i) => (
+                                  <li key={i} className="flex gap-2">
+                                    <span className="tabular-nums text-muted-foreground">{m.date}</span>
+                                    <span className="flex-1 truncate">{m.name}</span>
+                                    <span className="tabular-nums">{formatDollars(m.amount)}</span>
+                                    <span className="text-muted-foreground">{m.status}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                          </>
+                        ) : (
+                          <p className="text-muted-foreground">Dry-run shows what this rule matches today.</p>
+                        )}
+                      </div>
+                    ) : null}
+                    <div className="mt-1.5 flex flex-wrap gap-1">
                       <Button
                         type="button"
                         size="sm"
                         variant="ghost"
-                        className="h-6 text-xs"
-                        disabled={pending}
-                        onClick={() => toggleRule(r.id, r.enabled === false)}
+                        className="h-7 px-2 text-xs"
+                        aria-expanded={expanded}
+                        onClick={() => setOpenRule(expanded ? null : r.id)}
                       >
-                        {r.enabled === false ? "Enable" : "Disable"}
+                        {expanded ? "Hide" : "View"}
                       </Button>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs"
+                        disabled={pending}
+                        onClick={() => dryRun(r.id)}
+                      >
+                        Dry-run
+                      </Button>
+                      {canWrite ? (
+                        <>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs"
+                            disabled={pending}
+                            onClick={() => toggleRule(r.id, off)}
+                          >
+                            {off ? "Enable" : "Disable"}
+                          </Button>
+                          {r.applied_count > 0 || !off ? (
+                            confirmRevert === r.id ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="destructive"
+                                className="h-7 px-2 text-xs"
+                                disabled={pending || jobLive}
+                                onClick={() => revert(r.id)}
+                              >
+                                Confirm revert ({r.applied_count})
+                              </Button>
+                            ) : (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                disabled={pending || jobLive}
+                                title={jobLive ? "Waiting for the running Reapply to finish" : "Disable and re-categorize its transactions"}
+                                onClick={() => setConfirmRevert(r.id)}
+                              >
+                                Revert
+                              </Button>
+                            )
+                          ) : null}
+                        </>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
+              {!visibleRules.length ? (
+                <li className="text-muted-foreground">No rules match “{ruleQuery}”.</li>
+              ) : null}
             </ul>
           </section>
         </div>

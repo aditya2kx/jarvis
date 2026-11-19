@@ -3,7 +3,9 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
 import { operatorEmail } from "@/lib/auth/identity";
-import { MUTATING_ACTIONS, type MutatingActionName } from "@/lib/actions/registry";
+import { MUTATING_ACTIONS, PREVIEW_SANDBOX_ACTIONS, type MutatingActionName } from "@/lib/actions/registry";
+import { isConsolePreview, PREVIEW_ACTION_REFUSAL } from "@/lib/config/preview";
+import { plaidSandboxSuffix } from "@/lib/plaid/tables";
 import {
   NO_ACCESS,
   canKey,
@@ -89,9 +91,14 @@ export const ACCESS_DENIED_MESSAGE =
 
 /**
  * First line of every mutating server action: a refusal ack when the signed-in person
- * holds none of the action's `access` keys (lib/actions/registry.ts), else null.
+ * holds none of the action's `access` keys (lib/actions/registry.ts), else null. On a
+ * preview, everything but the Accounting sandbox actions is refused here as well as in
+ * middleware.ts.
  */
 export async function actionDenied(name: MutatingActionName): Promise<{ ok: false; error: string } | null> {
+  if (isConsolePreview() && !(plaidSandboxSuffix() && PREVIEW_SANDBOX_ACTIONS.includes(name))) {
+    return { ok: false, error: PREVIEW_ACTION_REFUSAL };
+  }
   const entry = MUTATING_ACTIONS.find((a) => a.name === name);
   const a = await getAccess();
   if (a.error) return { ok: false, error: `${a.error} Nothing was changed.` };

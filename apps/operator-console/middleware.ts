@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { HASH_CONSOLE_HOST } from "@/lib/iap/hosts";
 import { accessSandboxWritable, isConsolePreview, PREVIEW_ACTION_REFUSAL } from "@/lib/config/preview";
+import { plaidSandboxSuffix } from "@/lib/plaid/tables";
 
 /**
  * Issue #208 — do NOT redirect hash ↔ canonical after IAP.
@@ -17,7 +18,10 @@ export function middleware(request: NextRequest) {
     isConsolePreview() &&
     request.method !== "GET" &&
     request.method !== "HEAD" &&
-    !(request.nextUrl.pathname === "/api/access" && accessSandboxWritable())
+    !(request.nextUrl.pathname === "/api/access" && accessSandboxWritable()) &&
+    // Accounting actions on a preview with its own sandbox tables; actionDenied() limits
+    // which actions, and every preview write must target a sandbox table (lib/plaid/tables).
+    !(request.nextUrl.pathname === "/accounting" && request.headers.has("next-action") && plaidSandboxSuffix())
   ) {
     return new NextResponse(PREVIEW_ACTION_REFUSAL, {
       status: 403,

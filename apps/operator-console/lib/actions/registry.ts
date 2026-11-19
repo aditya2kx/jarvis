@@ -86,3 +86,22 @@ export const MUTATING_ACTIONS = [
 ] as const;
 
 export type MutatingActionName = (typeof MUTATING_ACTIONS)[number]["name"];
+
+/**
+ * The only actions a preview may run, and only when it has an Accounting sandbox
+ * (PLAID_SANDBOX_SUFFIX, lib/plaid/tables.ts): every table they write has a per-preview
+ * copy. Bank link / sync stay refused (they write Secret Manager and plaid_items).
+ */
+export const PREVIEW_SANDBOX_ACTIONS: readonly MutatingActionName[] = [
+  "setPlaidInternalAction",
+  "reapplyPlaidCategoriesAction",
+  "setTxnCategoryOverrideAction",
+  "upsertTaxonomyNodeAction",
+  "setTaxonomyNodeEnabledAction",
+  "setCategoryRuleEnabledAction",
+  "dryRunRuleAction",
+  "previewRuleMatchesAction",
+  "commitRuleFromTxnAction",
+  "revertRuleEvidenceAction",
+  "setTaxonomyExcludeAction",
+];

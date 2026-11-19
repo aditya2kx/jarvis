@@ -672,6 +672,23 @@ export async function previewRuleMatchesAction(
   });
 }
 
+/** Rows among `ids` (no override) that a higher-priority rule takes from `ruleId` on Reapply. */
+async function shadowingRules(ruleId: string, ids: string[]): Promise<Record<string, number>> {
+  if (!ids.length) return {};
+  const [rules, txns] = await Promise.all([loadRules(), loadTxnsForCategorize({ transactionIds: ids })]);
+  const active = rules.map((r) => toCategoryRule(r));
+  const out: Record<string, number> = {};
+  for (const t of txns) {
+    if (t.override_category_id) continue;
+    const win = evaluateRules(
+      { name: t.name, merchant_name: t.merchant_name, amount: t.amount, account_mask: t.account_mask, counterparty_name: t.counterparty_name },
+      active,
+    )?.rule_id;
+    if (win && win !== ruleId) out[win] = (out[win] ?? 0) + 1;
+  }
+  return out;
+}
+
 /**
  * Commit a proposed rule — all or nothing. Refused (nothing written) while a Reapply
  * job is live; otherwise one transaction inserts the rule + history event and backfills
@@ -684,7 +701,14 @@ export async function commitRuleFromTxnAction(input: {
   selectedTxnIds: string[];
   applyFuture: boolean;
 }): Promise<
-  ActionAck<{ ruleId: string; applied: number; skipped_override: number; reused: boolean }>
+  ActionAck<{
+    ruleId: string;
+    applied: number;
+    skipped_override: number;
+    reused: boolean;
+    /** Higher-priority rules that take these rows back on Reapply / ingest (rule id → rows). */
+    shadowed: Record<string, number>;
+  }>
 > {
   const denied = await actionDenied("commitRuleFromTxnAction");
   if (denied) return denied;
@@ -767,19 +791,28 @@ export async function commitRuleFromTxnAction(input: {
       { label: `rule_commit id=${newId} selected=${selectedIds.length}` },
     );
     const applied = Math.max(0, selectedIds.length - skipped_override);
+    const shadowed = await shadowingRules(ruleId, selectedIds).catch((e) => {
+      console.error(`plaid_rule_commit shadow check failed rule=${ruleId}: ${String(e)}`);
+      return {} as Record<string, number>;
+    });
+    const shadowCount = Object.values(shadowed).reduce((a, b) => a + b, 0);
     console.info(
       `plaid_rule_commit ok rule=${ruleId} reused=${reused} applied=${applied} ` +
-        `skipped_override=${skipped_override} future=${input.applyFuture !== false}`,
+        `skipped_override=${skipped_override} future=${input.applyFuture !== false} shadowed=${shadowCount}`,
     );
     revalidatePath("/accounting");
     revalidatePath("/home");
+    const base = reused
+      ? `Identical rule ${ruleId} already exists — applied it to ${applied}.`
+      : applied
+        ? `Rule committed — applied ${applied}.`
+        : "Rule committed — it will apply to future transactions.";
+    const warn = shadowCount
+      ? ` Heads-up: ${shadowCount} of these also match higher-priority ${Object.keys(shadowed).join(", ")}, which wins on the next Reapply / sync — disable that rule if this one should win.`
+      : "";
     return okAck({
-      data: { ruleId, applied, skipped_override, reused },
-      message: reused
-        ? `Identical rule ${ruleId} already exists — applied it to ${applied}.`
-        : applied
-          ? `Rule committed — applied ${applied}.`
-          : "Rule committed — it will apply to future transactions.",
+      data: { ruleId, applied, skipped_override, reused, shadowed },
+      message: base + warn,
     });
   } catch (e) {
     console.error(`plaid_rule_commit failed: ${e instanceof Error ? e.message : String(e)}`);

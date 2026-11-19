@@ -135,6 +135,21 @@ describe("commitRuleFromTxnAction", () => {
     if (ack.ok) expect(ack.message).toMatch(/future transactions/);
   });
 
+  it("warns when a higher-priority rule will take the rows back on Reapply", async () => {
+    s.rules = [{ ...WAGE, id: "corpus_wages", priority: 100, enabled: true, match_operator: "contains", from_mask: null, match_field: "name_or_merchant" }];
+    s.q.mockImplementation(async (sql: string) =>
+      sql.includes("COUNT(*)")
+        ? [{ n: 0 }]
+        : [{ transaction_id: "t1", date: "2026-09-10", name: "PAYCO WAGE PAY", merchant_name: null, amount: 100, account_mask: "1111", counterparty_name: null, category_id: null, subcategory_id: null, rule_id: null, override_category_id: null, is_internal: false }],
+    );
+    const ack = await commitRuleFromTxnAction({ draft, selectedTxnIds: ["t1"], applyFuture: true });
+    expect(ack.ok).toBe(true);
+    if (ack.ok) {
+      expect(ack.data?.shadowed).toEqual({ corpus_wages: 1 });
+      expect(ack.message).toMatch(/higher-priority corpus_wages/);
+    }
+  });
+
   it("zero rows and Apply to future off is refused (nothing to do)", async () => {
     const ack = await commitRuleFromTxnAction({ draft, selectedTxnIds: [], applyFuture: false });
     expect(ack.ok).toBe(false);

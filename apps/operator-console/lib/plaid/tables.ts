@@ -18,7 +18,7 @@ export const PLAID_SANDBOX_TABLES = [
 ] as const;
 export type PlaidSandboxTable = (typeof PLAID_SANDBOX_TABLES)[number];
 
-const SUFFIX_RE = /^_[a-z0-9_]{2,40}$/;
+const SUFFIX_RE = /^_[a-z0-9_]{2,60}$/;
 
 /** `_<tag>` when this is a preview with an Accounting sandbox, else null. */
 export function plaidSandboxSuffix(): string | null {

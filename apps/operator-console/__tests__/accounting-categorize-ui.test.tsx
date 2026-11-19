@@ -63,7 +63,7 @@ describe("amount sign labels", () => {
     ]);
     expect(amountSignLabel("positive")).toBe("Outflow");
     expect(amountSignLabel("negative")).toBe("Inflow");
-    expect(amountSignFor(7704.81)).toBe("positive");
+    expect(amountSignFor(1234.56)).toBe("positive");
     expect(amountSignFor(-812.4)).toBe("negative");
   });
 });

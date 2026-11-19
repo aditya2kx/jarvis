@@ -53,7 +53,7 @@ describe("planCategoryUpdates (set-based Reapply)", () => {
     const plan = planCategoryUpdates(
       [
         txn("a", "ORIG CO NAME:SQUARECO SETTLE", -812.4),
-        txn("b", "ORIG CO NAME:PAYCO WAGE PAY", 7704.81),
+        txn("b", "ORIG CO NAME:PAYCO WAGE PAY", 1234.56),
         txn("c", "SOME CAFE", 12.29),
       ],
       RULES,

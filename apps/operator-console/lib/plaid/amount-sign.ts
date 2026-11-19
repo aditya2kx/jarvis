@@ -1,6 +1,6 @@
 /**
  * Plaid amount convention: positive = money leaving the account, negative = money in
- * (prod check 2026-11-19: every "Square Inc" settlement is negative, every "ADP WAGE PAY"
+ * (prod check 2026-11-19: every card-processor settlement is negative, every payroll wage
  * debit positive). Rules store `positive` / `negative`; the UI says Outflow / Inflow.
  */
 export type AmountSignValue = "any" | "positive" | "negative";

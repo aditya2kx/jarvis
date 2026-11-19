@@ -56,7 +56,13 @@ on-load Plaid dedupe and the order-recommendation write are skipped, and the top
 isolation. Previews are separate services — never a revision of `operator-console` — so the flag
 cannot reach prod; `/prod-ops` refuses to set it. Unset (localhost, prod) the console behaves as
 before. Screenshots cover `/home` and `/inventory` only — Payroll and Accounting carry names, wages
-and bank lines, and this repo is public.
+and bank lines, and this repo is public. **Accounting sandbox:** the deploy also copies
+`plaid_transactions` / `plaid_category_rules` / `plaid_taxonomy_nodes` to `*_<tag>` (once per
+preview; delete them to re-copy), creates `plaid_categorize_jobs_<tag>` /
+`plaid_category_rule_events_<tag>` from migration 098 (all 7-day expiry) and sets
+`PLAID_SANDBOX_SUFFIX`, so Reapply, overrides and rule commits on `/accounting` can be tried on
+real data; any preview write to a non-sandbox table is refused in code
+(`apps/operator-console/lib/plaid/tables.ts`). Accounting UI evidence for a PR uses synthetic data.
 
 **Pre-PR branch previews** replace "show me on localhost first": push the work to a short
 `preview/<issue>-<slug>` (Cloud Agents: `git push origin HEAD:preview/415-mobile`; `cursor/**`

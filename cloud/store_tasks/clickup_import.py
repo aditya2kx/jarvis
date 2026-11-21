@@ -33,7 +33,7 @@ from cloud.store_tasks import auth, model, service as svc, store as st
 API = "https://api.clickup.com/api/v2"
 TEMPLATE_WINDOW_DAYS = 21
 MIRROR_LOOKBACK_DAYS = 3
-MIRROR_FILES_SECONDS = 150  # the scheduled tick has 300 s; what is left over is copied on the next one
+MIRROR_FILES_SECONDS = 90  # the scheduled tick has 300 s, and fetching the lists takes up to ~100; the rest waits for the next run
 MIRROR_MAX_FILE_BYTES = 100 * 1024 * 1024  # larger videos stay in ClickUp until the laptop backfill copies them
 FORM_TAG = "closing submission"
 PHOTO_TAG = "needs photo submission"

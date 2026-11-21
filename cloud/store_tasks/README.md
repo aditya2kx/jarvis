@@ -105,7 +105,17 @@ python3 -m cloud.store_tasks.admin cutover --store palmetto --date 2026-12-01
 ```
 
 Every import write is keyed by the ClickUp task id, so re-running is an upsert. Until
-cutover the scheduled tick re-mirrors the last three days every two hours. Templates are
+cutover the scheduled tick re-mirrors the last three days every two hours: fields and status,
+then, for tasks ClickUp changed since they were last copied, comments with replies, photos,
+videos, documents and checklists (90 seconds of that per run; the rest on the next run; files
+over 100 MB are logged and left to `--files`).
+
+```bash
+python3 -m cloud.store_tasks.clickup_import --store palmetto --files   # everything on every task, once (hours; resumable)
+```
+
+`--files` also keeps each task's raw ClickUp JSON under `archive/<store>/clickup/` in the
+photo bucket (never served by the app). Templates are
 inferred from what ClickUp scheduled in the last 21 days; ClickUp lists every weekday's
 deep-clean item every day, here a "Tues: …" item shows on Tuesdays only.
 

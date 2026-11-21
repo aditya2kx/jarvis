@@ -501,6 +501,7 @@ def test_import_maps_fields_days_and_infers_templates(env):
     assert shown and all(t["source"] == "generated" for t in shown)
     before = env.client.get("/v1/days/2026-11-18", headers=env.crew_h).get_json()
     assert not before["generated"] and {t["source"] for t in before["tasks"]} == {"clickup"}
+    assert not any(t["title"] == "Ghost step" for t in before["tasks"])
     assert env.client.post("/v1/tasks/cu_p18/complete", json={}, headers=env.crew_h).status_code == 400
     assert verify_backfill.verify(env.tasks, "palmetto", raw)["ok"]
     env.tasks.docs.set(st.TASKS, "cu_a5", {"status": "open"}, merge=True)

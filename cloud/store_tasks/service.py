@@ -325,7 +325,8 @@ class Tasks:
         """One owner per day: ClickUp's copy before cutover, the lists built here from then on."""
         tasks = self.docs.query(st.TASKS, store=cfg.id, date=day.isoformat())
         mirrored = not cfg.generated(day)
-        return [t for t in tasks if (t.get("source") == "clickup") == mirrored]
+        # A ClickUp step whose parent is on no list that day is not on ClickUp's list either.
+        return [t for t in tasks if (t.get("source") == "clickup") == mirrored and not t.get("stale_parent")]
 
     def ensure_day(self, cfg: model.StoreConfig, day: datetime.date) -> list[dict]:
         """The day's tasks. Generated days are created on first read; ids make this an upsert."""

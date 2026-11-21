@@ -6,12 +6,14 @@ re-running is an upsert.
     python3 -m cloud.store_tasks.clickup_import --store palmetto --dry-run
     python3 -m cloud.store_tasks.clickup_import --store palmetto --all
     python3 -m cloud.store_tasks.clickup_import --store palmetto --mirror
+    python3 -m cloud.store_tasks.clickup_import --store palmetto --files   # task photos + comments (resumable)
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import concurrent.futures
 import dataclasses
 import datetime
 import hashlib
@@ -351,6 +353,90 @@ def import_photos(tasks: svc.Tasks, cfg: model.StoreConfig, raw: dict[str, list[
     return n
 
 
+def _download(url: str) -> tuple[bytes, str]:
+    with urllib.request.urlopen(url, timeout=120) as resp:
+        return resp.read(), resp.headers.get_content_type()
+
+
+def _extras(task_id: str, get=_get) -> tuple[list[dict], list[dict]]:
+    """A task's attachments and comments: the list download carries neither."""
+    return get(f"/task/{task_id}").get("attachments") or [], get(f"/task/{task_id}/comment").get("comments") or []
+
+
+def import_task_files(tasks: svc.Tasks, cfg: model.StoreConfig, get=_get, download=_download,
+                      workers: int = 6) -> dict:
+    """Copy every mirrored task's photos (into our bucket) and comments. Resumable: done tasks are marked."""
+    tz = ZoneInfo(cfg.tz)
+    todo = [d for d in tasks.docs.query(st.TASKS, store=cfg.id, source="clickup") if not d.get("clickup_files_at")]
+    # ClickUp allows ~100 calls a minute, so a full run takes hours: photo tasks first, then newest first.
+    todo.sort(key=lambda d: d["date"], reverse=True)
+    todo.sort(key=lambda d: not d.get("needs_photo"))
+    out = collections.Counter(tasks=len(todo))
+    stamp = tasks.now().isoformat()
+    with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+        jobs = {pool.submit(_extras, d["clickup_id"], get): d for d in todo}
+        for i, job in enumerate(concurrent.futures.as_completed(jobs), 1):
+            d = jobs[job]
+            try:
+                files, comments = job.result()
+            except RuntimeError as e:
+                print(f"store-tasks fail reason=clickup_files task={d['id']} err={e}", file=sys.stderr)
+                out["failed"] += 1
+                continue
+            photos = list(d.get("photos") or [])
+            have = {p.get("clickup_attachment_id") for p in photos}
+            for a in files:
+                if a.get("deleted") or a.get("id") in have:
+                    continue
+                if not (a.get("mimetype") or "").startswith("image/"):
+                    out["not_images"] += 1  # videos and documents: counted, left in ClickUp
+                    continue
+                try:
+                    data, ctype = download(a["url"])
+                except (urllib.error.URLError, TimeoutError) as e:
+                    print(f"store-tasks fail reason=photo_download task={d['id']} err={e!r}", file=sys.stderr)
+                    out["photo_failed"] += 1
+                    continue
+                path = f"{cfg.id}/{d['date']}/{d['id']}/{a['id']}"
+                tasks.photos.put(path, data, ctype)
+                photos.append({"path": path, "by": staff_id(a["user"]["id"]) if a.get("user") else None,
+                               "at": _local(a.get("date"), tz).isoformat(), "clickup_attachment_id": a["id"]})
+                out["photos"] += 1
+            known = {c["id"] for c in d.get("comments") or []}
+            new = [{"id": f"cu{c['id']}", "by": staff_id(c["user"]["id"]) if c.get("user") else None,
+                    "at": _local(c.get("date"), tz).isoformat(), "text": (c.get("comment_text") or "").strip()}
+                   for c in comments if f"cu{c['id']}" not in known and (c.get("comment_text") or "").strip()]
+            out["comments"] += len(new)
+            tasks.docs.set(st.TASKS, d["id"], {
+                "photos": photos, "comments": sorted((d.get("comments") or []) + new, key=lambda c: c["at"]),
+                "clickup_files_at": stamp}, merge=True)
+            if i % 500 == 0:
+                print(f"clickup files: {i}/{len(todo)} {dict(out)}", file=sys.stderr, flush=True)
+    return dict(out)
+
+
+def seed_recent_photos(tasks: svc.Tasks, cfg: model.StoreConfig) -> int:
+    """Give each recurring task the last few photos ClickUp holds for it ("photos from earlier days")."""
+    docs = tasks.docs.query(st.TASKS, store=cfg.id, source="clickup")
+    titles = {d["id"]: d["title"] for d in docs}
+    by_template: dict[str, list[dict]] = collections.defaultdict(list)
+    for d in docs:
+        parent = titles.get(d["parent_id"]) if d.get("parent_id") else None
+        tid = template_id(d["shift"], parent, d["title"])
+        by_template[tid] += [{**p, "date": d["date"]} for p in d.get("photos") or []]
+    n = 0
+    for tpl in tasks.templates(cfg.id):
+        found = by_template.get(tpl.id)
+        if not found:
+            continue
+        cur = tasks.docs.get(st.TEMPLATES, tpl.id) or {}
+        merged = {p["path"]: p for p in found + (cur.get("recent_photos") or [])}
+        recent = sorted(merged.values(), key=lambda p: (p.get("date", ""), p.get("at") or ""), reverse=True)
+        tasks.docs.set(st.TEMPLATES, tpl.id, {"recent_photos": recent[:svc.RECENT_PHOTOS]}, merge=True)
+        n += 1
+    return n
+
+
 def write_counts(tasks: svc.Tasks, counts: list[dict]) -> int:
     n = 0
     for c in counts:
@@ -397,10 +483,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--all", action="store_true", help="staff, templates, history, counts, photos")
     ap.add_argument("--mirror", action="store_true", help="only what changed in the last few days")
     ap.add_argument("--photos-only", action="store_true", help="copy photos for submissions already stored")
+    ap.add_argument("--files", action="store_true", help="task photos and comments for tasks already stored")
     args = ap.parse_args(argv)
 
     tasks = svc.from_env()
     cfg = tasks.store(args.store)
+    if args.files:
+        report = import_task_files(tasks, cfg)
+        report["templates_with_earlier_photos"] = seed_recent_photos(tasks, cfg)
+        print(json.dumps({"store": args.store, **report}))
+        return 0
     if args.mirror:
         print(json.dumps(mirror(tasks, args.store)))
         return 0

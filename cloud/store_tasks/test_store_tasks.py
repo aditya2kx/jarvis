@@ -506,3 +506,32 @@ def test_import_maps_fields_days_and_infers_templates(env):
     env.tasks.docs.delete(st.TASKS, "cu_a6")
     broken = verify_backfill.verify(env.tasks, "palmetto", raw)
     assert not broken["ok"] and broken["missing"] == ["cu_a6"] and ("cu_a5", "status") in broken["field_mismatches"]
+
+
+def test_task_photos_and_comments_are_copied_once_and_seed_earlier_photos(env):
+    tid = ci.template_id("closing", None, "Upload deep clean photo")
+    env.tasks.save_template("palmetto", {"id": tid, "shift": "closing", "title": "Upload deep clean photo"}, "test")
+    env.tasks.docs.set(st.TASKS, "cu_x1", {
+        "id": "cu_x1", "store": "palmetto", "date": "2026-11-10", "shift": "closing", "title": "Upload deep clean photo",
+        "parent_id": None, "status": "done", "source": "clickup", "clickup_id": "x1", "photos": [], "comments": []})
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        if path.endswith("/comment"):
+            return {"comments": [{"id": "c1", "user": {"id": 7}, "date": "1789322744505", "comment_text": "freezer done"}]}
+        return {"attachments": [
+            {"id": "a1.jpg", "mimetype": "image/jpeg", "url": "https://files/a1", "date": "1789322744505", "user": {"id": 7}},
+            {"id": "a2.mp4", "mimetype": "video/mp4", "url": "https://files/a2", "date": "1789322744505"}]}
+
+    report = ci.import_task_files(env.tasks, env.tasks.store("palmetto"), get=get,
+                                  download=lambda url: (b"\xff\xd8jpeg", "image/jpeg"), workers=1)
+    assert report["photos"] == 1 and report["comments"] == 1 and report["not_images"] == 1
+    doc = env.tasks.docs.get(st.TASKS, "cu_x1")
+    assert doc["photos"][0]["by"] == ci.staff_id(7) and env.tasks.photos.get(doc["photos"][0]["path"])[0] == b"\xff\xd8jpeg"
+    assert doc["comments"][0]["text"] == "freezer done"
+    # A second run skips tasks already done: no ClickUp calls, nothing doubled.
+    calls.clear()
+    assert ci.import_task_files(env.tasks, env.tasks.store("palmetto"), get=get, workers=1)["tasks"] == 0 and not calls
+    assert ci.seed_recent_photos(env.tasks, env.tasks.store("palmetto")) == 1
+    assert env.tasks.docs.get(st.TEMPLATES, tid)["recent_photos"][0]["date"] == "2026-11-10"

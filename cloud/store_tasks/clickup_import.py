@@ -206,7 +206,7 @@ def infer_templates(cfg: model.StoreConfig, tasks: list[dict], today: datetime.d
     same weekday(s) each week gets those weekdays; anything seen once is a one-off and dropped.
     """
     lo = today - datetime.timedelta(days=TEMPLATE_WINDOW_DAYS)
-    recent = [t for t in tasks if lo.isoformat() <= t["date"] <= today.isoformat()]
+    recent = [t for t in tasks if lo.isoformat() <= t["date"] <= today.isoformat() and not t.get("stale_parent")]
     titles = {t["id"]: t["title"] for t in recent}
     days_by_shift: dict[str, set[str]] = collections.defaultdict(set)
     groups: dict[tuple, list[dict]] = collections.defaultdict(list)
@@ -304,6 +304,8 @@ def _reparent(docs: list[dict]) -> None:
         parent = by_id.get(d["parent_id"]) if d["parent_id"] else None
         if d["parent_id"] and (parent is None or parent["date"] != d["date"]):
             d["parent_id"] = todays.get((d["date"], d["shift"], _norm(parent["title"]))) if parent else None
+            # Its parent is not on that day's list, so nobody sees it there: history, not a task to carry over.
+            d["stale_parent"] = d["parent_id"] is None
 
 
 def write_tasks(tasks: svc.Tasks, cfg: model.StoreConfig, docs: list[dict]) -> int:

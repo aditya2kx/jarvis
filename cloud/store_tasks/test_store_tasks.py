@@ -406,8 +406,10 @@ def test_import_maps_fields_days_and_infers_templates(env):
             _cu(f"a{day}", "Unlock", day, st="closed", text="Front door"),
             _cu(f"p{day}", "Deep Clean", day),
             _cu(f"s{day}", "Thu: blender", day, parent=f"p{day}", undated=True),
+            # Recurs under a months-old parent that is on no day's list: not carried over.
+            _cu(f"g{day}", "Ghost step", day, parent="old"),
         ]
-    raw["opening"].append(_cu("once", "One-off", 10))
+    raw["opening"] += [_cu("once", "One-off", 10), _cu("old", "Line: Renamed since", 1)]
     raw["closing"].append({**_cu("form", "Form Submission - #2026-11-18T20:10:00-06:00", 18,
                                  tags=["closing submission"],
                                  fields=[{"id": FIELD, "name": "Açaí", "value": "38+20%"},

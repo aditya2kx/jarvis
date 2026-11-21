@@ -101,7 +101,9 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const tasks = useMemo(() => (day ? day.tasks.filter((t) => t.shift === activeShift) : []), [day, activeShift]);
   const scheduled = useMemo(() => new Set(Object.values(day?.teams ?? {}).flatMap((team) => team.map((m) => m.id ?? ""))), [day]);
   const openTask = day?.tasks.find((t) => t.id === open) ?? null;
-  const left = tasks.filter((t) => t.status === "open").length;
+  // Counted the way ClickUp reports a list: tasks, not the steps inside them.
+  const whole = tasks.filter((t) => !t.parent_id);
+  const left = whole.filter((t) => t.status === "open").length;
 
   useEffect(() => {
     if (!toast) return;
@@ -113,14 +115,14 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const listKey = `${date}/${activeShift}`;
   const before = useRef({ key: "", left: 0 });
   useEffect(() => {
-    if (before.current.key === listKey && before.current.left > 0 && left === 0 && tasks.length > 0) {
+    if (before.current.key === listKey && before.current.left > 0 && left === 0 && whole.length > 0) {
       setParty(listKey);
       const timer = window.setTimeout(() => setParty(""), CONFETTI_MS);
       before.current = { key: listKey, left };
       return () => window.clearTimeout(timer);
     }
     before.current = { key: listKey, left };
-  }, [listKey, left, tasks.length]);
+  }, [listKey, left, whole.length]);
 
   const change = (...changes: Omit<Pending, "at" | "token" | "staff_id">[]) => {
     const at = new Date().toISOString();
@@ -175,7 +177,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const shows = (t: Task) => matches(t) || childrenOf(t.id).some(matches);
   const top = tasks.filter((t) => !t.parent_id || !tasks.some((p) => p.id === t.parent_id));
   const unassigned = tasks.filter((t) => !t.assignee_id && t.status === "open");
-  const counts: Record<Filter, number> = { all: tasks.length, mine: tasks.filter((t) => t.assignee_id === me).length, unassigned: tasks.filter((t) => !t.assignee_id).length };
+  const counts: Record<Filter, number> = { all: whole.length, mine: tasks.filter((t) => t.assignee_id === me).length, unassigned: tasks.filter((t) => !t.assignee_id).length };
   const labels: Record<Filter, string> = { all: "All", mine: "Mine", unassigned: "Unassigned" };
   const shiftInfo = day.shifts.find((s) => s.id === activeShift);
   const overdue = left > 0 && date === day.today && Boolean(shiftInfo?.due_at) && new Date() > new Date(shiftInfo!.due_at!);
@@ -279,7 +281,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
 
         <div role="tablist" className="grid gap-2" style={{ gridTemplateColumns: `repeat(${day.shifts.length}, minmax(0, 1fr))` }}>
           {day.shifts.map((s) => {
-            const mine = day.tasks.filter((t) => t.shift === s.id);
+            const mine = day.tasks.filter((t) => t.shift === s.id && !t.parent_id);
             const done = mine.filter((t) => t.status === "done").length;
             const selected = s.id === activeShift;
             const complete = mine.length > 0 && done === mine.length;
@@ -355,7 +357,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             </div>
           </div>
 
-          {tasks.length > 0 && left === 0 ? (
+          {whole.length > 0 && left === 0 ? (
             <div key={listKey} className="pop relative mb-3 flex items-center gap-3 rounded-xl bg-success/10 px-4 py-3 font-medium text-success">
               <PartyPopper className="size-5 shrink-0" />
               {shiftInfo?.label} is all done{readOnly ? "." : ". Nice work."}
@@ -369,7 +371,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             </div>
           ) : (
             <p className={cx("mb-2 text-sm", overdue ? "font-medium text-destructive" : "text-muted-foreground")}>
-              {tasks.length > 0 && `${left} left · ${overdue ? "was due" : "due"} ${time(shiftInfo?.due_at)}`}
+              {whole.length > 0 && `${left} left · ${overdue ? "was due" : "due"} ${time(shiftInfo?.due_at)}`}
             </p>
           )}
           {readOnly && (

@@ -366,40 +366,50 @@ def write_tasks(tasks: svc.Tasks, cfg: model.StoreConfig, docs: list[dict]) -> i
     return tasks.docs.set_many(st.TASKS, keep, merge=True)
 
 
-def import_photos(tasks: svc.Tasks, cfg: model.StoreConfig, raw: dict[str, list[dict]]) -> int:
-    """Copy the deep-clean photos uploaded with closing submissions into our bucket, once each."""
+def import_photos(tasks: svc.Tasks, cfg: model.StoreConfig, raw: dict[str, list[dict]],
+                  get=_get, download=None) -> int:
+    """Copy the photos sent with closing submissions into our bucket, once each. Older forms put them in
+    attachment fields; the current form attaches them to the task, which only the task's own endpoint
+    returns, so a submission is fetched again only when ClickUp says it changed."""
+    download = download or _download
     tz = ZoneInfo(cfg.tz)
     n = 0
     for rows in raw.values():
         for r in rows:
-            files = [a for f in r.get("custom_fields") or [] if f.get("type") == "attachment"
-                     for a in (f.get("value") or [])]
-            if not files or not is_form(r):
+            if not is_form(r):
                 continue
             day = _local(r["date_created"], tz).date().isoformat()
             doc_id = f"{cfg.id}_{day}"
             cur = tasks.docs.get(st.COUNTS, doc_id)
-            if cur is None:
+            updated = str(r.get("date_updated") or r["date_created"])
+            if cur is None or cur.get("source") == "app" or cur.get("clickup_files_at") == updated:
+                continue
+            files = [a for f in r.get("custom_fields") or [] if f.get("type") == "attachment"
+                     for a in (f.get("value") or [])]
+            try:
+                files += [a for a in get(f"/task/{r['id']}").get("attachments") or [] if not a.get("deleted")]
+            except RuntimeError as e:
+                print(f"store-tasks fail reason=count_attachments task={r['id']} err={e}", file=sys.stderr)
                 continue
             photos = list(cur.get("photos") or [])
             have = {p.get("clickup_attachment_id") for p in photos}
+            missed = False
             for a in files:
                 if a.get("id") in have or not a.get("url"):
                     continue
                 try:
-                    with urllib.request.urlopen(a["url"], timeout=60) as resp:
-                        data = resp.read()
-                        ctype = resp.headers.get_content_type()
+                    data, ctype = download(a["url"])
                 except (urllib.error.URLError, TimeoutError) as e:
                     print(f"store-tasks fail reason=photo_download task={r['id']} err={e!r}", file=sys.stderr)
+                    missed = True
                     continue
                 path = f"{cfg.id}/{day}/count/{a['id']}"
                 tasks.photos.put(path, data, ctype)
                 photos.append({"path": path, "by": None, "at": _local(a.get("date"), tz).isoformat(),
                                "clickup_attachment_id": a["id"]})
                 n += 1
-            if len(photos) != len(cur.get("photos") or []):
-                tasks.docs.set(st.COUNTS, doc_id, {"photos": photos}, merge=True)
+            done = {} if missed else {"clickup_files_at": updated}  # a failed download is tried again
+            tasks.docs.set(st.COUNTS, doc_id, {"photos": photos, **done}, merge=True)
     return n
 
 
@@ -608,7 +618,8 @@ def write_counts(tasks: svc.Tasks, counts: list[dict]) -> int:
         cur = tasks.docs.get(st.COUNTS, c["id"])
         if cur and cur.get("source") == "app":
             continue  # a count entered in the app is never replaced by ClickUp
-        tasks.docs.set(st.COUNTS, c["id"], {**c, "photos": (cur or {}).get("photos") or []})
+        kept = {k: cur[k] for k in ("clickup_files_at",) if cur and k in cur}
+        tasks.docs.set(st.COUNTS, c["id"], {**c, **kept, "photos": (cur or {}).get("photos") or []})
         n += 1
     return n
 
@@ -640,6 +651,7 @@ def mirror(tasks: svc.Tasks, store_id: str, get=_get, download=_download) -> dic
     changed = [d["id"] for d in mirrored if _stale(d, tasks.docs.get(st.TASKS, d["id"]))]
     out = {"store": store_id, "tasks": write_tasks(tasks, cfg, docs), "counts": write_counts(tasks, counts),
            "staff": import_staff(tasks, cfg, get)}
+    out["count_photos"] = import_photos(tasks, cfg, raw, get, download)
     if changed:
         out["files"] = import_task_files(tasks, cfg, get, download, only=changed,
                                          deadline=time.time() + MIRROR_FILES_SECONDS, max_bytes=MIRROR_MAX_FILE_BYTES)

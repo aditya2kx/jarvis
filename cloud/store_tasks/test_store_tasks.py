@@ -838,6 +838,35 @@ def test_mirror_keeps_copying_status_comments_and_photos_of_changed_tasks(env):
     assert again["files"]["tasks"] == 1 and len(env.tasks.docs.get(st.TASKS, "cu_live")["photos"]) == 1
 
 
+def test_mirror_copies_the_photos_attached_to_a_closing_submission(env):
+    cfg = env.tasks.store("palmetto")
+    env.tasks.put_store(dataclasses.replace(cfg, cutover_date=None))
+    env.clock.at = datetime.datetime(2026, 11, 19, 21, 0, tzinfo=TZ)
+    lists = list(cfg.clickup["lists"])
+    form = {**_cu("f1", "Form Submission - #2026-11-19T19:06:00-06:00", 19), "date_created": _ms(2026, 11, 19, 19, 6),
+            "custom_fields": [{"id": FIELD, "name": "Açaí", "type": "short_text", "value": "25+40%"}]}
+    fetched = []
+
+    def get(path):
+        if path.startswith(f"/list/{lists[-1]}/task"):
+            return {"tasks": [form], "last_page": True}
+        if path.startswith("/list/"):
+            return {"tasks": [], "last_page": True}
+        if path == "/team":
+            return {"teams": [{"id": cfg.clickup["team_id"], "members": []}]}
+        fetched.append(path)  # the form's photos are only on the task itself
+        return {"attachments": [{"id": "freezer.jpg", "url": "https://files/freezer", "date": _ms(2026, 11, 19, 19, 6)}]}
+
+    assert ci.mirror(env.tasks, "palmetto", get=get, download=lambda u: (b"\xff\xd8f", "image/jpeg"))["count_photos"] == 1
+    photos = env.tasks.count("palmetto", datetime.date(2026, 11, 19))["photos"]
+    assert [p["clickup_attachment_id"] for p in photos] == ["freezer.jpg"]
+    assert env.tasks.photos.get(photos[0]["path"])[0] == b"\xff\xd8f"
+    # Unchanged in ClickUp: not fetched again, and the photo stays.
+    fetched.clear()
+    assert ci.mirror(env.tasks, "palmetto", get=get, download=lambda u: 1 / 0)["count_photos"] == 0 and not fetched
+    assert len(env.tasks.count("palmetto", datetime.date(2026, 11, 19))["photos"]) == 1
+
+
 def test_photo_rules_come_from_what_clickup_holds(env):
     def tpl(title, **kw):
         tid = ci.template_id("closing", kw.pop("parent", None), title)

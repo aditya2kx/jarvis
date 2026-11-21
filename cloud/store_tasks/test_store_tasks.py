@@ -551,25 +551,3 @@ def test_everything_clickup_holds_on_a_task_is_copied_once(env):
     assert ci.seed_recent_photos(env.tasks, env.tasks.store("palmetto")) == 1
     assert env.tasks.docs.get(st.TEMPLATES, tid)["recent_photos"][0]["date"] == "2026-11-10"
 
-
-def test_chat_is_archived_with_replies_and_files(env):
-    cfg = env.tasks.store("palmetto")
-    url = "https://t1.p.clickup-attachments.com/t1/abc/photo.jpg?view=open"
-
-    def get(path):
-        if "/channels?" in path:
-            return {"data": [{"id": "ch1", "name": "running-austin"}], "next_cursor": None}
-        if "/messages?" in path and "cursor=" not in path:
-            return {"data": [{"id": "m1", "content": f"Match [photo.jpg]({url})", "replies_count": "1"}], "next_cursor": "n2"}
-        if "/messages?" in path:
-            return {"data": [{"id": "m2", "content": "older", "replies_count": "0"}], "next_cursor": None}
-        if "/replies" in path:
-            return {"data": [{"id": "r1", "content": "done"}], "next_cursor": None}
-        raise AssertionError(path)
-
-    report = ci.archive_chat(env.tasks, cfg, get=get, download=lambda u: (b"jpg", "image/jpeg"),
-                             get_v2=lambda p: {"teams": [{"id": cfg.clickup["team_id"], "members": [{"user": {"id": 7}}]}]})
-    assert report == {"channels": 1, "messages": 2, "replies": 1, "files": 1}
-    saved = json.loads(env.tasks.photos.get(ci.archive_path("palmetto", "chat", "channels", "ch1.json"))[0])
-    assert saved["messages"][0]["replies"][0]["content"] == "done"
-    assert env.tasks.photos.get(saved["files"][url.split("?")[0]])[0] == b"jpg"

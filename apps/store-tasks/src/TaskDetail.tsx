@@ -175,7 +175,7 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
             <span className={cx("min-w-0 flex-1 truncate text-[16px]", !assignee && "text-muted-foreground")}>{assignee ?? (readOnly ? "No one" : "Pick a person")}</span>
             {!readOnly && assignee && <span className="text-sm text-muted-foreground">Change</span>}
           </button>
-          {!readOnly && task.assignee_id !== me && (
+          {!readOnly && task.assignee_id !== me && session.staff.assignable && (
             <Button variant="outline" onClick={() => onAssignMe(task)} className="min-h-12 shrink-0">
               I'll do it
             </Button>

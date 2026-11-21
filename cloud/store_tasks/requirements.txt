@@ -1,0 +1,9 @@
+flask==3.0.3
+gunicorn==22.0.0
+google-auth==2.53.0
+requests==2.32.3
+# google-auth verifies Google sign-in (IAP, ES256 JWK keys) through pyjwt
+pyjwt[crypto]==2.9.0
+google-cloud-firestore==2.19.0
+google-cloud-storage==2.18.2
+google-cloud-bigquery==3.26.0

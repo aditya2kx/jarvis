@@ -96,6 +96,9 @@ Entry point for the Cloud Run Job is `daily_refresh.py` (via `daily_refresh_wrap
    and fetches only newer tasks. Backfill: `--backfill-from YYYY-MM-DD`. Grafana source:
    `vw_inventory_base_latest_daily` (latest submission per base per day, used by Order Assistant
    section). Run standalone: `BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.ingest_inventory --store palmetto`.
+   Source switch: store-profile key `closing_source` (`clickup` default, `store_tasks` reads the
+   same shape from the Store Tasks API — needs `STORE_TASKS_API_URL` + `STORE_TASKS_INTERNAL_TOKEN`;
+   see `cloud/store_tasks/README.md`).
 9b. **Plaid Accounting catch-up** (`_plaid_sync_linked_items`, Issue #220): best-effort
    `skills.plaid_api.sync.sync_item` for every linked Item. **Non-fatal**, no Firestore marker —
    webhook is primary; this drains missed updates on the existing `bhaga-nightly` cron (no dedicated

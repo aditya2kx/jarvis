@@ -1,0 +1,128 @@
+# Store Tasks
+
+Shift checklists for the stores (opening, shift change, closing), the closing count, and
+deep-clean photos. Replaces ClickUp tasks. Three deployables, one job each:
+
+| Piece | Code | Runs as | Job |
+|---|---|---|---|
+| Tasks API | `cloud/store_tasks/` | Cloud Run `store-tasks-api` | The only reader and writer of task data. All rules live here. |
+| Staff app | `apps/store-tasks/` | Cloud Run `store-tasks-app` (static files) | What the crew uses on the iPad. Talks only to the Tasks API. |
+| Slack bridge | `cloud/store_tasks_slack/` | Cloud Run `store-tasks-slack` | Turns task events into Slack posts and Slack messages into tasks. |
+
+Nothing here imports from, or is imported by, BHAGA or the Operator Console. Other systems
+reach it through its HTTP API or its events.
+
+```
+iPad (staff app) ──HTTPS──▶ Tasks API ──▶ Firestore database "storetasks"   (tasks, templates, staff, counts)
+                               │      ──▶ GCS jarvis-store-tasks-photos     (photos)
+                               │      ──▶ Pub/Sub store-tasks-events ──▶ Slack bridge ──▶ Slack
+                               ◀── BigQuery adp_scheduled_shifts (read-only copy in shared_shifts)
+nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶ Tasks API
+```
+
+## How it works
+
+- **Templates → daily lists.** A manager edits task templates (title, how-to, shift, order,
+  weekdays, photo needed). Each day's list is built from them the first time anyone opens
+  the day. Document ids are `{store}_{date}_{template}`, so building twice changes nothing.
+- **Who ticked.** The app sits behind Google sign-in (Cloud Run direct IAP, the same building
+  blocks as the Operator Console: [`skills/google_signin/`](../../skills/google_signin/README.md)).
+  A shared account (the store iPad) then asks for a name and PIN; a person's own Google
+  account goes straight in as them, no PIN. The tick records that person and the time.
+  Sessions last 12 hours and a shared account locks after 3 idle minutes.
+- **One origin.** The app's nginx passes `/v1/` on to the API, re-sending Google's signed
+  assertion as `X-Signin-Assertion` (Google's front end drops `x-goog-*` headers between
+  services). The API verifies it against the app's audience, so calling the API directly
+  without a Google sign-in is refused.
+- **Shift team.** Read from the ADP schedule: everyone whose scheduled range overlaps the
+  shift's team window. The schedule is copied hourly from BigQuery into `shared_shifts`, so
+  the tablet never waits on the warehouse. The copy is read-only; BigQuery stays the source.
+- **Offline.** The app shell and the day are kept on the device. Ticks made offline queue
+  on the device and send when the connection returns; a repeated tick is a no-op.
+- **Closing count.** Same fields as the ClickUp form. The nightly inventory job reads it
+  through `closing-counts`, which returns the ClickUp form-task shape, so
+  `agents/bhaga/scripts/ingest_inventory.py` parses it unchanged. Switch a store with the
+  profile key `"closing_source": "store_tasks"` (default `clickup`).
+- **Events.** `task.completed`, `task.reopened`, `task.created`, `shift.incomplete`,
+  `count.submitted` on Pub/Sub. A failed publish is logged and never fails the tick.
+
+## Access
+
+| Caller | Proof | Can do |
+|---|---|---|
+| Anyone | none | `GET /health` |
+| Google account not on the list | Google sign-in | Nothing (Google refuses; the API also answers 403) |
+| Shared account (store iPad) | Google sign-in | See the store's shifts and staff names |
+| Crew | Google sign-in + PIN session (`X-Staff-Session`) | Read days, tick, undo own ticks, add photos, send the count, add a one-off task |
+| Manager | Google sign-in + 6-digit PIN session, or their own Google account | Also: templates, people and PINs, sign-in accounts, history, undo anyone's tick |
+| Scheduler, nightly job, Slack bridge | `Authorization: Bearer` internal token | `/internal/*` |
+
+PINs are stored as scrypt hashes; five wrong PINs lock that person for five minutes. An
+account can only see its own store. Adding or removing an account in Manage → Sign-in also
+adds or removes it on the app's Google sign-in list, so the two never drift.
+
+## Moving off ClickUp
+
+`cutover_date` on the store decides who owns a day: before it, days are mirrored from
+ClickUp (read-only here); from it on, days are built here and ClickUp is ignored.
+
+```bash
+python3 -m cloud.store_tasks.admin seed --store palmetto            # store config from stores/<id>.json
+python3 -m cloud.store_tasks.clickup_import --store palmetto --all  # staff, templates, all history, counts, photos
+python3 -m cloud.store_tasks.verify_backfill --store palmetto       # counts and fields vs ClickUp
+python3 -m cloud.store_tasks.admin manager --store palmetto --name "First Last" --pin 123456
+python3 -m cloud.store_tasks.admin account --store palmetto --email ipad@example.com --label "Front iPad"
+python3 -m cloud.store_tasks.admin account --store palmetto --email me@example.com --staff "First Last"   # own account, no PIN
+python3 -m cloud.store_tasks.admin cutover --store palmetto --date 2026-12-01
+```
+
+Every import write is keyed by the ClickUp task id, so re-running is an upsert. Until
+cutover the scheduled tick re-mirrors the last three days every two hours. Templates are
+inferred from what ClickUp scheduled in the last 21 days; ClickUp lists every weekday's
+deep-clean item every day, here a "Tues: …" item shows on Tuesdays only.
+
+Moving `cutover_date` later (for example after a trial) removes the lists built here for the
+days handed back to ClickUp; run `clickup_import --all` again afterwards to mirror those days.
+
+A new store: add `stores/<id>.json`, run `seed`, add people, add its iPad's Google account.
+
+## Operate
+
+- **Deploy:** `.github/workflows/store-tasks-deploy.yml` on merge to `main`.
+- **One-time setup:** `bash cloud/store_tasks/provision.sh` (service account, database,
+  bucket, topic, secrets). Run `python3 scripts/gcp_access_probe.py` first.
+- **Schedule:** one Cloud Scheduler job, `store-tasks-tick`, every 10 minutes →
+  `POST /internal/tick` (late-shift alerts every call, schedule copy hourly, ClickUp mirror
+  two-hourly until cutover).
+- **Failures** log one line starting `store-tasks fail reason=…` with the store and cause.
+- **Local run:** `STORE_TASKS_BACKEND=memory` uses in-memory storage; tests use the same.
+
+```bash
+python3 -m pytest cloud/store_tasks cloud/store_tasks_slack -q
+cd apps/store-tasks && npm test && npm run build
+```
+
+## Slack
+
+The bridge needs a Slack app in the workspace the crew uses, with a bot token
+(`chat:write`, `commands`), a `/task` slash command pointing at `/slack/commands`, and a
+message shortcut with callback id `make_task` pointing at `/slack/interactions`. Store its
+values as secrets `store-tasks-slack-bot-token`, `store-tasks-slack-signing-secret` and
+`store-tasks-slack-channels` (JSON `{"palmetto": "<channel id>"}`); the deploy workflow then
+deploys the bridge. Add a Pub/Sub push subscription on `store-tasks-events` to
+`<bridge url>/events?token=<store-tasks-push-token>`.
+
+| In Slack | Result |
+|---|---|
+| A shift is 30 minutes past due with open tasks | One post in the store channel listing them |
+| The closing count is sent | One post with the notes (out of, running low, shift notes) |
+| `/task closing: wipe the front door` | A one-off task on today's closing list |
+| Message → ⋯ → "Make this a task" | The message becomes a task; a reply in the thread confirms |
+
+## Cost
+
+Cloud Run scales to zero and bills per request; Firestore bills per document read and
+write (a named database has no free quota). At one store's volume — about 100 tasks a day,
+one or two iPads refreshing once a minute — that is roughly 3 million reads a month, about
+$1, plus cents for storage, photos and the scheduler job. This is an estimate from list
+prices, not yet a measured bill.

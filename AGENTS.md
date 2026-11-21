@@ -36,6 +36,7 @@ Read these first, derive proposals from them, cite what you used.
 | **tesla-aladdin-garage** | Geofence Dhanno → open Big Peach (Aladdin) | Cloud Run, always-on, max instances = 1 | `cloud/tesla_aladdin_garage/README.md` + `RUNBOOK.md` § Tesla Aladdin garage |
 | **pup-watch** | Email when the pup is let out alone in the daycare yard | Cloud Run, scale-to-zero + Cloud Scheduler tick | `cloud/pup_watch/README.md` + `RUNBOOK.md` § pup-watch |
 | **jarvis-dev-gateway** | Start / check Jarvis dev tasks from Siri, Grok (MCP) or HTTP | Cloud Run, scale-to-zero, bearer auth | `cloud/jarvis_dev_gateway/README.md` |
+| **store-tasks** | Shift checklists, closing count and deep-clean photos for the stores (replaces ClickUp tasks): Tasks API + staff iPad app + Slack bridge | Cloud Run, scale-to-zero, own Firestore database `storetasks` + one Cloud Scheduler tick | `cloud/store_tasks/README.md` + `RUNBOOK.md` § Store Tasks |
 
 ### Personal apps (not Palmetto, not BHAGA)
 

@@ -1,0 +1,434 @@
+import { ChevronLeft, Plus } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { api, type Bootstrap, type Account, type HistoryDay, type Session, type Staff, type Template } from "./api";
+import { addDays, Button, cx, dayLabel, Field, Input, inputClass, Notice, Sheet } from "./ui";
+
+const TABS = ["Tasks", "People", "Sign-in", "History"] as const;
+type Tab = (typeof TABS)[number];
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const HISTORY_DAYS = 14;
+
+interface Props {
+  boot: Bootstrap;
+  session: Session;
+  onBack: () => void;
+}
+
+export function Manage({ boot, session, onBack }: Props) {
+  const [tab, setTab] = useState<Tab>("Tasks");
+  return (
+    <div className="mx-auto flex h-full max-w-4xl flex-col">
+      <header className="space-y-3 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6">
+        <button onClick={onBack} className="-ml-2 flex items-center gap-1 rounded-lg p-2 text-muted-foreground active:bg-muted">
+          <ChevronLeft className="size-5" />
+          Back to today
+        </button>
+        <div role="tablist" className="grid grid-cols-4 gap-1 rounded-xl bg-muted p-1">
+          {TABS.map((t) => (
+            <button
+              key={t}
+              role="tab"
+              aria-selected={t === tab}
+              onClick={() => setTab(t)}
+              className={cx("min-h-10 rounded-lg text-[15px] font-medium", t === tab ? "bg-card shadow-sm" : "text-muted-foreground")}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </header>
+      <main className="flex-1 overflow-y-auto px-4 pb-10 pt-4 sm:px-6">
+        {tab === "Tasks" && <Templates boot={boot} token={session.token} />}
+        {tab === "People" && <People token={session.token} />}
+        {tab === "Sign-in" && <Accounts token={session.token} mine={boot.account.email} />}
+        {tab === "History" && <History boot={boot} token={session.token} />}
+      </main>
+    </div>
+  );
+}
+
+function useLoad<T>(load: () => Promise<T>): [T | null, string, () => void] {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState("");
+  const run = useCallback(() => {
+    load()
+      .then((d) => {
+        setData(d);
+        setError("");
+      })
+      .catch((e: Error) => setError(e.message || "Could not load. Check the connection."));
+  }, [load]);
+  useEffect(run, [run]);
+  return [data, error, run];
+}
+
+function Card({ children }: { children: React.ReactNode }) {
+  return <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">{children}</ul>;
+}
+
+function RowButton({ onClick, title, meta, dim }: { onClick: () => void; title: string; meta?: string; dim?: boolean }) {
+  return (
+    <li>
+      <button onClick={onClick} className={cx("flex min-h-14 w-full items-center justify-between gap-4 px-4 py-2 text-left active:bg-muted", dim && "opacity-50")}>
+        <span className="text-[16px]">{title}</span>
+        {meta && <span className="shrink-0 text-sm text-muted-foreground">{meta}</span>}
+      </button>
+    </li>
+  );
+}
+
+function Templates({ boot, token }: { boot: Bootstrap; token: string }) {
+  const load = useCallback(() => api.templates(token).then((r) => r.templates), [token]);
+  const [templates, error, reload] = useLoad(load);
+  const [editing, setEditing] = useState<Partial<Template> | null>(null);
+
+  if (error) return <Notice tone="error">{error}</Notice>;
+  if (!templates) return <p className="text-muted-foreground">Loading…</p>;
+  const when = (t: Template) => (t.weekdays.length ? t.weekdays.map((d) => WEEKDAYS[d]).join(", ") : "Every day");
+
+  return (
+    <div className="space-y-6">
+      <Notice>Changes apply to lists from tomorrow. Today's list stays as it is, and earlier versions are kept.</Notice>
+      {boot.store.shifts.map((s) => {
+        const mine = templates.filter((t) => t.shift === s.id);
+        return (
+          <section key={s.id}>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="font-semibold">{s.label} <span className="font-normal text-muted-foreground">· {mine.filter((t) => t.active).length}</span></h2>
+              <Button variant="ghost" onClick={() => setEditing({ shift: s.id, order: (mine.filter((t) => !t.parent_id).at(-1)?.order ?? 0) + 1, weekdays: [], active: true })}>
+                <Plus className="size-4" />
+                Add
+              </Button>
+            </div>
+            <Card>
+              {mine.filter((t) => !t.parent_id).map((t) => (
+                <div key={t.id}>
+                  <RowButton onClick={() => setEditing(t)} title={t.title} meta={when(t)} dim={!t.active} />
+                  {mine.filter((c) => c.parent_id === t.id).map((c) => (
+                    <div key={c.id} className="border-t border-border bg-muted/40 pl-6">
+                      <RowButton onClick={() => setEditing(c)} title={c.title} meta={when(c)} dim={!c.active} />
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </Card>
+          </section>
+        );
+      })}
+      {editing && (
+        <TemplateForm
+          boot={boot}
+          token={token}
+          value={editing}
+          parents={templates.filter((t) => !t.parent_id && t.shift === editing.shift && t.id !== editing.id)}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            reload();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+interface TemplateFormProps {
+  boot: Bootstrap;
+  token: string;
+  value: Partial<Template>;
+  parents: Template[];
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+function TemplateForm({ boot, token, value, parents, onClose, onSaved }: TemplateFormProps) {
+  const [t, setT] = useState(value);
+  const [error, setError] = useState("");
+  const set = (patch: Partial<Template>) => setT((cur) => ({ ...cur, ...patch }));
+  const days = t.weekdays ?? [];
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await api.saveTemplate(token, t);
+      onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  return (
+    <Sheet title={value.id ? "Edit task" : "New task"} onClose={onClose}>
+      <form onSubmit={save} className="space-y-4">
+        <Field label="Task">
+          <Input autoFocus={!value.id} value={t.title ?? ""} onChange={(e) => set({ title: e.target.value })} />
+        </Field>
+        <Field label="How to do it (optional)">
+          <textarea rows={4} value={t.instructions ?? ""} onChange={(e) => set({ instructions: e.target.value })} className={cx(inputClass, "py-2")} />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Shift">
+            <select value={t.shift} onChange={(e) => set({ shift: e.target.value, parent_id: null })} className={inputClass}>
+              {boot.store.shifts.map((s) => (
+                <option key={s.id} value={s.id}>{s.label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Position in list">
+            <Input inputMode="decimal" value={t.order ?? ""} onChange={(e) => set({ order: Number(e.target.value) || 0 })} />
+          </Field>
+        </div>
+        <Field label="Part of (optional)">
+          <select value={t.parent_id ?? ""} onChange={(e) => set({ parent_id: e.target.value || null })} className={inputClass}>
+            <option value="">On its own</option>
+            {parents.map((p) => (
+              <option key={p.id} value={p.id}>{p.title}</option>
+            ))}
+          </select>
+        </Field>
+        <div>
+          <span className="mb-1.5 block text-sm font-medium text-muted-foreground">Days {days.length === 0 && "· every day"}</span>
+          <div className="grid grid-cols-7 gap-1.5">
+            {WEEKDAYS.map((d, i) => (
+              <button
+                key={d}
+                type="button"
+                aria-pressed={days.includes(i)}
+                onClick={() => set({ weekdays: days.includes(i) ? days.filter((x) => x !== i) : [...days, i].sort() })}
+                className={cx("min-h-11 rounded-lg border text-sm font-medium", days.includes(i) ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card")}
+              >
+                {d}
+              </button>
+            ))}
+          </div>
+        </div>
+        <label className="flex min-h-11 items-center gap-3">
+          <input type="checkbox" checked={Boolean(t.needs_photo)} onChange={(e) => set({ needs_photo: e.target.checked })} className="size-5 accent-foreground" />
+          Needs a photo to tick
+        </label>
+        <label className="flex min-h-11 items-center gap-3">
+          <input type="checkbox" checked={t.active !== false} onChange={(e) => set({ active: e.target.checked })} className="size-5 accent-foreground" />
+          On the list
+        </label>
+        {error && <Notice tone="error">{error}</Notice>}
+        <Button type="submit" disabled={!t.title?.trim()} className="w-full">Save</Button>
+      </form>
+    </Sheet>
+  );
+}
+
+function People({ token }: { token: string }) {
+  const load = useCallback(() => api.staff(token).then((r) => r.staff), [token]);
+  const [staff, error, reload] = useLoad(load);
+  const [editing, setEditing] = useState<Partial<Staff> | null>(null);
+
+  if (error) return <Notice tone="error">{error}</Notice>;
+  if (!staff) return <p className="text-muted-foreground">Loading…</p>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <Button variant="outline" onClick={() => setEditing({ role: "crew", active: true })}>
+          <Plus className="size-4" />
+          Add person
+        </Button>
+      </div>
+      <Card>
+        {staff.map((s) => (
+          <RowButton
+            key={s.id}
+            onClick={() => setEditing(s)}
+            title={s.name}
+            meta={[s.role === "manager" ? "Manager" : "Crew", s.active ? (s.has_pin ? "" : "No PIN yet") : "Inactive"].filter(Boolean).join(" · ")}
+            dim={!s.active}
+          />
+        ))}
+      </Card>
+      {editing && (
+        <PersonForm
+          token={token}
+          value={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            reload();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function PersonForm({ token, value, onClose, onSaved }: { token: string; value: Partial<Staff>; onClose: () => void; onSaved: () => void }) {
+  const [s, setS] = useState(value);
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const pinLength = s.role === "manager" ? 6 : 4;
+  const roleChanged = Boolean(value.id) && s.role !== value.role;
+  const pinOk = pin.length === 0 || pin.length === pinLength;
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const saved = (await api.saveStaff(token, s)).staff;
+      if (pin) await api.setPin(token, saved.id, pin);
+      onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  return (
+    <Sheet title={value.id ? "Edit person" : "Add person"} onClose={onClose}>
+      <form onSubmit={save} className="space-y-4">
+        <Field label="Name">
+          <Input autoFocus={!value.id} value={s.name ?? ""} onChange={(e) => setS({ ...s, name: e.target.value })} />
+        </Field>
+        <Field label="Name on the ADP schedule (if different)">
+          <Input placeholder="Last, First" value={s.adp_name ?? ""} onChange={(e) => setS({ ...s, adp_name: e.target.value })} />
+        </Field>
+        <Field label="Role">
+          <select value={s.role} onChange={(e) => setS({ ...s, role: e.target.value as Staff["role"] })} className={inputClass}>
+            <option value="crew">Crew</option>
+            <option value="manager">Manager</option>
+          </select>
+        </Field>
+        <Field label={`${value.has_pin && !roleChanged ? "New PIN (leave empty to keep)" : "PIN"} · ${pinLength} digits`}>
+          <Input inputMode="numeric" autoComplete="off" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, pinLength))} />
+        </Field>
+        {roleChanged && <Notice>Changing the role clears the PIN. Set a new one here.</Notice>}
+        <label className="flex min-h-11 items-center gap-3">
+          <input type="checkbox" checked={s.active !== false} onChange={(e) => setS({ ...s, active: e.target.checked })} className="size-5 accent-foreground" />
+          Can sign in
+        </label>
+        {error && <Notice tone="error">{error}</Notice>}
+        <Button type="submit" disabled={!s.name?.trim() || !pinOk} className="w-full">Save</Button>
+      </form>
+    </Sheet>
+  );
+}
+
+function Accounts({ token, mine }: { token: string; mine: string }) {
+  const load = useCallback(() => Promise.all([api.accounts(token), api.staff(token)]).then(([a, s]) => ({ accounts: a.accounts, staff: s.staff })), [token]);
+  const [data, error, reload] = useLoad(load);
+  const [email, setEmail] = useState("");
+  const [staffId, setStaffId] = useState("");
+  const [label, setLabel] = useState("");
+  const [removing, setRemoving] = useState<Account | null>(null);
+  const [failed, setFailed] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (error) return <Notice tone="error">{error}</Notice>;
+  if (!data) return <p className="text-muted-foreground">Loading…</p>;
+  const names = new Map(data.staff.map((s) => [s.id, s.name]));
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setFailed("");
+    try {
+      await api.saveAccount(token, { email, staff_id: staffId || null, label: staffId ? "" : label });
+      setEmail("");
+      setLabel("");
+      setStaffId("");
+      reload();
+    } catch (err) {
+      setFailed((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Notice>Only these Google accounts can open Store Tasks. A shared account (a store iPad) asks each person for their name and PIN; a person's own account signs them straight in.</Notice>
+      <form onSubmit={add} className="space-y-3 rounded-xl border border-border bg-card p-4">
+        <Field label="Google account">
+          <Input type="email" inputMode="email" autoCapitalize="off" placeholder="name@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="Belongs to">
+            <select value={staffId} onChange={(e) => setStaffId(e.target.value)} className={inputClass}>
+              <option value="">Shared (store iPad)</option>
+              {data.staff.filter((s) => s.active).map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </Field>
+          {!staffId && (
+            <Field label="Name for this device">
+              <Input placeholder="Front iPad" value={label} onChange={(e) => setLabel(e.target.value)} />
+            </Field>
+          )}
+        </div>
+        {failed && <Notice tone="error">{failed}</Notice>}
+        <Button type="submit" disabled={!email.includes("@") || busy} className="w-full">{busy ? "Adding…" : "Give access"}</Button>
+      </form>
+      <Card>
+        {data.accounts.map((a) => (
+          <RowButton
+            key={a.email}
+            onClick={() => a.email !== mine && setRemoving(a)}
+            title={a.email}
+            meta={[a.staff_id ? names.get(a.staff_id) ?? "Person" : a.label || "Shared", a.email === mine ? "this one" : ""].filter(Boolean).join(" · ")}
+          />
+        ))}
+      </Card>
+      {removing && (
+        <Sheet title={`Remove ${removing.email}?`} onClose={() => setRemoving(null)}>
+          <p className="mb-4 text-muted-foreground">It loses access straight away.</p>
+          <Button
+            variant="danger"
+            className="w-full"
+            onClick={async () => {
+              await api.removeAccount(token, removing.email).catch((e: Error) => setFailed(e.message));
+              setRemoving(null);
+              reload();
+            }}
+          >
+            Remove access
+          </Button>
+        </Sheet>
+      )}
+    </div>
+  );
+}
+
+function History({ boot, token }: { boot: Bootstrap; token: string }) {
+  const load = useCallback(() => api.history(token, addDays(boot.today, -HISTORY_DAYS + 1), boot.today).then((r) => r.days), [token, boot.today]);
+  const [days, error] = useLoad(load);
+
+  if (error) return <Notice tone="error">{error}</Notice>;
+  if (!days) return <p className="text-muted-foreground">Loading…</p>;
+
+  return (
+    <div className="overflow-x-auto rounded-xl border border-border bg-card">
+      <table className="w-full text-left text-[15px] tabular-nums">
+        <thead className="text-sm text-muted-foreground">
+          <tr>
+            <th className="px-4 py-3 font-medium">Day</th>
+            {boot.store.shifts.map((s) => (
+              <th key={s.id} className="px-4 py-3 font-medium">{s.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {[...days].reverse().map((d: HistoryDay) => (
+            <tr key={d.date}>
+              <td className="px-4 py-3">{dayLabel(d.date)}</td>
+              {boot.store.shifts.map((s) => {
+                const c = d.shifts[s.id] ?? { total: 0, done: 0, late: 0 };
+                return (
+                  <td key={s.id} className={cx("px-4 py-3", c.total > 0 && c.done < c.total && "text-destructive")}>
+                    {c.total ? `${c.done}/${c.total}` : "—"}
+                    {c.late > 0 && <span className="text-muted-foreground"> · {c.late} late</span>}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}

@@ -1,0 +1,16 @@
+{
+  "id": "palmetto",
+  "name": "Austin",
+  "tz": "America/Chicago",
+  "shifts_dataset": "bhaga",
+  "cutover_date": null,
+  "shifts": [
+    {"id": "opening", "label": "Opening", "due": "07:00", "team_from": "05:30", "team_to": "08:00"},
+    {"id": "shift_change", "label": "Shift Change", "due": "14:00", "team_from": "13:00", "team_to": "15:00"},
+    {"id": "closing", "label": "Closing", "due": "20:30", "team_from": "19:00", "team_to": "21:30"}
+  ],
+  "clickup": {
+    "team_id": "9017956545",
+    "lists": {"901712091488": "opening", "901712092659": "shift_change", "901711373136": "closing"}
+  }
+}

@@ -3126,6 +3126,44 @@ curl -sS -X POST "$URL/telemetry" -H "X-Garage-Token: $GARAGE_ADMIN_TOKEN" \
 ```
 
 
+## Store Tasks (shift checklists, replaces ClickUp tasks)
+
+Design, access rules, ClickUp cutover and Slack setup: [`cloud/store_tasks/README.md`](cloud/store_tasks/README.md).
+
+| What | Where |
+|---|---|
+| Staff app | Cloud Run `store-tasks-app`, behind Google sign-in (direct IAP); proxies `/v1/` to the API |
+| Tasks API | Cloud Run `store-tasks-api`, runtime identity `store-tasks@` (its database, bucket and topic only; read-only on `adp_scheduled_shifts`) |
+| Data | Firestore database `storetasks`; photos in `gs://jarvis-store-tasks-photos` |
+| Schedule | Cloud Scheduler `store-tasks-tick`, every 10 minutes → `POST /internal/tick` |
+| Secrets | `store-tasks-signing-key`, `store-tasks-internal-token`, `store-tasks-push-token` |
+
+```bash
+# Is it up, and did the tick run?
+curl -fsS https://store-tasks-api-887772634501.us-central1.run.app/health
+gcloud logging read 'resource.labels.service_name="store-tasks-api" AND textPayload:"store-tasks fail"' \
+  --project jarvis-bhaga-prod --freshness 1d --limit 20
+
+# Let a Google account in (or a manager does it in the app: Manage → Sign-in)
+GOOGLE_CLOUD_PROJECT=jarvis-bhaga-prod STORE_TASKS_PHOTO_BUCKET=jarvis-store-tasks-photos \
+  python3 -m cloud.store_tasks.admin account --store palmetto --email <google account> --label "Front iPad"
+python3 -m skills.google_signin.access list --service store-tasks-app   # who Google lets through
+
+# Why was someone refused?
+gcloud logging read 'resource.labels.service_name="store-tasks-api" AND textPayload:"STORE_TASKS_SIGNIN_REJECTED"' \
+  --project jarvis-bhaga-prod --freshness 1d --limit 20
+```
+
+- **A lost or stolen iPad:** Manage → Sign-in → remove its Google account (and change that
+  account's password). A new grant can take a minute to apply; "You don't have access" right
+  after adding someone usually just needs a reload.
+- **Someone forgot their PIN:** a manager sets a new one in Manage → People.
+- **Closing counts missing from inventory:** the nightly reads them when the store profile has
+  `"closing_source": "store_tasks"` and the job has `STORE_TASKS_API_URL` and
+  `STORE_TASKS_INTERNAL_TOKEN`; otherwise it still reads the ClickUp form.
+- **Rotating the internal token:** add a secret version, redeploy (the workflow re-reads it and
+  updates the scheduler job header).
+
 ## pup-watch (daycare yard → email)
 
 Emails when a dog is out **alone** in either watched daycare yard. He is only

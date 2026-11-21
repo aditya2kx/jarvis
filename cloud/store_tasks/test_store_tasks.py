@@ -572,4 +572,4 @@ def test_chat_is_archived_with_replies_and_files(env):
     assert report == {"channels": 1, "messages": 2, "replies": 1, "files": 1}
     saved = json.loads(env.tasks.photos.get(ci.archive_path("palmetto", "chat", "channels", "ch1.json"))[0])
     assert saved["messages"][0]["replies"][0]["content"] == "done"
-    assert env.tasks.photos.get(saved["files"][url])[0] == b"jpg"
+    assert env.tasks.photos.get(saved["files"][url.split("?")[0]])[0] == b"jpg"

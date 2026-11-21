@@ -492,18 +492,42 @@ def _get_v3(path: str):
     return _get(path, api=API_V3)
 
 
-def _pages(path: str, get) -> list[dict]:
-    out, cursor = [], ""
+def _page_iter(path: str, get):
+    cursor = ""
     while True:
         sep = "&" if "?" in path else "?"
         page = get(f"{path}{sep}limit=100" + (f"&cursor={urllib.parse.quote(cursor)}" if cursor else ""))
-        out += page.get("data") or []
+        yield page.get("data") or []
         cursor = page.get("next_cursor") or ""
         if not cursor or not page.get("data"):
-            return out
+            return
+
+
+def _pages(path: str, get) -> list[dict]:
+    return [x for page in _page_iter(path, get) for x in page]
 
 
 CHAT_FILE = re.compile(r"https://t\d+\.p\.clickup-attachments\.com/[^\s)\]]+")
+
+
+def _chat_files(tasks: svc.Tasks, cfg: model.StoreConfig, channel: str, page: list[dict], files: dict,
+                download, out: collections.Counter) -> None:
+    """Download files linked in these messages; ``files`` maps each link (without its signature) to our copy."""
+    for text in (x.get("content") or "" for m in page for x in [m, *m["replies"]]):
+        for url in CHAT_FILE.findall(text):
+            bare = url.split("?")[0]
+            if bare in files:
+                continue
+            name = re.sub(r"[^A-Za-z0-9._-]", "_", bare.rsplit("/", 1)[-1])[-80:]
+            path = archive_path(cfg.id, "chat", "files", f"{hashlib.sha1(bare.encode()).hexdigest()[:12]}-{name}")
+            try:
+                data, ctype = download(url)
+            except (urllib.error.URLError, TimeoutError, ValueError) as e:
+                print(f"store-tasks fail reason=chat_file channel={channel} err={e!r}", file=sys.stderr)
+                out["file_failed"] += 1
+                continue
+            tasks.photos.put(path, data, ctype)
+            files[bare] = path
 
 
 def archive_chat(tasks: svc.Tasks, cfg: model.StoreConfig, get=_get_v3, download=_download, get_v2=_get) -> dict:
@@ -515,24 +539,13 @@ def archive_chat(tasks: svc.Tasks, cfg: model.StoreConfig, get=_get_v3, download
     members = fetch_members(team, get_v2)
     tasks.photos.put(archive_path(cfg.id, "chat", "members.json"), json.dumps(members).encode(), "application/json")
     for ch in _pages(f"{base}/channels?is_follower=false", get):
-        messages = _pages(f"{base}/channels/{ch['id']}/messages", get)
-        for m in messages:
-            m["replies"] = _pages(f"{base}/messages/{m['id']}/replies", get) if int(m.get("replies_count") or 0) else []
-        files = {}
-        for text in (x.get("content") or "" for m in messages for x in [m, *m["replies"]]):
-            for url in CHAT_FILE.findall(text):
-                if url in files:
-                    continue
-                name = re.sub(r"[^A-Za-z0-9._-]", "_", url.split("?")[0].rsplit("/", 1)[-1])[-80:]
-                path = archive_path(cfg.id, "chat", "files", f"{hashlib.sha1(url.split('?')[0].encode()).hexdigest()[:12]}-{name}")
-                try:
-                    data, ctype = download(url)
-                except (urllib.error.URLError, TimeoutError, ValueError) as e:
-                    print(f"store-tasks fail reason=chat_file channel={ch['id']} err={e!r}", file=sys.stderr)
-                    out["file_failed"] += 1
-                    continue
-                tasks.photos.put(path, data, ctype)
-                files[url] = path
+        messages, files = [], {}
+        for page in _page_iter(f"{base}/channels/{ch['id']}/messages", get):
+            # File links in chat are signed for a short time: fetch each message's files straight away.
+            for m in page:
+                m["replies"] = _pages(f"{base}/messages/{m['id']}/replies", get) if int(m.get("replies_count") or 0) else []
+                _chat_files(tasks, cfg, ch["id"], [m], files, download, out)
+            messages += page
         tasks.photos.put(archive_path(cfg.id, "chat", "channels", f"{ch['id']}.json"),
                          json.dumps({"channel": ch, "messages": messages, "files": files}).encode(), "application/json")
         out["channels"] += 1

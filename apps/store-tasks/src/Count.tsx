@@ -1,11 +1,21 @@
 import { useEffect, useState } from "react";
-import { api, isOffline, type Bootstrap, type Count, type Session } from "./api";
+import { api, isOffline, type Bootstrap, type Count, type CountItem, type Session } from "./api";
 import { AddPhotos, PhotoGrid } from "./Photos";
 import { Button, cx, dayLabel, Field, firstName, Input, inputClass, Notice, Sheet, time } from "./ui";
 
 type Draft = Pick<Count, "items" | "notes" | "tips">;
 
 const EMPTY: Draft = { items: {}, notes: { shift: "", low: "", out: "" }, tips: "" };
+
+/** The form's sections in order; fields without one (added since) come last, under "Other". */
+function sections(items: CountItem[]): [string, CountItem[]][] {
+  const out = new Map<string, CountItem[]>();
+  for (const i of items) {
+    const key = i.section ?? (items.some((x) => x.section) ? "Other" : "");
+    out.set(key, [...(out.get(key) ?? []), i]);
+  }
+  return [...out];
+}
 const draftKey = (date: string) => `st.count.${date}`;
 
 interface Props {
@@ -89,20 +99,25 @@ export function CountForm({ boot, session, date, names, readOnly, onClose }: Pro
             {!readOnly && " Sending again replaces it; the earlier one is kept in history."}
           </Notice>
         )}
-        <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
-          {boot.store.count_items.map((i) => (
-            <Field key={i.id} label={i.name}>
-              <Input
-                inputMode={i.kind === "number" ? "decimal" : "text"}
-                autoComplete="off"
-                autoCapitalize="off"
-                disabled={readOnly}
-                value={draft.items[i.id] ?? ""}
-                onChange={(e) => setDraft((d) => ({ ...d, items: { ...d.items, [i.id]: e.target.value } }))}
-              />
-            </Field>
-          ))}
-        </div>
+        {sections(boot.store.count_items).map(([section, items]) => (
+          <section key={section} className="space-y-2">
+            {section && <h3 className="text-sm font-medium text-muted-foreground">{section}</h3>}
+            <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
+              {items.map((i) => (
+                <Field key={i.id} label={i.name}>
+                  <Input
+                    inputMode={i.kind === "number" ? "decimal" : "text"}
+                    autoComplete="off"
+                    autoCapitalize="off"
+                    disabled={readOnly}
+                    value={draft.items[i.id] ?? ""}
+                    onChange={(e) => setDraft((d) => ({ ...d, items: { ...d.items, [i.id]: e.target.value } }))}
+                  />
+                </Field>
+              ))}
+            </div>
+          </section>
+        ))}
         <Field label="Tips ($)">
           <Input inputMode="decimal" disabled={readOnly} value={draft.tips ?? ""} onChange={(e) => setDraft((d) => ({ ...d, tips: e.target.value }))} />
         </Field>

@@ -24,6 +24,8 @@ export interface CountItem {
   id: string;
   name: string;
   kind: "text" | "number";
+  /** The ClickUp form's section heading (Bases, Granola…). */
+  section?: string | null;
 }
 
 export interface Bootstrap {

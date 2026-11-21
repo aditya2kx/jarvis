@@ -15,7 +15,7 @@ from skills.google_signin import identity
 from agents.bhaga.scripts.ingest_inventory import rows_from_task
 from cloud.store_tasks import app as app_mod
 from cloud.store_tasks import auth, clickup_import as ci, events as ev, model, service as svc
-from cloud.store_tasks import shared_sync, store as st, verify_backfill
+from cloud.store_tasks import shared_sync, store as st, summaries, verify_backfill
 
 TZ = datetime.timezone(datetime.timedelta(hours=-6))
 INTERNAL = "internal-token-for-tests-0123456789"
@@ -339,7 +339,76 @@ def test_tick_runs_hourly_jobs_once_per_hour(env, monkeypatch):
 
     monkeypatch.setenv("CLICKUP_PAT", "x")
     monkeypatch.setattr(ci, "mirror", lambda tasks, sid: {"tasks": 3})
-    assert env.client.post("/internal/tick", headers=h).get_json()["palmetto"]["mirror"] == {"tasks": 3}
+    posts = []
+    monkeypatch.setattr(app_mod.clickup_chat, "post_message", lambda channel, text: posts.append((channel, text)))
+    out = env.client.post("/internal/tick", headers=h).get_json()["palmetto"]
+    assert out["mirror"] == {"tasks": 3} and out["posted"] == ["palmetto_2026-11-19_opening"]
+    assert env.client.post("/internal/tick", headers=h).get_json()["palmetto"]["posted"] == []
+    assert [c for c, _ in posts] == ["8cr6661-7217"] and posts[0][1].startswith("**Opening duties · Thu Nov 19**")
+
+
+def test_shift_summary_counts_shoutouts_open_tasks_and_missing_photos(env):
+    tasks, day = env.tasks, datetime.date(2026, 11, 19)
+    env.client.get("/v1/days/2026-11-19", headers=env.crew_h)
+    tasks.complete("palmetto", "palmetto_2026-11-19_t1", {"sid": env.crew["id"], "role": "crew"})
+    tasks.docs.set(st.TASKS, "palmetto_2026-11-19_t2", {"status": "done", "completed_by": env.crew["id"]}, merge=True)
+    # A task ticked with tonight's step undone is called out (a Friday step on a ClickUp day is not).
+    tasks.docs.set(st.TASKS, "palmetto_2026-11-19_fri", {
+        "id": "palmetto_2026-11-19_fri", "store": "palmetto", "date": "2026-11-19", "shift": "opening",
+        "title": "Fri: shelf", "parent_id": "palmetto_2026-11-19_t2", "status": "open", "order": 3})
+    text = summaries.shift_summary(tasks, "palmetto", day, "opening")
+    assert text.splitlines() == [
+        "**Opening duties · Thu Nov 19**", "2 of 2 done 🎉", "Shoutouts: Dolce Johnson 2", "Steps not ticked: Thu: blender"]
+    # ClickUp never enforced photos: a step done without its photo is called out.
+    tasks.docs.set(st.TASKS, "palmetto_2026-11-19_t3", {"status": "done", "completed_by": env.crew["id"]}, merge=True)
+    assert summaries.shift_summary(tasks, "palmetto", day, "opening").splitlines()[-1] == (
+        "Done without the photo it needs: Thu: blender")
+
+
+def test_a_clickup_day_waits_for_fresh_clickup_data_before_its_summary(env):
+    tasks = env.tasks
+    tasks.put_store(dataclasses.replace(tasks.store("palmetto"), cutover_date=None))
+    env.clock.at = datetime.datetime(2026, 11, 19, 7, 45, tzinfo=TZ)
+    assert summaries.wants_mirror(tasks, "palmetto")
+    sent = []
+    assert summaries.post_due(tasks, "palmetto", lambda c, t: sent.append(t)) == [] and sent == []
+    tasks.job_done("palmetto", "mirror")
+    assert not summaries.wants_mirror(tasks, "palmetto")
+    assert summaries.post_due(tasks, "palmetto", lambda c, t: sent.append(t)) == ["palmetto_2026-11-19_opening"]
+    # ClickUp unreachable: after an hour the summary goes out from what is stored.
+    env.clock.at = datetime.datetime(2026, 11, 19, 14, 35, tzinfo=TZ)
+    assert summaries.wants_mirror(tasks, "palmetto")
+    env.clock.at = datetime.datetime(2026, 11, 19, 15, 31, tzinfo=TZ)
+    assert summaries.post_due(tasks, "palmetto", lambda c, t: sent.append(t)) == ["palmetto_2026-11-19_shift_change"]
+
+
+def test_closing_update_follows_the_form_sections_and_posts_again_when_resent(env):
+    tasks = env.tasks
+    env.clock.at = datetime.datetime(2026, 11, 19, 7, 5, tzinfo=TZ)  # before any shift summary is due
+    cfg = tasks.store("palmetto")
+    items = ({"id": "b-mango", "name": "Mango", "kind": "text"}, {"id": "f-mango", "name": "Mango", "kind": "text"},
+             {"id": FIELD, "name": "Açaí", "kind": "text"}, {"id": "new", "name": "Kiwi", "kind": "text"})
+    tasks.put_store(dataclasses.replace(cfg, count_items=items))
+    count = {"items": {"b-mango": "12+65%", "f-mango": "8 palettes", FIELD: "25+40%"}}
+    update = ("Submitted by: Huy\n\n**Shift notes**\n*   Shift notes: Steady\n\n**BASES**\n*   Blade: 1\n"
+              "*   Acai: 25+40%\n*   Mango: 12+65%\n\n**FRUIT**\n*   Mango: 8 palettes\n\n**NEED ATTENTION**\n"
+              "*   Manual LOW notes: None")
+    placed = summaries.sections_from_update(tasks.store("palmetto"), count, update)
+    # Same name, told apart by that day's values; a field the post never showed keeps its place at the end.
+    assert [(i["id"], i.get("section")) for i in placed] == [
+        (FIELD, "Bases"), ("b-mango", "Bases"), ("f-mango", "Fruit"), ("new", None)]
+    tasks.put_store(dataclasses.replace(tasks.store("palmetto"), count_items=placed))
+    env.client.put("/v1/counts/2026-11-19", json={"items": count["items"], "notes": {"shift": "Steady", "low": "oat milk"}},
+                   headers=env.crew_h)
+    sent = []
+    send = lambda c, t: sent.append(t)
+    assert summaries.post_due(tasks, "palmetto", send)[0].startswith("palmetto_2026-11-19_count_")
+    assert "Sent by Dolce Johnson at 7:05 AM" in sent[0] and "**BASES**\n*   Açaí: 25+40%\n*   Mango: 12+65%" in sent[0]
+    assert "Running low: oat milk · Out of: None" in sent[0] and "**FRUIT**\n*   Mango: 8 palettes" in sent[0]
+    assert summaries.post_due(tasks, "palmetto", send) == []
+    env.clock.at += datetime.timedelta(minutes=5)
+    env.client.put("/v1/counts/2026-11-19", json={"items": {FIELD: "24"}}, headers=env.crew_h)
+    assert len(summaries.post_due(tasks, "palmetto", send)) == 1
 
 
 def test_internal_one_off_is_idempotent_by_key(env):

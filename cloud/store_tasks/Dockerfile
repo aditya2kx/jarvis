@@ -11,6 +11,7 @@ COPY cloud/store_tasks ./cloud/store_tasks
 COPY cloud/store_tasks_slack ./cloud/store_tasks_slack
 COPY skills/__init__.py ./skills/__init__.py
 COPY skills/google_signin ./skills/google_signin
+COPY skills/clickup_chat ./skills/clickup_chat
 
 ENV PORT=8080
 ENV PYTHONPATH=/app

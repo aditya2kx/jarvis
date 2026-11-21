@@ -6,6 +6,7 @@
     python3 -m cloud.store_tasks.admin account --store palmetto --email ipad@b.com --label "Front iPad"
     python3 -m cloud.store_tasks.admin cutover --store palmetto --date 2026-12-01
     python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]
+    python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737
 """
 
 from __future__ import annotations
@@ -16,10 +17,12 @@ import datetime
 import json
 import pathlib
 import sys
+from zoneinfo import ZoneInfo
 
+from skills.clickup_chat import runner as clickup_chat
 from skills.google_signin import access
 
-from cloud.store_tasks import auth, clickup_import, model, service as svc, store as st
+from cloud.store_tasks import auth, clickup_import, model, service as svc, store as st, summaries
 
 SIGNIN_SERVICE = "store-tasks-app"
 STORES_DIR = pathlib.Path(__file__).parent / "stores"
@@ -42,7 +45,7 @@ def seed(tasks: svc.Tasks, store_id: str) -> model.StoreConfig:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("seed", "manager", "account", "cutover", "photo-rules"):
+    for name in ("seed", "manager", "account", "cutover", "photo-rules", "count-sections"):
         sp = sub.add_parser(name)
         sp.add_argument("--store", required=True)
         if name == "manager":
@@ -54,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
             sp.add_argument("--label", default="")
         if name == "cutover":
             sp.add_argument("--date", required=True, help="first day generated here; 'none' to clear")
+        if name == "count-sections":
+            sp.add_argument("--channel", required=True, help="ClickUp chat channel ClickUp's closing updates go to")
         if name == "photo-rules":
             sp.add_argument("--apply", action="store_true", help="turn on 'needs a photo' for the listed tasks")
     args = ap.parse_args(argv)
@@ -89,6 +94,25 @@ def main(argv: list[str] | None = None) -> int:
         for t in stale:
             tasks.docs.delete(st.TASKS, t["id"])
         print(f"store {args.store}: cutover {day}; removed {len(stale)} trial tasks from ClickUp-owned days")
+    elif args.cmd == "count-sections":
+        cfg = tasks.store(args.store)
+        since = int((tasks.now() - datetime.timedelta(days=3)).timestamp() * 1000)
+        updates = [m for m in clickup_chat.fetch_messages(args.channel, since_ts_ms=since)
+                   if "Submission task:" in (m.get("content") or "")]
+        tz = ZoneInfo(cfg.tz)
+        for m in reversed(updates):
+            day = datetime.datetime.fromtimestamp(m["date"] / 1000, tz).date()
+            count = tasks.count(args.store, day)
+            if count:
+                items = summaries.sections_from_update(cfg, count, m["content"])
+                tasks.put_store(dataclasses.replace(cfg, count_items=items))
+                print(f"{sum(1 for i in items if i.get('section'))}/{len(items)} fields placed, from {day}:")
+                for i in items:
+                    print(f"  {i.get('section') or '-':<16} {i['name']}")
+                break
+        else:
+            print("no closing update with a stored count in the last 3 days", file=sys.stderr)
+            return 1
     elif args.cmd == "photo-rules":
         for r in clickup_import.photo_rules(tasks, args.store):
             why = "asks for one" if r["asks"] else f"photos on {r['photo_days']} days, last {r['last_photo']}"

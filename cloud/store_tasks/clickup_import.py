@@ -164,7 +164,8 @@ def to_count(cfg: model.StoreConfig, task: dict) -> dict:
     return {
         "id": f"{cfg.id}_{created.date().isoformat()}", "store": cfg.id,
         "date": created.date().isoformat(), "items": items, "notes": notes, "tips": _field(task, "Tips"),
-        "submitted_by": None, "submitted_at": created.isoformat(), "source": "clickup",
+        "submitted_by": staff_id(task["creator"]["id"]) if (task.get("creator") or {}).get("id") else None,
+        "submitted_at": created.isoformat(), "source": "clickup",
         "clickup_id": task["id"], "revisions": [],
     }
 

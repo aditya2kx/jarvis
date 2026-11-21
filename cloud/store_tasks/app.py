@@ -14,7 +14,7 @@ consume its events. See cloud/store_tasks/README.md.
     POST /v1/tasks                   one-off task
     GET|PUT /v1/counts/<date>        closing count
     GET|POST /v1/templates, /v1/staff, /v1/accounts, GET /v1/history   (manager)
-    POST /internal/tick              scheduled: alerts, shared-shift sync, ClickUp mirror
+    POST /internal/tick              scheduled: alerts, shared-shift sync, ClickUp mirror, chat summaries
     POST /internal/stores/<s>/check-shifts | mirror | sync-shifts | tasks, GET …/closing-counts
 """
 
@@ -30,7 +30,9 @@ from flask import Flask, Response, g, jsonify, request
 
 from skills.google_signin import access, identity
 
-from cloud.store_tasks import auth, clickup_import, shared_sync
+from skills.clickup_chat import runner as clickup_chat
+
+from cloud.store_tasks import auth, clickup_import, shared_sync, summaries
 from cloud.store_tasks import service as svc
 from cloud.store_tasks import store as st
 
@@ -373,15 +375,17 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     @app.post("/internal/tick")
     @internal_required
     def tick():
-        """The one scheduled entry point: alerts every call, shared data hourly, ClickUp mirror until cutover."""
+        """The one scheduled entry point: alerts every call, shared data hourly, ClickUp mirror until
+        cutover (sooner when a shift summary waits for fresh ClickUp data), then due chat summaries."""
         out = {}
+        chat = bool(os.environ.get("CLICKUP_PAT"))
         for store_doc in tasks.docs.query(st.STORES):
             sid = store_doc["id"]
             out[sid] = {"alerts": len(tasks.check_shifts(sid))}
             for job, every, run in (("sync_shifts", SYNC_EVERY, shared_sync.sync), ("mirror", MIRROR_EVERY, clickup_import.mirror)):
-                if job == "mirror" and not (store_doc.get("clickup") and os.environ.get("CLICKUP_PAT")):
+                if job == "mirror" and not (store_doc.get("clickup") and chat):
                     continue
-                if not tasks.job_due(sid, job, every):
+                if not (tasks.job_due(sid, job, every) or (job == "mirror" and summaries.wants_mirror(tasks, sid))):
                     continue
                 try:
                     out[sid][job] = run(tasks, sid)
@@ -389,6 +393,8 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
                 except Exception as e:
                     log.error("store-tasks fail reason=%s store=%s err=%r", job, sid, e)
                     out[sid][job] = "failed"
+            if chat:
+                out[sid]["posted"] = summaries.post_due(tasks, sid, clickup_chat.post_message)
         return jsonify(out)
 
     return app

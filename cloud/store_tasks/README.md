@@ -106,6 +106,7 @@ python3 -m cloud.store_tasks.admin account --store palmetto --email ipad@example
 python3 -m cloud.store_tasks.admin account --store palmetto --email me@example.com --staff "First Last"   # own account, no PIN
 python3 -m cloud.store_tasks.admin cutover --store palmetto --date 2026-12-01
 python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]   # tasks that need a photo, from ClickUp history
+python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737   # closing-count sections, from ClickUp's latest closing update
 ```
 
 Every import write is keyed by the ClickUp task id, so re-running is an upsert. Until
@@ -143,6 +144,24 @@ A new store: add `stores/<id>.json`, run `seed`, add people, add its iPad's Goog
 python3 -m pytest cloud/store_tasks cloud/store_tasks_slack -q
 cd apps/store-tasks && npm test && npm run build
 ```
+
+## ClickUp chat summaries
+
+With `clickup.summary_channel` in `stores/<id>.json` (today the operator's private
+`#jarvis-drafts`) and `CLICKUP_PAT` set, the tick posts (`summaries.py`):
+
+| When | Post |
+|---|---|
+| Each shift's due time + 30 min | Done of total, shoutouts (ticks per person), what is still open, steps left unticked under a ticked task, done without the photo it needs |
+| A closing count is sent (or sent again) | Who and when, notes, then every field under the closing form's sections |
+
+Before cutover a shift summary waits for a ClickUp mirror run after the shift was due (the
+tick starts one), at most an hour. Each post is recorded in `posts` before sending, so it is
+sent once; a failed send logs `store-tasks fail reason=summary_post`.
+
+The closing count follows the ClickUp form: its sections and order come from ClickUp's own
+"Daily Closing Update" post (`admin count-sections`); fields are matched by name and that
+day's values, so the two "Mango" fields (a base, a fruit) land in the right section.
 
 ## Slack
 

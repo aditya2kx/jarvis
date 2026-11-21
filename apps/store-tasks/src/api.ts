@@ -7,6 +7,8 @@ export interface Staff {
   active: boolean;
   has_pin: boolean;
   adp_name: string;
+  /** Active in ADP: the only people a task can be given to. */
+  assignable: boolean;
 }
 
 export interface Shift {

@@ -34,8 +34,11 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   assertion as `X-Signin-Assertion` (Google's front end drops `x-goog-*` headers between
   services). The API verifies it against the app's audience, so calling the API directly
   without a Google sign-in is refused.
-- **Who is doing it.** Anyone signed in picks a person for a task from the whole team, or
-  for every unassigned task on a list at once, as in ClickUp. Nothing is assigned
+- **Who is doing it.** Anyone signed in picks a person for a task, or for every unassigned
+  task on a list at once, as in ClickUp. Only people Active in the latest ADP directory
+  snapshot (`adp_directory_status`) can be picked; the hourly sync sets `adp_active` on each
+  person, adds anyone employed who is missing, and changes nothing if the snapshot is empty.
+  A ClickUp nickname is linked to its ADP name through the person's `adp_name`. Nothing is assigned
   automatically. The ADP schedule (copied hourly from BigQuery into `shared_shifts`, so the
   tablet never waits on the warehouse; BigQuery stays the source) only puts the people
   scheduled today at the top of the picker.

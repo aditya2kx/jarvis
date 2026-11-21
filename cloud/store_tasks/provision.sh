@@ -40,9 +40,11 @@ gcloud pubsub topics add-iam-policy-binding "$TOPIC" --project "$PROJECT" \
 gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$SA_EMAIL" \
   --role roles/bigquery.jobUser --condition None >/dev/null
 for DATASET in bhaga bhaga_houston; do
-  bq --project_id "$PROJECT" query --use_legacy_sql=false --quiet \
-    "GRANT \`roles/bigquery.dataViewer\` ON TABLE \`$PROJECT.$DATASET.adp_scheduled_shifts\` TO 'serviceAccount:$SA_EMAIL'" \
-    >/dev/null || echo "note: no $DATASET.adp_scheduled_shifts yet — re-run after it exists"
+  for TABLE in adp_scheduled_shifts adp_directory_status; do
+    bq --project_id "$PROJECT" query --use_legacy_sql=false --quiet \
+      "GRANT \`roles/bigquery.dataViewer\` ON TABLE \`$PROJECT.$DATASET.$TABLE\` TO 'serviceAccount:$SA_EMAIL'" \
+      >/dev/null || echo "note: no $DATASET.$TABLE yet — re-run after it exists"
+  done
 done
 
 for SECRET in store-tasks-signing-key store-tasks-internal-token store-tasks-push-token; do

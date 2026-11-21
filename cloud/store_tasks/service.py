@@ -33,7 +33,12 @@ def _now() -> datetime.datetime:
 def public_staff(s: dict) -> dict:
     return {"id": s["id"], "name": s["name"], "role": s.get("role", auth.CREW),
             "active": s.get("active", True), "has_pin": bool(s.get("pin_hash")),
-            "adp_name": s.get("adp_name") or ""}
+            "adp_name": s.get("adp_name") or "", "assignable": assignable(s)}
+
+
+def assignable(s: dict) -> bool:
+    """Only people ADP employs are picked to do a task. Before the first ADP sync, everyone active."""
+    return s.get("active", True) and s.get("adp_active", True)
 
 
 class Tasks:
@@ -374,14 +379,19 @@ class Tasks:
                 "recent_photos": [p for p in tpl["recent_photos"] if p["path"] != path]}, merge=True)
         return t
 
+    def _assignee(self, store_id: str, staff_id: str) -> None:
+        s = self.docs.get(st.STAFF, staff_id)
+        if s is None or s.get("store") != store_id:
+            raise NotFound("person")
+        if not assignable(s):
+            raise Invalid("that person is not on the ADP roster")
+
     def assign(self, store_id: str, task_ids: list[str], assignee_id: str | None, staff: dict) -> list[dict]:
         """Anyone signed in can say who is doing a task, as in ClickUp. ``None`` clears it."""
         if not task_ids or len(task_ids) > MAX_ASSIGN:
             raise Invalid(f"pick between 1 and {MAX_ASSIGN} tasks")
         if assignee_id:
-            s = self.docs.get(st.STAFF, assignee_id)
-            if s is None or s.get("store") != store_id or not s.get("active", True):
-                raise NotFound("person")
+            self._assignee(store_id, assignee_id)
         picked = [self._task(i, store_id) for i in dict.fromkeys(task_ids)]
         for t in picked:
             self._writable(t)
@@ -455,6 +465,8 @@ class Tasks:
             raise Invalid("title is required")
         day = datetime.date.fromisoformat(data.get("date") or cfg.today(self.now()).isoformat())
         shift = cfg.shift(data.get("shift") or cfg.shifts[0].id)
+        if data.get("assignee_id"):
+            self._assignee(store_id, data["assignee_id"])
         tid = data.get("id") or f"{store_id}_{day.isoformat()}_o{uuid.uuid4().hex[:10]}"
         t = {"id": tid, "store": store_id, "date": day.isoformat(), "shift": shift.id, "title": title,
              "instructions": (data.get("instructions") or "").strip(), "order": 1000.0,

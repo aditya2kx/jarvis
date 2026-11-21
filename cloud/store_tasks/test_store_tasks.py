@@ -373,12 +373,31 @@ def test_duplicate_starts_with_the_originals_example_photos(env):
 def test_shift_team_comes_from_shared_schedule(env):
     rows = [{"date": "2026-11-19", "name": "Johnson, Dolce J", "ranges": ["6:30 AM - 2:30 PM"]},
             {"date": "2026-11-19", "name": "Vu, Phong", "ranges": ["3:00 PM - 8:30 PM"]}]
-    out = shared_sync.sync(env.tasks, "palmetto", read=lambda ds, a, b: rows)
+    out = shared_sync.sync(env.tasks, "palmetto", read=lambda ds, a, b: rows, roster=lambda ds, s: [])
     assert out["days"] == shared_sync.DAYS_BACK + shared_sync.DAYS_AHEAD + 1
     teams = env.client.get("/v1/days/2026-11-19", headers=env.crew_h).get_json()["teams"]
     assert teams["opening"] == [{"id": env.crew["id"], "name": "Dolce Johnson"}]
     assert teams["shift_change"] == [{"id": env.crew["id"], "name": "Dolce Johnson"}]
     assert teams["closing"] == [{"id": None, "name": "Vu, Phong"}]
+
+
+def test_only_people_adp_employs_can_be_picked(env):
+    leaver = env.tasks.save_staff("palmetto", {"name": "Old Hand"}, "test")
+    nick = env.tasks.save_staff("palmetto", {"name": "Quinnz", "adp_name": "Nguyen, Quyen P"}, "test")
+    sync = lambda names: shared_sync.sync(env.tasks, "palmetto", read=lambda ds, a, b: [], roster=lambda ds, s: names)
+    out = sync(["Johnson, Dolce J", "Nguyen, Quyen P", "Guerrero, Amy"])
+    assert (out["adp_active"], out["added"]) == (3, 1)
+    staff = {s["name"]: s for s in env.client.get("/v1/bootstrap", headers=env.ipad).get_json()["staff"]}
+    assert {n for n, s in staff.items() if s["assignable"]} == {"Dolce Johnson", "Quinnz", "Amy Guerrero"}
+    assert staff["Amy Guerrero"]["adp_name"] == "Guerrero, Amy"
+    env.client.get("/v1/days/2026-11-19", headers=env.crew_h)
+    one = ["palmetto_2026-11-19_t1"]
+    assert env.client.post("/v1/assign", json={"task_ids": one, "assignee_id": leaver["id"]}, headers=env.crew_h).status_code == 400
+    assert env.client.post("/v1/assign", json={"task_ids": one, "assignee_id": nick["id"]}, headers=env.crew_h).status_code == 200
+    added = env.client.post("/v1/tasks", json={"title": "x", "shift": "opening", "assignee_id": env.boss["id"]}, headers=env.crew_h)
+    assert added.status_code == 400  # the manager is not on the ADP roster here
+    # A failed scrape (no one active) changes nothing.
+    assert sync([])["skipped"] and env.tasks.docs.get(st.STAFF, nick["id"])["adp_active"]
 
 
 # ── ClickUp import ─────────────────────────────────────────────────────────

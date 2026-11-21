@@ -3133,7 +3133,7 @@ Design, access rules, ClickUp cutover and Slack setup: [`cloud/store_tasks/READM
 | What | Where |
 |---|---|
 | Staff app | Cloud Run `store-tasks-app`, behind Google sign-in (direct IAP); proxies `/v1/` to the API |
-| Tasks API | Cloud Run `store-tasks-api`, runtime identity `store-tasks@` (its database, bucket and topic only; read-only on `adp_scheduled_shifts`) |
+| Tasks API | Cloud Run `store-tasks-api`, runtime identity `store-tasks@` (its database, bucket and topic only; read-only on `adp_scheduled_shifts` and `adp_directory_status`) |
 | Data | Firestore database `storetasks`; photos in `gs://jarvis-store-tasks-photos` |
 | Schedule | Cloud Scheduler `store-tasks-tick`, every 10 minutes → `POST /internal/tick` |
 | Secrets | `store-tasks-signing-key`, `store-tasks-internal-token`, `store-tasks-push-token` |

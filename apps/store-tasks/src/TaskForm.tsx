@@ -120,7 +120,7 @@ export function TaskForm({ boot, session, date, title, initial, once, onClose, o
             <Field label="Who is doing it">
               <select value={t.assignee_id ?? ""} onChange={(e) => set({ assignee_id: e.target.value || null })} className={inputClass}>
                 <option value="">No one yet</option>
-                {boot.staff.map((s) => (
+                {boot.staff.filter((s) => s.assignable).map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}
                   </option>

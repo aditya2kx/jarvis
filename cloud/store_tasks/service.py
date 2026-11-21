@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
+import io
 import os
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
+
+from PIL import Image, ImageOps
 
 from cloud.store_tasks import auth, events as ev, model, store as st
 
@@ -18,6 +24,14 @@ PHOTO_TYPES = ("image/jpeg", "image/png", "image/webp", "image/heic")
 RECENT_PHOTOS = 8  # per task definition: what the last few days' photos looked like
 MAX_COMMENT = 2000
 MAX_ASSIGN = 200
+_READS = ThreadPoolExecutor(max_workers=16, thread_name_prefix="store-tasks-read")
+PHOTO_SIZES = {"thumb": 480, "view": 1600}  # longest side, px
+SIZED_DIR = "_sized"
+_RESIZING = threading.BoundedSemaphore(2)  # decoding big photos is memory-hungry
+# What the day's list reads from a definition: not its "earlier photos", the bulk of the document.
+TEMPLATE_LIST_FIELDS = tuple(f.name for f in dataclasses.fields(model.Template)) + ("reference_photos",)
+# Kept on a ClickUp task as a record; nothing on screen reads it.
+NOT_LISTED = ("clickup",)
 
 
 class NotFound(Exception):
@@ -30,6 +44,22 @@ class Invalid(Exception):
 
 def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def shrink(data: bytes, longest: int) -> bytes | None:
+    """A JPEG no larger than ``longest`` px on its longest side; None when the photo already is."""
+    try:
+        img = Image.open(io.BytesIO(data))
+        if max(img.size) <= longest and len(data) <= 400 * 1024:
+            return None
+        img.draft("RGB", (longest, longest))  # JPEG decodes at a fraction of full size: fast and small
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        img.thumbnail((longest, longest))
+        out = io.BytesIO()
+        img.save(out, "JPEG", quality=80, optimize=True)
+        return out.getvalue()
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return None
 
 
 def public_staff(s: dict) -> dict:
@@ -335,8 +365,10 @@ class Tasks:
 
     # ── days ────────────────────────────────────────────────────────────────
 
-    def teams(self, cfg: model.StoreConfig, day: datetime.date, staff: list[dict]) -> dict[str, list[dict]]:
-        doc = self.docs.get(st.SHIFTS, f"{cfg.id}_{day.isoformat()}") or {}
+    def teams(self, cfg: model.StoreConfig, day: datetime.date, staff: list[dict],
+              doc: dict | None = None) -> dict[str, list[dict]]:
+        if doc is None:
+            doc = self.docs.get(st.SHIFTS, f"{cfg.id}_{day.isoformat()}") or {}
         teams = {}
         for shift in cfg.shifts:
             members = []
@@ -346,24 +378,28 @@ class Tasks:
             teams[shift.id] = members
         return teams
 
-    def _stored(self, cfg: model.StoreConfig, day: datetime.date) -> list[dict]:
+    def _stored(self, cfg: model.StoreConfig, day: datetime.date, rows: list[dict] | None = None) -> list[dict]:
         """One owner per day: ClickUp's copy before cutover, the lists built here from then on."""
-        tasks = self.docs.query(st.TASKS, store=cfg.id, date=day.isoformat())
+        if rows is None:
+            rows = self.docs.query(st.TASKS, store=cfg.id, date=day.isoformat())
         mirrored = not cfg.generated(day)
         # A ClickUp step whose parent is on no list that day is not on ClickUp's list either.
-        return [t for t in tasks if (t.get("source") == "clickup") == mirrored and not t.get("stale_parent")]
+        return [t for t in rows if (t.get("source") == "clickup") == mirrored and not t.get("stale_parent")]
 
-    def ensure_day(self, cfg: model.StoreConfig, day: datetime.date) -> list[dict]:
+    def ensure_day(self, cfg: model.StoreConfig, day: datetime.date, rows: list[dict] | None = None,
+                   templates: list[model.Template] | None = None) -> list[dict]:
         """The day's tasks. Generated days are created on first read; ids make this an upsert."""
-        tasks = self._stored(cfg, day)
+        tasks = self._stored(cfg, day, rows)
+        if templates is None:
+            templates = self.templates(cfg.id)
         if not cfg.generated(day):
             # ClickUp never enforced photos: show our rule on its tasks, so a missing photo is visible.
-            rules = {t.id for t in self.templates(cfg.id) if t.needs_photo}
+            rules = {t.id for t in templates if t.needs_photo}
             for t in tasks:
                 t["needs_photo"] = bool(t.get("needs_photo") or t.get("template_id") in rules)
         if cfg.generated(day):
             have = {t["id"] for t in tasks}
-            missing = [t for t in model.build_day(cfg, self.templates(cfg.id), day) if t["id"] not in have]
+            missing = [t for t in model.build_day(cfg, templates, day) if t["id"] not in have]
             if missing and day <= cfg.today(self.now()) + datetime.timedelta(days=7):
                 stamp = self.now().isoformat()
                 created = [t for t in missing
@@ -372,13 +408,26 @@ class Tasks:
         return sorted(tasks, key=lambda t: (t["shift"], *model.sort_key(t)))
 
     def day(self, store_id: str, day: datetime.date) -> dict:
-        cfg = self.store(store_id)
-        staff = self.staff(store_id)
-        count = self.docs.get(st.COUNTS, f"{store_id}_{day.isoformat()}")
-        tasks = self.ensure_day(cfg, day)
-        examples = {d["id"]: d["reference_photos"] for d in self.docs.query(st.TEMPLATES, store=store_id)
-                    if d.get("reference_photos")}
+        key = f"{store_id}_{day.isoformat()}"
+        # Independent reads, fetched together: the list is the most-loaded screen (p99 target 500 ms).
+        jobs = {
+            "cfg": lambda: self.store(store_id),
+            "staff": lambda: self.staff(store_id),
+            "count": lambda: self.docs.get(st.COUNTS, key),
+            "shifts": lambda: self.docs.get(st.SHIFTS, key) or {},
+            "templates": lambda: self.docs.query_fields(st.TEMPLATES, TEMPLATE_LIST_FIELDS, store=store_id),
+            "rows": lambda: self.docs.query(st.TASKS, store=store_id, date=day.isoformat()),
+        }
+        futures = {k: _READS.submit(f) for k, f in jobs.items()}
+        got = {k: f.result() for k, f in futures.items()}
+        cfg, staff, count = got["cfg"], got["staff"], got["count"]
+        templates = sorted((model.Template.from_dict(d) for d in got["templates"]),
+                           key=lambda t: (t.shift, t.order, t.title))
+        tasks = self.ensure_day(cfg, day, got["rows"], templates)
+        examples = {d["id"]: d["reference_photos"] for d in got["templates"] if d.get("reference_photos")}
         for t in tasks:  # the list shows which tasks have "how it should look" media
+            for k in NOT_LISTED:
+                t.pop(k, None)
             media = examples.get(t.get("template_id") or "") or t.get("reference_photos") or []
             t["examples"] = {"photos": sum(1 for p in media if not p.get("type")),
                              "videos": sum(1 for p in media if p.get("type"))}
@@ -386,10 +435,32 @@ class Tasks:
             "store": store_id, "date": day.isoformat(), "today": cfg.today(self.now()).isoformat(),
             "generated": cfg.generated(day),
             "shifts": [{**s.to_dict(), "due_at": model.due_at(cfg, s.id, day)} for s in cfg.shifts],
-            "teams": self.teams(cfg, day, staff),
+            "teams": self.teams(cfg, day, staff, got["shifts"]),
             "tasks": tasks,
             "count_submitted": bool(count and count.get("submitted_at")),
         }
+
+    def photo(self, path: str, size: str | None = None) -> tuple[bytes, str] | None:
+        """A stored photo, or a smaller copy of it. ClickUp's originals are ~8 MB; a phone shows them
+        as a thumbnail or at screen size, so those copies are made once and kept beside the original."""
+        if size is None:
+            return self.photos.get(path)
+        if size not in PHOTO_SIZES:
+            raise Invalid(f"size is one of {', '.join(PHOTO_SIZES)}")
+        store_id, rest = path.split("/", 1)
+        sized = f"{store_id}/{SIZED_DIR}/{size}/{rest}"
+        found = self.photos.get(sized)
+        if found is not None:
+            return found
+        found = self.photos.get(path)
+        if found is None or found[1] not in PHOTO_TYPES:
+            return found
+        with _RESIZING:
+            small = shrink(found[0], PHOTO_SIZES[size])
+        if small is None:
+            return found
+        self.photos.put(sized, small, "image/jpeg")
+        return small, "image/jpeg"
 
     def _task(self, task_id: str, store_id: str) -> dict:
         t = self.docs.get(st.TASKS, task_id)

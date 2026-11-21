@@ -121,7 +121,13 @@ python3 -m cloud.store_tasks.admin cutover --store palmetto --date 2026-12-01
 python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]   # tasks that need a photo, from ClickUp history
 python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737   # closing-count sections, from ClickUp's latest closing update
 python3 -m cloud.store_tasks.admin link-templates --store palmetto   # link mirrored tasks to their definitions + earlier photos
+python3 -m cloud.store_tasks.admin photo-sizes --store palmetto      # thumbnail + screen-size copies of stored photos (Cloud Run job store-tasks-photo-sizes)
 ```
+
+Photos are served at `?size=thumb` (480 px) or `?size=view` (1600 px); copies live under
+`<store>/_sized/<size>/` and are made on first request when missing. ClickUp's originals (~8 MB)
+are only sent for downloads. Latency target: p99 ≤ 500 ms per action (`/v1/days` reads in parallel;
+the API's startup probe `/health/ready` opens Firestore and Storage before an instance takes traffic).
 
 **ClickUp webhooks** (`clickup_webhooks.py`) keep it live: the API registers one webhook per
 configured list itself (every 6 hours it re-checks them and replaces any ClickUp suspended),

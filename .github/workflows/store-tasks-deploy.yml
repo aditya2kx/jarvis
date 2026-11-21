@@ -96,8 +96,9 @@ jobs:
             --image $REGISTRY/store-tasks-api:${{ github.sha }} \
             --region $REGION --project $PROJECT_ID \
             --service-account $RUNTIME_SA --allow-unauthenticated \
-            --min-instances 0 --max-instances 2 --memory 512Mi --cpu 1 --cpu-boost --timeout 300 \
-            --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,STORE_TASKS_FIRESTORE_DB=storetasks,STORE_TASKS_PHOTO_BUCKET=jarvis-store-tasks-photos,STORE_TASKS_EVENTS_TOPIC=store-tasks-events,STORE_TASKS_SIGNIN_SERVICE=store-tasks-app,STORE_TASKS_HOME_URL=$HOME_URL" \
+            --min-instances 0 --max-instances 2 --memory 1Gi --cpu 2 --cpu-boost --timeout 300 \
+            --startup-probe "httpGet.path=/health/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=6,failureThreshold=10" \
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,STORE_TASKS_FIRESTORE_DB=storetasks,STORE_TASKS_PHOTO_BUCKET=jarvis-store-tasks-photos,STORE_TASKS_EVENTS_TOPIC=store-tasks-events,STORE_TASKS_SIGNIN_SERVICE=store-tasks-app,STORE_TASKS_HOME_URL=$HOME_URL,GUNICORN_WORKERS=2" \
             --set-secrets "STORE_TASKS_SIGNING_KEY=store-tasks-signing-key:latest,STORE_TASKS_INTERNAL_TOKEN=store-tasks-internal-token:latest,CLICKUP_PAT=jarvis-clickup-palmetto-pat:latest"
 
       # The one link: no Google gate in front. Its front door offers "Sign in with Google" (the hop

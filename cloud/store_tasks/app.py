@@ -135,6 +135,14 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     def health():
         return jsonify(ok=True, service="store-tasks")
 
+    @app.get("/health/ready")
+    def ready():
+        # Cloud Run's startup probe. A new instance's first Firestore and Storage calls open channels
+        # and fetch tokens (seconds); paying that here keeps it out of the first staff request.
+        tasks.docs.get(st.STORES, "_warm")
+        tasks.photos.get("_warm")
+        return jsonify(ok=True)
+
     @app.get("/v1/bootstrap")
     @account_required
     def bootstrap():
@@ -252,10 +260,11 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     def get_photo(path: str):
         if not path.startswith(f"{g.store}/"):
             raise svc.NotFound("photo")
-        found = tasks.photos.get(path)
+        found = tasks.photo(path, request.args.get("size"))
         if found is None:
             raise svc.NotFound("photo")
-        return Response(found[0], mimetype=found[1], headers={"Cache-Control": "private, max-age=86400"})
+        # A path never changes what it holds, so the device may keep it.
+        return Response(found[0], mimetype=found[1], headers={"Cache-Control": "private, max-age=604800, immutable"})
 
     @app.post("/v1/tasks")
     @staff_required

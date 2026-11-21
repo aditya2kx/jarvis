@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight, ImagePlus, Play, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, type Photo } from "./api";
+import { api, type Photo, type PhotoSize } from "./api";
 import { Button, cx, dayLabel, firstName, time, useEscape } from "./ui";
 
 const MAX_PHOTO_EDGE = 1600;
@@ -21,26 +21,28 @@ export async function shrink(file: File): Promise<Blob> {
   }
 }
 
-function useUrl(token: string, path: string) {
+function useUrl(token: string, photo: Photo, size: PhotoSize) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const path = photo.path;
+  const sized = photo.type ? undefined : size; // videos are served as they are
   useEffect(() => {
     let live = true;
     setUrl(null);
     setFailed(false);
     api
-      .photoUrl(token, path)
+      .photoUrl(token, path, sized)
       .then((u) => live && setUrl(u))
       .catch(() => live && setFailed(true));
     return () => {
       live = false;
     };
-  }, [token, path]);
+  }, [token, path, sized]);
   return { url, failed };
 }
 
 function Thumb({ token, photo, onOpen }: { token: string; photo: Photo; onOpen: () => void }) {
-  const { url, failed } = useUrl(token, photo.path);
+  const { url, failed } = useUrl(token, photo, "thumb");
   return (
     <button onClick={onOpen} className="group relative aspect-square overflow-hidden rounded-lg bg-muted" aria-label={photo.type ? "Play video" : "Open photo"}>
       {url && !photo.type && <img src={url} alt="" className="size-full object-cover transition group-hover:scale-105" />}
@@ -114,7 +116,7 @@ interface ViewerProps {
 }
 
 function Viewer({ token, photo, caption, position, onClose, onStep, onRemove }: ViewerProps) {
-  const { url } = useUrl(token, photo.path);
+  const { url } = useUrl(token, photo, "view");
   const [busy, setBusy] = useState(false);
 
   useEscape(onClose);

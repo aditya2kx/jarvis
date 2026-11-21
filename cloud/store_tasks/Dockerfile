@@ -18,4 +18,5 @@ ENV PYTHONPATH=/app
 ENV APP_MODULE=cloud.store_tasks.wsgi:app
 EXPOSE 8080
 
-CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 120 $APP_MODULE
+ENV GUNICORN_WORKERS=1
+CMD exec gunicorn --bind :$PORT --workers $GUNICORN_WORKERS --threads 8 --timeout 120 $APP_MODULE

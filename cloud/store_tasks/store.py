@@ -40,6 +40,7 @@ class DocStore(Protocol):
     def create(self, coll: str, doc_id: str, doc: dict) -> bool: ...
     def delete(self, coll: str, doc_id: str) -> None: ...
     def query(self, coll: str, **eq) -> list[dict]: ...
+    def query_fields(self, coll: str, fields: Iterable[str], **eq) -> list[dict]: ...
     def count(self, coll: str, **eq) -> int: ...
 
 
@@ -78,6 +79,10 @@ class MemoryStore:
     def query(self, coll, **eq):
         return [copy.deepcopy(d) for d in self.data.get(coll, {}).values()
                 if all(d.get(k) == v for k, v in eq.items())]
+
+    def query_fields(self, coll, fields, **eq):
+        keep = set(fields)
+        return [{k: v for k, v in d.items() if k in keep} for d in self.query(coll, **eq)]
 
     def count(self, coll, **eq):
         return len(self.query(coll, **eq))
@@ -133,6 +138,10 @@ class FirestoreStore:
     def query(self, coll, **eq):
         return [s.to_dict() for s in self._q(coll, eq).stream()]
 
+    def query_fields(self, coll, fields, **eq):
+        # Firestore sends and decodes only these fields; decoding is most of a list read's CPU.
+        return [s.to_dict() for s in self._q(coll, eq).select(list(fields)).stream()]
+
     def count(self, coll, **eq):
         return int(self._q(coll, eq).count().get()[0][0].value)
 
@@ -140,6 +149,7 @@ class FirestoreStore:
 class PhotoStore(Protocol):
     def put(self, path: str, data: bytes, content_type: str) -> None: ...
     def get(self, path: str) -> tuple[bytes, str] | None: ...
+    def paths(self, prefix: str) -> list[str]: ...
 
 
 class DirPhotoStore:
@@ -157,6 +167,10 @@ class DirPhotoStore:
             return None
         return p.read_bytes(), "image/jpeg"
 
+    def paths(self, prefix):
+        base = self.root / prefix
+        return [str(p.relative_to(self.root)) for p in base.rglob("*") if p.is_file()] if base.exists() else []
+
 
 class GcsPhotoStore:
     def __init__(self, bucket: str) -> None:
@@ -170,3 +184,6 @@ class GcsPhotoStore:
         if blob is None:
             return None
         return blob.download_as_bytes(), blob.content_type or "image/jpeg"
+
+    def paths(self, prefix):
+        return [b.name for b in self.bucket.list_blobs(prefix=prefix)]

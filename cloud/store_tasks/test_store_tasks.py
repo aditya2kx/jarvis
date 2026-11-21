@@ -11,6 +11,7 @@ import json
 import pathlib
 
 import pytest
+from PIL import Image
 
 from skills.google_signin import identity
 
@@ -345,6 +346,24 @@ def test_example_media_takes_a_short_video(env):
     r = env.client.post(f"/v1/tasks/{tid}/photo", headers=env.boss_h,
                         data={"photo": (io.BytesIO(b"\x00\x00\x00\x18ftypmp42"), "how.mp4", "video/mp4")})
     assert r.status_code == 400  # a task's own proof is a photo
+
+
+def test_big_photos_are_served_small(env):
+    tid = "palmetto_2026-11-19_t1"
+    env.client.get("/v1/days/2026-11-19", headers=env.crew_h)
+    big = io.BytesIO()
+    Image.effect_noise((2400, 1600), 64).convert("RGB").save(big, "JPEG", quality=95)
+    up = env.client.post(f"/v1/tasks/{tid}/photo", headers=env.crew_h,
+                         data={"photo": (io.BytesIO(big.getvalue()), "p.jpg", "image/jpeg")})
+    path = up.get_json()["photos"][0]["path"]
+    for size, edge in svc.PHOTO_SIZES.items():
+        r = env.client.get(f"/v1/photos/{path}?size={size}", headers=env.crew_h)
+        assert r.status_code == 200 and max(Image.open(io.BytesIO(r.data)).size) == edge
+        assert env.tasks.photos.get(f"palmetto/{svc.SIZED_DIR}/{size}/{path.split('/', 1)[1]}")  # kept
+    assert env.client.get(f"/v1/photos/{path}", headers=env.crew_h).data == big.getvalue()
+    assert env.client.get(f"/v1/photos/{path}?size=huge", headers=env.crew_h).status_code == 400
+    small = env.client.get(f"/v1/photos/{path}?size=thumb", headers=env.crew_h).data
+    assert len(small) < len(big.getvalue()) / 4
 
 
 def test_anyone_assigns_any_person_to_one_or_many_tasks(env):

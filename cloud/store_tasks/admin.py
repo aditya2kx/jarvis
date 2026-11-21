@@ -18,6 +18,7 @@ import datetime
 import json
 import pathlib
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
 from skills.clickup_chat import runner as clickup_chat
@@ -46,7 +47,8 @@ def seed(tasks: svc.Tasks, store_id: str) -> model.StoreConfig:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("seed", "manager", "account", "cutover", "photo-rules", "count-sections", "link-templates"):
+    for name in ("seed", "manager", "account", "cutover", "photo-rules", "count-sections", "link-templates",
+                 "photo-sizes"):
         sp = sub.add_parser(name)
         sp.add_argument("--store", required=True)
         if name == "manager":
@@ -127,7 +129,25 @@ def main(argv: list[str] | None = None) -> int:
         cfg = tasks.store(args.store)
         print(f"linked {clickup_import.link_templates(tasks, cfg)} tasks; "
               f"earlier photos on {clickup_import.seed_recent_photos(tasks, cfg)} definitions")
+    elif args.cmd == "photo-sizes":
+        print(f"made smaller copies of {photo_sizes(tasks, args.store)} photos")
     return 0
+
+
+def photo_sizes(tasks: svc.Tasks, store_id: str) -> int:
+    """Thumbnail and screen-size copies of every stored photo, so no one waits on the first view.
+    Safe to re-run: a copy that exists is read, not remade."""
+    # Not every path has an extension; ``photo`` leaves anything that is not a photo as it is.
+    images = [p for p in tasks.photos.paths(f"{store_id}/") if f"/{svc.SIZED_DIR}/" not in p]
+    def both(path: str) -> None:
+        for size in svc.PHOTO_SIZES:
+            try:
+                tasks.photo(path, size)
+            except Exception as e:  # one unreadable photo must not stop the rest
+                print(f"store-tasks fail reason=photo_size path={path} size={size} err={e!r}", file=sys.stderr)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(both, images))
+    return len(images)
 
 
 if __name__ == "__main__":

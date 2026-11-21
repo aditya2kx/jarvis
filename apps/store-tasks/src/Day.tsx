@@ -133,7 +133,6 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   };
 
   const toggle = (t: Task) => {
-    if (t.source === "clickup") return;
     if (t.status === "open" && t.needs_photo && !t.photos?.length) {
       setOpen(t.id);
       return;

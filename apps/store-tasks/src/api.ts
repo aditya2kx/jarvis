@@ -242,6 +242,8 @@ const photoForm = (file: Blob) => {
 };
 
 const photoUrls = new Map<string, Promise<string>>();
+/** A thumbnail for grids, screen size for the viewer; the original only for downloads. */
+export type PhotoSize = "thumb" | "view";
 
 export const api = {
   bootstrap: () => call<Bootstrap>("GET", "/v1/bootstrap"),
@@ -270,15 +272,16 @@ export const api = {
   countPhoto: (token: string, date: string, file: Blob) =>
     call<{ count: Count }>("POST", `/v1/counts/${date}/photo`, { token, form: photoForm(file) }),
   /** Photos need the session header, so they are fetched once and shown from memory. */
-  photoUrl: (token: string, path: string) => {
-    let url = photoUrls.get(path);
+  photoUrl: (token: string, path: string, size?: PhotoSize) => {
+    const key = size ? `${path}?size=${size}` : path;
+    let url = photoUrls.get(key);
     if (!url) {
-      url = fetch(`/v1/photos/${path}`, { headers: authHeaders(token) }).then(async (res) => {
+      url = fetch(`/v1/photos/${key}`, { headers: authHeaders(token) }).then(async (res) => {
         if (!res.ok) throw new ApiError("Photo not available", res.status);
         return URL.createObjectURL(await res.blob());
       });
-      url.catch(() => photoUrls.delete(path));
-      photoUrls.set(path, url);
+      url.catch(() => photoUrls.delete(key));
+      photoUrls.set(key, url);
     }
     return url;
   },

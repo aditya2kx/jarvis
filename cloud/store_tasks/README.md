@@ -59,8 +59,8 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   automatically. The ADP schedule (copied hourly from BigQuery into `shared_shifts`, so the
   tablet never waits on the warehouse; BigQuery stays the source) only puts the people
   scheduled today at the top of the picker.
-- **One task.** Opening a task shows how to do it, example photos of how it should look,
-  photos from earlier days, today's photos (any task takes photos, from a phone camera or a
+- **One task.** Opening a task shows how to do it, example photos or short videos (up to 30 MB)
+  of how it should look, photos from earlier days, today's photos (any task takes photos, from a phone camera or a
   computer's files), its steps and the team's notes. A manager edits the how-to and example
   photos there; on a recurring task the edit applies every day from today. A task added for
   one day can be deleted by whoever added it or a manager.
@@ -101,7 +101,14 @@ adds or removes it on the app's Google sign-in list, so the two never drift.
 ## Moving off ClickUp
 
 `cutover_date` on the store decides who owns a day: before it, days are mirrored from
-ClickUp (read-only here); from it on, days are built here and ClickUp is ignored.
+ClickUp; from it on, days are built here and ClickUp is ignored.
+
+Every mirrored task is linked to its recurring definition (`template_id`), so it shows that
+definition's how-to, example media, photo rule and photos from earlier days. Today and later
+ClickUp days can be **tried out** in the app: the first tick, assignment, photo or note keeps
+ClickUp's state on the task (`trial`, `clickup_state`). Summaries and alerts read ClickUp's state
+(`svc.clickup_view`), a ClickUp change to the task wins, and the tick's `reset_trials` puts every
+tried-out task back as ClickUp has it once its day is over. Earlier days stay read-only.
 
 ```bash
 python3 -m cloud.store_tasks.admin seed --store palmetto            # store config from stores/<id>.json
@@ -113,6 +120,7 @@ python3 -m cloud.store_tasks.admin account --store palmetto --email me@example.c
 python3 -m cloud.store_tasks.admin cutover --store palmetto --date 2026-12-01
 python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]   # tasks that need a photo, from ClickUp history
 python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737   # closing-count sections, from ClickUp's latest closing update
+python3 -m cloud.store_tasks.admin link-templates --store palmetto   # link mirrored tasks to their definitions + earlier photos
 ```
 
 **ClickUp webhooks** (`clickup_webhooks.py`) keep it live: the API registers one webhook per

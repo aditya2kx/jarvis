@@ -170,6 +170,7 @@ def to_task(cfg: model.StoreConfig, shift_id: str, task: dict, day: datetime.dat
         "completed_at": _local(closed, tz).isoformat() if (done and closed) else None,
         "source": "clickup", "clickup_id": task["id"],
         "clickup_url": task.get("url"),
+        "clickup_state": None,  # ClickUp changed it: a try-out's tick and assignee give way (svc.clickup_view)
         "created_at": _local(task.get("date_created"), tz).isoformat(),
         "updated_at": _local(task.get("date_updated") or task.get("date_created"), tz).isoformat(),
     }
@@ -334,7 +335,8 @@ def split(cfg: model.StoreConfig, raw: dict[str, list[dict]]) -> tuple[list[dict
 
 
 def _reparent(docs: list[dict]) -> None:
-    """Recurring subtasks can hang off a months-old parent; point them at that day's copy of it."""
+    """Recurring subtasks can hang off a months-old parent; point them at that day's copy of it.
+    Each task is also linked to its recurring definition, which holds its how-to and photos."""
     by_id = {d["id"]: d for d in docs}
     todays = {(d["date"], d["shift"], _norm(d["title"])): d["id"] for d in docs if not d["parent_id"]}
     for d in docs:
@@ -343,6 +345,19 @@ def _reparent(docs: list[dict]) -> None:
             d["parent_id"] = todays.get((d["date"], d["shift"], _norm(parent["title"]))) if parent else None
             # Its parent is not on that day's list, so nobody sees it there: history, not a task to carry over.
             d["stale_parent"] = d["parent_id"] is None
+        d["template_id"] = template_id(d["shift"], parent["title"] if parent else None, d["title"])
+
+
+def link_templates(tasks: svc.Tasks, cfg: model.StoreConfig) -> int:
+    """Give tasks mirrored before ``_reparent`` linked definitions their ``template_id``. Idempotent."""
+    docs = tasks.docs.query(st.TASKS, store=cfg.id, source="clickup")
+    titles = {d["id"]: d["title"] for d in docs}
+    changed = []
+    for d in docs:
+        tid = template_id(d["shift"], titles.get(d.get("parent_id") or ""), d["title"])
+        if d.get("template_id") != tid:
+            changed.append({"id": d["id"], "template_id": tid})
+    return tasks.docs.set_many(st.TASKS, changed, merge=True)
 
 
 def write_tasks(tasks: svc.Tasks, cfg: model.StoreConfig, docs: list[dict]) -> int:

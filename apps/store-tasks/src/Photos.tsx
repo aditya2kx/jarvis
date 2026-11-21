@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, ImagePlus, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ImagePlus, Play, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type Photo } from "./api";
 import { Button, cx, dayLabel, firstName, time, useEscape } from "./ui";
@@ -7,6 +7,7 @@ const MAX_PHOTO_EDGE = 1600;
 
 /** Phone photos are several MB; shrink before sending. A format the browser cannot read is sent as it is. */
 export async function shrink(file: File): Promise<Blob> {
+  if (file.type.startsWith("video/")) return file;
   try {
     const img = await createImageBitmap(file);
     const scale = Math.min(1, MAX_PHOTO_EDGE / Math.max(img.width, img.height));
@@ -41,8 +42,18 @@ function useUrl(token: string, path: string) {
 function Thumb({ token, photo, onOpen }: { token: string; photo: Photo; onOpen: () => void }) {
   const { url, failed } = useUrl(token, photo.path);
   return (
-    <button onClick={onOpen} className="group relative aspect-square overflow-hidden rounded-lg bg-muted" aria-label="Open photo">
-      {url && <img src={url} alt="" className="size-full object-cover transition group-hover:scale-105" />}
+    <button onClick={onOpen} className="group relative aspect-square overflow-hidden rounded-lg bg-muted" aria-label={photo.type ? "Play video" : "Open photo"}>
+      {url && !photo.type && <img src={url} alt="" className="size-full object-cover transition group-hover:scale-105" />}
+      {url && photo.type && (
+        <>
+          <video src={`${url}#t=0.1`} muted playsInline preload="metadata" className="size-full object-cover" />
+          <span className="absolute inset-0 flex items-center justify-center">
+            <span className="rounded-full bg-black/55 p-2.5 text-white transition group-hover:scale-110">
+              <Play className="size-5 fill-current" />
+            </span>
+          </span>
+        </>
+      )}
       {!url && !failed && <span className="absolute inset-0 animate-pulse bg-muted" />}
       {failed && <span className="absolute inset-0 flex items-center justify-center p-1 text-center text-xs text-muted-foreground">Not available</span>}
       {photo.date && <span className="absolute inset-x-0 bottom-0 bg-black/55 px-1.5 py-0.5 text-left text-[11px] text-white">{dayLabel(photo.date)}</span>}
@@ -141,7 +152,13 @@ function Viewer({ token, photo, caption, position, onClose, onStep, onRemove }: 
         </div>
       </div>
       <div className="relative flex min-h-0 flex-1 items-center justify-center p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        {url ? <img src={url} alt="" className="max-h-full max-w-full rounded-lg object-contain" onClick={(e) => e.stopPropagation()} /> : <p className="text-white/70">Loading…</p>}
+        {!url ? (
+          <p className="text-white/70">Loading…</p>
+        ) : photo.type ? (
+          <video key={url} src={url} controls autoPlay playsInline className="max-h-full max-w-full rounded-lg" onClick={(e) => e.stopPropagation()} />
+        ) : (
+          <img src={url} alt="" className="max-h-full max-w-full rounded-lg object-contain" onClick={(e) => e.stopPropagation()} />
+        )}
         {onStep && (
           <>
             <button aria-label="Previous photo" className={cx(round, "absolute left-3")} onClick={(e) => (e.stopPropagation(), onStep(-1))}>
@@ -159,9 +176,9 @@ function Viewer({ token, photo, caption, position, onClose, onStep, onRemove }: 
 
 /**
  * One button for every device: a phone offers its camera or photo library, a computer its files.
- * `onFile` is called once per chosen photo, in order.
+ * `onFile` is called once per chosen photo (or video, with `videos`), in order.
  */
-export function AddPhotos({ label, onFile, className }: { label: string; onFile: (file: Blob) => Promise<void>; className?: string }) {
+export function AddPhotos({ label, onFile, className, videos }: { label: string; onFile: (file: Blob) => Promise<void>; className?: string; videos?: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   const [left, setLeft] = useState(0);
 
@@ -181,7 +198,7 @@ export function AddPhotos({ label, onFile, className }: { label: string; onFile:
 
   return (
     <>
-      <input ref={input} type="file" accept="image/*" multiple hidden onChange={(e) => send(e.target.files)} />
+      <input ref={input} type="file" accept={videos ? "image/*,video/*" : "image/*"} multiple hidden onChange={(e) => send(e.target.files)} />
       <Button variant="outline" disabled={left > 0} onClick={() => input.current?.click()} className={className}>
         <ImagePlus className="size-4" />
         {left > 0 ? `Saving ${left}…` : label}

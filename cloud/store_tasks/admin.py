@@ -7,6 +7,7 @@
     python3 -m cloud.store_tasks.admin cutover --store palmetto --date 2026-12-01
     python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]
     python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737
+    python3 -m cloud.store_tasks.admin link-templates --store palmetto
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ def seed(tasks: svc.Tasks, store_id: str) -> model.StoreConfig:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("seed", "manager", "account", "cutover", "photo-rules", "count-sections"):
+    for name in ("seed", "manager", "account", "cutover", "photo-rules", "count-sections", "link-templates"):
         sp = sub.add_parser(name)
         sp.add_argument("--store", required=True)
         if name == "manager":
@@ -120,6 +121,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.apply and not r["needs_photo"]:
                 cur = tasks.docs.get(st.TEMPLATES, r["id"])
                 tasks.save_template(args.store, {**cur, "needs_photo": True}, "photo-rules")
+    elif args.cmd == "link-templates":
+        # Each ClickUp task points at its recurring definition (how-to, examples), and each definition
+        # gets the latest photos ClickUp holds for it ("photos from earlier days").
+        cfg = tasks.store(args.store)
+        print(f"linked {clickup_import.link_templates(tasks, cfg)} tasks; "
+              f"earlier photos on {clickup_import.seed_recent_photos(tasks, cfg)} definitions")
     return 0
 
 

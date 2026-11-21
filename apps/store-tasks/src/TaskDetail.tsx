@@ -240,8 +240,8 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
             />
             {isManager && !readOnly && (
               <>
-                {!reference.length && <p className="text-muted-foreground">Add an example photo so everyone knows what "done right" looks like.</p>}
-                <AddPhotos label="Add example photo" onFile={(f) => run("The photo was not saved", async () => setDetail(await api.addReferencePhoto(session.token, task.id, f)))} />
+                {!reference.length && <p className="text-muted-foreground">Add an example photo or a short video so everyone knows what "done right" looks like.</p>}
+                <AddPhotos videos label="Add example photo or video" onFile={(f) => run("The photo was not saved", async () => setDetail(await api.addReferencePhoto(session.token, task.id, f)))} />
               </>
             )}
           </div>

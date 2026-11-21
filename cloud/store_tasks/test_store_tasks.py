@@ -242,6 +242,108 @@ def _upload(env, url, headers):
     return env.client.post(url, headers=headers, data={"photo": (io.BytesIO(JPEG), "a.jpg", "image/jpeg")})
 
 
+def test_clickup_days_can_be_tried_out_and_the_sync_puts_them_back(env):
+    cfg = dataclasses.replace(env.tasks.store("palmetto"), cutover_date=None)
+    env.tasks.put_store(cfg)
+    tid = ci.template_id("closing", None, "Wipe the door")
+    env.tasks.save_template("palmetto", {"id": tid, "shift": "closing", "title": "Wipe the door", "needs_photo": True}, "test")
+    kept = {"path": "palmetto/2026-11-19/cu_d/cu1", "by": "cu7", "at": "2026-11-19T08:00:00-06:00",
+            "clickup_attachment_id": "cu1"}
+    for day in ("2026-11-18", "2026-11-19"):
+        docs = [ci.to_task(cfg, "closing", {"id": f"d{day[-2:]}", "name": "Wipe the door", "status": {"type": "open"},
+                                             "start_date": None, "due_date": None, "date_created": "1795600800000"},
+                           datetime.date.fromisoformat(day))]
+        ci._reparent(docs)
+        ci.write_tasks(env.tasks, cfg, docs)
+    task = "cu_d19"
+    env.tasks.docs.set(st.TASKS, task, {"photos": [kept], "comments": [{"id": "cu9", "text": "from ClickUp", "at": "x"}]}, merge=True)
+    c, h = env.client, env.boss_h
+
+    shown = next(t for t in c.get("/v1/days/2026-11-19", headers=h).get_json()["tasks"] if t["id"] == task)
+    assert shown["template_id"] == tid and shown["needs_photo"]  # our photo rule shows on ClickUp's task
+    assert c.post("/v1/tasks/cu_d18/complete", json={}, headers=h).status_code == 400  # history stays ClickUp's
+    assert _upload(env, f"/v1/tasks/{task}/photo", h).status_code == 200
+    assert c.post(f"/v1/tasks/{task}/complete", json={}, headers=h).get_json()["status"] == "done"
+    assert c.post("/v1/assign", json={"task_ids": [task], "assignee_id": env.crew["id"]}, headers=h).status_code == 200
+    c.post(f"/v1/tasks/{task}/comments", json={"text": "trying it"}, headers=h)
+    assert c.delete(f"/v1/tasks/{task}/photos/{kept['path']}", headers=h).status_code == 400  # ClickUp's photo
+
+    # Summaries and alerts see ClickUp's state, never the try-out.
+    seen = svc.clickup_view(env.tasks.docs.get(st.TASKS, task))
+    assert seen["status"] == "open" and seen["assignee_id"] is None and seen["photos"] == [kept]
+    assert [c["id"] for c in seen["comments"]] == ["cu9"]
+    assert "0 of" in summaries.shift_summary(env.tasks, "palmetto", datetime.date(2026, 11, 19), "closing")
+    assert env.tasks.docs.get(st.TEMPLATES, tid).get("recent_photos") is None  # a try-out photo is not history
+
+    assert env.tasks.reset_trials("palmetto") == 0  # today: still trying it out
+    env.clock.at += datetime.timedelta(days=1)
+    assert env.tasks.reset_trials("palmetto") == 1
+    back = env.tasks.docs.get(st.TASKS, task)
+    assert back["status"] == "open" and back["assignee_id"] is None and back["photos"] == [kept]
+    assert "trial" not in back and "clickup_state" not in back and len(back["comments"]) == 1
+
+
+def test_a_clickup_change_ends_a_try_out_tick(env):
+    cfg = dataclasses.replace(env.tasks.store("palmetto"), cutover_date=None)
+    env.tasks.put_store(cfg)
+    raw = {"id": "e1", "name": "Mop", "status": {"type": "open"}, "start_date": None, "due_date": None,
+           "date_created": "1795600800000"}
+    ci.write_tasks(env.tasks, cfg, [ci.to_task(cfg, "closing", raw, datetime.date(2026, 11, 19))])
+    env.client.post("/v1/tasks/cu_e1/complete", json={}, headers=env.boss_h)
+    done_in_clickup = {**raw, "status": {"type": "closed"}, "date_closed": "1795611600000", "assignees": [{"id": 5}]}
+    ci.write_tasks(env.tasks, cfg, [ci.to_task(cfg, "closing", done_in_clickup, datetime.date(2026, 11, 19))])
+    seen = svc.clickup_view(env.tasks.docs.get(st.TASKS, "cu_e1"))
+    assert seen["status"] == "done" and seen["completed_by"] == "cu5"
+    # A later try-out keeps ClickUp's new state to go back to.
+    env.client.post("/v1/tasks/cu_e1/reopen", headers=env.boss_h)
+    env.clock.at += datetime.timedelta(days=1)
+    env.tasks.reset_trials("palmetto")
+    assert env.tasks.docs.get(st.TASKS, "cu_e1")["completed_by"] == "cu5"
+
+
+def test_editing_a_definition_never_touches_clickup_copies(env):
+    cfg = dataclasses.replace(env.tasks.store("palmetto"), cutover_date=None)
+    env.tasks.put_store(cfg)
+    tid = ci.template_id("closing", None, "Mop")
+    env.tasks.save_template("palmetto", {"id": tid, "shift": "closing", "title": "Mop"}, "test")
+    docs = [ci.to_task(cfg, "closing", {"id": "m1", "name": "Mop", "status": {"type": "open"}, "start_date": None,
+                                        "due_date": None, "date_created": "1795600800000"}, datetime.date(2026, 11, 20))]
+    ci._reparent(docs)
+    ci.write_tasks(env.tasks, cfg, docs)
+    env.tasks.save_template("palmetto", {"id": tid, "shift": "closing", "title": "Mop well", "weekdays": [0]}, "test")
+    assert env.tasks.docs.get(st.TASKS, "cu_m1")["title"] == "Mop"
+
+
+def test_link_templates_gives_clickup_tasks_their_definition_and_earlier_photos(env):
+    cfg = env.tasks.store("palmetto")
+    tid = ci.template_id("closing", "Deep clean", "Fridge")
+    env.tasks.save_template("palmetto", {"id": tid, "shift": "closing", "title": "Fridge"}, "test")
+    env.tasks.docs.set(st.TASKS, "cu_p", {"id": "cu_p", "store": "palmetto", "date": "2026-11-10", "shift": "closing",
+                                          "title": "Deep clean", "parent_id": None, "source": "clickup"})
+    env.tasks.docs.set(st.TASKS, "cu_s", {"id": "cu_s", "store": "palmetto", "date": "2026-11-10", "shift": "closing",
+                                          "title": "Fridge", "parent_id": "cu_p", "source": "clickup",
+                                          "photos": [{"path": "palmetto/2026-11-10/cu_s/a", "clickup_attachment_id": "a"}]})
+    assert ci.link_templates(env.tasks, cfg) == 2
+    assert ci.link_templates(env.tasks, cfg) == 0
+    assert env.tasks.docs.get(st.TASKS, "cu_s")["template_id"] == tid
+    ci.seed_recent_photos(env.tasks, cfg)
+    later = env.tasks.add_one_off("palmetto", {"title": "Fridge", "date": "2026-11-19", "shift": "closing"}, env.boss["id"])
+    env.tasks.docs.set(st.TASKS, later["id"], {"template_id": tid}, merge=True)
+    detail = env.client.get(f"/v1/tasks/{later['id']}", headers=env.crew_h).get_json()
+    assert [p["date"] for p in detail["recent_photos"]] == ["2026-11-10"]
+
+
+def test_example_media_takes_a_short_video(env):
+    tid = "palmetto_2026-11-19_t1"
+    env.client.get("/v1/days/2026-11-19", headers=env.crew_h)
+    r = env.client.post(f"/v1/tasks/{tid}/reference-photo", headers=env.boss_h,
+                        data={"photo": (io.BytesIO(b"\x00\x00\x00\x18ftypmp42"), "how.mp4", "video/mp4")})
+    assert r.status_code == 200 and r.get_json()["reference_photos"][0]["type"] == "video/mp4"
+    r = env.client.post(f"/v1/tasks/{tid}/photo", headers=env.boss_h,
+                        data={"photo": (io.BytesIO(b"\x00\x00\x00\x18ftypmp42"), "how.mp4", "video/mp4")})
+    assert r.status_code == 400  # a task's own proof is a photo
+
+
 def test_anyone_assigns_any_person_to_one_or_many_tasks(env):
     c = env.client
     ids = [t["id"] for t in c.get("/v1/days/2026-11-19", headers=env.crew_h).get_json()["tasks"]]

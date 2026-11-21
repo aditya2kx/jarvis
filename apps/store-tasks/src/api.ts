@@ -47,6 +47,8 @@ export interface Photo {
   at: string | null;
   /** Set on photos from earlier days: the day they were taken for. */
   date?: string;
+  /** Set on an example video (its content type); photos have none. */
+  type?: string;
 }
 
 export interface Comment {

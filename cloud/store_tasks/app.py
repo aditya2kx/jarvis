@@ -52,7 +52,7 @@ WEBHOOKS_EVERY = datetime.timedelta(hours=6)
 def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=None) -> Flask:
     """``signed_in(headers) -> email`` and ``signin_access`` (the Google sign-in list) are injectable for tests."""
     app = Flask(__name__)
-    app.config["MAX_CONTENT_LENGTH"] = svc.MAX_PHOTO_BYTES + 64 * 1024
+    app.config["MAX_CONTENT_LENGTH"] = svc.MAX_VIDEO_BYTES + 64 * 1024  # each upload checks its own limit
     tasks = tasks or svc.from_env()
     signin_service = os.environ.get("STORE_TASKS_SIGNIN_SERVICE", "store-tasks-app")
     aud = identity.audience(signin_service)
@@ -429,6 +429,10 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
                     out[sid]["inbox"] = clickup_webhooks.drain(tasks, sid)
                 except Exception as e:
                     log.error("store-tasks fail reason=inbox store=%s err=%r", sid, e)
+            try:
+                out[sid]["reset_trials"] = tasks.reset_trials(sid)
+            except Exception as e:
+                log.error("store-tasks fail reason=reset_trials store=%s err=%r", sid, e)
             if chat:
                 out[sid]["posted"] = summaries.post_due(tasks, sid, clickup_chat.post_message)
         return jsonify(out)

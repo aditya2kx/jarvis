@@ -171,7 +171,9 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
     );
   }
 
-  const readOnly = !day.generated;
+  // Before cutover ClickUp owns the day: ticks here are a try-out the sync undoes, so past days stay as ClickUp left them.
+  const clickupDay = !day.generated;
+  const readOnly = clickupDay && date < day.today;
   const childrenOf = (id: string) => tasks.filter((t) => t.parent_id === id);
   const matches = (t: Task) =>
     (filter === "all" || (filter === "mine" ? t.assignee_id === me : !t.assignee_id)) && (!hideDone || t.status === "open");
@@ -184,7 +186,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const shiftInfo = day.shifts.find((s) => s.id === activeShift);
   const overdue = left > 0 && date === day.today && Boolean(shiftInfo?.due_at) && new Date() > new Date(shiftInfo!.due_at!);
   const isLastShift = activeShift === day.shifts.at(-1)?.id;
-  const showCount = isLastShift && boot.store.count_items.length > 0 && (!readOnly || day.count_submitted);
+  const showCount = isLastShift && boot.store.count_items.length > 0 && (!clickupDay || day.count_submitted);
 
   const row = (t: Task, sub = false) => (
     <TaskRow
@@ -386,9 +388,13 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
               {whole.length > 0 && `${left} left · ${overdue ? "was due" : "due"} ${time(shiftInfo?.due_at)}`}
             </p>
           )}
-          {readOnly && (
+          {clickupDay && (
             <div className="mb-2">
-              <Notice>This day was done in ClickUp. It is shown here for reference.</Notice>
+              <Notice>
+                {readOnly
+                  ? "This day was done in ClickUp. It is shown here for reference."
+                  : "ClickUp still runs this day. Try things out here: ticks, people, photos and notes are put back as ClickUp has them tomorrow, or as soon as the task changes in ClickUp."}
+              </Notice>
             </div>
           )}
           {error && (
@@ -411,7 +417,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
               <span className="flex-1">
                 <span className="block font-medium">Closing count</span>
                 <span className="block text-sm text-muted-foreground">
-                  {readOnly ? "Sent. Open to see counts, notes and photos." : day.count_submitted ? "Sent. Open to view or correct it." : "Not sent yet. Counts, notes and photos."}
+                  {clickupDay ? "Sent. Open to see counts, notes and photos." : day.count_submitted ? "Sent. Open to view or correct it." : "Not sent yet. Counts, notes and photos."}
                 </span>
               </span>
               <ChevronRight className="size-5 text-muted-foreground" />
@@ -444,7 +450,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
                       : "Nothing to show."}
               </li>
             )}
-            {!readOnly && !shop && (
+            {!clickupDay && !shop && (
               <li>
                 <button
                   onClick={() => activeShift && setForm({ title: "Add a task", initial: blankDraft(activeShift), once: true })}
@@ -526,7 +532,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
           session={session}
           date={date}
           names={names}
-          readOnly={readOnly}
+          readOnly={clickupDay}
           onClose={() => {
             setCounting(false);
             refresh();

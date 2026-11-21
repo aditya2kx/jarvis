@@ -58,7 +58,7 @@ def _missing_photo(tasks: svc.Tasks, store_id: str, done: list[dict], titles: di
 
 def shift_summary(tasks: svc.Tasks, store_id: str, day: datetime.date, shift_id: str) -> str:
     cfg = tasks.store(store_id)
-    every = tasks.ensure_day(cfg, day)
+    every = [svc.clickup_view(t) for t in tasks.ensure_day(cfg, day)]  # never someone's try-out
     titles = {t["id"]: t["title"] for t in every}
     mine = [t for t in every if t["shift"] == shift_id]
     top = [t for t in mine if not t.get("parent_id")]

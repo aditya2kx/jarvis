@@ -11,6 +11,8 @@ from cloud.store_tasks import auth, events as ev, model, store as st
 
 MAX_HISTORY_DAYS = 62
 MAX_PHOTO_BYTES = 8 * 1024 * 1024
+MAX_VIDEO_BYTES = 30 * 1024 * 1024  # under Cloud Run's 32 MiB request limit
+VIDEO_TYPES = ("video/mp4", "video/quicktime", "video/webm")
 ALERT_GRACE_MINUTES = 30
 PHOTO_TYPES = ("image/jpeg", "image/png", "image/webp", "image/heic")
 RECENT_PHOTOS = 8  # per task definition: what the last few days' photos looked like
@@ -38,6 +40,20 @@ def public_staff(s: dict) -> dict:
 
 SHOP_STAFF = {"id": auth.SHOP, "name": "Shop", "role": auth.CREW, "active": True, "has_pin": False,
               "adp_name": "", "assignable": False}
+
+
+CLICKUP_STATE = ("status", "assignee_id", "completed_by", "completed_at", "ticked_by", "assigned_by", "note")
+
+
+def clickup_view(t: dict) -> dict:
+    """A task as ClickUp has it, without any try-out made here (see ``Tasks._trial``)."""
+    if not t.get("trial"):
+        return t
+    out = {k: v for k, v in t.items() if k not in ("trial", "clickup_state")}
+    out.update(t.get("clickup_state") or {})
+    out["photos"] = [p for p in t.get("photos") or [] if p.get("clickup_attachment_id")]
+    out["comments"] = [c for c in t.get("comments") or [] if str(c.get("id", "")).startswith("cu")]
+    return out
 
 
 def assignable(s: dict) -> bool:
@@ -305,8 +321,8 @@ class Tasks:
         for tpl in family:
             for task in self.docs.query(st.TASKS, store=cfg.id, template_id=tpl.id):
                 day = datetime.date.fromisoformat(task["date"])
-                if day < today or task["status"] != model.OPEN:
-                    continue
+                if day < today or task["status"] != model.OPEN or task.get("source") == "clickup":
+                    continue  # ClickUp's copy is ClickUp's
                 if not (model.due_on(tpl, day) and model.due_on(t, day)):
                     # No longer scheduled that day. Something already attached to it is kept.
                     if not (task.get("photos") or task.get("comments")):
@@ -340,6 +356,11 @@ class Tasks:
     def ensure_day(self, cfg: model.StoreConfig, day: datetime.date) -> list[dict]:
         """The day's tasks. Generated days are created on first read; ids make this an upsert."""
         tasks = self._stored(cfg, day)
+        if not cfg.generated(day):
+            # ClickUp never enforced photos: show our rule on its tasks, so a missing photo is visible.
+            rules = {t.id for t in self.templates(cfg.id) if t.needs_photo}
+            for t in tasks:
+                t["needs_photo"] = bool(t.get("needs_photo") or t.get("template_id") in rules)
         if cfg.generated(day):
             have = {t["id"] for t in tasks}
             missing = [t for t in model.build_day(cfg, self.templates(cfg.id), day) if t["id"] not in have]
@@ -369,10 +390,26 @@ class Tasks:
             raise NotFound("task")
         return t
 
-    @staticmethod
-    def _writable(t: dict) -> None:
-        if t.get("source") == "clickup":
+    def _trial(self, t: dict) -> dict:
+        """ClickUp still owns this task: an edit here is a try-out. Keep ClickUp's state, once, so the
+        sync can put it back (``reset_trials``); a ClickUp change to the task ends the try-out too.
+        Days before today are history: they stay as ClickUp left them."""
+        if t.get("source") != "clickup":
+            return {}
+        if t["date"] < self.store(t["store"]).today(self.now()).isoformat():
             raise Invalid("this day was done in ClickUp — it is read-only here")
+        if t.get("clickup_state"):
+            return {}
+        return {"trial": True, "clickup_state": {k: t.get(k) for k in CLICKUP_STATE}}
+
+    def _needs_photo(self, t: dict) -> bool:
+        if t.get("needs_photo") or t.get("source") != "clickup" or not t.get("template_id"):
+            return bool(t.get("needs_photo"))
+        return bool((self.docs.get(st.TEMPLATES, t["template_id"]) or {}).get("needs_photo"))
+
+    def _publish(self, t: dict, kind: str, store_id: str, data: dict) -> None:
+        if t.get("source") != "clickup":  # a try-out is not news
+            self.events.publish(kind, store_id, data)
 
     def complete(self, store_id: str, task_id: str, staff: dict, note: str = "",
                  at: str | None = None) -> dict:
@@ -380,17 +417,16 @@ class Tasks:
         t = self._task(task_id, store_id)
         if t["status"] == model.DONE:
             return t
-        self._writable(t)
-        if t.get("needs_photo") and not t.get("photos"):
+        if self._needs_photo(t) and not t.get("photos"):
             raise Invalid("add a photo first")
         stamp = self.now().isoformat()
         # The shop device is not a person: the tick counts for whoever the task is assigned to.
         done_by = (t.get("assignee_id") or auth.SHOP) if staff["sid"] == auth.SHOP else staff["sid"]
-        patch = {"status": model.DONE, "completed_by": done_by, "ticked_by": staff["sid"], "completed_at": at or stamp,
-                 "note": (note or t.get("note") or "").strip()[:1000], "updated_at": stamp}
+        patch = {**self._trial(t), "status": model.DONE, "completed_by": done_by, "ticked_by": staff["sid"],
+                 "completed_at": at or stamp, "note": (note or t.get("note") or "").strip()[:1000], "updated_at": stamp}
         self.docs.set(st.TASKS, task_id, patch, merge=True)
         t.update(patch)
-        self.events.publish(ev.TASK_COMPLETED, store_id, {
+        self._publish(t, ev.TASK_COMPLETED, store_id, {
             "task_id": task_id, "title": t["title"], "shift": t["shift"], "date": t["date"],
             "by": staff["sid"], "at": patch["completed_at"]})
         return t
@@ -399,15 +435,26 @@ class Tasks:
         t = self._task(task_id, store_id)
         if t["status"] != model.DONE:
             return t
-        self._writable(t)
         if staff["role"] != auth.MANAGER and staff["sid"] not in (t.get("completed_by"), t.get("ticked_by")):
             raise auth.AuthError("only the person who ticked it or a manager can undo it", 403)
-        patch = {"status": model.OPEN, "completed_by": None, "ticked_by": None, "completed_at": None,
-                 "updated_at": self.now().isoformat()}
+        patch = {**self._trial(t), "status": model.OPEN, "completed_by": None, "ticked_by": None,
+                 "completed_at": None, "updated_at": self.now().isoformat()}
         self.docs.set(st.TASKS, task_id, patch, merge=True)
         t.update(patch)
-        self.events.publish(ev.TASK_REOPENED, store_id, {"task_id": task_id, "by": staff["sid"]})
+        self._publish(t, ev.TASK_REOPENED, store_id, {"task_id": task_id, "by": staff["sid"]})
         return t
+
+    def reset_trials(self, store_id: str, everything: bool = False) -> int:
+        """Put ClickUp-owned tasks tried out here back as ClickUp has them: its tick and assignee, and
+        only ClickUp's photos and notes. Days before today, or every day with ``everything``."""
+        today = self.store(store_id).today(self.now()).isoformat()
+        n = 0
+        for t in self.docs.query(st.TASKS, store=store_id, trial=True):
+            if t["date"] >= today and not everything:
+                continue
+            self.docs.set(st.TASKS, t["id"], clickup_view(t))
+            n += 1
+        return n
 
     @staticmethod
     def _photo(store_id: str, folder: str, data: bytes, content_type: str) -> str:
@@ -419,30 +466,33 @@ class Tasks:
 
     def add_photo(self, store_id: str, task_id: str, staff: dict, data: bytes, content_type: str) -> dict:
         t = self._task(task_id, store_id)
-        self._writable(t)
         path = self._photo(store_id, f"{t['date']}/{task_id}", data, content_type)
         self.photos.put(path, data, content_type)
         stamp = self.now().isoformat()
         photo = {"path": path, "by": staff["sid"], "at": stamp}
         photos = (t.get("photos") or []) + [photo]
-        self.docs.set(st.TASKS, task_id, {"photos": photos, "updated_at": stamp}, merge=True)
-        t["photos"] = photos
+        patch = {**self._trial(t), "photos": photos, "updated_at": stamp}
+        self.docs.set(st.TASKS, task_id, patch, merge=True)
+        t.update(patch)
         tpl = self.docs.get(st.TEMPLATES, t["template_id"]) if t.get("template_id") else None
-        if tpl:
+        if tpl and t.get("source") != "clickup":  # ClickUp's photos reach earlier-days via the sync
             recent = [{**photo, "date": t["date"]}] + (tpl.get("recent_photos") or [])
             self.docs.set(st.TEMPLATES, tpl["id"], {"recent_photos": recent[:RECENT_PHOTOS]}, merge=True)
         return t
 
     def remove_photo(self, store_id: str, task_id: str, path: str, staff: dict) -> dict:
         t = self._task(task_id, store_id)
-        self._writable(t)
         photo = next((p for p in t.get("photos") or [] if p["path"] == path), None)
         if photo is None:
             return t
+        if t.get("source") == "clickup" and photo.get("clickup_attachment_id"):
+            raise Invalid("this photo is in ClickUp — remove it there")
         if staff["role"] != auth.MANAGER and photo.get("by") != staff["sid"]:
             raise auth.AuthError("only the person who added it or a manager can remove it", 403)
-        t["photos"] = [p for p in t["photos"] if p["path"] != path]
-        self.docs.set(st.TASKS, task_id, {"photos": t["photos"], "updated_at": self.now().isoformat()}, merge=True)
+        patch = {**self._trial(t), "photos": [p for p in t["photos"] if p["path"] != path],
+                 "updated_at": self.now().isoformat()}
+        self.docs.set(st.TASKS, task_id, patch, merge=True)
+        t.update(patch)
         tpl = self.docs.get(st.TEMPLATES, t["template_id"]) if t.get("template_id") else None
         if tpl and any(p["path"] == path for p in tpl.get("recent_photos") or []):
             self.docs.set(st.TEMPLATES, tpl["id"], {
@@ -463,26 +513,25 @@ class Tasks:
         if assignee_id:
             self._assignee(store_id, assignee_id)
         picked = [self._task(i, store_id) for i in dict.fromkeys(task_ids)]
-        for t in picked:
-            self._writable(t)
         patch = {"assignee_id": assignee_id or None, "assigned_by": staff["sid"],
                  "updated_at": self.now().isoformat()}
         for t in picked:
             if t.get("assignee_id") != patch["assignee_id"]:
-                self.docs.set(st.TASKS, t["id"], patch, merge=True)
-                t.update(patch)
+                mine = {**self._trial(t), **patch}
+                self.docs.set(st.TASKS, t["id"], mine, merge=True)
+                t.update(mine)
         return picked
 
     def comment(self, store_id: str, task_id: str, staff: dict, text: str) -> dict:
         t = self._task(task_id, store_id)
-        self._writable(t)
         text = (text or "").strip()
         if not text:
             raise Invalid("write something first")
         stamp = self.now().isoformat()
-        t["comments"] = (t.get("comments") or []) + [
-            {"id": uuid.uuid4().hex[:10], "by": staff["sid"], "at": stamp, "text": text[:MAX_COMMENT]}]
-        self.docs.set(st.TASKS, task_id, {"comments": t["comments"], "updated_at": stamp}, merge=True)
+        patch = {**self._trial(t), "updated_at": stamp, "comments": (t.get("comments") or []) + [
+            {"id": uuid.uuid4().hex[:10], "by": staff["sid"], "at": stamp, "text": text[:MAX_COMMENT]}]}
+        self.docs.set(st.TASKS, task_id, patch, merge=True)
+        t.update(patch)
         return t
 
     def _definition(self, t: dict) -> tuple[str, dict]:
@@ -502,23 +551,28 @@ class Tasks:
     def set_instructions(self, store_id: str, task_id: str, text: str, staff: dict) -> dict:
         """A manager's edit to the how-to. On a recurring task it changes every day from today."""
         t = self._task(task_id, store_id)
-        self._writable(t)
         coll, holder = self._definition(t)
         text = (text or "").strip()
         if coll == st.TEMPLATES:
             self.save_template(store_id, {**holder, "instructions": text}, staff["sid"])
-        self.docs.set(st.TASKS, task_id, {"instructions": text, "updated_at": self.now().isoformat()}, merge=True)
+        elif t.get("source") == "clickup":
+            raise Invalid("this task's how-to is in ClickUp — change it there")
+        if t.get("source") != "clickup":  # a ClickUp day keeps ClickUp's text; the definition carries the edit
+            self.docs.set(st.TASKS, task_id, {"instructions": text, "updated_at": self.now().isoformat()}, merge=True)
         return self._task(task_id, store_id)
 
     def add_reference_photo(self, store_id: str, task_id: str, staff: dict, data: bytes,
                             content_type: str) -> dict:
-        t = self._task(task_id, store_id)
-        self._writable(t)
-        coll, holder = self._definition(t)
-        path = self._photo(store_id, f"ref/{holder['id']}", data, content_type)
+        """An example photo, or a short video, of the task done right."""
+        coll, holder = self._definition(self._task(task_id, store_id))
+        video = content_type in VIDEO_TYPES
+        if video and (not data or len(data) > MAX_VIDEO_BYTES):
+            raise Invalid("video is empty or larger than 30 MB — keep it short")
+        path = (f"{store_id}/ref/{holder['id']}/{uuid.uuid4().hex}" if video
+                else self._photo(store_id, f"ref/{holder['id']}", data, content_type))
         self.photos.put(path, data, content_type)
         photos = (holder.get("reference_photos") or []) + [
-            {"path": path, "by": staff["sid"], "at": self.now().isoformat()}]
+            {"path": path, "by": staff["sid"], "at": self.now().isoformat(), **({"type": content_type} if video else {})}]
         self.docs.set(coll, holder["id"], {"reference_photos": photos}, merge=True)
         return self.task_detail(store_id, task_id)
 
@@ -560,7 +614,8 @@ class Tasks:
         t = self.docs.get(st.TASKS, task_id)
         if t is None or t["store"] != store_id:
             return
-        self._writable(t)
+        if t.get("source") == "clickup":
+            raise Invalid("this task is in ClickUp — delete it there")
         if t.get("template_id"):
             raise Invalid("this task comes back every day — a manager changes it under Manage → Tasks")
         if staff["role"] != auth.MANAGER and t.get("created_by") != staff["sid"]:
@@ -665,7 +720,7 @@ class Tasks:
         cfg = self.store(store_id)
         now = self.now()
         day = cfg.today(now)
-        tasks = self._stored(cfg, day)
+        tasks = [clickup_view(t) for t in self._stored(cfg, day)]
         sent = []
         for s in cfg.shifts:
             due = datetime.datetime.fromisoformat(model.due_at(cfg, s.id, day))

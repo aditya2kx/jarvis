@@ -109,8 +109,15 @@ python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]   # ta
 python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737   # closing-count sections, from ClickUp's latest closing update
 ```
 
+**ClickUp webhooks** (`clickup_webhooks.py`) keep it live: the API registers one webhook per
+configured list itself (every 6 hours it re-checks them and replaces any ClickUp suspended),
+keeping each signing secret in the `webhooks` collection. A change in ClickUp calls
+`/webhooks/clickup/<store>/<list>` (signature checked); the task's status and fields, or the
+closing count, update in seconds, and its comments and files follow on the next tick (inbox).
+Nothing here runs on a laptop or needs Cursor.
+
 Every import write is keyed by the ClickUp task id, so re-running is an upsert. Until
-cutover the scheduled tick re-mirrors the last three days every two hours: fields and status,
+cutover, as a net for anything a webhook missed, the scheduled tick re-mirrors the last three days every two hours: fields and status,
 then, for tasks ClickUp changed since they were last copied, comments with replies, photos,
 videos, documents and checklists (90 seconds of that per run; the rest on the next run; files
 over 100 MB are logged and left to `--files`).

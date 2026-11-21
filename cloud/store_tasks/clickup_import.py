@@ -59,6 +59,22 @@ def _get(path: str, pat: str | None = None):
     raise RuntimeError(f"ClickUp GET {path.split('?')[0]} kept failing")
 
 
+def _send(method: str, path: str, body: dict | None = None, pat: str | None = None) -> dict:
+    """A ClickUp write (webhook registration). Not retried: the caller re-checks state next run."""
+    pat = pat or os.environ.get("CLICKUP_PAT", "")
+    if not pat:
+        raise RuntimeError("CLICKUP_PAT is not set")
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(API + path, data=data, method=method,
+                                 headers={"Authorization": pat, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read()
+            return json.loads(raw.decode()) if raw else {}
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"ClickUp {method} {path} → HTTP {e.code}") from None
+
+
 def fetch_list(list_id: str, updated_since_ms: int | None = None, get=_get) -> list[dict]:
     out, page = [], 0
     while True:

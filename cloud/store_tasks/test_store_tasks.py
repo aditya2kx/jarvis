@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import hashlib
+import hmac
 import io
 import json
 import pathlib
@@ -14,7 +16,7 @@ from skills.google_signin import identity
 
 from agents.bhaga.scripts.ingest_inventory import rows_from_task
 from cloud.store_tasks import app as app_mod
-from cloud.store_tasks import auth, clickup_import as ci, events as ev, model, service as svc
+from cloud.store_tasks import auth, clickup_import as ci, clickup_webhooks as cw, events as ev, model, service as svc
 from cloud.store_tasks import shared_sync, store as st, summaries, verify_backfill
 
 TZ = datetime.timezone(datetime.timedelta(hours=-6))
@@ -339,10 +341,13 @@ def test_tick_runs_hourly_jobs_once_per_hour(env, monkeypatch):
 
     monkeypatch.setenv("CLICKUP_PAT", "x")
     monkeypatch.setattr(ci, "mirror", lambda tasks, sid: {"tasks": 3})
+    monkeypatch.setattr(cw, "ensure", lambda tasks, sid, root: {"root": root})
+    monkeypatch.setattr(cw, "drain", lambda tasks, sid: {})
     posts = []
     monkeypatch.setattr(app_mod.clickup_chat, "post_message", lambda channel, text: posts.append((channel, text)))
     out = env.client.post("/internal/tick", headers=h).get_json()["palmetto"]
     assert out["mirror"] == {"tasks": 3} and out["posted"] == ["palmetto_2026-11-19_opening"]
+    assert out["webhooks"] == {"root": "https://localhost/"}
     assert env.client.post("/internal/tick", headers=h).get_json()["palmetto"]["posted"] == []
     assert [c for c, _ in posts] == ["8cr6661-7217"] and posts[0][1].startswith("**Opening duties · Thu Nov 19**")
 
@@ -680,3 +685,69 @@ def test_photo_rules_come_from_what_clickup_holds(env):
     # Steps carry the rule, not the task that holds them; a passing mention of a photo is not a request.
     assert set(rules) == {"Tue: freezer", "Acai thaw"}
     assert rules["Tue: freezer"]["photo_days"] == 3 and rules["Acai thaw"]["asks"]
+
+
+def test_clickup_webhooks_register_themselves_and_heal(env):
+    cfg = env.tasks.store("palmetto")
+    lists = list(cfg.clickup["lists"])
+    live, calls = {}, []
+
+    def get(path):
+        return {"webhooks": list(live.values())}
+
+    def send(method, path, body=None):
+        calls.append((method, path))
+        if method == "DELETE":
+            live.pop(path.rsplit("/", 1)[1])
+            return {}
+        wid = f"w{len(calls)}"
+        live[wid] = {"id": wid, "endpoint": body["endpoint"], "health": {"status": "active"}}
+        return {"id": wid, "webhook": {"id": wid, "secret": f"s-{wid}"}}
+
+    assert cw.ensure(env.tasks, "palmetto", "https://api.example/", get, send) == {"kept": 0, "created": 3}
+    assert cw.hook(env.tasks, "palmetto", lists[0])["secret"] == "s-w1"
+    assert live["w1"]["endpoint"] == f"https://api.example/webhooks/clickup/palmetto/{lists[0]}"
+    assert cw.ensure(env.tasks, "palmetto", "https://api.example/", get, send) == {"kept": 3, "created": 0}
+    # ClickUp suspends a webhook after failed calls: it is replaced, not left dead.
+    live["w2"]["health"]["status"] = "suspended"
+    assert cw.ensure(env.tasks, "palmetto", "https://api.example/", get, send) == {"kept": 2, "created": 1}
+    assert ("DELETE", "/webhook/w2") in calls and "w2" not in live
+
+
+def test_a_clickup_change_lands_in_seconds_and_its_files_on_the_next_tick(env, monkeypatch):
+    cfg = env.tasks.store("palmetto")
+    env.tasks.put_store(dataclasses.replace(cfg, cutover_date=None))
+    lists = list(cfg.clickup["lists"])
+    env.tasks.docs.set(st.WEBHOOKS, "palmetto", {"id": "palmetto", "hooks": {lists[0]: {"id": "w1", "secret": "shh"}}})
+    task = {**_cu("live", "Wipe tables", 19, st="closed"), "list": {"id": lists[0]},
+            "attachments": [{"id": "p9.jpg", "mimetype": "image/jpeg", "url": "https://files/p9",
+                             "date": _ms(2026, 11, 19, 8), "user": {"id": 7}}]}
+    gets = []
+
+    def get(path):
+        gets.append(path)
+        if path.endswith("/comment"):
+            return {"comments": []}
+        return task
+
+    body = json.dumps({"event": "taskStatusUpdated", "task_id": "live", "webhook_id": "w1"}).encode()
+    url = f"/webhooks/clickup/palmetto/{lists[0]}"
+    assert env.client.post(url, data=body, headers={"X-Signature": "forged"}).status_code == 401
+    assert env.client.post(f"/webhooks/clickup/palmetto/{lists[1]}", data=body,
+                           headers={"X-Signature": "x"}).status_code == 401  # no webhook on that list
+    sig = hmac.new(b"shh", body, hashlib.sha256).hexdigest()
+    monkeypatch.setattr(ci, "_get", get)
+    r = env.client.post(url, data=body, headers={"X-Signature": sig, "Content-Type": "application/json"})
+    assert r.get_json() == {"task": "cu_live", "queued": True}
+    assert env.tasks.docs.get(st.TASKS, "cu_live")["status"] == "done"  # before any tick
+    out = cw.drain(env.tasks, "palmetto", get=get, download=lambda u: (b"\xff\xd8", "image/jpeg"))
+    assert out["done"] == 1 and out["files"]["photos"] == 1 and env.tasks.docs.query(st.INBOX) == []
+    # A closing form sent in ClickUp becomes the day's count straight away.
+    form = {**_cu("f1", "Form Submission - #2026-11-19T19:06", 19), "list": {"id": lists[0]}, "creator": {"id": 7},
+            "fields": [], "custom_fields": [{"id": FIELD, "name": "Açaí", "type": "short_text", "value": "25+40%"},
+                                            {"id": "f-notes", "name": "Shift notes", "value": "Steady"}]}
+    cw.receive(env.tasks, "palmetto", lists[0], {"event": "taskCreated", "task_id": "f1"}, get=lambda p: form)
+    c = env.tasks.count("palmetto", datetime.date(2026, 11, 19))
+    assert c["items"] == {FIELD: "25+40%"} and c["notes"]["shift"] == "Steady" and c["submitted_by"] == "cu7"
+    cw.receive(env.tasks, "palmetto", lists[0], {"event": "taskDeleted", "task_id": "live"})
+    assert env.tasks.docs.get(st.TASKS, "cu_live") is None

@@ -14,7 +14,8 @@ consume its events. See cloud/store_tasks/README.md.
     POST /v1/tasks                   one-off task
     GET|PUT /v1/counts/<date>        closing count
     GET|POST /v1/templates, /v1/staff, /v1/accounts, GET /v1/history   (manager)
-    POST /internal/tick              scheduled: alerts, shared-shift sync, ClickUp mirror, chat summaries
+    POST /webhooks/clickup/<s>/<list> ClickUp change (signed with that webhook's secret)
+    POST /internal/tick              scheduled: alerts, shared-shift sync, ClickUp webhooks + mirror, chat summaries
     POST /internal/stores/<s>/check-shifts | mirror | sync-shifts | tasks, GET …/closing-counts
 """
 
@@ -32,7 +33,7 @@ from skills.google_signin import access, identity
 
 from skills.clickup_chat import runner as clickup_chat
 
-from cloud.store_tasks import auth, clickup_import, shared_sync, summaries
+from cloud.store_tasks import auth, clickup_import, clickup_webhooks, shared_sync, summaries
 from cloud.store_tasks import service as svc
 from cloud.store_tasks import store as st
 
@@ -43,6 +44,7 @@ SESSION_HEADER = "X-Staff-Session"  # not Authorization: Google sign-in reads th
 DEVICE_HEADER = "X-Shop-Device"
 SYNC_EVERY = datetime.timedelta(hours=1)
 MIRROR_EVERY = datetime.timedelta(hours=2)
+WEBHOOKS_EVERY = datetime.timedelta(hours=6)
 
 
 def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=None) -> Flask:
@@ -338,6 +340,15 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     def history():
         return jsonify(days=tasks.history(g.store, day_arg(request.args["from"]), day_arg(request.args["to"])))
 
+    # ── ClickUp webhooks ────────────────────────────────────────────────────
+
+    @app.post("/webhooks/clickup/<store_id>/<list_id>")
+    def clickup_webhook(store_id: str, list_id: str):
+        h = clickup_webhooks.hook(tasks, store_id, list_id)
+        if h is None or not clickup_webhooks.signed(h["secret"], request.get_data(), request.headers.get("X-Signature", "")):
+            raise auth.AuthError("unauthorized")
+        return jsonify(clickup_webhooks.receive(tasks, store_id, list_id, request.get_json(silent=True) or {}))
+
     # ── internal (Cloud Scheduler, nightly pipeline) ────────────────────────
 
     @app.post("/internal/stores/<store_id>/check-shifts")
@@ -379,11 +390,14 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
         cutover (sooner when a shift summary waits for fresh ClickUp data), then due chat summaries."""
         out = {}
         chat = bool(os.environ.get("CLICKUP_PAT"))
+        root = os.environ.get("STORE_TASKS_PUBLIC_URL") or request.url_root.replace("http://", "https://", 1)
         for store_doc in tasks.docs.query(st.STORES):
             sid = store_doc["id"]
             out[sid] = {"alerts": len(tasks.check_shifts(sid))}
-            for job, every, run in (("sync_shifts", SYNC_EVERY, shared_sync.sync), ("mirror", MIRROR_EVERY, clickup_import.mirror)):
-                if job == "mirror" and not (store_doc.get("clickup") and chat):
+            for job, every, run in (("sync_shifts", SYNC_EVERY, shared_sync.sync),
+                                    ("webhooks", WEBHOOKS_EVERY, lambda t, s: clickup_webhooks.ensure(t, s, root)),
+                                    ("mirror", MIRROR_EVERY, clickup_import.mirror)):
+                if job != "sync_shifts" and not (store_doc.get("clickup") and chat):
                     continue
                 if not (tasks.job_due(sid, job, every) or (job == "mirror" and summaries.wants_mirror(tasks, sid))):
                     continue
@@ -394,6 +408,11 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
                 except Exception as e:
                     log.error("store-tasks fail reason=%s store=%s err=%r", job, sid, e)
                     out[sid][job] = "failed"
+            if chat and store_doc.get("clickup"):
+                try:
+                    out[sid]["inbox"] = clickup_webhooks.drain(tasks, sid)
+                except Exception as e:
+                    log.error("store-tasks fail reason=inbox store=%s err=%r", sid, e)
             if chat:
                 out[sid]["posted"] = summaries.post_due(tasks, sid, clickup_chat.post_message)
         return jsonify(out)

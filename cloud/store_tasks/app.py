@@ -8,6 +8,7 @@ consume its events. See cloud/store_tasks/README.md.
 
     GET  /v1/bootstrap               store, shifts, staff names (any allowed Google account)
     POST /v1/sessions                staff id + PIN → session (shared store account)
+    POST /v1/shop/enroll             shop code → device token (a shop device, no Google account)
     GET  /v1/days/<date>             shifts, teams, tasks
     POST /v1/tasks/<id>/complete | reopen | photo
     POST /v1/tasks                   one-off task
@@ -37,6 +38,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("store_tasks")
 
 SESSION_HEADER = "X-Staff-Session"  # not Authorization: Google sign-in reads that header itself
+DEVICE_HEADER = "X-Shop-Device"
 SYNC_EVERY = datetime.timedelta(hours=1)
 MIRROR_EVERY = datetime.timedelta(hours=2)
 
@@ -78,7 +80,8 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     def account_required(fn):
         @functools.wraps(fn)
         def wrapped(*a, **kw):
-            g.account = tasks.account(signed_in(request.headers))
+            device = request.headers.get(DEVICE_HEADER, "")
+            g.account = tasks.shop_account(device) if device else tasks.account(signed_in(request.headers))
             g.store = g.account["store"]
             return fn(*a, **kw)
         return wrapped
@@ -134,8 +137,10 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
         return jsonify(
             store={"id": cfg.id, "name": cfg.name, "tz": cfg.tz, "cutover_date": cfg.cutover_date,
                    "shifts": [s.to_dict() for s in cfg.shifts], "count_items": list(cfg.count_items)},
-            account={"email": g.account["email"], "label": g.account.get("label") or ""},
+            account={"email": g.account["email"], "label": g.account.get("label") or "",
+                     "shop": bool(g.account.get("shop"))},
             own=tasks.own_session(g.account),
+            device=tasks.renew_device(g.account),
             staff=[svc.public_staff(s) for s in staff],
             on_today=sorted({m["id"] for team in tasks.teams(cfg, today, staff).values() for m in team if m["id"]}),
             today=today.isoformat(),
@@ -146,6 +151,10 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     def sessions():
         b = body()
         return jsonify(tasks.sign_in(g.account, b.get("staff_id", ""), b.get("pin", "")))
+
+    @app.post("/v1/shop/enroll")
+    def enroll_shop():
+        return jsonify(tasks.enroll_shop(str(body().get("code", ""))))
 
     # ── days and tasks ──────────────────────────────────────────────────────
 
@@ -308,6 +317,19 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
             # The account is already refused by this API; only Google's login page still lets it through.
             log.error("store-tasks fail reason=signin_revoke email_domain=%s err=%r", email.split("@")[-1], e)
         return jsonify(ok=True)
+
+    @app.get("/v1/shop-code")
+    @manager_required
+    def shop_code():
+        return jsonify(**tasks.shop_code(g.store), url=os.environ.get("STORE_TASKS_SHOP_URL", ""))
+
+    @app.put("/v1/shop-code")
+    @manager_required
+    def set_shop_code():
+        tasks.set_shop_code(g.store, str(body().get("code", "")), g.staff["sid"])
+        # Changed from the shop device itself: it keeps working with the new code.
+        return jsonify(**tasks.shop_code(g.store), url=os.environ.get("STORE_TASKS_SHOP_URL", ""),
+                       device=tasks.renew_device(g.account))
 
     @app.get("/v1/history")
     @manager_required

@@ -28,9 +28,12 @@ export interface CountItem {
 
 export interface Bootstrap {
   store: { id: string; name: string; tz: string; cutover_date: string | null; shifts: Shift[]; count_items: CountItem[] };
-  account: { email: string; label: string };
-  /** Set when the Google account is a person's own: they are signed in without a PIN. */
+  /** `shop`: a shop device signed in with the store's code, not a Google account. */
+  account: { email: string; label: string; shop: boolean };
+  /** Set on a person's own Google account (signed in without a PIN) and on a shop device (signed in as the shop). */
   own: { session: string; staff: Staff } | null;
+  /** A shop device's renewed token. */
+  device: string | null;
   staff: Staff[];
   on_today: string[];
   today: string;
@@ -64,6 +67,8 @@ export interface Task {
   status: "open" | "done";
   assignee_id: string | null;
   completed_by: string | null;
+  /** Who pressed the tick: differs from `completed_by` when the shop device ticks for the assignee. */
+  ticked_by?: string | null;
   completed_at: string | null;
   note?: string;
   photos?: Photo[];
@@ -135,6 +140,13 @@ export interface Account {
   updated_at: string;
 }
 
+export interface ShopCode {
+  set: boolean;
+  updated_at: string | null;
+  /** Where the shop device opens the app. */
+  url: string;
+}
+
 export interface HistoryDay {
   date: string;
   shifts: Record<string, { total: number; done: number; late: number }>;
@@ -155,13 +167,27 @@ export class ApiError extends Error {
   }
 }
 
+export const SHOP = "shop";
+const DEVICE_KEY = "st.device";
+export const shopDevice = {
+  get: () => localStorage.getItem(DEVICE_KEY),
+  set: (token: string | null) => (token ? localStorage.setItem(DEVICE_KEY, token) : localStorage.removeItem(DEVICE_KEY)),
+};
+
+function authHeaders(token?: string): Record<string, string> {
+  // X-Requested-With makes Google sign-in answer 401 instead of redirecting a background request.
+  const headers: Record<string, string> = { "X-Requested-With": "XMLHttpRequest" };
+  const device = shopDevice.get();
+  if (device) headers["X-Shop-Device"] = device;
+  if (token) headers["X-Staff-Session"] = token;
+  return headers;
+}
+
 /** True when the request never reached the server (offline, timeout) — safe to retry later. */
 export const isOffline = (e: unknown) => !(e instanceof ApiError);
 
 async function call<T>(method: string, path: string, opts: { token?: string; body?: unknown; form?: FormData } = {}): Promise<T> {
-  // X-Requested-With makes Google sign-in answer 401 instead of redirecting a background request.
-  const headers: Record<string, string> = { "X-Requested-With": "XMLHttpRequest" };
-  if (opts.token) headers["X-Staff-Session"] = opts.token;
+  const headers = authHeaders(opts.token);
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), opts.form ? 60000 : 15000);
@@ -198,6 +224,9 @@ export const api = {
   bootstrap: () => call<Bootstrap>("GET", "/v1/bootstrap"),
   signIn: (staff_id: string, pin: string) =>
     call<{ session: string; staff: Staff }>("POST", "/v1/sessions", { body: { staff_id, pin } }),
+  enrollShop: (code: string) => call<{ device: string }>("POST", "/v1/shop/enroll", { body: { code } }),
+  shopCode: (token: string) => call<ShopCode>("GET", "/v1/shop-code", { token }),
+  setShopCode: (token: string, code: string) => call<ShopCode & { device: string | null }>("PUT", "/v1/shop-code", { token, body: { code } }),
   day: (token: string, date: string) => call<Day>("GET", `/v1/days/${date}`, { token }),
   complete: (token: string, id: string, at: string, note = "") =>
     call<Task>("POST", `/v1/tasks/${id}/complete`, { token, body: { at, note } }),
@@ -221,7 +250,7 @@ export const api = {
   photoUrl: (token: string, path: string) => {
     let url = photoUrls.get(path);
     if (!url) {
-      url = fetch(`/v1/photos/${path}`, { headers: { "X-Staff-Session": token, "X-Requested-With": "XMLHttpRequest" } }).then(async (res) => {
+      url = fetch(`/v1/photos/${path}`, { headers: authHeaders(token) }).then(async (res) => {
         if (!res.ok) throw new ApiError("Photo not available", res.status);
         return URL.createObjectURL(await res.blob());
       });

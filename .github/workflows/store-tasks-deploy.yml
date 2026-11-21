@@ -31,6 +31,7 @@ env:
   # Cloud Run's deterministic URLs (service-projectnumber.region.run.app).
   API_URL: https://store-tasks-api-887772634501.us-central1.run.app
   APP_URL: https://store-tasks-app-887772634501.us-central1.run.app
+  SHOP_URL: https://store-tasks-shop-887772634501.us-central1.run.app
 
 permissions:
   contents: read
@@ -94,7 +95,7 @@ jobs:
             --region $REGION --project $PROJECT_ID \
             --service-account $RUNTIME_SA --allow-unauthenticated \
             --min-instances 0 --max-instances 2 --memory 512Mi --cpu 1 --cpu-boost --timeout 300 \
-            --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,STORE_TASKS_FIRESTORE_DB=storetasks,STORE_TASKS_PHOTO_BUCKET=jarvis-store-tasks-photos,STORE_TASKS_EVENTS_TOPIC=store-tasks-events,STORE_TASKS_SIGNIN_SERVICE=store-tasks-app" \
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,STORE_TASKS_FIRESTORE_DB=storetasks,STORE_TASKS_PHOTO_BUCKET=jarvis-store-tasks-photos,STORE_TASKS_EVENTS_TOPIC=store-tasks-events,STORE_TASKS_SIGNIN_SERVICE=store-tasks-app,STORE_TASKS_SHOP_URL=$SHOP_URL" \
             --set-secrets "STORE_TASKS_SIGNING_KEY=store-tasks-signing-key:latest,STORE_TASKS_INTERNAL_TOKEN=store-tasks-internal-token:latest,CLICKUP_PAT=jarvis-clickup-palmetto-pat:latest"
 
       # Google sign-in in front of the staff app (Cloud Run direct IAP, as the Operator Console).
@@ -115,6 +116,17 @@ jobs:
             --region $REGION --project $PROJECT_ID \
             --member "serviceAccount:$RUNTIME_SA" --role roles/iap.admin --quiet >/dev/null \
             || echo "::warning::roles/iap.admin grant failed — Manage → Sign-in cannot add Google accounts"
+
+      # The same app for the shop device, which has no Google account: no Google sign-in in front;
+      # the API refuses every /v1 call without a device token from the store's shop code.
+      - name: Deploy shop app
+        run: |
+          gcloud run deploy store-tasks-shop \
+            --image $REGISTRY/store-tasks-app:${{ github.sha }} \
+            --region $REGION --project $PROJECT_ID \
+            --service-account $RUNTIME_SA --allow-unauthenticated \
+            --min-instances 0 --max-instances 2 --memory 128Mi --cpu 1 --timeout 120 \
+            --set-env-vars "API_HOST=${API_URL#https://}"
 
       # The Slack bridge needs a Slack app in the staff workspace; it deploys once its secrets exist.
       - name: Deploy Slack bridge
@@ -150,6 +162,8 @@ jobs:
           [ "$CODE" = "401" ] || { echo "::error::/v1/bootstrap without Google sign-in returned $CODE"; exit 1; }
           CODE="$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/")"
           [ "$CODE" = "302" ] || { echo "::error::staff app without Google sign-in returned $CODE (expected a redirect to Google)"; exit 1; }
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' "$SHOP_URL/v1/bootstrap")"
+          [ "$CODE" = "401" ] || { echo "::error::shop app without a shop code returned $CODE on /v1/bootstrap"; exit 1; }
           CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API_URL/internal/tick")"
           [ "$CODE" = "401" ] || { echo "::error::unauthenticated /internal/tick returned $CODE"; exit 1; }
           echo "### store-tasks: $APP_URL" >> "$GITHUB_STEP_SUMMARY"

@@ -1,4 +1,4 @@
-import { api, isOffline, type Day, type Task } from "./api";
+import { api, isOffline, SHOP, type Day, type Task } from "./api";
 
 /** A change made on this device that the server has not confirmed yet. */
 export interface Pending {
@@ -31,9 +31,11 @@ export function enqueue(queue: Pending[], p: Pending): Pending[] {
 function apply(t: Task, p: Pending): Task {
   switch (p.kind) {
     case "complete":
-      return { ...t, status: "done", completed_by: p.staff_id, completed_at: p.at, pending: true };
+      // As the API: the shop device ticks for the assignee.
+      const by = p.staff_id === SHOP ? (t.assignee_id ?? SHOP) : p.staff_id;
+      return { ...t, status: "done", completed_by: by, ticked_by: p.staff_id, completed_at: p.at, pending: true };
     case "reopen":
-      return { ...t, status: "open", completed_by: null, completed_at: null, pending: true };
+      return { ...t, status: "open", completed_by: null, ticked_by: null, completed_at: null, pending: true };
     case "assign":
       return { ...t, assignee_id: p.assignee_id ?? null };
     default: {

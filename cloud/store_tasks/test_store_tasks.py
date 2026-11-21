@@ -126,6 +126,47 @@ def test_wrong_pin_locks_after_five_misses(env):
                            headers=h).status_code == 200
 
 
+def test_shop_device_signs_in_with_the_store_code_and_ticks_for_the_assignee(env):
+    c = env.client
+    assert c.put("/v1/shop-code", json={"code": "482913"}, headers=env.crew_h).status_code == 403
+    assert c.put("/v1/shop-code", json={"code": "4829"}, headers=env.boss_h).status_code == 400
+    assert c.put("/v1/shop-code", json={"code": "482913"}, headers=env.boss_h).get_json()["set"] is True
+    assert c.post("/v1/shop/enroll", json={"code": "000000"}).status_code == 403
+    device = c.post("/v1/shop/enroll", json={"code": "482913"}).get_json()["device"]
+    shop = {"X-Shop-Device": device}
+    boot = c.get("/v1/bootstrap", headers=shop).get_json()  # no Google account at all
+    assert boot["account"]["shop"] is True and boot["own"]["staff"]["id"] == auth.SHOP and boot["device"]
+    h = {**shop, "X-Staff-Session": boot["own"]["session"]}
+    assert c.get("/v1/templates", headers=h).status_code == 403
+    tid = "palmetto_2026-11-19_t1"
+    c.get("/v1/days/2026-11-19", headers=h)
+    c.post("/v1/assign", json={"task_ids": [tid], "assignee_id": env.crew["id"]}, headers=h)
+    done = c.post(f"/v1/tasks/{tid}/complete", json={}, headers=h).get_json()
+    assert done["completed_by"] == env.crew["id"] and done["ticked_by"] == auth.SHOP
+    assert c.post(f"/v1/tasks/{tid}/reopen", headers=h).get_json()["status"] == "open"
+    # Only managers sign in on the shop device; crew just use it.
+    assert c.post("/v1/sessions", json={"staff_id": env.crew["id"], "pin": "1234"}, headers=shop).status_code == 403
+    boss = c.post("/v1/sessions", json={"staff_id": env.boss["id"], "pin": "123456"}, headers=shop).get_json()
+    assert c.get("/v1/templates", headers={**shop, "X-Staff-Session": boss["session"]}).status_code == 200
+    # The shop session is no Google session and no staff session is a device token.
+    assert c.get("/v1/bootstrap", headers={"X-Shop-Device": env.crew_h["X-Staff-Session"]}).status_code == 401
+    assert c.get("/v1/days/2026-11-19", headers={**env.ipad, "X-Staff-Session": device}).status_code == 401
+    # A new code signs old devices out.
+    c.put("/v1/shop-code", json={"code": "771204"}, headers=env.boss_h)
+    assert c.get("/v1/bootstrap", headers=shop).status_code == 401
+
+
+def test_wrong_shop_codes_pause_shop_sign_in(env):
+    env.tasks.set_shop_code("palmetto", "482913", "test")
+    assert env.client.post("/v1/shop/enroll", json={"code": "111111"}).status_code == 403
+    env.clock.at += datetime.timedelta(seconds=auth.CODE_LOCK_SECONDS + 1)  # an old miss no longer counts
+    for _ in range(auth.MAX_CODE_MISSES):
+        assert env.client.post("/v1/shop/enroll", json={"code": "111111"}).status_code == 403
+    assert env.client.post("/v1/shop/enroll", json={"code": "482913"}).status_code == 429
+    env.clock.at += datetime.timedelta(seconds=auth.CODE_LOCK_SECONDS + 1)
+    assert env.client.post("/v1/shop/enroll", json={"code": "482913"}).status_code == 200
+
+
 def test_day_is_generated_once_with_only_todays_deep_clean(env):
     day = env.client.get("/v1/days/2026-11-19", headers=env.crew_h).get_json()
     assert sorted(t["title"] for t in day["tasks"]) == ["Deep Clean", "Mop", "Thu: blender", "Unlock"]

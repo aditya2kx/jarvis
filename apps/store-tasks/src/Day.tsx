@@ -1,6 +1,6 @@
-import { Camera, Check, ChevronLeft, ChevronRight, ClipboardList, CloudOff, FileText, ListChecks, Lock, MessageSquare, MousePointerClick, PartyPopper, Plus, Settings, UserPlus, Users, X } from "lucide-react";
+import { Camera, Check, ChevronLeft, ChevronRight, ClipboardList, CloudOff, FileText, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, PartyPopper, Plus, Settings, UserPlus, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, isOffline, type Bootstrap, type Day, type Session, type Task } from "./api";
+import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
 import { PersonPicker } from "./People";
 import { applyPending, flush, loadQueue, push, type Pending } from "./queue";
@@ -28,7 +28,7 @@ function currentShift(day: Day): string {
 interface Props {
   boot: Bootstrap;
   session: Session;
-  /** Null on a person's own Google account: there is nobody to hand the screen to. */
+  /** Null on a person's own Google account: there is nobody to hand the screen to. On the shop session: manager sign-in. */
   onLock: (() => void) | null;
   onManage: () => void;
 }
@@ -65,7 +65,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const wide = useWide();
   const isManager = session.staff.role === "manager";
   const me = session.staff.id;
-  const names = useMemo(() => new Map(boot.staff.map((s) => [s.id, s.name])), [boot.staff]);
+  const shop = me === SHOP;
+  const names = useMemo(() => new Map([[SHOP, "Shop"], ...boot.staff.map((s): [string, string] => [s.id, s.name])]), [boot.staff]);
 
   const refresh = useCallback(async () => {
     try {
@@ -137,7 +138,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
       setOpen(t.id);
       return;
     }
-    if (t.status === "done" && !isManager && t.completed_by !== me) {
+    if (t.status === "done" && !isManager && t.completed_by !== me && t.ticked_by !== me) {
       setError(`${firstName(names.get(t.completed_by ?? "")) || "Someone else"} ticked this. Ask them or a manager to undo it.`);
       return;
     }
@@ -177,7 +178,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const shows = (t: Task) => matches(t) || childrenOf(t.id).some(matches);
   const top = tasks.filter((t) => !t.parent_id || !tasks.some((p) => p.id === t.parent_id));
   const unassigned = tasks.filter((t) => !t.assignee_id && t.status === "open");
-  const counts: Record<Filter, number> = { all: whole.length, mine: tasks.filter((t) => t.assignee_id === me).length, unassigned: tasks.filter((t) => !t.assignee_id).length };
+  const counts: Record<Filter, number> = { all: whole.length, mine: whole.filter((t) => t.assignee_id === me).length, unassigned: whole.filter((t) => !t.assignee_id).length };
+  const openUnassigned = unassigned.filter((t) => !t.parent_id).length;
   const labels: Record<Filter, string> = { all: "All", mine: "Mine", unassigned: "Unassigned" };
   const shiftInfo = day.shifts.find((s) => s.id === activeShift);
   const overdue = left > 0 && date === day.today && Boolean(shiftInfo?.due_at) && new Date() > new Date(shiftInfo!.due_at!);
@@ -266,16 +268,26 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
                 <Settings className="size-5" />
               </button>
             )}
-            <button
-              disabled={!onLock}
-              onClick={onLock ?? undefined}
-              aria-label={onLock ? `Lock (signed in as ${session.staff.name})` : session.staff.name}
-              className="flex items-center gap-2 rounded-full border border-border bg-card py-1 pl-1 pr-3 text-[15px] font-medium enabled:hover:bg-muted"
-            >
-              <Avatar id={me} name={session.staff.name} />
-              <span className="hidden sm:inline">{firstName(session.staff.name)}</span>
-              {onLock && <Lock className="size-4 text-muted-foreground" />}
-            </button>
+            {shop ? (
+              <button
+                onClick={onLock ?? undefined}
+                className="flex min-h-10 items-center gap-2 rounded-full border border-border bg-card px-3 text-[15px] font-medium text-muted-foreground transition hover:bg-muted active:scale-95"
+              >
+                <KeyRound className="size-4" />
+                Manager
+              </button>
+            ) : (
+              <button
+                disabled={!onLock}
+                onClick={onLock ?? undefined}
+                aria-label={onLock ? `Lock (signed in as ${session.staff.name})` : session.staff.name}
+                className="flex items-center gap-2 rounded-full border border-border bg-card py-1 pl-1 pr-3 text-[15px] font-medium enabled:hover:bg-muted"
+              >
+                <Avatar id={me} name={session.staff.name} />
+                <span className="hidden sm:inline">{firstName(session.staff.name)}</span>
+                {onLock && <Lock className="size-4 text-muted-foreground" />}
+              </button>
+            )}
           </div>
         </div>
 
@@ -328,7 +340,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
         <main className="min-w-0 flex-1 overflow-y-auto px-4 pb-10 pt-3 sm:px-6">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
             <div role="group" aria-label="Show" className="flex gap-1 rounded-lg bg-muted p-1">
-              {FILTERS.map((f) => (
+              {FILTERS.filter((f) => !(shop && f === "mine")).map((f) => (
                 <button
                   key={f}
                   aria-pressed={filter === f}
@@ -347,11 +359,11 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
               {!readOnly && unassigned.length > 0 && (
                 <Button
                   variant="outline"
-                  onClick={() => setPicking({ title: `Who is doing the ${unassigned.length} unassigned ${shiftInfo?.label ?? ""} tasks?`, ids: unassigned.map((t) => t.id) })}
+                  onClick={() => setPicking({ title: `Who is doing the ${openUnassigned} unassigned ${shiftInfo?.label ?? ""} tasks?`, ids: unassigned.map((t) => t.id) })}
                   className="min-h-9 px-3 text-sm"
                 >
                   <Users className="size-4" />
-                  Assign {unassigned.length} unassigned
+                  Assign {openUnassigned} unassigned
                 </Button>
               )}
             </div>

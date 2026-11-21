@@ -2,7 +2,8 @@
 
 Google sign-in (skills/google_signin) decides which Google accounts reach the app. On a shared
 store account, each person then signs in with a PIN and gets a short-lived signed session.
-Only PIN hashes are stored.
+A shop device has no Google account: it enters the store's 6-digit shop code once and keeps a
+signed device token. Only PIN and code hashes are stored.
 """
 
 from __future__ import annotations
@@ -18,6 +19,10 @@ import time
 SESSION_SECONDS = 12 * 3600
 MAX_PIN_MISSES = 5
 LOCK_SECONDS = 300
+DEVICE_SECONDS = 90 * 86400  # renewed on every bootstrap, so only an unused device runs out
+MAX_CODE_MISSES = 10  # wrong shop codes from anywhere, before shop sign-in pauses
+CODE_LOCK_SECONDS = 900
+SHOP = "shop"  # who a shop device acts as
 CREW = "crew"
 MANAGER = "manager"
 
@@ -64,16 +69,41 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def sign_session(staff_id: str, store: str, role: str, account: str, now: float | None = None) -> str:
-    body = _b64(json.dumps({
-        "sid": staff_id, "store": store, "role": role, "acct": account,
-        "exp": int((now or time.time()) + SESSION_SECONDS),
-    }, separators=(",", ":")).encode())
+def valid_shop_code(code: str) -> bool:
+    return code.isdigit() and len(code) == 6
+
+
+def _sign(claims: dict) -> str:
+    body = _b64(json.dumps(claims, separators=(",", ":")).encode())
     sig = _b64(hmac.new(_key(), body.encode(), hashlib.sha256).digest())
     return f"{body}.{sig}"
 
 
+def sign_session(staff_id: str, store: str, role: str, account: str, now: float | None = None) -> str:
+    return _sign({"sid": staff_id, "store": store, "role": role, "acct": account,
+                  "exp": int((now or time.time()) + SESSION_SECONDS)})
+
+
+def sign_device(store: str, gen: str, now: float | None = None) -> str:
+    """``gen`` is the shop code's generation: changing the code signs every shop device out."""
+    return _sign({"kind": SHOP, "store": store, "gen": gen, "exp": int((now or time.time()) + DEVICE_SECONDS)})
+
+
 def read_session(token: str, now: float | None = None) -> dict:
+    claims = _read(token, now)
+    if "kind" in claims:
+        raise AuthError("sign in again")
+    return claims
+
+
+def read_device(token: str, now: float | None = None) -> dict:
+    claims = _read(token, now)
+    if claims.get("kind") != SHOP:
+        raise AuthError("enter the shop code again")
+    return claims
+
+
+def _read(token: str, now: float | None) -> dict:
     try:
         body, sig = token.split(".")
         want = _b64(hmac.new(_key(), body.encode(), hashlib.sha256).digest())

@@ -6,7 +6,8 @@ deep-clean photos. Replaces ClickUp tasks. Three deployables, one job each:
 | Piece | Code | Runs as | Job |
 |---|---|---|---|
 | Tasks API | `cloud/store_tasks/` | Cloud Run `store-tasks-api` | The only reader and writer of task data. All rules live here. |
-| Staff app | `apps/store-tasks/` | Cloud Run `store-tasks-app` (static files) | What the crew uses on the iPad. Talks only to the Tasks API. |
+| Staff app | `apps/store-tasks/` | Cloud Run `store-tasks-app` (static files, Google sign-in) | What managers and Google accounts use. Talks only to the Tasks API. |
+| Shop app | the same image | Cloud Run `store-tasks-shop` (static files, no Google sign-in) | What the shop iPad uses, signed in with the store's shop code. |
 | Slack bridge | `cloud/store_tasks_slack/` | Cloud Run `store-tasks-slack` | Turns task events into Slack posts and Slack messages into tasks. |
 
 Nothing here imports from, or is imported by, BHAGA or the Operator Console. Other systems
@@ -30,6 +31,13 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   A shared account (the store iPad) then asks for a name and PIN; a person's own Google
   account goes straight in as them, no PIN. The tick records that person and the time.
   Sessions last 12 hours and a shared account locks after 3 idle minutes.
+- **The shop device.** The shop iPad has no Google account. It opens the shop app and enters
+  the store's 6-digit shop code once (a manager sets it in Manage → Sign-in); it then keeps a
+  device token, renewed whenever the app loads, and works as "Shop". Crew never sign in there:
+  they pick who is doing each task, and a tick from the shop counts for the task's assignee.
+  A manager taps Manager and enters their PIN to manage; it falls back to the shop after 3 idle
+  minutes. Changing the code signs every shop device out. Ten wrong codes within 15 minutes,
+  from anywhere, pause shop sign-in for 15 minutes; devices already signed in keep working.
 - **One origin.** The app's nginx passes `/v1/` on to the API, re-sending Google's signed
   assertion as `X-Signin-Assertion` (Google's front end drops `x-goog-*` headers between
   services). The API verifies it against the app's audience, so calling the API directly
@@ -72,11 +80,12 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
 | Anyone | none | `GET /health` |
 | Google account not on the list | Google sign-in | Nothing (Google refuses; the API also answers 403) |
 | Shared account (store iPad) | Google sign-in | See the store's shifts and staff names |
+| Shop device | shop code → device token (`X-Shop-Device`) | Crew rights as "Shop" (no PIN); managers sign in on it with their PIN |
 | Crew | Google sign-in + PIN session (`X-Staff-Session`) | Read days, tick, undo own ticks, assign anyone, add photos and notes, remove own photos, send the count, add a one-off task and delete their own |
 | Manager | Google sign-in + 6-digit PIN session, or their own Google account | Also: how-to text and example photos, templates, people and PINs, sign-in accounts, history, undo anyone's tick, remove any photo or one-off task |
 | Scheduler, nightly job, Slack bridge | `Authorization: Bearer` internal token | `/internal/*` |
 
-PINs are stored as scrypt hashes; five wrong PINs lock that person for five minutes. An
+PINs and shop codes are stored as scrypt hashes; five wrong PINs lock that person for five minutes. An
 account can only see its own store. Adding or removing an account in Manage → Sign-in also
 adds or removes it on the app's Google sign-in list, so the two never drift.
 

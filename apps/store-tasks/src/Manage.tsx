@@ -1,6 +1,6 @@
 import { ChevronLeft, Plus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, type Bootstrap, type Account, type HistoryDay, type Session, type Staff, type Template } from "./api";
+import { api, shopDevice, type Bootstrap, type Account, type HistoryDay, type Session, type Staff, type Template } from "./api";
 import { repeatLabel } from "./Repeat";
 import { blankDraft, TaskForm, type TaskDraft } from "./TaskForm";
 import { addDays, Button, cx, dayLabel, Field, Input, inputClass, Notice, Sheet } from "./ui";
@@ -41,7 +41,12 @@ export function Manage({ boot, session, onBack }: Props) {
       <main className="flex-1 overflow-y-auto px-4 pb-10 pt-4 sm:px-6">
         {tab === "Tasks" && <Templates boot={boot} session={session} />}
         {tab === "People" && <People token={session.token} />}
-        {tab === "Sign-in" && <Accounts token={session.token} mine={boot.account.email} />}
+        {tab === "Sign-in" && (
+          <div className="space-y-8">
+            <ShopCodeCard token={session.token} />
+            <Accounts token={session.token} mine={boot.account.email} />
+          </div>
+        )}
         {tab === "History" && <History boot={boot} token={session.token} />}
       </main>
     </div>
@@ -224,6 +229,68 @@ function PersonForm({ token, value, onClose, onSaved }: { token: string; value: 
         <Button type="submit" disabled={!s.name?.trim() || !pinOk} className="w-full">Save</Button>
       </form>
     </Sheet>
+  );
+}
+
+function ShopCodeCard({ token }: { token: string }) {
+  const load = useCallback(() => api.shopCode(token), [token]);
+  const [data, error, reload] = useLoad(load);
+  const [code, setCode] = useState("");
+  const [failed, setFailed] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  if (error) return <Notice tone="error">{error}</Notice>;
+  if (!data) return <p className="text-muted-foreground">Loading…</p>;
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setFailed("");
+    try {
+      const r = await api.setShopCode(token, code);
+      if (r.device) shopDevice.set(r.device);
+      setCode("");
+      setSaved(true);
+      reload();
+    } catch (err) {
+      setFailed((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-lg font-semibold">Shop device</h2>
+      <p className="text-muted-foreground">
+        The shop iPad needs no Google account. Open {data.url ? <span className="font-medium text-foreground break-all">{data.url}</span> : "the shop address"} on it and enter
+        this 6-digit code once; it stays signed in as the shop. Crew pick who is doing each task, and a manager signs in with their PIN to manage.
+      </p>
+      <form onSubmit={save} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-end">
+        <Field label={data.set ? "New shop code" : "Shop code"}>
+          <Input
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={6}
+            placeholder="6 digits"
+            value={code}
+            onChange={(e) => {
+              setSaved(false);
+              setCode(e.target.value.replace(/\D/g, ""));
+            }}
+          />
+        </Field>
+        <Button type="submit" disabled={code.length !== 6 || busy} className="sm:w-48">
+          {busy ? "Saving…" : data.set ? "Change code" : "Set code"}
+        </Button>
+      </form>
+      {failed && <Notice tone="error">{failed}</Notice>}
+      {saved && <Notice>Saved. Shop devices that used the old code enter the new one.</Notice>}
+      {data.set && !saved && data.updated_at && (
+        <p className="text-sm text-muted-foreground">Set {new Date(data.updated_at).toLocaleDateString()}. Changing it signs every shop device out.</p>
+      )}
+    </section>
   );
 }
 

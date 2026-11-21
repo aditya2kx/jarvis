@@ -36,6 +36,10 @@ def public_staff(s: dict) -> dict:
             "adp_name": s.get("adp_name") or "", "assignable": assignable(s)}
 
 
+SHOP_STAFF = {"id": auth.SHOP, "name": "Shop", "role": auth.CREW, "active": True, "has_pin": False,
+              "adp_name": "", "assignable": False}
+
+
 def assignable(s: dict) -> bool:
     """Only people ADP employs are picked to do a task. Before the first ADP sync, everyone active."""
     return s.get("active", True) and s.get("adp_active", True)
@@ -135,7 +139,10 @@ class Tasks:
         self.docs.delete(st.ACCOUNTS, email)
 
     def own_session(self, account: dict) -> dict | None:
-        """A person's own Google account is already proof of who they are: no PIN."""
+        """A person's own Google account is already proof of who they are: no PIN. A shop device is the shop."""
+        if account.get("shop"):
+            return {"session": auth.sign_session(auth.SHOP, account["store"], auth.CREW, account["email"],
+                                                 self.now().timestamp()), "staff": SHOP_STAFF}
         s = self.docs.get(st.STAFF, account.get("staff_id") or "") if account.get("staff_id") else None
         if s is None or not s.get("active", True) or s.get("store") != account["store"]:
             return None
@@ -147,6 +154,8 @@ class Tasks:
         s = self.docs.get(st.STAFF, staff_id)
         if s is None or s.get("store") != account["store"] or not s.get("active", True):
             raise auth.AuthError("unknown person", 403)
+        if account.get("shop") and s.get("role") != auth.MANAGER:
+            raise auth.AuthError("on the shop device only managers sign in", 403)
         now = self.now().timestamp()
         if s.get("locked_until", 0) > now:
             raise auth.AuthError("too many wrong PINs — try again in a few minutes", 429)
@@ -162,6 +171,55 @@ class Tasks:
         role = s.get("role", auth.CREW)
         return {"session": auth.sign_session(staff_id, s["store"], role, account["email"], now),
                 "staff": public_staff(s)}
+
+    # ── shop devices ────────────────────────────────────────────────────────
+
+    def shop_code(self, store_id: str) -> dict:
+        d = self.docs.get(st.SHOP_CODES, store_id) or {}
+        return {"set": bool(d.get("code_hash")), "updated_at": d.get("updated_at")}
+
+    def set_shop_code(self, store_id: str, code: str, by: str) -> None:
+        """A new code also signs out every device that used the old one."""
+        if not auth.valid_shop_code(code):
+            raise Invalid("the shop code is 6 digits")
+        for other in self.docs.query(st.SHOP_CODES):
+            if other["id"] != store_id and auth.pin_matches(code, _as_pin(other)):
+                raise Invalid("another store uses that code — pick a different one")
+        h = auth.hash_pin(code)
+        self.docs.set(st.SHOP_CODES, store_id, {
+            "id": store_id, "code_hash": h["pin_hash"], "code_salt": h["pin_salt"], "gen": uuid.uuid4().hex,
+            "updated_at": self.now().isoformat(), "updated_by": by})
+
+    def enroll_shop(self, code: str) -> dict:
+        """The code names the store. Wrong codes from anywhere count together, so guessing is slow."""
+        now = self.now().timestamp()
+        guard = self.docs.get(st.GUARDS, auth.SHOP) or {}
+        if guard.get("locked_until", 0) > now:
+            raise auth.AuthError("too many wrong codes — try again in a few minutes", 429)
+        found = next((d for d in self.docs.query(st.SHOP_CODES)
+                      if auth.valid_shop_code(code or "") and auth.pin_matches(code, _as_pin(d))), None)
+        if found is None:
+            fresh = now - guard.get("since", 0) > auth.CODE_LOCK_SECONDS  # misses count within one window
+            misses = 1 if fresh else guard.get("misses", 0) + 1
+            patch = {"id": auth.SHOP, "misses": misses, "since": now if fresh else guard["since"]}
+            if misses >= auth.MAX_CODE_MISSES:
+                patch = {"id": auth.SHOP, "misses": 0, "locked_until": now + auth.CODE_LOCK_SECONDS}
+            self.docs.set(st.GUARDS, auth.SHOP, patch, merge=True)
+            raise auth.AuthError("wrong code", 403)
+        return {"device": auth.sign_device(found["id"], found["gen"], now)}
+
+    def shop_account(self, token: str) -> dict:
+        claims = auth.read_device(token, self.now().timestamp())
+        d = self.docs.get(st.SHOP_CODES, claims["store"]) or {}
+        if d.get("gen") != claims["gen"]:
+            raise auth.AuthError("the shop code changed — enter the new one")
+        return {"email": f"{auth.SHOP}:{claims['store']}", "store": claims["store"], "label": "Shop", "shop": True}
+
+    def renew_device(self, account: dict) -> str | None:
+        if not account.get("shop"):
+            return None
+        gen = (self.docs.get(st.SHOP_CODES, account["store"]) or {})["gen"]
+        return auth.sign_device(account["store"], gen, self.now().timestamp())
 
     # ── templates ───────────────────────────────────────────────────────────
 
@@ -316,7 +374,9 @@ class Tasks:
         if t.get("needs_photo") and not t.get("photos") and staff["role"] != auth.MANAGER:
             raise Invalid("add a photo first")
         stamp = self.now().isoformat()
-        patch = {"status": model.DONE, "completed_by": staff["sid"], "completed_at": at or stamp,
+        # The shop device is not a person: the tick counts for whoever the task is assigned to.
+        done_by = (t.get("assignee_id") or auth.SHOP) if staff["sid"] == auth.SHOP else staff["sid"]
+        patch = {"status": model.DONE, "completed_by": done_by, "ticked_by": staff["sid"], "completed_at": at or stamp,
                  "note": (note or t.get("note") or "").strip()[:1000], "updated_at": stamp}
         self.docs.set(st.TASKS, task_id, patch, merge=True)
         t.update(patch)
@@ -330,9 +390,9 @@ class Tasks:
         if t["status"] != model.DONE:
             return t
         self._writable(t)
-        if staff["role"] != auth.MANAGER and t.get("completed_by") != staff["sid"]:
+        if staff["role"] != auth.MANAGER and staff["sid"] not in (t.get("completed_by"), t.get("ticked_by")):
             raise auth.AuthError("only the person who ticked it or a manager can undo it", 403)
-        patch = {"status": model.OPEN, "completed_by": None, "completed_at": None,
+        patch = {"status": model.OPEN, "completed_by": None, "ticked_by": None, "completed_at": None,
                  "updated_at": self.now().isoformat()}
         self.docs.set(st.TASKS, task_id, patch, merge=True)
         t.update(patch)
@@ -621,6 +681,10 @@ class Tasks:
 
     def job_done(self, store_id: str, job: str) -> None:
         self.docs.set(st.JOBS, store_id, {"id": store_id, job: self.now().isoformat()}, merge=True)
+
+
+def _as_pin(code_doc: dict) -> dict:
+    return {"pin_hash": code_doc.get("code_hash"), "pin_salt": code_doc.get("code_salt")}
 
 
 def _later(a: str, b: str) -> bool:

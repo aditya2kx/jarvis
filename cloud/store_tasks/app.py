@@ -9,6 +9,7 @@ consume its events. See cloud/store_tasks/README.md.
     GET  /v1/bootstrap               store, shifts, staff names (any allowed Google account)
     POST /v1/sessions                staff id + PIN → session (shared store account)
     POST /v1/shop/enroll             shop code → device token (a shop device, no Google account)
+    GET  /v1/handoff                 via the Google-gated service → back to the one link with a device token
     GET  /v1/days/<date>             shifts, teams, tasks
     POST /v1/tasks/<id>/complete | reopen | photo
     POST /v1/tasks                   one-off task
@@ -26,8 +27,9 @@ import functools
 import hmac
 import logging
 import os
+from urllib.parse import quote
 
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, g, jsonify, redirect, request
 
 from skills.google_signin import access, identity
 
@@ -85,7 +87,8 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
         @functools.wraps(fn)
         def wrapped(*a, **kw):
             device = request.headers.get(DEVICE_HEADER, "")
-            g.account = tasks.shop_account(device) if device else tasks.account(signed_in(request.headers))
+            g.account = tasks.device_account(device) if device else tasks.account(signed_in(request.headers))
+            g.has_device = bool(device)
             g.store = g.account["store"]
             return fn(*a, **kw)
         return wrapped
@@ -144,7 +147,7 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
             account={"email": g.account["email"], "label": g.account.get("label") or "",
                      "shop": bool(g.account.get("shop"))},
             own=tasks.own_session(g.account),
-            device=tasks.renew_device(g.account),
+            device=tasks.renew_device(g.account, g.has_device),
             staff=[svc.public_staff(s) for s in staff],
             on_today=sorted({m["id"] for team in tasks.teams(cfg, today, staff).values() for m in team if m["id"]}),
             today=today.isoformat(),
@@ -159,6 +162,19 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     @app.post("/v1/shop/enroll")
     def enroll_shop():
         return jsonify(tasks.enroll_shop(str(body().get("code", ""))))
+
+    @app.get("/v1/handoff")
+    def handoff():
+        """Reached through the Google-gated service: back to the one link, carrying a device token.
+
+        The token rides in the URL fragment, which browsers never send to a server."""
+        home = os.environ.get("STORE_TASKS_HOME_URL", "").rstrip("/")
+        if not home:
+            raise auth.AuthError("sign-in is not configured", 500)
+        try:
+            return redirect(f"{home}/#signin={tasks.google_device(signed_in(request.headers))}")
+        except (identity.NotSignedIn, auth.AuthError) as e:
+            return redirect(f"{home}/#signin_error={quote(str(e))}")
 
     # ── days and tasks ──────────────────────────────────────────────────────
 
@@ -325,15 +341,15 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     @app.get("/v1/shop-code")
     @manager_required
     def shop_code():
-        return jsonify(**tasks.shop_code(g.store), url=os.environ.get("STORE_TASKS_SHOP_URL", ""))
+        return jsonify(**tasks.shop_code(g.store), url=os.environ.get("STORE_TASKS_HOME_URL", ""))
 
     @app.put("/v1/shop-code")
     @manager_required
     def set_shop_code():
         tasks.set_shop_code(g.store, str(body().get("code", "")), g.staff["sid"])
         # Changed from the shop device itself: it keeps working with the new code.
-        return jsonify(**tasks.shop_code(g.store), url=os.environ.get("STORE_TASKS_SHOP_URL", ""),
-                       device=tasks.renew_device(g.account))
+        return jsonify(**tasks.shop_code(g.store), url=os.environ.get("STORE_TASKS_HOME_URL", ""),
+                       device=tasks.renew_device(g.account, g.has_device and bool(g.account.get("shop"))))
 
     @app.get("/v1/history")
     @manager_required

@@ -1,46 +1,62 @@
-import { ArrowLeft, Delete } from "lucide-react";
+import { ArrowLeft, Delete, Store } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, isOffline, SHOP, shopDevice, type Bootstrap, type Session, type Staff } from "./api";
+import { api, ApiError, device, isOffline, SHOP, type Bootstrap, type Session, type Staff } from "./api";
 import { DayScreen } from "./Day";
 import { Manage } from "./Manage";
-import { Avatar, cx, Notice } from "./ui";
+import { Avatar, Button, cx, Notice } from "./ui";
 
 const BOOT_KEY = "st.bootstrap";
 const IDLE_LOCK_MS = 3 * 60 * 1000;
 const RENEW_MS = 60 * 60 * 1000; // a shop device stays open for days; its 12-hour session is renewed well before then
 const toSession = (own: Bootstrap["own"]): Session | null => (own ? { token: own.session, staff: own.staff } : null);
 
+/** Back from "Sign in with Google": keep the token it carries in the URL fragment, then drop the fragment. */
+function takeSignIn(): string {
+  const hash = new URLSearchParams(location.hash.slice(1));
+  const token = hash.get("signin");
+  const error = hash.get("signin_error");
+  if (token === null && error === null) return "";
+  history.replaceState(null, "", location.pathname + location.search);
+  if (token) {
+    device.set(token);
+    localStorage.removeItem(BOOT_KEY);
+  }
+  return error ?? "";
+}
+
 export function App() {
+  const [signInError] = useState(takeSignIn);
   const [boot, setBoot] = useState<Bootstrap | null>(() => JSON.parse(localStorage.getItem(BOOT_KEY) ?? "null"));
   const [session, setSession] = useState<Session | null>(null);
   const [managing, setManaging] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
-  const [needCode, setNeedCode] = useState(false);
-  const [error, setError] = useState("");
+  const [signedOut, setSignedOut] = useState(false);
+  const [error, setError] = useState(signInError);
 
   const loadBoot = useCallback(() => {
     api
       .bootstrap()
       .then((b) => {
-        if (b.device) shopDevice.set(b.device);
+        if (b.device) device.set(b.device);
         // A person's PIN-free session is used once and never kept; the shop's is the device's own.
         localStorage.setItem(BOOT_KEY, JSON.stringify(b.account.shop ? b : { ...b, own: null }));
         setBoot(b);
         setError("");
-        setNeedCode(false);
+        setSignedOut(false);
         setSession((cur) => (cur && cur.staff.id !== SHOP ? cur : toSession(b.own) ?? cur));
       })
       .catch((e) => {
         if (isOffline(e)) return;
         if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+          // Never signed in is not an error; a refused account or a changed shop code is.
+          const explain = e.status === 403 || device.get() !== null;
           localStorage.removeItem(BOOT_KEY);
+          device.set(null);
           setBoot(null);
           setSession(null);
-          // No Google account here: this is a shop device, signed out or never signed in.
-          if (e.status === 401) {
-            shopDevice.set(null);
-            setNeedCode(true);
-          }
+          setSignedOut(true);
+          setError((cur) => (explain ? e.message : cur));
+          return;
         }
         setError((e as Error).message);
       });
@@ -81,22 +97,9 @@ export function App() {
     };
   }, [session, shared, lock]);
 
-  if (needCode) return <ShopCode onEnrolled={loadBoot} />;
+  if (signedOut) return <Welcome error={error} onEnrolled={loadBoot} />;
   if (!boot) {
-    return (
-      <Centered>
-        {error ? (
-          <div className="max-w-sm space-y-3 text-center">
-            <Notice tone="error">{error}</Notice>
-            <a href="/?gcp-iap-mode=CLEAR_LOGIN_COOKIE" className="inline-block text-sm text-muted-foreground underline">
-              Use a different Google account
-            </a>
-          </div>
-        ) : (
-          <p className="text-muted-foreground">Loading…</p>
-        )}
-      </Centered>
-    );
+    return <Centered>{error ? <Notice tone="error">{error}</Notice> : <p className="text-muted-foreground">Loading…</p>}</Centered>;
   }
   if (signingIn || !session) {
     return (
@@ -123,18 +126,57 @@ export function App() {
   );
 }
 
-/** A shop device has no Google account: the store's 6-digit code signs it in, once. */
-function ShopCode({ onEnrolled }: { onEnrolled: () => void }) {
+/** The one link's front door: a person signs in with Google; the shop iPad enters the store's code, once. */
+function Welcome({ error, onEnrolled }: { error: string; onEnrolled: () => void }) {
+  const [shop, setShop] = useState(false);
+  if (shop) {
+    return (
+      <CodePad
+        title="Shop iPad"
+        prompt="Enter the shop code"
+        length={6}
+        onBack={() => setShop(false)}
+        submit={async (code) => {
+          device.set((await api.enrollShop(code)).device);
+          onEnrolled();
+        }}
+      />
+    );
+  }
   return (
-    <CodePad
-      title="Store Tasks"
-      prompt="Enter the shop code"
-      length={6}
-      submit={async (code) => {
-        shopDevice.set((await api.enrollShop(code)).device);
-        onEnrolled();
-      }}
-    />
+    <Centered>
+      <div className="w-full max-w-xs space-y-6 text-center">
+        <div>
+          <h1 className="text-2xl font-semibold">Store Tasks</h1>
+          <p className="mt-1 text-muted-foreground">Sign in to see today's tasks</p>
+        </div>
+        {error && <Notice tone="error">{error}</Notice>}
+        <div className="flex flex-col gap-3">
+          <a
+            href="/signin"
+            className="inline-flex min-h-12 items-center justify-center gap-3 rounded-lg border border-border bg-card px-4 text-[15px] font-medium shadow-card transition hover:border-ring hover:bg-accent active:scale-[0.97]"
+          >
+            <GoogleMark />
+            Sign in with Google
+          </a>
+          <Button variant="ghost" className="min-h-12" onClick={() => setShop(true)}>
+            <Store className="size-4" />
+            Set up this iPad for the shop
+          </Button>
+        </div>
+      </div>
+    </Centered>
+  );
+}
+
+function GoogleMark() {
+  return (
+    <svg viewBox="0 0 48 48" className="size-5" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+    </svg>
   );
 }
 

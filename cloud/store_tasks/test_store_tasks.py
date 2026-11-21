@@ -92,6 +92,30 @@ def test_access_needs_an_allowed_google_account_then_a_session_then_a_role(env):
     assert c.get("/v1/days/2026-11-19", headers={**env.crew_h, "X-Test-Google": OWNER}).status_code == 401
 
 
+def test_google_sign_in_hop_hands_the_one_link_a_device_token(env, monkeypatch):
+    monkeypatch.setenv("STORE_TASKS_HOME_URL", "https://tasks.example/")
+    c = env.client
+    r = c.get("/v1/handoff", headers={"X-Test-Google": OWNER})
+    assert r.status_code == 302 and r.location.startswith("https://tasks.example/#signin=")
+    token = r.location.split("#signin=")[1]
+    boot = c.get("/v1/bootstrap", headers={"X-Shop-Device": token}).get_json()
+    assert boot["account"]["email"] == OWNER and not boot["account"]["shop"]
+    assert boot["own"]["staff"]["id"] == env.boss["id"]  # a person's own account: no PIN
+    assert boot["device"]  # renewed on every bootstrap
+    h = {"X-Shop-Device": token, "X-Staff-Session": boot["own"]["session"]}
+    assert c.get("/v1/templates", headers=h).status_code == 200
+    # A shared account signed in through the hop still needs a PIN.
+    ipad = c.get("/v1/handoff", headers=env.ipad).location.split("#signin=")[1]
+    assert c.get("/v1/bootstrap", headers={"X-Shop-Device": ipad}).get_json()["own"] is None
+    # Not on the list, or not signed in: back to the link with the reason, never a token.
+    r = c.get("/v1/handoff", headers={"X-Test-Google": "stranger@gmail.com"})
+    assert "#signin_error=" in r.location and "#signin=" not in r.location
+    assert "#signin_error=" in c.get("/v1/handoff").location
+    # Removing the account stops its token at the next call.
+    env.tasks.remove_account("palmetto", OWNER)
+    assert c.get("/v1/bootstrap", headers={"X-Shop-Device": token}).status_code == 403
+
+
 def test_own_google_account_signs_a_person_in_without_a_pin(env):
     boot = env.client.get("/v1/bootstrap", headers={"X-Test-Google": OWNER}).get_json()
     assert boot["own"]["staff"]["id"] == env.boss["id"]

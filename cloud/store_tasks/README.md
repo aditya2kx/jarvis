@@ -6,8 +6,9 @@ deep-clean photos. Replaces ClickUp tasks. Three deployables, one job each:
 | Piece | Code | Runs as | Job |
 |---|---|---|---|
 | Tasks API | `cloud/store_tasks/` | Cloud Run `store-tasks-api` | The only reader and writer of task data. All rules live here. |
-| Staff app | `apps/store-tasks/` | Cloud Run `store-tasks-app` (static files, Google sign-in) | What managers and Google accounts use. Talks only to the Tasks API. |
-| Shop app | the same image | Cloud Run `store-tasks-shop` (static files, no Google sign-in) | What the shop iPad uses, signed in with the store's shop code. |
+| Staff app | `apps/store-tasks/` | Cloud Run `store-tasks` (static files, public) | **The one link** everyone opens: "Sign in with Google", or "Set up this iPad for the shop". Talks only to the Tasks API. |
+| Google sign-in hop | the same image | Cloud Run `store-tasks-app` (Google sign-in) | Only `/v1/handoff`: Google proves who you are, then the browser goes back to the one link. Its pages redirect there. |
+| Old shop link | the same image | Cloud Run `store-tasks-shop` | Redirects to the one link, so a bookmarked iPad still lands there. |
 | Slack bridge | `cloud/store_tasks_slack/` | Cloud Run `store-tasks-slack` | Turns task events into Slack posts and Slack messages into tasks. |
 
 Nothing here imports from, or is imported by, BHAGA or the Operator Console. Other systems
@@ -29,22 +30,27 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   A task that needs a photo cannot be marked done without one, by anyone — a manager who
   wants an exception turns the requirement off for that task. `admin photo-rules` lists the
   tasks ClickUp history says need one (the how-to asks for a photo, or photos on 3+ days).
-- **Who ticked.** The app sits behind Google sign-in (Cloud Run direct IAP, the same building
-  blocks as the Operator Console: [`skills/google_signin/`](../../skills/google_signin/README.md)).
-  A shared account (the store iPad) then asks for a name and PIN; a person's own Google
-  account goes straight in as them, no PIN. The tick records that person and the time.
+- **One link, every kind of sign-in.** "Sign in with Google" on the one link goes to
+  `/signin`, which hops through the Google-gated `store-tasks-app` (Cloud Run direct IAP, the same
+  building blocks as the Operator Console: [`skills/google_signin/`](../../skills/google_signin/README.md)).
+  There the API verifies Google's signed assertion, checks the account is on the store's list
+  and sends the browser back with a 30-day device token in the URL fragment (never sent to a
+  server); the app keeps it and it is renewed whenever the app loads. Removing the account stops
+  it at the next call. The hop always uses the gate's deterministic host, never the hash host.
+- **Who ticked.** A shared Google account (a store iPad) asks for a name and PIN; a person's own
+  Google account goes straight in as them, no PIN. The tick records that person and the time.
   Sessions last 12 hours and a shared account locks after 3 idle minutes.
-- **The shop device.** The shop iPad has no Google account. It opens the shop app and enters
-  the store's 6-digit shop code once (a manager sets it in Manage → Sign-in); it then keeps a
+- **The shop device.** The shop iPad has no Google account. On the one link it taps "Set up this
+  iPad for the shop" and enters the store's 6-digit shop code once (a manager sets it in Manage → Sign-in); it then keeps a
   device token, renewed whenever the app loads, and works as "Shop". Crew never sign in there:
   they pick who is doing each task, and a tick from the shop counts for the task's assignee.
   A manager taps Manager and enters their PIN to manage; it falls back to the shop after 3 idle
   minutes. Changing the code signs every shop device out. Ten wrong codes within 15 minutes,
   from anywhere, pause shop sign-in for 15 minutes; devices already signed in keep working.
-- **One origin.** The app's nginx passes `/v1/` on to the API, re-sending Google's signed
-  assertion as `X-Signin-Assertion` (Google's front end drops `x-goog-*` headers between
-  services). The API verifies it against the app's audience, so calling the API directly
-  without a Google sign-in is refused.
+- **One origin.** The app's nginx passes `/v1/` on to the API. On the sign-in hop it re-sends
+  Google's signed assertion as `X-Signin-Assertion` (Google's front end drops `x-goog-*` headers
+  between services) and the API verifies it against the hop's audience. Calling the API without
+  a device token or a Google sign-in is refused.
 - **Who is doing it.** Anyone signed in picks a person for a task, or for every unassigned
   task on a list at once, as in ClickUp. Only people Active in the latest ADP directory
   snapshot (`adp_directory_status`) can be picked; the hourly sync sets `adp_active` on each
@@ -82,7 +88,7 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
 |---|---|---|
 | Anyone | none | `GET /health` |
 | Google account not on the list | Google sign-in | Nothing (Google refuses; the API also answers 403) |
-| Shared account (store iPad) | Google sign-in | See the store's shifts and staff names |
+| Shared account (store iPad) | Google sign-in → device token (`X-Shop-Device`, kind `google`) | See the store's shifts and staff names |
 | Shop device | shop code → device token (`X-Shop-Device`) | Tick, assign, add photos and notes as "Shop" (no PIN); cannot add or change tasks; managers sign in on it with their PIN |
 | Crew | Google sign-in + PIN session (`X-Staff-Session`) | Read days, tick, undo own ticks, assign anyone, add photos and notes, remove own photos, send the count, add a one-off task and delete their own |
 | Manager | Google sign-in + 6-digit PIN session, or their own Google account | Also: how-to text and example photos, templates, people and PINs, sign-in accounts, history, undo anyone's tick, remove any photo or one-off task |

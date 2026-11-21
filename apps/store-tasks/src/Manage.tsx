@@ -1,6 +1,6 @@
 import { ChevronLeft, Plus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, shopDevice, type Bootstrap, type Account, type HistoryDay, type Session, type Staff, type Template } from "./api";
+import { api, device, type Bootstrap, type Account, type HistoryDay, type Session, type Staff, type Template } from "./api";
 import { repeatLabel } from "./Repeat";
 import { blankDraft, TaskForm, type TaskDraft } from "./TaskForm";
 import { addDays, Button, cx, dayLabel, Field, Input, inputClass, Notice, Sheet } from "./ui";
@@ -249,7 +249,7 @@ function ShopCodeCard({ token }: { token: string }) {
     setFailed("");
     try {
       const r = await api.setShopCode(token, code);
-      if (r.device) shopDevice.set(r.device);
+      if (r.device) device.set(r.device);
       setCode("");
       setSaved(true);
       reload();
@@ -264,8 +264,8 @@ function ShopCodeCard({ token }: { token: string }) {
     <section className="space-y-3">
       <h2 className="text-lg font-semibold">Shop device</h2>
       <p className="text-muted-foreground">
-        The shop iPad needs no Google account. Open {data.url ? <span className="font-medium text-foreground break-all">{data.url}</span> : "the shop address"} on it and enter
-        this 6-digit code once; it stays signed in as the shop. Crew pick who is doing each task, and a manager signs in with their PIN to manage.
+        The shop iPad needs no Google account. Open {data.url ? <span className="font-medium text-foreground break-all">{data.url}</span> : "the Store Tasks link"} on it, tap
+        “Set up this iPad for the shop” and enter this 6-digit code once; it stays signed in as the shop. Crew pick who is doing each task, and a manager signs in with their PIN to manage.
       </p>
       <form onSubmit={save} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-end">
         <Field label={data.set ? "New shop code" : "Shop code"}>

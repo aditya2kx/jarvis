@@ -208,18 +208,27 @@ class Tasks:
             raise auth.AuthError("wrong code", 403)
         return {"device": auth.sign_device(found["id"], found["gen"], now)}
 
-    def shop_account(self, token: str) -> dict:
+    def device_account(self, token: str) -> dict:
+        """The account a device token stands for: the store's shop, or a signed-in Google account."""
         claims = auth.read_device(token, self.now().timestamp())
+        if claims["kind"] == auth.GOOGLE:
+            return self.account(claims["email"])
         d = self.docs.get(st.SHOP_CODES, claims["store"]) or {}
         if d.get("gen") != claims["gen"]:
             raise auth.AuthError("the shop code changed — enter the new one")
         return {"email": f"{auth.SHOP}:{claims['store']}", "store": claims["store"], "label": "Shop", "shop": True}
 
-    def renew_device(self, account: dict) -> str | None:
-        if not account.get("shop"):
+    def renew_device(self, account: dict, has_device: bool) -> str | None:
+        if not has_device:
             return None
+        if not account.get("shop"):
+            return auth.sign_google(account["email"], self.now().timestamp())
         gen = (self.docs.get(st.SHOP_CODES, account["store"]) or {})["gen"]
         return auth.sign_device(account["store"], gen, self.now().timestamp())
+
+    def google_device(self, email: str) -> str:
+        """After the Google sign-in hop: a device token for the one public link."""
+        return auth.sign_google(self.account(email)["email"], self.now().timestamp())
 
     # ── templates ───────────────────────────────────────────────────────────
 

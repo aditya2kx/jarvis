@@ -30,6 +30,8 @@ env:
   RUNTIME_SA: store-tasks@jarvis-bhaga-prod.iam.gserviceaccount.com
   # Cloud Run's deterministic URLs (service-projectnumber.region.run.app).
   API_URL: https://store-tasks-api-887772634501.us-central1.run.app
+  # The one link everyone opens. APP_URL is only the Google sign-in hop; SHOP_URL redirects home.
+  HOME_URL: https://store-tasks-887772634501.us-central1.run.app
   APP_URL: https://store-tasks-app-887772634501.us-central1.run.app
   SHOP_URL: https://store-tasks-shop-887772634501.us-central1.run.app
 
@@ -95,20 +97,31 @@ jobs:
             --region $REGION --project $PROJECT_ID \
             --service-account $RUNTIME_SA --allow-unauthenticated \
             --min-instances 0 --max-instances 2 --memory 512Mi --cpu 1 --cpu-boost --timeout 300 \
-            --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,STORE_TASKS_FIRESTORE_DB=storetasks,STORE_TASKS_PHOTO_BUCKET=jarvis-store-tasks-photos,STORE_TASKS_EVENTS_TOPIC=store-tasks-events,STORE_TASKS_SIGNIN_SERVICE=store-tasks-app,STORE_TASKS_SHOP_URL=$SHOP_URL" \
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,STORE_TASKS_FIRESTORE_DB=storetasks,STORE_TASKS_PHOTO_BUCKET=jarvis-store-tasks-photos,STORE_TASKS_EVENTS_TOPIC=store-tasks-events,STORE_TASKS_SIGNIN_SERVICE=store-tasks-app,STORE_TASKS_HOME_URL=$HOME_URL" \
             --set-secrets "STORE_TASKS_SIGNING_KEY=store-tasks-signing-key:latest,STORE_TASKS_INTERNAL_TOKEN=store-tasks-internal-token:latest,CLICKUP_PAT=jarvis-clickup-palmetto-pat:latest"
 
-      # Google sign-in in front of the staff app (Cloud Run direct IAP, as the Operator Console).
-      # Who may sign in is managed in the app (Manage → Sign-in) and stored on the IAP policy,
-      # so a deploy never resets it.
-      - name: Deploy staff app
+      # The one link: no Google gate in front. Its front door offers "Sign in with Google" (the hop
+      # below) and "Set up this iPad for the shop" (shop code); the API refuses /v1 without either.
+      - name: Deploy staff app (the one link)
+        run: |
+          gcloud run deploy store-tasks \
+            --image $REGISTRY/store-tasks-app:${{ github.sha }} \
+            --region $REGION --project $PROJECT_ID \
+            --service-account $RUNTIME_SA --allow-unauthenticated \
+            --min-instances 0 --max-instances 2 --memory 128Mi --cpu 1 --timeout 120 \
+            --set-env-vars "API_HOST=${API_URL#https://},HOME_HOST=${HOME_URL#https://},SIGNIN_URL=$APP_URL"
+
+      # The Google sign-in hop (Cloud Run direct IAP, as the Operator Console): /v1/handoff sends
+      # the browser home with a device token; its pages redirect home. Who may sign in is managed
+      # in the app (Manage → Sign-in) and stored on the IAP policy, so a deploy never resets it.
+      - name: Deploy Google sign-in hop
         run: |
           gcloud run deploy store-tasks-app \
             --image $REGISTRY/store-tasks-app:${{ github.sha }} \
             --region $REGION --project $PROJECT_ID \
             --service-account $RUNTIME_SA --no-allow-unauthenticated --iap \
             --min-instances 0 --max-instances 2 --memory 128Mi --cpu 1 --timeout 120 \
-            --set-env-vars "API_HOST=${API_URL#https://}"
+            --set-env-vars "API_HOST=${API_URL#https://},HOME_HOST=${HOME_URL#https://},SIGNIN_URL=$APP_URL"
           gcloud run services add-iam-policy-binding store-tasks-app --region $REGION --project $PROJECT_ID \
             --member "serviceAccount:service-887772634501@gcp-sa-iap.iam.gserviceaccount.com" \
             --role roles/run.invoker --quiet >/dev/null
@@ -117,16 +130,15 @@ jobs:
             --member "serviceAccount:$RUNTIME_SA" --role roles/iap.admin --quiet >/dev/null \
             || echo "::warning::roles/iap.admin grant failed — Manage → Sign-in cannot add Google accounts"
 
-      # The same app for the shop device, which has no Google account: no Google sign-in in front;
-      # the API refuses every /v1 call without a device token from the store's shop code.
-      - name: Deploy shop app
+      # The old shop link: kept so a bookmarked iPad lands on the one link (it enters the shop code there once).
+      - name: Deploy old shop link
         run: |
           gcloud run deploy store-tasks-shop \
             --image $REGISTRY/store-tasks-app:${{ github.sha }} \
             --region $REGION --project $PROJECT_ID \
             --service-account $RUNTIME_SA --allow-unauthenticated \
-            --min-instances 0 --max-instances 2 --memory 128Mi --cpu 1 --timeout 120 \
-            --set-env-vars "API_HOST=${API_URL#https://}"
+            --min-instances 0 --max-instances 1 --memory 128Mi --cpu 1 --timeout 120 \
+            --set-env-vars "API_HOST=${API_URL#https://},HOME_HOST=${HOME_URL#https://},SIGNIN_URL=$APP_URL"
 
       # The Slack bridge needs a Slack app in the staff workspace; it deploys once its secrets exist.
       - name: Deploy Slack bridge
@@ -140,7 +152,7 @@ jobs:
             --region $REGION --project $PROJECT_ID \
             --service-account $RUNTIME_SA --allow-unauthenticated \
             --min-instances 0 --max-instances 1 --memory 256Mi --cpu 1 --timeout 30 \
-            --set-env-vars "APP_MODULE=cloud.store_tasks_slack.wsgi:app,STORE_TASKS_API_URL=$API_URL,STORE_TASKS_APP_URL=$APP_URL" \
+            --set-env-vars "APP_MODULE=cloud.store_tasks_slack.wsgi:app,STORE_TASKS_API_URL=$API_URL,STORE_TASKS_APP_URL=$HOME_URL" \
             --update-secrets "SLACK_BOT_TOKEN=store-tasks-slack-bot-token:latest,SLACK_SIGNING_SECRET=store-tasks-slack-signing-secret:latest,STORE_TASKS_INTERNAL_TOKEN=store-tasks-internal-token:latest,STORE_TASKS_PUSH_TOKEN=store-tasks-push-token:latest,STORE_TASKS_SLACK_CHANNELS=store-tasks-slack-channels:latest"
 
       - name: Scheduler tick
@@ -162,8 +174,14 @@ jobs:
           [ "$CODE" = "401" ] || { echo "::error::/v1/bootstrap without Google sign-in returned $CODE"; exit 1; }
           CODE="$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/")"
           [ "$CODE" = "302" ] || { echo "::error::staff app without Google sign-in returned $CODE (expected a redirect to Google)"; exit 1; }
-          CODE="$(curl -s -o /dev/null -w '%{http_code}' "$SHOP_URL/v1/bootstrap")"
-          [ "$CODE" = "401" ] || { echo "::error::shop app without a shop code returned $CODE on /v1/bootstrap"; exit 1; }
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' "$HOME_URL/")"
+          [ "$CODE" = "200" ] || { echo "::error::the one link returned $CODE"; exit 1; }
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' "$HOME_URL/v1/bootstrap")"
+          [ "$CODE" = "401" ] || { echo "::error::the one link without a sign-in returned $CODE on /v1/bootstrap"; exit 1; }
+          LOC="$(curl -s -o /dev/null -w '%{redirect_url}' "$HOME_URL/signin")"
+          [ "$LOC" = "$APP_URL/v1/handoff" ] || { echo "::error::/signin redirects to '$LOC'"; exit 1; }
+          LOC="$(curl -s -o /dev/null -w '%{redirect_url}' "$SHOP_URL/")"
+          [ "$LOC" = "$HOME_URL/" ] || { echo "::error::old shop link redirects to '$LOC'"; exit 1; }
           CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API_URL/internal/tick")"
           [ "$CODE" = "401" ] || { echo "::error::unauthenticated /internal/tick returned $CODE"; exit 1; }
-          echo "### store-tasks: $APP_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "### store-tasks: $HOME_URL" >> "$GITHUB_STEP_SUMMARY"

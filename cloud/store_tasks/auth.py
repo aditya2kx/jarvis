@@ -3,7 +3,8 @@
 Google sign-in (skills/google_signin) decides which Google accounts reach the app. On a shared
 store account, each person then signs in with a PIN and gets a short-lived signed session.
 A shop device has no Google account: it enters the store's 6-digit shop code once and keeps a
-signed device token. Only PIN and code hashes are stored.
+signed device token. A Google account signed in through the sign-in hop gets a device token
+too, so the one public link serves both. Only PIN and code hashes are stored.
 """
 
 from __future__ import annotations
@@ -20,9 +21,11 @@ SESSION_SECONDS = 12 * 3600
 MAX_PIN_MISSES = 5
 LOCK_SECONDS = 300
 DEVICE_SECONDS = 90 * 86400  # renewed on every bootstrap, so only an unused device runs out
+GOOGLE_SECONDS = 30 * 86400  # also renewed on bootstrap; a removed account stops at its next call
 MAX_CODE_MISSES = 10  # wrong shop codes from anywhere, before shop sign-in pauses
 CODE_LOCK_SECONDS = 900
 SHOP = "shop"  # who a shop device acts as
+GOOGLE = "google"  # a device token that stands for a signed-in Google account
 CREW = "crew"
 MANAGER = "manager"
 
@@ -89,6 +92,10 @@ def sign_device(store: str, gen: str, now: float | None = None) -> str:
     return _sign({"kind": SHOP, "store": store, "gen": gen, "exp": int((now or time.time()) + DEVICE_SECONDS)})
 
 
+def sign_google(email: str, now: float | None = None) -> str:
+    return _sign({"kind": GOOGLE, "email": email, "exp": int((now or time.time()) + GOOGLE_SECONDS)})
+
+
 def read_session(token: str, now: float | None = None) -> dict:
     claims = _read(token, now)
     if "kind" in claims:
@@ -98,8 +105,8 @@ def read_session(token: str, now: float | None = None) -> dict:
 
 def read_device(token: str, now: float | None = None) -> dict:
     claims = _read(token, now)
-    if claims.get("kind") != SHOP:
-        raise AuthError("enter the shop code again")
+    if claims.get("kind") not in (SHOP, GOOGLE):
+        raise AuthError("sign in again")
     return claims
 
 

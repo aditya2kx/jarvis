@@ -187,7 +187,8 @@ export class ApiError extends Error {
 
 export const SHOP = "shop";
 const DEVICE_KEY = "st.device";
-export const shopDevice = {
+/** This browser's sign-in: the shop's (from the shop code) or a Google account's (from the sign-in hop). */
+export const device = {
   get: () => localStorage.getItem(DEVICE_KEY),
   set: (token: string | null) => (token ? localStorage.setItem(DEVICE_KEY, token) : localStorage.removeItem(DEVICE_KEY)),
 };
@@ -195,8 +196,8 @@ export const shopDevice = {
 function authHeaders(token?: string): Record<string, string> {
   // X-Requested-With makes Google sign-in answer 401 instead of redirecting a background request.
   const headers: Record<string, string> = { "X-Requested-With": "XMLHttpRequest" };
-  const device = shopDevice.get();
-  if (device) headers["X-Shop-Device"] = device;
+  const signedIn = device.get();
+  if (signedIn) headers["X-Shop-Device"] = signedIn;
   if (token) headers["X-Staff-Session"] = token;
   return headers;
 }

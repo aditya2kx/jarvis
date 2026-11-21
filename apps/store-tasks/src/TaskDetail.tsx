@@ -1,4 +1,4 @@
-import { CalendarDays, Check, Copy, ExternalLink, FileText, Film, Pencil, Repeat2, Send, Trash2, UserPlus } from "lucide-react";
+import { CalendarDays, Check, Copy, FileText, Film, Pencil, Repeat2, Send, Trash2, UserPlus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { api, isOffline, type Photo, type TaskFile, type Session, type Shift, type Task, type TaskDetail as Detail, type Template } from "./api";
 import { AddPhotos, PhotoGrid } from "./Photos";
@@ -374,13 +374,6 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
             </Button>
           )}
         </div>
-      )}
-
-      {task.clickup_url && (
-        <a href={task.clickup_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground underline">
-          <ExternalLink className="size-3.5" />
-          Open in ClickUp
-        </a>
       )}
     </div>
   );

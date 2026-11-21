@@ -92,7 +92,6 @@ export interface Task {
   checklists?: Checklist[];
   template_id?: string | null;
   created_by?: string;
-  clickup_url?: string | null;
   source: string;
   pending?: boolean;
 }

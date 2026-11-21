@@ -162,6 +162,96 @@ def test_photo_task_needs_a_photo(env):
     assert env.client.post(f"/v1/tasks/{tid}/complete", json={}, headers=env.crew_h).status_code == 200
 
 
+JPEG = b"\xff\xd8jpeg"
+
+
+def _upload(env, url, headers):
+    return env.client.post(url, headers=headers, data={"photo": (io.BytesIO(JPEG), "a.jpg", "image/jpeg")})
+
+
+def test_anyone_assigns_any_person_to_one_or_many_tasks(env):
+    c = env.client
+    ids = [t["id"] for t in c.get("/v1/days/2026-11-19", headers=env.crew_h).get_json()["tasks"]]
+    r = c.post("/v1/assign", json={"task_ids": ids[:2], "assignee_id": env.boss["id"]}, headers=env.crew_h)
+    assert [t["assignee_id"] for t in r.get_json()["tasks"]] == [env.boss["id"]] * 2
+    day = c.get("/v1/days/2026-11-19", headers=env.crew_h).get_json()["tasks"]
+    assert sum(1 for t in day if t["assignee_id"] == env.boss["id"]) == 2
+    c.post("/v1/assign", json={"task_ids": ids[:1], "assignee_id": None}, headers=env.crew_h)
+    assert c.get(f"/v1/tasks/{ids[0]}", headers=env.crew_h).get_json()["task"]["assignee_id"] is None
+    assert c.post("/v1/assign", json={"task_ids": ids[:1], "assignee_id": "nobody"}, headers=env.crew_h).status_code == 404
+    assert c.post("/v1/assign", json={"task_ids": [], "assignee_id": None}, headers=env.crew_h).status_code == 400
+
+
+def test_task_detail_has_how_to_example_photos_and_earlier_days_photos(env):
+    c = env.client
+    tid = "palmetto_2026-11-19_t1"
+    c.get("/v1/days/2026-11-19", headers=env.crew_h)
+    # Any task takes a photo, not only the ones that require it.
+    path = _upload(env, f"/v1/tasks/{tid}/photo", env.crew_h).get_json()["photos"][0]["path"]
+    assert _upload(env, f"/v1/tasks/{tid}/reference-photo", env.crew_h).status_code == 403
+    ref = _upload(env, f"/v1/tasks/{tid}/reference-photo", env.boss_h).get_json()["reference_photos"]
+    assert len(ref) == 1 and c.get(f"/v1/photos/{ref[0]['path']}", headers=env.crew_h).data == JPEG
+    assert c.post(f"/v1/tasks/{tid}/instructions", json={"instructions": "x"}, headers=env.crew_h).status_code == 403
+    c.post(f"/v1/tasks/{tid}/instructions", json={"instructions": "Key is in the safe"}, headers=env.boss_h)
+
+    today = c.get(f"/v1/tasks/{tid}", headers=env.crew_h).get_json()
+    assert today["task"]["instructions"] == "Key is in the safe"
+    assert today["recent_photos"] == []  # today's own photo is not an earlier one
+
+    env.clock.at += datetime.timedelta(hours=20)  # the next morning: yesterday's sessions have run out
+    def session(staff, pin):
+        r = c.post("/v1/sessions", json={"staff_id": staff["id"], "pin": pin}, headers=env.ipad)
+        return {**env.ipad, "X-Staff-Session": r.get_json()["session"]}
+    env.crew_h, env.boss_h = session(env.crew, "1234"), session(env.boss, "123456")
+    c.get("/v1/days/2026-11-20", headers=env.crew_h)
+    tomorrow = c.get("/v1/tasks/palmetto_2026-11-20_t1", headers=env.crew_h).get_json()
+    assert tomorrow["task"]["instructions"] == "Key is in the safe"
+    assert [p["path"] for p in tomorrow["reference_photos"]] == [ref[0]["path"]]
+    assert [(p["path"], p["date"]) for p in tomorrow["recent_photos"]] == [(path, "2026-11-19")]
+
+    # Only the person who added a photo, or a manager, removes it.
+    other = env.tasks.save_staff("palmetto", {"name": "Other Crew"}, "test")
+    env.tasks.set_pin("palmetto", other["id"], "4321")
+    other_h = session(other, "4321")
+    assert c.delete(f"/v1/tasks/{tid}/photos/{path}", headers=other_h).status_code == 403
+    assert c.delete(f"/v1/tasks/{tid}/photos/{path}", headers=env.crew_h).get_json()["photos"] == []
+    assert c.get("/v1/tasks/palmetto_2026-11-20_t1", headers=env.crew_h).get_json()["recent_photos"] == []
+    assert c.delete(f"/v1/tasks/{tid}/reference-photos/{ref[0]['path']}", headers=env.boss_h).get_json()["reference_photos"] == []
+
+
+def test_added_task_takes_an_assignee_and_only_its_author_or_a_manager_deletes_it(env):
+    c = env.client
+    t = c.post("/v1/tasks", json={"title": "Call plumber", "shift": "closing", "date": "2026-11-19",
+                                  "assignee_id": env.boss["id"]}, headers=env.boss_h).get_json()
+    assert t["assignee_id"] == env.boss["id"] and t["created_by"] == env.boss["id"]
+    assert c.delete(f"/v1/tasks/{t['id']}", headers=env.crew_h).status_code == 403
+    c.get("/v1/days/2026-11-19", headers=env.crew_h)
+    assert c.delete("/v1/tasks/palmetto_2026-11-19_t1", headers=env.boss_h).status_code == 400  # recurring
+    assert c.delete(f"/v1/tasks/{t['id']}", headers=env.boss_h).status_code == 200
+    titles = [x["title"] for x in c.get("/v1/days/2026-11-19", headers=env.crew_h).get_json()["tasks"]]
+    assert "Call plumber" not in titles and "Unlock" in titles
+
+
+def test_comments_are_kept_in_order_with_who_wrote_them(env):
+    c = env.client
+    tid = "palmetto_2026-11-19_t1"
+    c.get("/v1/days/2026-11-19", headers=env.crew_h)
+    assert c.post(f"/v1/tasks/{tid}/comments", json={"text": "  "}, headers=env.crew_h).status_code == 400
+    c.post(f"/v1/tasks/{tid}/comments", json={"text": "Door sticks"}, headers=env.crew_h)
+    got = c.post(f"/v1/tasks/{tid}/comments", json={"text": "Fixed"}, headers=env.boss_h).get_json()["comments"]
+    assert [(m["text"], m["by"]) for m in got] == [("Door sticks", env.crew["id"]), ("Fixed", env.boss["id"])]
+
+
+def test_closing_count_photos_survive_sending_the_count(env):
+    c = env.client
+    up = _upload(env, "/v1/counts/2026-11-19/photo", env.crew_h).get_json()["count"]
+    assert len(up["photos"]) == 1
+    assert c.get("/v1/days/2026-11-19", headers=env.crew_h).get_json()["count_submitted"] is False
+    sent = c.put("/v1/counts/2026-11-19", json={"items": {FIELD: "2"}}, headers=env.crew_h).get_json()["count"]
+    assert len(sent["photos"]) == 1 and sent["revisions"] == []
+    assert c.get("/v1/days/2026-11-19", headers=env.crew_h).get_json()["count_submitted"] is True
+
+
 def test_closing_count_feeds_inventory_in_clickup_shape(env):
     env.clock.at = datetime.datetime(2026, 11, 19, 20, 15, tzinfo=TZ)
     r = env.client.put("/v1/counts/2026-11-19", headers=env.crew_h,

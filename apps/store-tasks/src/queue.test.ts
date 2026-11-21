@@ -24,4 +24,14 @@ describe("offline tick queue", () => {
     ]);
     expect(applyPending(day, [])).toBe(day);
   });
+
+  it("keeps only the latest assignment of a task, alongside its tick", () => {
+    const assign = (id: string, assignee_id: string | null): Pending => ({ ...tick(id, "assign"), assignee_id });
+    let q = enqueue([], assign("a", "s2"));
+    q = enqueue(q, tick("a"));
+    q = enqueue(q, assign("a", "s3"));
+    expect(q.map((p) => [p.kind, p.assignee_id])).toEqual([["complete", undefined], ["assign", "s3"]]);
+    const shown = applyPending({ tasks: [task("a")] } as Day, q);
+    expect([shown.tasks[0].status, shown.tasks[0].assignee_id]).toEqual(["done", "s3"]);
+  });
 });

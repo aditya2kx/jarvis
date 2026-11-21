@@ -1,6 +1,6 @@
 // App shell cache: the page opens with no network; API calls are never cached here
 // (the app keeps its own copy of the day and a queue of ticks).
-const CACHE = "store-tasks-shell-v1";
+const CACHE = "store-tasks-shell-v2";
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(["/", "/manifest.webmanifest", "/icon.svg"])));
@@ -17,6 +17,7 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/v1/")) return; // the API shares this origin; the app keeps its own copy of the day
   if (url.pathname.startsWith("/assets/")) {
     e.respondWith(
       caches.match(e.request).then(

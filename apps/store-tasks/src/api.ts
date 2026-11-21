@@ -38,6 +38,15 @@ export interface Photo {
   path: string;
   by: string | null;
   at: string | null;
+  /** Set on photos from earlier days: the day they were taken for. */
+  date?: string;
+}
+
+export interface Comment {
+  id: string;
+  by: string;
+  at: string;
+  text: string;
 }
 
 export interface Task {
@@ -56,8 +65,19 @@ export interface Task {
   completed_at: string | null;
   note?: string;
   photos?: Photo[];
+  comments?: Comment[];
+  template_id?: string | null;
+  created_by?: string;
+  clickup_url?: string | null;
   source: string;
   pending?: boolean;
+}
+
+/** What a task needs beyond the list: example photos and what earlier days' photos looked like. */
+export interface TaskDetail {
+  task: Task;
+  reference_photos: Photo[];
+  recent_photos: Photo[];
 }
 
 export interface Day {
@@ -76,7 +96,9 @@ export interface Count {
   notes: { shift: string; low: string; out: string };
   tips: string | number | null;
   submitted_by: string | null;
-  submitted_at: string;
+  /** Null while only photos have been added and the count itself is not sent yet. */
+  submitted_at: string | null;
+  photos?: Photo[];
 }
 
 export interface Template {
@@ -149,6 +171,14 @@ async function call<T>(method: string, path: string, opts: { token?: string; bod
   }
 }
 
+const photoForm = (file: Blob) => {
+  const form = new FormData();
+  form.append("photo", file, "photo.jpg");
+  return form;
+};
+
+const photoUrls = new Map<string, Promise<string>>();
+
 export const api = {
   bootstrap: () => call<Bootstrap>("GET", "/v1/bootstrap"),
   signIn: (staff_id: string, pin: string) =>
@@ -157,17 +187,35 @@ export const api = {
   complete: (token: string, id: string, at: string, note = "") =>
     call<Task>("POST", `/v1/tasks/${id}/complete`, { token, body: { at, note } }),
   reopen: (token: string, id: string) => call<Task>("POST", `/v1/tasks/${id}/reopen`, { token, body: {} }),
-  photo: (token: string, id: string, file: Blob) => {
-    const form = new FormData();
-    form.append("photo", file, "photo.jpg");
-    return call<Task>("POST", `/v1/tasks/${id}/photo`, { token, form });
+  removeTask: (token: string, id: string) => call<{ ok: true }>("DELETE", `/v1/tasks/${id}`, { token }),
+  task: (token: string, id: string) => call<TaskDetail>("GET", `/v1/tasks/${id}`, { token }),
+  assign: (token: string, task_ids: string[], assignee_id: string | null) =>
+    call<{ tasks: Task[] }>("POST", "/v1/assign", { token, body: { task_ids, assignee_id } }),
+  comment: (token: string, id: string, text: string) => call<Task>("POST", `/v1/tasks/${id}/comments`, { token, body: { text } }),
+  setInstructions: (token: string, id: string, instructions: string) =>
+    call<Task>("POST", `/v1/tasks/${id}/instructions`, { token, body: { instructions } }),
+  photo: (token: string, id: string, file: Blob) => call<Task>("POST", `/v1/tasks/${id}/photo`, { token, form: photoForm(file) }),
+  removePhoto: (token: string, id: string, path: string) => call<Task>("DELETE", `/v1/tasks/${id}/photos/${path}`, { token }),
+  addReferencePhoto: (token: string, id: string, file: Blob) =>
+    call<TaskDetail>("POST", `/v1/tasks/${id}/reference-photo`, { token, form: photoForm(file) }),
+  removeReferencePhoto: (token: string, id: string, path: string) =>
+    call<TaskDetail>("DELETE", `/v1/tasks/${id}/reference-photos/${path}`, { token }),
+  countPhoto: (token: string, date: string, file: Blob) =>
+    call<{ count: Count }>("POST", `/v1/counts/${date}/photo`, { token, form: photoForm(file) }),
+  /** Photos need the session header, so they are fetched once and shown from memory. */
+  photoUrl: (token: string, path: string) => {
+    let url = photoUrls.get(path);
+    if (!url) {
+      url = fetch(`/v1/photos/${path}`, { headers: { "X-Staff-Session": token, "X-Requested-With": "XMLHttpRequest" } }).then(async (res) => {
+        if (!res.ok) throw new ApiError("Photo not available", res.status);
+        return URL.createObjectURL(await res.blob());
+      });
+      url.catch(() => photoUrls.delete(path));
+      photoUrls.set(path, url);
+    }
+    return url;
   },
-  photoUrl: async (token: string, path: string) => {
-    const res = await fetch(`/v1/photos/${path}`, { headers: { "X-Staff-Session": token } });
-    if (!res.ok) throw new ApiError("Photo not available", res.status);
-    return URL.createObjectURL(await res.blob());
-  },
-  addTask: (token: string, body: { title: string; shift: string; date: string; instructions?: string }) =>
+  addTask: (token: string, body: { title: string; shift: string; date: string; instructions?: string; assignee_id?: string | null }) =>
     call<Task>("POST", "/v1/tasks", { token, body }),
   count: (token: string, date: string) => call<{ count: Count | null }>("GET", `/v1/counts/${date}`, { token }),
   submitCount: (token: string, date: string, body: Pick<Count, "items" | "notes" | "tips">) =>

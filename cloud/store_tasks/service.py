@@ -12,6 +12,10 @@ from cloud.store_tasks import auth, events as ev, model, store as st
 MAX_HISTORY_DAYS = 62
 MAX_PHOTO_BYTES = 8 * 1024 * 1024
 ALERT_GRACE_MINUTES = 30
+PHOTO_TYPES = ("image/jpeg", "image/png", "image/webp", "image/heic")
+RECENT_PHOTOS = 8  # per task definition: what the last few days' photos looked like
+MAX_COMMENT = 2000
+MAX_ASSIGN = 200
 
 
 class NotFound(Exception):
@@ -189,7 +193,16 @@ class Tasks:
             # Superseded versions are kept, never overwritten.
             self.docs.set(st.TEMPLATE_HISTORY, f"{tid}_{stamp}", {
                 **cur, "template_id": tid, "superseded_at": stamp, "superseded_by": by})
-        self.docs.set(st.TEMPLATES, tid, {**t.to_dict(), "updated_at": stamp, "updated_by": by})
+        kept = {k: cur[k] for k in ("reference_photos", "recent_photos") if cur and k in cur}
+        self.docs.set(st.TEMPLATES, tid, {**kept, **t.to_dict(), "updated_at": stamp, "updated_by": by})
+        if cur:
+            # Lists already built for today and later follow the edit; finished tasks keep what was done.
+            today = cfg.today(self.now()).isoformat()
+            patch = {"title": t.title, "instructions": t.instructions, "needs_photo": t.needs_photo,
+                     "order": t.order, "updated_at": stamp}
+            for task in self.docs.query(st.TASKS, store=store_id, template_id=tid):
+                if task["date"] >= today and task["status"] == model.OPEN:
+                    self.docs.set(st.TASKS, task["id"], patch, merge=True)
         return t
 
     # ── days ────────────────────────────────────────────────────────────────
@@ -234,7 +247,7 @@ class Tasks:
             "shifts": [{**s.to_dict(), "due_at": model.due_at(cfg, s.id, day)} for s in cfg.shifts],
             "teams": self.teams(cfg, day, staff),
             "tasks": self.ensure_day(cfg, day),
-            "count_submitted": bool(count),
+            "count_submitted": bool(count and count.get("submitted_at")),
         }
 
     def _task(self, task_id: str, store_id: str) -> dict:
@@ -281,18 +294,118 @@ class Tasks:
         self.events.publish(ev.TASK_REOPENED, store_id, {"task_id": task_id, "by": staff["sid"]})
         return t
 
-    def add_photo(self, store_id: str, task_id: str, staff: dict, data: bytes, content_type: str) -> dict:
-        t = self._task(task_id, store_id)
+    @staticmethod
+    def _photo(store_id: str, folder: str, data: bytes, content_type: str) -> str:
         if not data or len(data) > MAX_PHOTO_BYTES:
             raise Invalid("photo is empty or larger than 8 MB")
-        if content_type not in ("image/jpeg", "image/png", "image/webp", "image/heic"):
+        if content_type not in PHOTO_TYPES:
             raise Invalid("photo must be a JPEG, PNG, WebP or HEIC image")
-        path = f"{store_id}/{t['date']}/{task_id}/{uuid.uuid4().hex}"
+        return f"{store_id}/{folder}/{uuid.uuid4().hex}"
+
+    def add_photo(self, store_id: str, task_id: str, staff: dict, data: bytes, content_type: str) -> dict:
+        t = self._task(task_id, store_id)
+        self._writable(t)
+        path = self._photo(store_id, f"{t['date']}/{task_id}", data, content_type)
         self.photos.put(path, data, content_type)
-        photos = (t.get("photos") or []) + [{"path": path, "by": staff["sid"], "at": self.now().isoformat()}]
-        self.docs.set(st.TASKS, task_id, {"photos": photos, "updated_at": self.now().isoformat()}, merge=True)
+        stamp = self.now().isoformat()
+        photo = {"path": path, "by": staff["sid"], "at": stamp}
+        photos = (t.get("photos") or []) + [photo]
+        self.docs.set(st.TASKS, task_id, {"photos": photos, "updated_at": stamp}, merge=True)
         t["photos"] = photos
+        tpl = self.docs.get(st.TEMPLATES, t["template_id"]) if t.get("template_id") else None
+        if tpl:
+            recent = [{**photo, "date": t["date"]}] + (tpl.get("recent_photos") or [])
+            self.docs.set(st.TEMPLATES, tpl["id"], {"recent_photos": recent[:RECENT_PHOTOS]}, merge=True)
         return t
+
+    def remove_photo(self, store_id: str, task_id: str, path: str, staff: dict) -> dict:
+        t = self._task(task_id, store_id)
+        self._writable(t)
+        photo = next((p for p in t.get("photos") or [] if p["path"] == path), None)
+        if photo is None:
+            return t
+        if staff["role"] != auth.MANAGER and photo.get("by") != staff["sid"]:
+            raise auth.AuthError("only the person who added it or a manager can remove it", 403)
+        t["photos"] = [p for p in t["photos"] if p["path"] != path]
+        self.docs.set(st.TASKS, task_id, {"photos": t["photos"], "updated_at": self.now().isoformat()}, merge=True)
+        tpl = self.docs.get(st.TEMPLATES, t["template_id"]) if t.get("template_id") else None
+        if tpl and any(p["path"] == path for p in tpl.get("recent_photos") or []):
+            self.docs.set(st.TEMPLATES, tpl["id"], {
+                "recent_photos": [p for p in tpl["recent_photos"] if p["path"] != path]}, merge=True)
+        return t
+
+    def assign(self, store_id: str, task_ids: list[str], assignee_id: str | None, staff: dict) -> list[dict]:
+        """Anyone signed in can say who is doing a task, as in ClickUp. ``None`` clears it."""
+        if not task_ids or len(task_ids) > MAX_ASSIGN:
+            raise Invalid(f"pick between 1 and {MAX_ASSIGN} tasks")
+        if assignee_id:
+            s = self.docs.get(st.STAFF, assignee_id)
+            if s is None or s.get("store") != store_id or not s.get("active", True):
+                raise NotFound("person")
+        picked = [self._task(i, store_id) for i in dict.fromkeys(task_ids)]
+        for t in picked:
+            self._writable(t)
+        patch = {"assignee_id": assignee_id or None, "assigned_by": staff["sid"],
+                 "updated_at": self.now().isoformat()}
+        for t in picked:
+            if t.get("assignee_id") != patch["assignee_id"]:
+                self.docs.set(st.TASKS, t["id"], patch, merge=True)
+                t.update(patch)
+        return picked
+
+    def comment(self, store_id: str, task_id: str, staff: dict, text: str) -> dict:
+        t = self._task(task_id, store_id)
+        self._writable(t)
+        text = (text or "").strip()
+        if not text:
+            raise Invalid("write something first")
+        stamp = self.now().isoformat()
+        t["comments"] = (t.get("comments") or []) + [
+            {"id": uuid.uuid4().hex[:10], "by": staff["sid"], "at": stamp, "text": text[:MAX_COMMENT]}]
+        self.docs.set(st.TASKS, task_id, {"comments": t["comments"], "updated_at": stamp}, merge=True)
+        return t
+
+    def _definition(self, t: dict) -> tuple[str, dict]:
+        """Where a task's how-to and example photos live: its recurring definition, else itself."""
+        tpl = self.docs.get(st.TEMPLATES, t["template_id"]) if t.get("template_id") else None
+        return (st.TEMPLATES, tpl) if tpl else (st.TASKS, t)
+
+    def task_detail(self, store_id: str, task_id: str) -> dict:
+        t = self._task(task_id, store_id)
+        coll, holder = self._definition(t)
+        own = {p["path"] for p in t.get("photos") or []}
+        recent = holder.get("recent_photos") or [] if coll == st.TEMPLATES else []
+        return {"task": t, "reference_photos": holder.get("reference_photos") or [],
+                "recent_photos": [p for p in recent if p["path"] not in own]}
+
+    def set_instructions(self, store_id: str, task_id: str, text: str, staff: dict) -> dict:
+        """A manager's edit to the how-to. On a recurring task it changes every day from today."""
+        t = self._task(task_id, store_id)
+        self._writable(t)
+        coll, holder = self._definition(t)
+        text = (text or "").strip()
+        if coll == st.TEMPLATES:
+            self.save_template(store_id, {**holder, "instructions": text}, staff["sid"])
+        self.docs.set(st.TASKS, task_id, {"instructions": text, "updated_at": self.now().isoformat()}, merge=True)
+        return self._task(task_id, store_id)
+
+    def add_reference_photo(self, store_id: str, task_id: str, staff: dict, data: bytes,
+                            content_type: str) -> dict:
+        t = self._task(task_id, store_id)
+        self._writable(t)
+        coll, holder = self._definition(t)
+        path = self._photo(store_id, f"ref/{holder['id']}", data, content_type)
+        self.photos.put(path, data, content_type)
+        photos = (holder.get("reference_photos") or []) + [
+            {"path": path, "by": staff["sid"], "at": self.now().isoformat()}]
+        self.docs.set(coll, holder["id"], {"reference_photos": photos}, merge=True)
+        return self.task_detail(store_id, task_id)
+
+    def remove_reference_photo(self, store_id: str, task_id: str, path: str) -> dict:
+        coll, holder = self._definition(self._task(task_id, store_id))
+        photos = [p for p in holder.get("reference_photos") or [] if p["path"] != path]
+        self.docs.set(coll, holder["id"], {"reference_photos": photos}, merge=True)
+        return self.task_detail(store_id, task_id)
 
     def add_one_off(self, store_id: str, data: dict, by: str) -> dict:
         cfg = self.store(store_id)
@@ -307,7 +420,8 @@ class Tasks:
              "template_id": None, "parent_id": None, "needs_photo": bool(data.get("needs_photo")),
              "due_at": model.due_at(cfg, shift.id, day), "status": model.OPEN,
              "assignee_id": data.get("assignee_id") or None, "completed_by": None, "completed_at": None,
-             "note": "", "photos": [], "source": data.get("source") or "oneoff", "created_by": by,
+             "note": "", "photos": [], "comments": [], "source": data.get("source") or "oneoff",
+             "created_by": by,
              "updated_at": self.now().isoformat()}
         if self.docs.create(st.TASKS, tid, t):
             self.events.publish(ev.TASK_CREATED, store_id, {
@@ -315,6 +429,18 @@ class Tasks:
                 "assignee_id": t["assignee_id"], "by": by, "source": t["source"]})
             return t
         return self._task(tid, store_id)
+
+    def remove_one_off(self, store_id: str, task_id: str, staff: dict) -> None:
+        """Delete a task someone added for one day. Recurring tasks are changed in their definition."""
+        t = self.docs.get(st.TASKS, task_id)
+        if t is None or t["store"] != store_id:
+            return
+        self._writable(t)
+        if t.get("template_id"):
+            raise Invalid("this task comes back every day — a manager changes it under Manage → Tasks")
+        if staff["role"] != auth.MANAGER and t.get("created_by") != staff["sid"]:
+            raise auth.AuthError("only the person who added it or a manager can delete it", 403)
+        self.docs.delete(st.TASKS, task_id)
 
     # ── closing count ───────────────────────────────────────────────────────
 
@@ -328,11 +454,14 @@ class Tasks:
         stamp = self.now()
         doc_id = f"{store_id}_{day.isoformat()}"
         prev = self.docs.get(st.COUNTS, doc_id)
+        photos = (prev or {}).get("photos") or []
+        if prev and not prev.get("submitted_at"):
+            prev = None  # only photos so far: nothing was sent yet, so there is no earlier version
         doc = {"id": doc_id, "store": store_id, "date": day.isoformat(), "items": items,
                "notes": {k: (data.get("notes") or {}).get(k, "").strip()
                          for k in ("shift", "low", "out")},
                "tips": data.get("tips"), "submitted_by": staff["sid"],
-               "submitted_at": stamp.isoformat(), "source": "app",
+               "submitted_at": stamp.isoformat(), "source": "app", "photos": photos,
                "revisions": (prev or {}).get("revisions", []) + ([{
                    k: prev[k] for k in ("items", "notes", "tips", "submitted_by", "submitted_at")
                }] if prev else [])}
@@ -341,6 +470,21 @@ class Tasks:
             "date": doc["date"], "by": staff["sid"], "items": len(items), "notes": doc["notes"],
             "tips": doc["tips"]})
         return doc
+
+    def add_count_photo(self, store_id: str, day: datetime.date, staff: dict, data: bytes,
+                        content_type: str) -> dict:
+        """Photos sent with the closing count (deep clean, freezer). Can be added before the count."""
+        self.store(store_id)
+        doc_id = f"{store_id}_{day.isoformat()}"
+        cur = self.docs.get(st.COUNTS, doc_id) or {
+            "id": doc_id, "store": store_id, "date": day.isoformat(), "items": {},
+            "notes": {"shift": "", "low": "", "out": ""}, "tips": None, "source": "draft"}
+        path = self._photo(store_id, f"{day.isoformat()}/count", data, content_type)
+        self.photos.put(path, data, content_type)
+        cur["photos"] = (cur.get("photos") or []) + [
+            {"path": path, "by": staff["sid"], "at": self.now().isoformat()}]
+        self.docs.set(st.COUNTS, doc_id, cur)
+        return cur
 
     def count(self, store_id: str, day: datetime.date) -> dict | None:
         return self.docs.get(st.COUNTS, f"{store_id}_{day.isoformat()}")

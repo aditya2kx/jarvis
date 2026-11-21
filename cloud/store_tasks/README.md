@@ -34,12 +34,22 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   assertion as `X-Signin-Assertion` (Google's front end drops `x-goog-*` headers between
   services). The API verifies it against the app's audience, so calling the API directly
   without a Google sign-in is refused.
-- **Shift team.** Read from the ADP schedule: everyone whose scheduled range overlaps the
-  shift's team window. The schedule is copied hourly from BigQuery into `shared_shifts`, so
-  the tablet never waits on the warehouse. The copy is read-only; BigQuery stays the source.
-- **Offline.** The app shell and the day are kept on the device. Ticks made offline queue
-  on the device and send when the connection returns; a repeated tick is a no-op.
-- **Closing count.** Same fields as the ClickUp form. The nightly inventory job reads it
+- **Who is doing it.** Anyone signed in picks a person for a task from the whole team, or
+  for every unassigned task on a list at once, as in ClickUp. Nothing is assigned
+  automatically. The ADP schedule (copied hourly from BigQuery into `shared_shifts`, so the
+  tablet never waits on the warehouse; BigQuery stays the source) only puts the people
+  scheduled today at the top of the picker.
+- **One task.** Opening a task shows how to do it, example photos of how it should look,
+  photos from earlier days, today's photos (any task takes photos, from a phone camera or a
+  computer's files), its steps and the team's notes. A manager edits the how-to and example
+  photos there; on a recurring task the edit applies every day from today. A task added for
+  one day can be deleted by whoever added it or a manager.
+- **Any screen.** Phone: one column, a task opens as a sheet. iPad landscape and desktop:
+  the list and the open task side by side.
+- **Offline.** The app shell and the day are kept on the device. Ticks and assignments made
+  offline queue on the device and send when the connection returns; a repeated tick is a
+  no-op. Photos and notes need a connection.
+- **Closing count.** Same fields as the ClickUp form, including its photos. The nightly inventory job reads it
   through `closing-counts`, which returns the ClickUp form-task shape, so
   `agents/bhaga/scripts/ingest_inventory.py` parses it unchanged. Switch a store with the
   profile key `"closing_source": "store_tasks"` (default `clickup`).
@@ -53,8 +63,8 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
 | Anyone | none | `GET /health` |
 | Google account not on the list | Google sign-in | Nothing (Google refuses; the API also answers 403) |
 | Shared account (store iPad) | Google sign-in | See the store's shifts and staff names |
-| Crew | Google sign-in + PIN session (`X-Staff-Session`) | Read days, tick, undo own ticks, add photos, send the count, add a one-off task |
-| Manager | Google sign-in + 6-digit PIN session, or their own Google account | Also: templates, people and PINs, sign-in accounts, history, undo anyone's tick |
+| Crew | Google sign-in + PIN session (`X-Staff-Session`) | Read days, tick, undo own ticks, assign anyone, add photos and notes, remove own photos, send the count, add a one-off task and delete their own |
+| Manager | Google sign-in + 6-digit PIN session, or their own Google account | Also: how-to text and example photos, templates, people and PINs, sign-in accounts, history, undo anyone's tick, remove any photo or one-off task |
 | Scheduler, nightly job, Slack bridge | `Authorization: Bearer` internal token | `/internal/*` |
 
 PINs are stored as scrypt hashes; five wrong PINs lock that person for five minutes. An

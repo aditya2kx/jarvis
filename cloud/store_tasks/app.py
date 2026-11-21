@@ -165,13 +165,58 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     def reopen(task_id: str):
         return jsonify(tasks.reopen(g.store, task_id, g.staff))
 
-    @app.post("/v1/tasks/<task_id>/photo")
-    @staff_required
-    def photo(task_id: str):
+    def upload() -> tuple[bytes, str]:
         f = request.files.get("photo")
         if f is None:
             raise svc.Invalid("no photo")
-        return jsonify(tasks.add_photo(g.store, task_id, g.staff, f.read(), f.mimetype or ""))
+        return f.read(), f.mimetype or ""
+
+    @app.get("/v1/tasks/<task_id>")
+    @staff_required
+    def task_detail(task_id: str):
+        return jsonify(tasks.task_detail(g.store, task_id))
+
+    @app.delete("/v1/tasks/<task_id>")
+    @staff_required
+    def remove_task(task_id: str):
+        tasks.remove_one_off(g.store, task_id, g.staff)
+        return jsonify(ok=True)
+
+    @app.post("/v1/assign")
+    @staff_required
+    def assign():
+        b = body()
+        return jsonify(tasks=tasks.assign(g.store, b.get("task_ids") or [], b.get("assignee_id"), g.staff))
+
+    @app.post("/v1/tasks/<task_id>/comments")
+    @staff_required
+    def comment(task_id: str):
+        return jsonify(tasks.comment(g.store, task_id, g.staff, body().get("text", "")))
+
+    @app.post("/v1/tasks/<task_id>/photo")
+    @staff_required
+    def photo(task_id: str):
+        return jsonify(tasks.add_photo(g.store, task_id, g.staff, *upload()))
+
+    @app.delete("/v1/tasks/<task_id>/photos/<path:path>")
+    @staff_required
+    def remove_photo(task_id: str, path: str):
+        return jsonify(tasks.remove_photo(g.store, task_id, path, g.staff))
+
+    @app.post("/v1/tasks/<task_id>/instructions")
+    @manager_required
+    def set_instructions(task_id: str):
+        return jsonify(tasks.set_instructions(g.store, task_id, body().get("instructions", ""), g.staff))
+
+    @app.post("/v1/tasks/<task_id>/reference-photo")
+    @manager_required
+    def add_reference_photo(task_id: str):
+        return jsonify(tasks.add_reference_photo(g.store, task_id, g.staff, *upload()))
+
+    @app.delete("/v1/tasks/<task_id>/reference-photos/<path:path>")
+    @manager_required
+    def remove_reference_photo(task_id: str, path: str):
+        return jsonify(tasks.remove_reference_photo(g.store, task_id, path))
 
     @app.get("/v1/photos/<path:path>")
     @staff_required
@@ -199,6 +244,11 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     @staff_required
     def put_count(date: str):
         return jsonify(count=tasks.submit_count(g.store, day_arg(date), body(), g.staff))
+
+    @app.post("/v1/counts/<date>/photo")
+    @staff_required
+    def count_photo(date: str):
+        return jsonify(count=tasks.add_count_photo(g.store, day_arg(date), g.staff, *upload()))
 
     # ── manager ─────────────────────────────────────────────────────────────
 

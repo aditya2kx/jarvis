@@ -88,7 +88,7 @@ function Templates({ boot, token }: { boot: Bootstrap; token: string }) {
 
   return (
     <div className="space-y-6">
-      <Notice>Changes apply to lists from tomorrow. Today's list stays as it is, and earlier versions are kept.</Notice>
+      <Notice>Changes show from today on tasks not done yet. Earlier versions are kept.</Notice>
       {boot.store.shifts.map((s) => {
         const mine = templates.filter((t) => t.shift === s.id);
         return (

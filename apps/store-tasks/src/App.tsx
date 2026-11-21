@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, isOffline, type Bootstrap, type Session, type Staff } from "./api";
 import { DayScreen } from "./Day";
 import { Manage } from "./Manage";
-import { cx, Notice } from "./ui";
+import { Avatar, cx, Notice } from "./ui";
 
 const BOOT_KEY = "st.bootstrap";
 const IDLE_LOCK_MS = 3 * 60 * 1000;
@@ -96,14 +96,15 @@ function SignIn({ boot, onSignedIn }: { boot: Bootstrap; onSignedIn: (s: Session
     people.length > 0 && (
       <section>
         <h2 className="mb-2 text-sm font-medium text-muted-foreground">{title}</h2>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
           {people.map((s) => (
             <button
               key={s.id}
               onClick={() => setWho(s)}
-              className="min-h-16 rounded-xl border border-border bg-card px-4 text-left text-lg font-medium transition active:scale-[0.98] active:bg-muted"
+              className="flex min-h-16 items-center gap-3 rounded-xl border border-border bg-card px-4 text-left text-lg font-medium transition hover:bg-muted active:scale-[0.98]"
             >
-              {s.name}
+              <Avatar id={s.id} name={s.name} size="lg" />
+              <span className="min-w-0 truncate">{s.name}</span>
             </button>
           ))}
         </div>
@@ -111,7 +112,7 @@ function SignIn({ boot, onSignedIn }: { boot: Bootstrap; onSignedIn: (s: Session
     );
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-6 pt-[max(1.5rem,env(safe-area-inset-top))]">
+    <div className="mx-auto max-w-5xl space-y-6 p-6 pt-[max(1.5rem,env(safe-area-inset-top))]">
       <header>
         <p className="text-sm text-muted-foreground">{boot.store.name}</p>
         <h1 className="text-2xl font-semibold">Who's working?</h1>

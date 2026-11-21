@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, device, isOffline, SHOP, type Bootstrap, type Session, type Staff } from "./api";
 import { DayScreen } from "./Day";
 import { Manage } from "./Manage";
-import { Avatar, Button, cx, Notice } from "./ui";
+import { Avatar, cx, Notice } from "./ui";
 
 const BOOT_KEY = "st.bootstrap";
 const IDLE_LOCK_MS = 3 * 60 * 1000;
@@ -144,28 +144,31 @@ function Welcome({ error, onEnrolled }: { error: string; onEnrolled: () => void 
     );
   }
   return (
-    <Centered>
-      <div className="w-full max-w-xs space-y-6 text-center">
-        <div>
-          <h1 className="text-2xl font-semibold">Store Tasks</h1>
-          <p className="mt-1 text-muted-foreground">Sign in to see today's tasks</p>
+    <div className="flex min-h-full items-center justify-center bg-primary p-6 text-primary-foreground">
+      <div className="w-full max-w-xs space-y-8 text-center">
+        <div className="rise">
+          <span role="img" aria-label="Palmetto Superfoods" className="brand-mark brand-word mx-auto block w-60" />
+          <p className="mt-4 text-[15px] text-primary-foreground/80">Sign in to see today's tasks</p>
         </div>
         {error && <Notice tone="error">{error}</Notice>}
-        <div className="flex flex-col gap-3">
+        <div className="rise flex flex-col gap-3" style={{ "--i": 3 } as React.CSSProperties}>
           <a
             href="/signin"
-            className="inline-flex min-h-12 items-center justify-center gap-3 rounded-lg border border-border bg-card px-4 text-[15px] font-medium shadow-card transition hover:border-ring hover:bg-accent active:scale-[0.97]"
+            className="inline-flex min-h-12 items-center justify-center gap-3 rounded-full bg-card px-5 text-[15px] font-semibold text-foreground shadow-float transition hover:brightness-95 active:scale-[0.97]"
           >
             <GoogleMark />
             Sign in with Google
           </a>
-          <Button variant="ghost" className="min-h-12" onClick={() => setShop(true)}>
+          <button
+            onClick={() => setShop(true)}
+            className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full px-4 text-[15px] font-medium text-primary-foreground/85 transition hover:bg-white/10 hover:text-primary-foreground active:scale-[0.97]"
+          >
             <Store className="size-4" />
             Set up this iPad for the shop
-          </Button>
+          </button>
         </div>
       </div>
-    </Centered>
+    </div>
   );
 }
 
@@ -229,7 +232,7 @@ function SignIn({ boot, managersOnly, onCancel, onSignedIn }: SignInProps) {
           </button>
         )}
         <p className="text-sm text-muted-foreground">{boot.store.name}</p>
-        <h1 className="text-2xl font-semibold">{managersOnly ? "Manager sign-in" : "Who's working?"}</h1>
+        <h1 className="text-2xl font-extrabold tracking-tight">{managersOnly ? "Manager sign-in" : "Who's working?"}</h1>
       </header>
       {group("On shift today", onShift)}
       {group(managersOnly ? "Managers" : onShift.length ? "Everyone else" : "Team", others)}
@@ -286,7 +289,8 @@ function CodePad({ title, prompt, length, onBack, submit }: CodePadProps) {
     <Centered>
       <div className="w-full max-w-xs space-y-6 text-center">
         <div>
-          <h1 className="text-2xl font-semibold">{title}</h1>
+          <span aria-hidden className="brand-mark brand-palm mx-auto mb-3 block h-11 text-primary" />
+          <h1 className="text-2xl font-extrabold tracking-tight">{title}</h1>
           <p className="mt-1 text-muted-foreground">{prompt}</p>
         </div>
         <div className="flex justify-center gap-3" aria-label={`${pin.length} of ${length} digits entered`}>

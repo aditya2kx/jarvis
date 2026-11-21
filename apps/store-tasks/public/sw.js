@@ -1,9 +1,9 @@
 // App shell cache: the page opens with no network; API calls are never cached here
 // (the app keeps its own copy of the day and a queue of ticks).
-const CACHE = "store-tasks-shell-v2";
+const CACHE = "store-tasks-shell-v3";
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(["/", "/manifest.webmanifest", "/icon.svg"])));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(["/", "/manifest.webmanifest", "/icon-192.png", "/palmetto-wordmark.png", "/palmetto-palm.png"])));
   self.skipWaiting();
 });
 

@@ -1,4 +1,4 @@
-import { Camera, Check, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, PartyPopper, Plus, Settings, UserPlus, Users, X } from "lucide-react";
+import { Camera, Check, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, Plus, Settings, UserPlus, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
@@ -11,7 +11,16 @@ import { addDays, Avatar, Button, cx, dayLabel, firstName, Notice, Sheet, shiftT
 const REFRESH_MS = 60 * 1000;
 const TOAST_MS = 2800;
 const CONFETTI_MS = 1600;
-const CONFETTI = ["var(--success)", "var(--tone)", "oklch(0.8 0.16 85)", "oklch(0.7 0.17 20)", "var(--primary)"];
+/** Açaí, mango, banana, palm leaf, pitaya, berry. */
+const CONFETTI = ["oklch(0.42 0.15 305)", "oklch(0.77 0.16 62)", "oklch(0.9 0.15 98)", "var(--success)", "oklch(0.68 0.2 355)", "var(--primary)"];
+const CHEERS = ["Berry well done.", "Açaí-mazing work.", "Bowl-ed it over.", "That was smooth-ie.", "Fresh work, team.", "Peachy keen."];
+
+/** The same list on the same day always gets the same cheer. */
+function cheer(key: string) {
+  let h = 0;
+  for (const c of key) h = (h * 31 + c.charCodeAt(0)) | 0;
+  return CHEERS[Math.abs(h) % CHEERS.length];
+}
 
 const FILTERS = ["all", "mine", "unassigned"] as const;
 type Filter = (typeof FILTERS)[number];
@@ -71,13 +80,15 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const refresh = useCallback(async () => {
     try {
       const sent = await flush();
-      setQueue(loadQueue());
       if (sent.rejected.length) setError(sent.rejected[0]);
       const fresh = await api.day(session.token, date);
       localStorage.setItem(cacheKey(date), JSON.stringify(fresh));
+      // Sent changes leave the queue only with the day that includes them, or ticks flicker back.
       setServer(fresh);
+      setQueue(loadQueue());
       setOffline(false);
     } catch (e) {
+      setQueue(loadQueue());
       if (isOffline(e)) setOffline(true);
       else setError((e as Error).message);
     }
@@ -124,6 +135,10 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
     }
     before.current = { key: listKey, left };
   }, [listKey, left, whole.length]);
+  const cheerBanner = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (party) cheerBanner.current?.scrollIntoView({ block: "nearest" });
+  }, [party]);
 
   const change = (...changes: Omit<Pending, "at" | "token" | "staff_id">[]) => {
     const at = new Date().toISOString();
@@ -229,11 +244,12 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
       <header className="space-y-3 border-b border-border bg-card px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1">
+            <span aria-hidden className="brand-mark brand-palm mr-1 hidden h-9 shrink-0 text-primary sm:inline-block" />
             <button aria-label="Previous day" onClick={() => setDate(addDays(date, -1))} className="rounded-full p-2 text-muted-foreground hover:bg-muted">
               <ChevronLeft className="size-5" />
             </button>
             <div className="min-w-0 px-1">
-              <h1 className="truncate text-xl font-semibold leading-tight">{date === day.today ? "Today" : dayLabel(date)}</h1>
+              <h1 className="truncate text-xl font-extrabold leading-tight tracking-tight">{date === day.today ? "Today" : dayLabel(date)}</h1>
               <p className="truncate text-sm text-muted-foreground">
                 {boot.store.name}
                 {date === day.today ? (
@@ -371,9 +387,9 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
           </div>
 
           {whole.length > 0 && left === 0 ? (
-            <div key={listKey} className="pop relative mb-3 flex items-center gap-3 rounded-xl bg-success/10 px-4 py-3 font-medium text-success">
-              <PartyPopper className="size-5 shrink-0" />
-              {shiftInfo?.label} is all done{readOnly ? "." : ". Nice work."}
+            <div key={`cheer-${listKey}`} ref={cheerBanner} className="pop relative mb-3 flex scroll-mt-3 items-center gap-3 rounded-xl bg-success/10 px-4 py-3 font-medium text-success">
+              <span aria-hidden className={cx("brand-mark brand-palm h-7 shrink-0", party === listKey && "sway")} />
+              {shiftInfo?.label} is all done.{!readOnly && ` ${cheer(listKey)}`}
               {party === listKey &&
                 Array.from({ length: 22 }, (_, i) => {
                   const angle = (i / 22) * 2 * Math.PI;

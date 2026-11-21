@@ -1,9 +1,12 @@
 {
-  "name": "Store Tasks",
-  "short_name": "Tasks",
+  "name": "Palmetto Tasks",
+  "short_name": "Palmetto",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#ffffff",
-  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+  "background_color": "#7c112a",
+  "theme_color": "#f6f4ef",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
 }

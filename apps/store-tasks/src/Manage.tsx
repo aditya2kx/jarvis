@@ -1,11 +1,13 @@
-import { ChevronLeft, Plus } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronLeft, Plus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, device, type Bootstrap, type Account, type HistoryDay, type Session, type Staff, type Template } from "./api";
+import { FeedbackButton, FeedbackList } from "./Feedback";
 import { repeatLabel } from "./Repeat";
+import { setWhere } from "./steps";
 import { blankDraft, TaskForm, type TaskDraft } from "./TaskForm";
 import { addDays, Button, cx, dayLabel, Field, Input, inputClass, Notice, Sheet } from "./ui";
 
-const TABS = ["Tasks", "People", "Sign-in", "History"] as const;
+const TABS = ["Tasks", "People", "Sign-in", "History", "Feedback"] as const;
 type Tab = (typeof TABS)[number];
 const HISTORY_DAYS = 14;
 
@@ -17,21 +19,25 @@ interface Props {
 
 export function Manage({ boot, session, onBack }: Props) {
   const [tab, setTab] = useState<Tab>("Tasks");
+  useEffect(() => setWhere({ screen: `Manage · ${tab}` }), [tab]);
   return (
     <div className="mx-auto flex h-full max-w-4xl flex-col">
       <header className="space-y-3 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6">
-        <button onClick={onBack} className="-ml-2 flex items-center gap-1 rounded-lg p-2 text-muted-foreground active:bg-muted">
-          <ChevronLeft className="size-5" />
-          Back to today
-        </button>
-        <div role="tablist" className="grid grid-cols-4 gap-1 rounded-xl bg-muted p-1">
+        <div className="flex items-center justify-between">
+          <button onClick={onBack} className="-ml-2 flex items-center gap-1 rounded-lg p-2 text-muted-foreground active:bg-muted">
+            <ChevronLeft className="size-5" />
+            Back to today
+          </button>
+          <FeedbackButton session={session} />
+        </div>
+        <div role="tablist" className="grid grid-cols-5 gap-1 rounded-xl bg-muted p-1">
           {TABS.map((t) => (
             <button
               key={t}
               role="tab"
               aria-selected={t === tab}
               onClick={() => setTab(t)}
-              className={cx("min-h-10 rounded-lg text-[15px] font-medium", t === tab ? "bg-card shadow-sm" : "text-muted-foreground")}
+              className={cx("min-h-10 rounded-lg text-[14px] font-medium sm:text-[15px]", t === tab ? "bg-card shadow-sm" : "text-muted-foreground")}
             >
               {t}
             </button>
@@ -48,6 +54,7 @@ export function Manage({ boot, session, onBack }: Props) {
           </div>
         )}
         {tab === "History" && <History boot={boot} token={session.token} />}
+        {tab === "Feedback" && <FeedbackList token={session.token} />}
       </main>
     </div>
   );
@@ -88,16 +95,34 @@ function Templates({ boot, session }: { boot: Bootstrap; session: Session }) {
   const load = useCallback(() => api.templates(token).then((r) => r.templates), [token]);
   const [templates, error, reload] = useLoad(load);
   const [editing, setEditing] = useState<TaskDraft | null>(null);
+  const [moving, setMoving] = useState(false);
+  const [moveError, setMoveError] = useState("");
 
   if (error) return <Notice tone="error">{error}</Notice>;
   if (!templates) return <p className="text-muted-foreground">Loading…</p>;
+  const move = async (top: Template[], i: number, by: -1 | 1) => {
+    const ids = top.map((t) => t.id);
+    [ids[i], ids[i + by]] = [ids[i + by], ids[i]];
+    setMoving(true);
+    setMoveError("");
+    try {
+      await api.reorderTemplates(token, top[i].shift, ids);
+      reload();
+    } catch (e) {
+      setMoveError((e as Error).message || "The order was not saved");
+    } finally {
+      setMoving(false);
+    }
+  };
   const when = (t: Template) => [repeatLabel(t, boot.today), t.needs_photo ? "Photo needed" : ""].filter(Boolean).join(" · ");
 
   return (
     <div className="space-y-6">
-      <Notice>Tasks that repeat. Changes show from today on tasks not done yet; earlier versions are kept. To copy a task, open it on a day's list and choose Duplicate.</Notice>
+      <Notice>Tasks that repeat, in the order the crew does them. Changes show from today on tasks not done yet; earlier versions are kept. To copy a task, open it on a day's list and choose Duplicate.</Notice>
+      {moveError && <Notice tone="error">{moveError}</Notice>}
       {boot.store.shifts.map((s) => {
-        const mine = templates.filter((t) => t.shift === s.id);
+        const mine = templates.filter((t) => t.shift === s.id).sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
+        const top = mine.filter((t) => !t.parent_id);
         return (
           <section key={s.id}>
             <div className="mb-2 flex items-center justify-between">
@@ -108,9 +133,21 @@ function Templates({ boot, session }: { boot: Bootstrap; session: Session }) {
               </Button>
             </div>
             <Card>
-              {mine.filter((t) => !t.parent_id).map((t) => (
+              {top.map((t, i) => (
                 <div key={t.id}>
-                  <RowButton onClick={() => setEditing(t)} title={t.title} meta={when(t)} dim={!t.active} />
+                  <div className="flex items-stretch">
+                    <div className="min-w-0 flex-1">
+                      <RowButton onClick={() => setEditing(t)} title={t.title} meta={when(t)} dim={!t.active} />
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1 pr-2">
+                      <MoveButton label={`Move ${t.title} up`} disabled={moving || i === 0} onClick={() => move(top, i, -1)}>
+                        <ArrowUp className="size-4" />
+                      </MoveButton>
+                      <MoveButton label={`Move ${t.title} down`} disabled={moving || i === top.length - 1} onClick={() => move(top, i, 1)}>
+                        <ArrowDown className="size-4" />
+                      </MoveButton>
+                    </div>
+                  </div>
                   {mine.filter((c) => c.parent_id === t.id).map((c) => (
                     <div key={c.id} className="border-t border-border bg-muted/40 pl-6">
                       <RowButton onClick={() => setEditing(c)} title={c.title} meta={when(c)} dim={!c.active} />
@@ -138,6 +175,19 @@ function Templates({ boot, session }: { boot: Bootstrap; session: Session }) {
         />
       )}
     </div>
+  );
+}
+
+function MoveButton({ label, disabled, onClick, children }: { label: string; disabled: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="flex size-10 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground active:scale-90 disabled:opacity-25"
+    >
+      {children}
+    </button>
   );
 }
 

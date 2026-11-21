@@ -18,7 +18,7 @@ from skills.google_signin import identity
 from agents.bhaga.scripts.ingest_inventory import rows_from_task
 from cloud.store_tasks import app as app_mod
 from cloud.store_tasks import auth, clickup_import as ci, clickup_webhooks as cw, events as ev, model, service as svc
-from cloud.store_tasks import shared_sync, store as st, summaries, verify_backfill
+from cloud.store_tasks import notify, shared_sync, store as st, summaries, verify_backfill
 
 TZ = datetime.timezone(datetime.timedelta(hours=-6))
 INTERNAL = "internal-token-for-tests-0123456789"
@@ -336,6 +336,57 @@ def test_a_clickup_task_shows_its_definitions_how_to(env):
     assert c.get("/v1/tasks/cu_m1", headers=h).get_json()["task"]["instructions"] == "1. Wet floor sign out."
     assert c.post("/v1/tasks/cu_m1/complete", json={}, headers=h).get_json()["instructions"] == "1. Wet floor sign out."
     assert env.tasks.docs.get(st.TASKS, "cu_m1")["instructions"] == "ClickUp's words"  # ClickUp's copy untouched
+
+
+def test_feedback_keeps_where_they_were_and_what_they_did_and_tells_the_operator(env, monkeypatch):
+    sent = []
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("STORE_TASKS_FEEDBACK_SLACK_USER", "U1")
+    monkeypatch.setattr(notify, "_slack", lambda token, method, payload: sent.append((method, payload)) or {"channel": {"id": "D1"}})
+    c = env.client
+    context = {"screen": "Day", "date": "2026-11-19", "shift": "closing", "task": "Mop", "task_id": "x", "online": True}
+    events = [{"at": f"t{i}", "kind": "api", "what": "x" * 200} for i in range(150)]
+    r = c.post("/v1/feedback", json={"kind": "problem", "text": "Tick did nothing", "context": context, "events": events},
+               headers=env.crew_h)
+    fid = r.get_json()["id"]
+    assert c.post("/v1/feedback", json={"text": "  "}, headers=env.crew_h).status_code == 400
+    photo = (io.BytesIO(JPEG), "shot.jpg", "image/jpeg")
+    c.post("/v1/feedback", data={"data": json.dumps({"kind": "idea", "text": ""}), "photo": photo},
+           headers=env.crew_h, content_type="multipart/form-data")
+
+    assert c.get("/v1/feedback", headers=env.crew_h).status_code == 403
+    listed = c.get("/v1/feedback", headers=env.boss_h).get_json()["feedback"]
+    assert sorted(f["kind"] for f in listed) == ["idea", "problem"]
+    first = next(f for f in listed if f["id"] == fid)
+    assert first["staff_name"] == "Dolce Johnson" and first["context"]["task"] == "Mop"
+    assert 0 < len(first["events"]) <= svc.MAX_FEEDBACK_EVENTS and first["events"][-1]["at"] == "t149"
+    assert next(f for f in listed if f["kind"] == "idea")["photos"]
+    assert c.post(f"/v1/feedback/{fid}/done", json={}, headers=env.boss_h).get_json()["status"] == "done"
+
+    posts = [p for m, p in sent if m == "chat.postMessage"]
+    assert len(posts) == 2 and posts[0]["channel"] == "D1"
+    assert "Tick did nothing" in posts[0]["text"] and "Closing list" in posts[0]["text"] and fid in posts[0]["text"]
+
+
+def test_a_manager_puts_a_shift_in_the_order_it_is_done(env):
+    c, h = env.client, env.boss_h
+    assert c.post("/v1/templates/order", json={"shift": "opening", "ids": ["t2"]}, headers=env.crew_h).status_code == 403
+    assert c.post("/v1/templates/order", json={"shift": "opening", "ids": ["t5"]}, headers=h).status_code == 400
+    assert c.post("/v1/templates/order", json={"shift": "opening", "ids": ["t2"]}, headers=h).get_json() == {"changed": 2}
+    assert c.post("/v1/templates/order", json={"shift": "opening", "ids": ["t2"]}, headers=h).get_json() == {"changed": 0}
+    top = [t["title"] for t in c.get("/v1/days/2026-11-19", headers=h).get_json()["tasks"]
+           if t["shift"] == "opening" and not t["parent_id"]]
+    assert top == ["Deep Clean", "Unlock"]
+    assert len(env.tasks.docs.query(st.TEMPLATE_HISTORY, template_id="t1")) == 1  # the old order is kept
+
+    env.tasks.put_store(dataclasses.replace(env.tasks.store("palmetto"), cutover_date=None))
+    base = {"store": "palmetto", "date": "2026-11-19", "shift": "opening", "source": "clickup", "status": "open",
+            "parent_id": None}
+    env.tasks.docs.set(st.TASKS, "cu_u", {**base, "id": "cu_u", "title": "Unlock", "template_id": "t1", "order": 1.0})
+    env.tasks.docs.set(st.TASKS, "cu_d", {**base, "id": "cu_d", "title": "Deep Clean", "template_id": "t2", "order": 2.0})
+    shown = [t["id"] for t in c.get("/v1/days/2026-11-19", headers=h).get_json()["tasks"] if t["shift"] == "opening"]
+    assert shown == ["cu_d", "cu_u"]  # ClickUp's tasks in our order
+    assert env.tasks.docs.get(st.TASKS, "cu_u")["order"] == 1.0  # ClickUp's copy untouched
 
 
 def test_days_ahead_show_the_tasks_clickup_has_not_added_yet(env):

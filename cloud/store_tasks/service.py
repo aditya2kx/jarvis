@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import io
+import json
 import os
 import threading
 import uuid
@@ -33,6 +34,11 @@ TEMPLATE_LIST_FIELDS = tuple(f.name for f in dataclasses.fields(model.Template))
 # Kept on a ClickUp task as a record; nothing on screen reads it.
 NOT_LISTED = ("clickup",)
 PLANNED = "planned"  # a ClickUp day's task the schedule expects but ClickUp has not added yet
+FEEDBACK_KINDS = ("problem", "idea")
+MAX_FEEDBACK_TEXT = 4000
+MAX_FEEDBACK_EVENTS = 100
+MAX_FEEDBACK_BYTES = 48 * 1024  # what was on screen and the last steps: plenty, and far under a Firestore doc
+FEEDBACK_LISTED = 200
 
 
 class NotFound(Exception):
@@ -367,6 +373,31 @@ class Tasks:
             self._follow_edit(cfg, t, today, stamp)
         return t
 
+    def reorder_templates(self, store_id: str, shift: str, ids: list[str], by: str) -> int:
+        """A shift's top-level tasks in the order they are done; ids not given keep their place after.
+        Earlier orders are kept in history, and lists from today on follow (ClickUp days show it too)."""
+        cfg = self.store(store_id)
+        cfg.shift(shift)
+        cur = {t.id: t for t in self.templates(store_id) if t.shift == shift and not t.parent_id}
+        if unknown := [i for i in ids if i not in cur]:
+            raise Invalid(f"not a {shift} task: {unknown[0]}")
+        rest = [t.id for t in sorted(cur.values(), key=lambda t: (t.order, t.title)) if t.id not in ids]
+        today = cfg.today(self.now()).isoformat()
+        stamp = self.now().isoformat()
+        changed = 0
+        for i, tid in enumerate(list(dict.fromkeys(ids)) + rest, 1):
+            if cur[tid].order == i:
+                continue
+            old = self.docs.get(st.TEMPLATES, tid)
+            self.docs.set(st.TEMPLATE_HISTORY, f"{tid}_{stamp}", {
+                **old, "template_id": tid, "superseded_at": stamp, "superseded_by": by})
+            self.docs.set(st.TEMPLATES, tid, {"order": float(i), "updated_at": stamp, "updated_by": by}, merge=True)
+            for task in self.docs.query(st.TASKS, store=store_id, template_id=tid):
+                if task["date"] >= today and task.get("source") != "clickup":
+                    self.docs.set(st.TASKS, task["id"], {"order": float(i)}, merge=True)
+            changed += 1
+        return changed
+
     def _follow_edit(self, cfg: model.StoreConfig, t: model.Template, today: datetime.date, stamp: str) -> None:
         """Lists already built for today and later follow an edit; finished tasks keep what was done."""
         family = [t] + [c for c in self.templates(cfg.id) if c.parent_id == t.id]
@@ -417,10 +448,13 @@ class Tasks:
         if not cfg.generated(day):
             # ClickUp never enforced photos: show our rule on its tasks, so a missing photo is visible.
             rules = {t.id for t in templates if t.needs_photo}
-            how_to = {t.id: {"instructions": t.instructions} for t in templates}
+            by_id = {t.id: t for t in templates}
             for t in tasks:
+                tpl = by_id.get(t.get("template_id") or "")
                 t["needs_photo"] = bool(t.get("needs_photo") or t.get("template_id") in rules)
-                _show_how_to(t, how_to.get(t.get("template_id") or ""))
+                if tpl:  # shown in our order, with our how-to; ClickUp's copy stays as it is
+                    _show_how_to(t, {"instructions": tpl.instructions})
+                    t["order"] = tpl.order
         if cfg.generated(day):
             have = {t["id"] for t in tasks}
             missing = [t for t in model.build_day(cfg, templates, day) if t["id"] not in have]
@@ -811,6 +845,49 @@ class Tasks:
                                   for k, v in c["items"].items() if k in names],
             })
         return sorted(out, key=lambda t: t["date_created"])
+
+    # ── feedback ────────────────────────────────────────────────────────────
+
+    def add_feedback(self, store_id: str, staff: dict, account: dict, data: dict,
+                     photo: tuple[bytes, str] | None = None) -> dict:
+        """A problem or an idea from the crew, kept with what was on screen and their last steps."""
+        text = (data.get("text") or "").strip()[:MAX_FEEDBACK_TEXT]
+        if not text and photo is None:
+            raise Invalid("say what happened, or add a photo")
+        context = data.get("context") if isinstance(data.get("context"), dict) else {}
+        events = [e for e in (data.get("events") or [])[-MAX_FEEDBACK_EVENTS:] if isinstance(e, dict)]
+        while events and len(json.dumps([context, events])) > MAX_FEEDBACK_BYTES:
+            events = events[len(events) // 4 + 1:]  # the latest steps matter most
+        if len(json.dumps(context)) > MAX_FEEDBACK_BYTES:
+            context = {"dropped": "too large"}
+        fid = f"f{uuid.uuid4().hex[:12]}"
+        names = {s["id"]: s["name"] for s in self.staff(store_id, include_inactive=True)}
+        doc = {
+            "id": fid, "store": store_id, "at": self.now().isoformat(), "status": "new",
+            "kind": data.get("kind") if data.get("kind") in FEEDBACK_KINDS else FEEDBACK_KINDS[0],
+            "text": text, "staff_id": staff["sid"], "staff_name": names.get(staff["sid"], "Shop"),
+            "account": account.get("email"), "device": account.get("label") or "",
+            "context": context, "events": events, "photos": [],
+        }
+        if photo is not None:
+            path = self._photo(store_id, f"feedback/{fid}", *photo)
+            self.photos.put(path, photo[0], photo[1])
+            doc["photos"] = [{"path": path, "by": staff["sid"], "at": doc["at"]}]
+        self.docs.set(st.FEEDBACK, fid, doc)
+        return doc
+
+    def feedback(self, store_id: str) -> list[dict]:
+        rows = self.docs.query(st.FEEDBACK, store=store_id)
+        return sorted(rows, key=lambda f: f["at"], reverse=True)[:FEEDBACK_LISTED]
+
+    def close_feedback(self, store_id: str, fid: str, by: str, done: bool = True) -> dict:
+        f = self.docs.get(st.FEEDBACK, fid)
+        if f is None or f["store"] != store_id:
+            raise NotFound("feedback")
+        patch = {"status": "done" if done else "new", "done_by": by if done else None,
+                 "done_at": self.now().isoformat() if done else None}
+        self.docs.set(st.FEEDBACK, fid, patch, merge=True)
+        return {**f, **patch}
 
     # ── history and alerts ──────────────────────────────────────────────────
 

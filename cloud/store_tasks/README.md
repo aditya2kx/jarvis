@@ -70,6 +70,20 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   what is due that day. Changing a repeating task's schedule or shift updates lists already
   built from today on (open, untouched tasks only). Duplicate on any task opens the form
   filled in from it, and a copied repeating task keeps its example photos.
+- **Order of work.** Each shift lists tasks in the order the crew does them (the definition
+  `order`, also applied to ClickUp-mirrored days). The starting order came from ClickUp tick
+  times; a manager moves a task up or down in Manage → Tasks (`POST /v1/templates/order`), which
+  keeps the previous order in the template history and re-orders lists from today on.
+- **Photo-needed ticks.** Ticking a task that needs a photo opens the camera; the photo is
+  saved and the task ticked in one step.
+- **Feedback.** One Feedback button, on the day list and in Manage: "Something's wrong" or "Idea", text and an
+  optional photo. The app sends with it where the person was (screen, day, shift, open task,
+  app build, device, offline queue) and their last 100 steps (screens, taps, API calls with
+  status and time, JavaScript errors), kept only in the tab's session storage. It is stored in
+  the `feedback` collection, logged as `store-tasks feedback id=…`, and DMed to the operator by
+  the BHAGA bot (`SLACK_BOT_TOKEN` from secret `slack-bot-token`,
+  `STORE_TASKS_FEEDBACK_SLACK_USER`); a failed DM logs `reason=feedback_notify` and never
+  fails the send. Managers read and close it in Manage → Feedback.
 - **Any screen.** Phone: one column, a task opens as a sheet. iPad landscape and desktop:
   the list and the open task side by side.
 - **Offline.** The app shell and the day are kept on the device. Ticks and assignments made

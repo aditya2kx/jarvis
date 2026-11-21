@@ -14,7 +14,8 @@ consume its events. See cloud/store_tasks/README.md.
     POST /v1/tasks/<id>/complete | reopen | photo
     POST /v1/tasks                   one-off task
     GET|PUT /v1/counts/<date>        closing count
-    GET|POST /v1/templates, /v1/staff, /v1/accounts, GET /v1/history   (manager)
+    POST /v1/feedback                a problem or idea, with what was on screen and the last steps
+    GET|POST /v1/templates (+ /order), /v1/staff, /v1/accounts, GET /v1/history, GET /v1/feedback   (manager)
     POST /webhooks/clickup/<s>/<list> ClickUp change (signed with that webhook's secret)
     POST /internal/tick              scheduled: alerts, shared-shift sync, ClickUp webhooks + mirror, chat summaries
     POST /internal/stores/<s>/check-shifts | mirror | sync-shifts | tasks, GET …/closing-counts
@@ -25,6 +26,7 @@ from __future__ import annotations
 import datetime
 import functools
 import hmac
+import json
 import logging
 import os
 from urllib.parse import quote
@@ -35,7 +37,7 @@ from skills.google_signin import access, identity
 
 from skills.clickup_chat import runner as clickup_chat
 
-from cloud.store_tasks import auth, clickup_import, clickup_webhooks, shared_sync, summaries
+from cloud.store_tasks import auth, clickup_import, clickup_webhooks, notify, shared_sync, summaries
 from cloud.store_tasks import service as svc
 from cloud.store_tasks import store as st
 
@@ -299,6 +301,38 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     @manager_required
     def save_template():
         return jsonify(template=tasks.save_template(g.store, body(), g.staff["sid"]).to_dict())
+
+    @app.post("/v1/feedback")
+    @staff_required
+    def add_feedback():
+        if request.files.get("photo") is not None:
+            data, photo = json.loads(request.form.get("data") or "{}"), upload()
+        else:
+            data, photo = body(), None
+        f = tasks.add_feedback(g.store, g.staff, g.account, data, photo)
+        ctx = f["context"]
+        log.info("store-tasks feedback id=%s store=%s staff=%s kind=%s screen=%s date=%s shift=%s task_id=%s",
+                 f["id"], g.store, f["staff_id"], f["kind"], ctx.get("screen"), ctx.get("date"),
+                 ctx.get("shift"), ctx.get("task_id"))
+        notify.feedback(tasks.store(g.store), f)
+        return jsonify(id=f["id"])
+
+    @app.get("/v1/feedback")
+    @manager_required
+    def feedback():
+        return jsonify(feedback=tasks.feedback(g.store))
+
+    @app.post("/v1/feedback/<fid>/done")
+    @manager_required
+    def close_feedback(fid: str):
+        return jsonify(tasks.close_feedback(g.store, fid, g.staff["sid"], bool(body().get("done", True))))
+
+    @app.post("/v1/templates/order")
+    @manager_required
+    def reorder_templates():
+        b = body()
+        return jsonify(changed=tasks.reorder_templates(g.store, str(b.get("shift", "")), list(b.get("ids") or []),
+                                                       g.staff["sid"]))
 
     @app.get("/v1/staff")
     @manager_required

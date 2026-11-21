@@ -29,6 +29,7 @@ COUNTS = "counts"
 SHIFTS = "shared_shifts"  # read-only shared data, written by shared_sync only
 ALERTS = "shift_alerts"
 JOBS = "jobs"
+FEEDBACK = "feedback"  # problems and ideas from the crew, with what was on screen and their last steps
 
 _BATCH = 400
 

@@ -2,8 +2,11 @@ import { CalendarClock, Camera, Check, ChevronLeft, ChevronRight, Clapperboard, 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
+import { FeedbackButton } from "./Feedback";
+import { shrink } from "./Photos";
 import { PersonPicker } from "./People";
 import { applyPending, flush, loadQueue, push, type Pending } from "./queue";
+import { setWhere, track } from "./steps";
 import { TaskDetail } from "./TaskDetail";
 import { blankDraft, TaskForm, type TaskDraft } from "./TaskForm";
 import { addDays, Avatar, Button, cx, dayLabel, firstName, Notice, Sheet, shiftTone, Tick, time, Toast, useWide } from "./ui";
@@ -113,6 +116,9 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const tasks = useMemo(() => (day ? day.tasks.filter((t) => t.shift === activeShift) : []), [day, activeShift]);
   const scheduled = useMemo(() => new Set(Object.values(day?.teams ?? {}).flatMap((team) => team.map((m) => m.id ?? ""))), [day]);
   const openTask = day?.tasks.find((t) => t.id === open) ?? null;
+  useEffect(() => {
+    setWhere({ screen: "List", date, shift: activeShift, task: openTask?.title, task_id: openTask?.id, source: openTask?.source });
+  }, [date, activeShift, openTask?.id, openTask?.title, openTask?.source]);
   // Counted the way ClickUp reports a list: tasks, not the steps inside them.
   const whole = tasks.filter((t) => !t.parent_id);
   const left = whole.filter((t) => t.status === "open").length;
@@ -147,9 +153,31 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
     refresh();
   };
 
+  // A task that needs a photo goes straight to the camera; the photo, once saved, ticks it.
+  const camera = useRef<HTMLInputElement>(null);
+  const shooting = useRef<string | null>(null);
+  const tookPhoto = async (file: File | undefined) => {
+    const id = shooting.current;
+    shooting.current = null;
+    if (camera.current) camera.current.value = "";
+    if (!id || !file) return;
+    setToast("Saving the photo…");
+    try {
+      replaceTask(await api.photo(session.token, id, await shrink(file)));
+      navigator.vibrate?.(12);
+      change({ id, kind: "complete" });
+      setToast("Photo saved and ticked");
+    } catch (e) {
+      setToast("");
+      setError(isOffline(e) ? "No connection, so the photo was not saved. Try again when you are back online." : (e as Error).message);
+    }
+  };
+
   const toggle = (t: Task) => {
     if (t.status === "open" && t.needs_photo && !t.photos?.length) {
       setOpen(t.id);
+      shooting.current = t.id;
+      camera.current?.click();
       return;
     }
     if (t.status === "done" && !isManager && t.completed_by !== me && t.ticked_by !== me) {
@@ -157,10 +185,12 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
       return;
     }
     if (t.status === "open") navigator.vibrate?.(12);
+    track("action", `${t.status === "open" ? "tick" : "undo"} ${t.title}`);
     change({ id: t.id, kind: t.status === "open" ? "complete" : "reopen" });
   };
 
   const assign = (ids: string[], assignee_id: string | null) => {
+    track("action", `assign ${ids.length} task(s) to ${assignee_id ? firstName(names.get(assignee_id)) : "no one"}`);
     change(...ids.map((id) => ({ id, kind: "assign" as const, assignee_id })));
     const who = assignee_id === me ? "you" : firstName(names.get(assignee_id ?? ""));
     setToast(assignee_id ? `${ids.length > 1 ? `${ids.length} tasks` : "Task"} assigned to ${who}` : "No one is on it now");
@@ -281,6 +311,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
                 {queue.length ? `${queue.length} to send` : "Offline"}
               </span>
             )}
+            <FeedbackButton session={session} />
             {isManager && (
               <button aria-label="Manage" onClick={onManage} className="rounded-full p-2.5 text-muted-foreground hover:bg-muted">
                 <Settings className="size-5" />
@@ -543,6 +574,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
         />
       )}
       {toast && <Toast key={toast} text={toast} />}
+      <input ref={camera} type="file" accept="image/*" capture="environment" hidden onChange={(e) => tookPhoto(e.target.files?.[0])} />
       {counting && (
         <CountForm
           boot={boot}

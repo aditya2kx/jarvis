@@ -1,3 +1,5 @@
+import { track, type Step } from "./steps";
+
 export type Role = "crew" | "manager";
 
 export interface Staff {
@@ -144,6 +146,24 @@ export interface Repeat {
   end_date: string | null;
 }
 
+export type FeedbackKind = "problem" | "idea";
+
+export interface FeedbackNew {
+  kind: FeedbackKind;
+  text: string;
+  context: Record<string, unknown>;
+  events: Step[];
+}
+
+export interface Feedback extends FeedbackNew {
+  id: string;
+  at: string;
+  status: "new" | "done";
+  staff_name: string;
+  device: string;
+  photos: Photo[];
+}
+
 export interface Template extends Repeat {
   id: string;
   shift: string;
@@ -214,13 +234,19 @@ async function call<T>(method: string, path: string, opts: { token?: string; bod
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), opts.form ? 60000 : 15000);
+  const started = performance.now();
+  const step = (status: number) => track("api", `${method} ${path.split("?")[0]}`, { status, ms: Math.round(performance.now() - started) });
   try {
     const res = await fetch(path, {
       method,
       headers,
       body: opts.form ?? (opts.body !== undefined ? JSON.stringify(opts.body) : undefined),
       signal: ctl.signal,
+    }).catch((e: unknown) => {
+      step(0);
+      throw e;
     });
+    step(res.status);
     if (!res.ok) {
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
       if (res.status === 401 && !data?.error) {
@@ -291,6 +317,16 @@ export const api = {
   submitCount: (token: string, date: string, body: Pick<Count, "items" | "notes" | "tips">) =>
     call<{ count: Count }>("PUT", `/v1/counts/${date}`, { token, body }),
   templates: (token: string) => call<{ templates: Template[] }>("GET", "/v1/templates", { token }),
+  sendFeedback: (token: string, body: FeedbackNew, photo?: Blob) => {
+    if (!photo) return call<{ id: string }>("POST", "/v1/feedback", { token, body });
+    const form = photoForm(photo);
+    form.append("data", JSON.stringify(body));
+    return call<{ id: string }>("POST", "/v1/feedback", { token, form });
+  },
+  feedback: (token: string) => call<{ feedback: Feedback[] }>("GET", "/v1/feedback", { token }),
+  closeFeedback: (token: string, id: string, done: boolean) => call<Feedback>("POST", `/v1/feedback/${id}/done`, { token, body: { done } }),
+  reorderTemplates: (token: string, shift: string, ids: string[]) =>
+    call<{ changed: number }>("POST", "/v1/templates/order", { token, body: { shift, ids } }),
   /** `copy_from` starts a new task with another one's example photos. */
   saveTemplate: (token: string, body: Partial<Template> & { copy_from?: string }) =>
     call<{ template: Template }>("POST", "/v1/templates", { token, body }),

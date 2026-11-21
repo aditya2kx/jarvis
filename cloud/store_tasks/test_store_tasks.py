@@ -558,6 +558,22 @@ def test_closing_count_feeds_inventory_in_clickup_shape(env):
         (FIELD, "2026-11-19", "st-palmetto_2026-11-19")]
 
 
+def test_a_count_tried_on_a_clickup_day_gives_way_to_the_clickup_count(env):
+    day = "2026-11-18"  # before cutover: ClickUp runs it
+    _upload(env, f"/v1/counts/{day}/photo", env.crew_h)
+    sent = env.client.put(f"/v1/counts/{day}", json={"items": {FIELD: "5"}}, headers=env.crew_h).get_json()["count"]
+    assert sent["source"] == svc.COUNT_TRYOUT
+    assert env.client.get(f"/v1/days/{day}", headers=env.crew_h).get_json()["count_submitted"] is True
+    out = env.client.get("/internal/stores/palmetto/closing-counts",
+                         headers={"Authorization": f"Bearer {INTERNAL}"}).get_json()["tasks"]
+    assert out == []
+    real = {"id": f"palmetto_{day}", "store": "palmetto", "date": day, "items": {FIELD: "40"},
+            "source": "clickup", "clickup_id": "cu1", "submitted_at": f"{day}T21:00:00-06:00"}
+    assert ci.write_counts(env.tasks, [real]) == 1
+    kept = env.tasks.count("palmetto", datetime.date(2026, 11, 18))
+    assert kept["items"] == {FIELD: "40"} and kept["photos"] == []
+
+
 def test_unfinished_shift_alerts_once(env):
     h = {"Authorization": f"Bearer {INTERNAL}"}
     env.client.get("/v1/days/2026-11-19", headers=env.crew_h)

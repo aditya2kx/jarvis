@@ -95,7 +95,9 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
 - **Closing count.** Same fields as the ClickUp form, including its photos. The nightly inventory job reads it
   through `closing-counts`, which returns the ClickUp form-task shape, so
   `agents/bhaga/scripts/ingest_inventory.py` parses it unchanged. Switch a store with the
-  profile key `"closing_source": "store_tasks"` (default `clickup`).
+  profile key `"closing_source": "store_tasks"` (default `clickup`). On a day ClickUp still runs,
+  a count sent here is kept as `source: "tryout"`: shown, never returned by `closing-counts`, and
+  replaced (with its photos) by the count the crew sends in ClickUp.
 - **Events.** `task.completed`, `task.reopened`, `task.created`, `shift.incomplete`,
   `count.submitted` on Pub/Sub. A failed publish is logged and never fails the tick.
 

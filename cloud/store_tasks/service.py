@@ -34,6 +34,9 @@ TEMPLATE_LIST_FIELDS = tuple(f.name for f in dataclasses.fields(model.Template))
 # Kept on a ClickUp task as a record; nothing on screen reads it.
 NOT_LISTED = ("clickup",)
 PLANNED = "planned"  # a ClickUp day's task the schedule expects but ClickUp has not added yet
+# A count sent from the app on a day ClickUp still runs: shown, never sent to inventory, and
+# replaced (photos too) by the count the crew sends in ClickUp.
+COUNT_TRYOUT = "tryout"
 FEEDBACK_KINDS = ("problem", "idea")
 MAX_FEEDBACK_TEXT = 4000
 MAX_FEEDBACK_EVENTS = 100
@@ -792,6 +795,7 @@ class Tasks:
         stamp = self.now()
         doc_id = f"{store_id}_{day.isoformat()}"
         prev = self.docs.get(st.COUNTS, doc_id)
+        source = "app" if cfg.generated(day) else COUNT_TRYOUT
         photos = (prev or {}).get("photos") or []
         if prev and not prev.get("submitted_at"):
             prev = None  # only photos so far: nothing was sent yet, so there is no earlier version
@@ -799,7 +803,7 @@ class Tasks:
                "notes": {k: (data.get("notes") or {}).get(k, "").strip()
                          for k in ("shift", "low", "out")},
                "tips": data.get("tips"), "submitted_by": staff["sid"],
-               "submitted_at": stamp.isoformat(), "source": "app", "photos": photos,
+               "submitted_at": stamp.isoformat(), "source": source, "photos": photos,
                "revisions": (prev or {}).get("revisions", []) + ([{
                    k: prev[k] for k in ("items", "notes", "tips", "submitted_by", "submitted_at")
                }] if prev else [])}
@@ -812,11 +816,12 @@ class Tasks:
     def add_count_photo(self, store_id: str, day: datetime.date, staff: dict, data: bytes,
                         content_type: str) -> dict:
         """Photos sent with the closing count (deep clean, freezer). Can be added before the count."""
-        self.store(store_id)
+        cfg = self.store(store_id)
         doc_id = f"{store_id}_{day.isoformat()}"
         cur = self.docs.get(st.COUNTS, doc_id) or {
             "id": doc_id, "store": store_id, "date": day.isoformat(), "items": {},
-            "notes": {"shift": "", "low": "", "out": ""}, "tips": None, "source": "draft"}
+            "notes": {"shift": "", "low": "", "out": ""}, "tips": None,
+            "source": "draft" if cfg.generated(day) else COUNT_TRYOUT}
         path = self._photo(store_id, f"{day.isoformat()}/count", data, content_type)
         self.photos.put(path, data, content_type)
         cur["photos"] = (cur.get("photos") or []) + [

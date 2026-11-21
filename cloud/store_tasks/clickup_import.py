@@ -618,6 +618,8 @@ def write_counts(tasks: svc.Tasks, counts: list[dict]) -> int:
         cur = tasks.docs.get(st.COUNTS, c["id"])
         if cur and cur.get("source") == "app":
             continue  # a count entered in the app is never replaced by ClickUp
+        if cur and cur.get("source") == svc.COUNT_TRYOUT:
+            cur = None
         kept = {k: cur[k] for k in ("clickup_files_at",) if cur and k in cur}
         tasks.docs.set(st.COUNTS, c["id"], {**c, **kept, "photos": (cur or {}).get("photos") or []})
         n += 1

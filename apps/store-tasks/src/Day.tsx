@@ -238,8 +238,13 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
       return next;
     });
   };
+  const countFound = words.every((w) => "closing inventory count".includes(w));
+  const hasCount = boot.store.count_items.length > 0 && (!readOnly || day.count_submitted);
   const elsewhere = words.length
-    ? day.shifts.filter((s) => s.id !== activeShift).map((s) => ({ ...s, n: day.tasks.filter((t) => t.shift === s.id && found(t)).length })).filter((s) => s.n > 0)
+    ? day.shifts
+        .filter((s) => s.id !== activeShift)
+        .map((s) => ({ ...s, n: day.tasks.filter((t) => t.shift === s.id && found(t)).length + (hasCount && countFound && s.id === day.shifts.at(-1)?.id ? 1 : 0) }))
+        .filter((s) => s.n > 0)
     : [];
   const top = tasks.filter((t) => !t.parent_id || !tasks.some((p) => p.id === t.parent_id));
   const unassigned = tasks.filter((t) => !t.assignee_id && t.status === "open" && !isPlanned(t));
@@ -250,7 +255,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const shiftInfo = day.shifts.find((s) => s.id === activeShift);
   const overdue = left > 0 && date === day.today && Boolean(shiftInfo?.due_at) && new Date() > new Date(shiftInfo!.due_at!);
   const isLastShift = activeShift === day.shifts.at(-1)?.id;
-  const showCount = isLastShift && boot.store.count_items.length > 0 && (!clickupDay || day.count_submitted);
+  const showCount = isLastShift && hasCount && countFound;
 
   const row = (t: Task, sub = false) => (
     <TaskRow
@@ -505,7 +510,15 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
               <span className="flex-1">
                 <span className="block font-medium">Closing count</span>
                 <span className="block text-sm text-muted-foreground">
-                  {clickupDay ? "Sent. Open to see counts, notes and photos." : day.count_submitted ? "Sent. Open to view or correct it." : "Not sent yet. Counts, notes and photos."}
+                  {readOnly
+                    ? "Sent in ClickUp. Open to see counts, notes and photos."
+                    : clickupDay
+                      ? day.count_submitted
+                        ? "Sent. Open to view it. A count sent in ClickUp replaces it."
+                        : "Try it out here. Inventory still reads the ClickUp count."
+                      : day.count_submitted
+                        ? "Sent. Open to view or correct it."
+                        : "Not sent yet. Counts, notes and photos."}
                 </span>
               </span>
               <ChevronRight className="size-5 text-muted-foreground" />
@@ -641,7 +654,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
           session={session}
           date={date}
           names={names}
-          readOnly={clickupDay}
+          readOnly={readOnly}
+          tryout={clickupDay}
           onClose={() => {
             setCounting(false);
             refresh();

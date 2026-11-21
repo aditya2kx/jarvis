@@ -25,10 +25,12 @@ interface Props {
   names: Map<string, string>;
   /** A day done in ClickUp: the count is shown, not edited. */
   readOnly: boolean;
+  /** ClickUp still runs this day: a count sent here is a try-out the ClickUp count replaces. */
+  tryout: boolean;
   onClose: () => void;
 }
 
-export function CountForm({ boot, session, date, names, readOnly, onClose }: Props) {
+export function CountForm({ boot, session, date, names, readOnly, tryout, onClose }: Props) {
   const [draft, setDraft] = useState<Draft>(() => (readOnly ? null : JSON.parse(localStorage.getItem(draftKey(date)) ?? "null")) ?? EMPTY);
   const [saved, setSaved] = useState<Count | null>(null);
   const [busy, setBusy] = useState(false);
@@ -93,6 +95,7 @@ export function CountForm({ boot, session, date, names, readOnly, onClose }: Pro
   return (
     <Sheet title={`Closing count · ${dayLabel(date)}`} onClose={onClose}>
       <div className="space-y-4">
+        {tryout && !readOnly && <Notice>Try it out here. Inventory still reads the count sent in ClickUp, and that count replaces this one.</Notice>}
         {saved?.submitted_at && (
           <Notice>
             Sent{saved.submitted_by && ` by ${firstName(names.get(saved.submitted_by)) || "someone"}`} at {time(saved.submitted_at)}.

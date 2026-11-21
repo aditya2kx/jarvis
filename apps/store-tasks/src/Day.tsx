@@ -1,4 +1,4 @@
-import { CalendarClock, Camera, Check, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, Plus, Settings, UserPlus, Users, X } from "lucide-react";
+import { CalendarClock, Camera, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, Plus, Search, Settings, UserPlus, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
@@ -9,7 +9,7 @@ import { applyPending, flush, loadQueue, push, type Pending } from "./queue";
 import { setWhere, track } from "./steps";
 import { TaskDetail } from "./TaskDetail";
 import { blankDraft, TaskForm, type TaskDraft } from "./TaskForm";
-import { addDays, Avatar, Button, cx, dayLabel, firstName, Notice, Sheet, shiftTone, Tick, time, Toast, useWide } from "./ui";
+import { addDays, Avatar, Button, cx, dayLabel, firstName, inputClass, Notice, Sheet, shiftTone, Tick, time, Toast, useWide } from "./ui";
 
 const REFRESH_MS = 60 * 1000;
 const TOAST_MS = 2800;
@@ -66,6 +66,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const [shift, setShift] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [hideDone, setHideDone] = useState(false);
+  const [query, setQuery] = useState("");
+  const [unfolded, setUnfolded] = useState<Set<string>>(() => new Set());
   const [open, setOpen] = useState<string | null>(null);
   const [picking, setPicking] = useState<Picking | null>(null);
   const [form, setForm] = useState<Forming | null>(null);
@@ -219,9 +221,26 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const clickupDay = !day.generated;
   const readOnly = clickupDay && date < day.today;
   const childrenOf = (id: string) => tasks.filter((t) => t.parent_id === id);
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const found = (t: Task) => words.every((w) => t.title.toLowerCase().includes(w));
   const matches = (t: Task) =>
-    (filter === "all" || (filter === "mine" ? t.assignee_id === me : !t.assignee_id)) && (!hideDone || t.status === "open");
+    found(t) && (filter === "all" || (filter === "mine" ? t.assignee_id === me : !t.assignee_id)) && (!hideDone || t.status === "open");
   const shows = (t: Task) => matches(t) || childrenOf(t.id).some(matches);
+  // Groups start folded; one opens by itself when only its steps match the search or filter.
+  const isOpen = (t: Task) => unfolded.has(t.id) || ((words.length > 0 || !matches(t)) && childrenOf(t.id).some(matches));
+  const fold = (t: Task) => {
+    const opening = !isOpen(t);
+    track("action", `${opening ? "open" : "fold"} group ${t.title}`);
+    setUnfolded((u) => {
+      const next = new Set(u);
+      if (opening) next.add(t.id);
+      else next.delete(t.id);
+      return next;
+    });
+  };
+  const elsewhere = words.length
+    ? day.shifts.filter((s) => s.id !== activeShift).map((s) => ({ ...s, n: day.tasks.filter((t) => t.shift === s.id && found(t)).length })).filter((s) => s.n > 0)
+    : [];
   const top = tasks.filter((t) => !t.parent_id || !tasks.some((p) => p.id === t.parent_id));
   const unassigned = tasks.filter((t) => !t.assignee_id && t.status === "open" && !isPlanned(t));
   const hasPlanned = tasks.some(isPlanned);
@@ -239,6 +258,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
       task={t}
       sub={sub}
       steps={childrenOf(t.id)}
+      expanded={sub ? undefined : isOpen(t)}
+      onExpand={() => fold(t)}
       names={names}
       selected={t.id === open}
       readOnly={readOnly || isPlanned(t)}
@@ -388,6 +409,24 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
 
       <div className="flex min-h-0 flex-1">
         <main className="min-w-0 flex-1 overflow-y-auto px-4 pb-10 pt-3 sm:px-6">
+          <div className="relative mb-2">
+            <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onBlur={() => query.trim() && track("action", `search "${query.trim()}"`)}
+              placeholder="Find a task"
+              aria-label="Find a task"
+              enterKeyHint="search"
+              className={cx(inputClass, "pl-10 pr-11 [&::-webkit-search-cancel-button]:hidden")}
+            />
+            {query && (
+              <button aria-label="Clear search" onClick={() => setQuery("")} className="absolute right-1 top-1/2 flex size-10 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted">
+                <X className="size-4" />
+              </button>
+            )}
+          </div>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
             <div role="group" aria-label="Show" className="flex gap-1 rounded-lg bg-muted p-1">
               {FILTERS.filter((f) => !(shop && f === "mine")).map((f) => (
@@ -477,7 +516,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             {top.filter(shows).map((t, i) => (
               <li key={t.id} className="rise" style={{ "--i": i } as React.CSSProperties}>
                 {row(t)}
-                {childrenOf(t.id).filter(matches).length > 0 && (
+                {isOpen(t) && childrenOf(t.id).filter(matches).length > 0 && (
                   <ul className="divide-y divide-border border-t border-border bg-muted/40">
                     {childrenOf(t.id)
                       .filter(matches)
@@ -492,6 +531,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
               <li className="px-4 py-12 text-center text-muted-foreground">
                 {tasks.length === 0
                   ? "Nothing on this list yet."
+                  : words.length
+                    ? `No ${shiftInfo?.label ?? ""} task matches “${query.trim()}”.`
                   : filter === "mine"
                     ? "Nothing here is yours yet. Tap the person icon on a task to take it."
                     : hideDone && left === 0
@@ -511,6 +552,24 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
               </li>
             )}
           </ul>
+          {elsewhere.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              Also matches on
+              {elsewhere.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => {
+                    setShift(s.id);
+                    setOpen(null);
+                  }}
+                  className="flex min-h-10 items-center gap-1 rounded-full border border-border bg-card px-3 font-medium text-foreground transition hover:bg-muted active:scale-95"
+                >
+                  {s.label} <span className="tabular-nums text-muted-foreground">{s.n}</span>
+                  <ChevronRight className="size-4" />
+                </button>
+              ))}
+            </div>
+          )}
         </main>
 
         {wide && (
@@ -597,6 +656,8 @@ interface RowProps {
   task: Task;
   sub: boolean;
   steps: Task[];
+  expanded?: boolean;
+  onExpand: () => void;
   names: Map<string, string>;
   selected: boolean;
   readOnly: boolean;
@@ -607,7 +668,7 @@ interface RowProps {
 
 const isPlanned = (t: Task) => t.source === "planned";
 
-function TaskRow({ task, sub, steps, names, selected, readOnly, onToggle, onOpen, onAssign }: RowProps) {
+function TaskRow({ task, sub, steps, expanded, onExpand, names, selected, readOnly, onToggle, onOpen, onAssign }: RowProps) {
   const done = task.status === "done";
   const assignee = task.assignee_id ? names.get(task.assignee_id) : undefined;
   const photos = task.photos?.length ?? 0;
@@ -682,6 +743,17 @@ function TaskRow({ task, sub, steps, names, selected, readOnly, onToggle, onOpen
           )}
         </span>
       </button>
+      {expanded !== undefined && steps.length > 0 && (
+        <button
+          aria-expanded={expanded}
+          aria-label={`${expanded ? "Hide" : "Show"} the ${steps.length} steps of ${task.title}`}
+          onClick={onExpand}
+          className="flex shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
+        >
+          <span className="hidden sm:inline">{expanded ? "Hide" : "Show"} steps</span>
+          <ChevronDown className={cx("size-5 transition-transform", expanded && "rotate-180")} />
+        </button>
+      )}
       <button
         disabled={readOnly}
         onClick={() => onAssign(task)}

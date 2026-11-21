@@ -74,6 +74,9 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   `order`, also applied to ClickUp-mirrored days). The starting order came from ClickUp tick
   times; a manager moves a task up or down in Manage → Tasks (`POST /v1/templates/order`), which
   keeps the previous order in the template history and re-orders lists from today on.
+- **Finding a task.** "Find a task" above the list filters the shift by words in the title and
+  offers a jump to other shifts that also match. A task with steps shows folded; "Show steps"
+  opens it, and it opens by itself when only its steps match the search or filter.
 - **Photo-needed ticks.** Ticking a task that needs a photo opens the camera; the photo is
   saved and the task ticked in one step.
 - **Feedback.** One Feedback button, on the day list and in Manage: "Something's wrong" or "Idea", text and an

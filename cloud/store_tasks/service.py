@@ -32,6 +32,7 @@ _RESIZING = threading.BoundedSemaphore(2)  # decoding big photos is memory-hungr
 TEMPLATE_LIST_FIELDS = tuple(f.name for f in dataclasses.fields(model.Template)) + ("reference_photos",)
 # Kept on a ClickUp task as a record; nothing on screen reads it.
 NOT_LISTED = ("clickup",)
+PLANNED = "planned"  # a ClickUp day's task the schedule expects but ClickUp has not added yet
 
 
 class NotFound(Exception):
@@ -67,6 +68,20 @@ def _show_how_to(t: dict, definition: dict | None) -> None:
     Only what is shown: ClickUp's own text stays on the stored task."""
     if definition and definition.get("instructions"):
         t["instructions"] = definition["instructions"]
+
+
+def planned(cfg: model.StoreConfig, day: datetime.date, tasks: list[dict],
+            templates: list[model.Template]) -> list[dict]:
+    """ClickUp adds a recurring task's next copy only once the current one is due, so days ahead look
+    empty. Show what the schedule puts there instead, never stored, until ClickUp's own copy arrives."""
+    def key(t: dict) -> tuple:
+        return t["shift"], " ".join(t["title"].split()).lower()
+
+    have = {k: t["id"] for t in tasks for k in (t.get("template_id"), key(t)) if k}
+    built = model.build_day(cfg, templates, day)
+    real = {t["id"]: have.get(t["template_id"]) or have.get(key(t)) for t in built}
+    return [{**t, "source": PLANNED, "parent_id": real.get(t["parent_id"]) or t["parent_id"]}
+            for t in built if not real[t["id"]]]
 
 
 def public_staff(s: dict) -> dict:
@@ -433,6 +448,8 @@ class Tasks:
         templates = sorted((model.Template.from_dict(d) for d in got["templates"]),
                            key=lambda t: (t.shift, t.order, t.title))
         tasks = self.ensure_day(cfg, day, got["rows"], templates)
+        if not cfg.generated(day) and day > cfg.today(self.now()):
+            tasks = sorted(tasks + planned(cfg, day, tasks, templates), key=lambda t: (t["shift"], *model.sort_key(t)))
         examples = {d["id"]: d["reference_photos"] for d in got["templates"] if d.get("reference_photos")}
         for t in tasks:  # the list shows which tasks have "how it should look" media
             for k in NOT_LISTED:
@@ -628,8 +645,26 @@ class Tasks:
         tpl = self.docs.get(st.TEMPLATES, t["template_id"]) if t.get("template_id") else None
         return (st.TEMPLATES, tpl) if tpl else (st.TASKS, t)
 
+    def _planned_task(self, store_id: str, task_id: str) -> dict:
+        prefix = f"{store_id}_"
+        try:
+            day = datetime.date.fromisoformat(task_id[len(prefix):len(prefix) + 10])
+        except ValueError:
+            raise NotFound("task") from None
+        cfg = self.store(store_id)
+        if not task_id.startswith(prefix) or cfg.generated(day) or day <= cfg.today(self.now()):
+            raise NotFound("task")
+        found = next((t for t in planned(cfg, day, self._stored(cfg, day), self.templates(store_id))
+                      if t["id"] == task_id), None)
+        if found is None:
+            raise NotFound("task")
+        return found
+
     def task_detail(self, store_id: str, task_id: str) -> dict:
-        t = self._task(task_id, store_id)
+        try:
+            t = self._task(task_id, store_id)
+        except NotFound:
+            t = self._planned_task(store_id, task_id)
         coll, holder = self._definition(t)
         own = {p["path"] for p in t.get("photos") or []}
         recent = holder.get("recent_photos") or [] if coll == st.TEMPLATES else []

@@ -1,4 +1,4 @@
-import { Camera, Check, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, Plus, Settings, UserPlus, Users, X } from "lucide-react";
+import { CalendarClock, Camera, Check, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, Plus, Settings, UserPlus, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
@@ -193,7 +193,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
     (filter === "all" || (filter === "mine" ? t.assignee_id === me : !t.assignee_id)) && (!hideDone || t.status === "open");
   const shows = (t: Task) => matches(t) || childrenOf(t.id).some(matches);
   const top = tasks.filter((t) => !t.parent_id || !tasks.some((p) => p.id === t.parent_id));
-  const unassigned = tasks.filter((t) => !t.assignee_id && t.status === "open");
+  const unassigned = tasks.filter((t) => !t.assignee_id && t.status === "open" && !isPlanned(t));
+  const hasPlanned = tasks.some(isPlanned);
   const counts: Record<Filter, number> = { all: whole.length, mine: whole.filter((t) => t.assignee_id === me).length, unassigned: whole.filter((t) => !t.assignee_id).length };
   const openUnassigned = unassigned.filter((t) => !t.parent_id).length;
   const labels: Record<Filter, string> = { all: "All", mine: "Mine", unassigned: "Unassigned" };
@@ -210,7 +211,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
       steps={childrenOf(t.id)}
       names={names}
       selected={t.id === open}
-      readOnly={readOnly}
+      readOnly={readOnly || isPlanned(t)}
       onToggle={toggle}
       onOpen={setOpen}
       onAssign={pickFor}
@@ -224,7 +225,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
       shift={day.shifts.find((s) => s.id === openTask.shift)}
       names={names}
       session={session}
-      readOnly={readOnly}
+      readOnly={readOnly || isPlanned(openTask)}
       onToggle={toggle}
       onAssign={pickFor}
       onAssignMe={(t) => assign([t.id], me)}
@@ -409,6 +410,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
                 {readOnly
                   ? "This day was done in ClickUp. It is shown here for reference."
                   : "ClickUp still runs this day. Try things out here: ticks, people, photos and notes are put back as ClickUp has them tomorrow, or as soon as the task changes in ClickUp."}
+                {hasPlanned && " Tasks marked Planned are on the schedule, but ClickUp adds each one only once its previous copy is due. They can be ticked from then on."}
               </Notice>
             </div>
           )}
@@ -570,6 +572,8 @@ interface RowProps {
   onAssign: (t: Task) => void;
 }
 
+const isPlanned = (t: Task) => t.source === "planned";
+
 function TaskRow({ task, sub, steps, names, selected, readOnly, onToggle, onOpen, onAssign }: RowProps) {
   const done = task.status === "done";
   const assignee = task.assignee_id ? names.get(task.assignee_id) : undefined;
@@ -594,6 +598,12 @@ function TaskRow({ task, sub, steps, names, selected, readOnly, onToggle, onOpen
           </span>
         </span>
         <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[13px] text-muted-foreground empty:hidden">
+          {isPlanned(task) && (
+            <span className={cx(meta, "rounded-full bg-muted px-1.5 font-medium")}>
+              <CalendarClock className="size-3.5" />
+              Planned
+            </span>
+          )}
           {done && (
             <span className={cx(meta, "text-success")}>
               {[firstName(names.get(task.completed_by ?? "")), time(task.completed_at)].filter(Boolean).join(" · ")}

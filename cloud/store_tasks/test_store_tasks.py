@@ -338,6 +338,25 @@ def test_a_clickup_task_shows_its_definitions_how_to(env):
     assert env.tasks.docs.get(st.TASKS, "cu_m1")["instructions"] == "ClickUp's words"  # ClickUp's copy untouched
 
 
+def test_days_ahead_show_the_tasks_clickup_has_not_added_yet(env):
+    env.tasks.put_store(dataclasses.replace(env.tasks.store("palmetto"), cutover_date=None))
+    base = {"store": "palmetto", "date": "2026-11-20", "shift": "opening", "source": "clickup", "status": "open"}
+    env.tasks.docs.set(st.TASKS, "cu_u", {**base, "id": "cu_u", "title": "Unlock", "template_id": "t1", "parent_id": None})
+    env.tasks.docs.set(st.TASKS, "cu_dc", {**base, "id": "cu_dc", "title": "deep  clean", "parent_id": None})
+    c, h = env.client, env.crew_h
+
+    tasks = c.get("/v1/days/2026-11-20", headers=h).get_json()["tasks"]
+    assert {t["title"]: (t["source"], t["parent_id"]) for t in tasks} == {
+        "Unlock": ("clickup", None), "deep  clean": ("clickup", None),
+        "Fri: shelf": ("planned", "cu_dc"), "Mop": ("planned", None)}
+    mop = next(t for t in tasks if t["title"] == "Mop")
+    assert c.get(f"/v1/tasks/{mop['id']}", headers=h).get_json()["task"]["title"] == "Mop"
+    assert c.post(f"/v1/tasks/{mop['id']}/complete", json={}, headers=h).status_code == 404
+    assert env.tasks.docs.get(st.TASKS, mop["id"]) is None  # a preview, never stored
+    today = c.get("/v1/days/2026-11-19", headers=h).get_json()["tasks"]
+    assert not any(t["source"] == "planned" for t in today)  # today is exactly what ClickUp has
+
+
 def test_link_templates_gives_clickup_tasks_their_definition_and_earlier_photos(env):
     cfg = env.tasks.store("palmetto")
     tid = ci.template_id("closing", "Deep clean", "Fridge")

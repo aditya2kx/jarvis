@@ -154,7 +154,7 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
             </Button>
           )
         )}
-        {blocked && <Notice>Add a photo below first — this one needs a photo to be marked done.</Notice>}
+        {blocked && !readOnly && <Notice>Add a photo below first — this one needs a photo to be marked done.</Notice>}
         {error && <Notice tone="error">{error}</Notice>}
       </div>
 

@@ -110,6 +110,11 @@ ClickUp's state on the task (`trial`, `clickup_state`). Summaries and alerts rea
 (`svc.clickup_view`), a ClickUp change to the task wins, and the tick's `reset_trials` puts every
 tried-out task back as ClickUp has it once its day is over. Earlier days stay read-only.
 
+ClickUp adds a recurring task's next copy only once the current one is due, so days ahead hold
+few ClickUp tasks. The day list fills them from the definitions as **planned** tasks
+(`source: "planned"`, `svc.planned`): computed on read, never stored, read-only, and replaced by
+ClickUp's copy (matched on `template_id`, else shift and title) as soon as the mirror has it.
+
 ```bash
 python3 -m cloud.store_tasks.admin seed --store palmetto            # store config from stores/<id>.json
 python3 -m cloud.store_tasks.clickup_import --store palmetto --all  # staff, templates, all history, counts, photos

@@ -319,11 +319,12 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             )}
             {shop ? (
               <button
+                aria-label="Manager"
                 onClick={onLock ?? undefined}
-                className="flex min-h-10 items-center gap-2 rounded-full border border-border bg-card px-3 text-[15px] font-medium text-muted-foreground transition hover:bg-muted active:scale-95"
+                className="flex min-h-10 min-w-10 items-center justify-center gap-2 rounded-full border border-border bg-card px-3 text-[15px] font-medium text-muted-foreground transition hover:bg-muted active:scale-95"
               >
                 <KeyRound className="size-4" />
-                Manager
+                <span className="hidden sm:inline">Manager</span>
               </button>
             ) : (
               <button

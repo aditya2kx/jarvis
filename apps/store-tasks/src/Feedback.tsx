@@ -8,7 +8,7 @@ import { Button, cx, dayLabel, inputClass, Notice, Sheet, time, Toast } from "./
 
 const KINDS: { id: FeedbackKind; label: string; prompt: string }[] = [
   { id: "problem", label: "Something's wrong", prompt: "What happened, and what did you expect?" },
-  { id: "idea", label: "Idea", prompt: "What would make this easier or faster?" },
+  { id: "idea", label: "I have an idea", prompt: "What would make this easier or faster?" },
 ];
 const TOAST_MS = 2600;
 
@@ -26,15 +26,16 @@ export function FeedbackButton({ session }: { session: Session }) {
   return (
     <>
       <button
-        aria-label="Feedback: report a problem or an idea"
+        aria-label="Report a problem or an idea"
         onClick={() => {
           track("action", "open feedback");
           setOpen(true);
         }}
-        className="flex min-h-10 items-center gap-2 rounded-full p-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground active:scale-95 sm:px-3"
+        className="flex min-h-10 items-center gap-2 rounded-full border border-border bg-card px-3 text-[15px] font-medium text-foreground transition hover:bg-muted active:scale-95"
       >
-        <MessageSquareWarning className="size-5" />
-        <span className="hidden text-[15px] font-medium sm:inline">Feedback</span>
+        <MessageSquareWarning className="size-4 text-primary" />
+        <span className="sm:hidden">Problem?</span>
+        <span className="hidden sm:inline">Report a problem</span>
       </button>
       {open && (
         <FeedbackSheet
@@ -46,7 +47,7 @@ export function FeedbackButton({ session }: { session: Session }) {
           }}
         />
       )}
-      {thanks && <Toast text="Thanks. The team will look at it." />}
+      {thanks && <Toast text="Sent. Thank you, we will look at it." />}
     </>
   );
 }
@@ -74,7 +75,7 @@ function FeedbackSheet({ session, onClose, onSent }: { session: Session; onClose
   };
 
   return (
-    <Sheet title="Feedback" onClose={onClose}>
+    <Sheet title="Report a problem or an idea" onClose={onClose}>
       <div className="space-y-4">
         <div role="radiogroup" aria-label="Kind" className="grid grid-cols-2 gap-1 rounded-xl bg-muted p-1">
           {KINDS.map((k) => (

@@ -1,6 +1,6 @@
-import { CalendarDays, Check, Copy, ExternalLink, Pencil, Repeat2, Send, Trash2, UserPlus } from "lucide-react";
+import { CalendarDays, Check, Copy, ExternalLink, FileText, Film, Pencil, Repeat2, Send, Trash2, UserPlus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { api, isOffline, type Photo, type Session, type Shift, type Task, type TaskDetail as Detail, type Template } from "./api";
+import { api, isOffline, type Photo, type TaskFile, type Session, type Shift, type Task, type TaskDetail as Detail, type Template } from "./api";
 import { AddPhotos, PhotoGrid } from "./Photos";
 import { repeatLabel } from "./Repeat";
 import type { TaskDraft } from "./TaskForm";
@@ -79,6 +79,8 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
   const done = task.status === "done";
   const photos = task.photos ?? [];
   const comments = task.comments ?? [];
+  const files = task.files ?? [];
+  const checklists = task.checklists ?? [];
   const blocked = !done && task.needs_photo && !photos.length && !isManager;
   const assignee = task.assignee_id ? names.get(task.assignee_id) : undefined;
   const reference = detail?.reference_photos ?? [];
@@ -266,6 +268,31 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
         </Section>
       )}
 
+      {files.length > 0 && (
+        <Section title={`Files · ${files.length}`}>
+          <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+            {files.map((f) => (
+              <li key={f.path}>
+                <FileLink token={session.token} file={f} />
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {checklists.map((c, i) => (
+        <Section key={i} title={`${c.name} · ${c.items.filter((it) => it.done).length}/${c.items.length}`}>
+          <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+            {c.items.map((it, j) => (
+              <li key={j} className="flex min-h-11 items-center gap-3 px-3 py-2">
+                <Tick done={it.done} small />
+                <span className="strike" data-done={it.done}>{it.name}</span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      ))}
+
       {subtasks.length > 0 && (
         <Section title={`Steps · ${subtasks.filter((s) => s.status === "done").length}/${subtasks.length}`}>
           <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
@@ -295,7 +322,7 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
           {comments.length > 0 && (
             <ul className="space-y-3">
               {comments.map((c) => (
-                <li key={c.id} className="flex gap-3">
+                <li key={c.id} className={cx("flex gap-3", c.reply_to && "pl-11")}>
                   <Avatar id={c.by} name={names.get(c.by) ?? "?"} />
                   <div className="rise min-w-0 flex-1 rounded-lg bg-muted px-3 py-2">
                     <p className="text-sm text-muted-foreground">
@@ -356,5 +383,37 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
         </a>
       )}
     </div>
+  );
+}
+
+/** Opens a stored video or document; the session header is needed, so it is fetched first. */
+function FileLink({ token, file }: { token: string; file: TaskFile }) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const Icon = file.type.startsWith("video/") ? Film : FileText;
+  const open = async () => {
+    setBusy(true);
+    setFailed(false);
+    // Opened before the fetch so Safari does not treat it as a pop-up.
+    const tab = window.open("", "_blank");
+    try {
+      const url = await api.photoUrl(token, file.path);
+      if (tab) tab.location.href = url;
+      else window.location.href = url;
+    } catch {
+      tab?.close();
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button onClick={open} disabled={busy} className="flex min-h-12 w-full items-center gap-3 px-3 py-2 text-left transition hover:bg-muted">
+      <Icon className="size-5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate">{file.name}</span>
+      <span className="shrink-0 text-sm text-muted-foreground">
+        {failed ? "Could not open" : busy ? "Opening…" : `${Math.max(1, Math.round(file.size / 1e6))} MB`}
+      </span>
+    </button>
   );
 }

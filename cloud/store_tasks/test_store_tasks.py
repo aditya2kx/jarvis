@@ -508,30 +508,68 @@ def test_import_maps_fields_days_and_infers_templates(env):
     assert not broken["ok"] and broken["missing"] == ["cu_a6"] and ("cu_a5", "status") in broken["field_mismatches"]
 
 
-def test_task_photos_and_comments_are_copied_once_and_seed_earlier_photos(env):
+def test_everything_clickup_holds_on_a_task_is_copied_once(env):
     tid = ci.template_id("closing", None, "Upload deep clean photo")
     env.tasks.save_template("palmetto", {"id": tid, "shift": "closing", "title": "Upload deep clean photo"}, "test")
     env.tasks.docs.set(st.TASKS, "cu_x1", {
         "id": "cu_x1", "store": "palmetto", "date": "2026-11-10", "shift": "closing", "title": "Upload deep clean photo",
         "parent_id": None, "status": "done", "source": "clickup", "clickup_id": "x1", "photos": [], "comments": []})
     calls = []
+    when = "1789322744505"
+    page1 = [{"id": str(i), "user": {"id": 7}, "date": when, "comment_text": f"note {i}", "reply_count": 0}
+             for i in range(ci.COMMENT_PAGE)]
+    page1[0].update(reply_count=1, comment=[{"text": "see"}, {"image": {"id": "img", "url": "https://files/c1"}}])
 
     def get(path):
         calls.append(path)
-        if path.endswith("/comment"):
-            return {"comments": [{"id": "c1", "user": {"id": 7}, "date": "1789322744505", "comment_text": "freezer done"}]}
-        return {"attachments": [
-            {"id": "a1.jpg", "mimetype": "image/jpeg", "url": "https://files/a1", "date": "1789322744505", "user": {"id": 7}},
-            {"id": "a2.mp4", "mimetype": "video/mp4", "url": "https://files/a2", "date": "1789322744505"}]}
+        if path.startswith("/comment/"):
+            return {"comments": [{"id": "r1", "user": {"id": 8}, "date": when, "comment_text": "thanks"}]}
+        if "/comment" in path:
+            return {"comments": page1 if "start=" not in path else [
+                {"id": "old", "user": {"id": 7}, "date": when, "comment_text": "oldest"}]}
+        return {"tags": [{"name": "deep clean"}], "priority": {"priority": "high"}, "custom_fields": [],
+                "checklists": [{"name": "Steps", "items": [{"name": "fridge", "resolved": True}]}, {"items": []}],
+                "attachments": [
+                    {"id": "a1.jpg", "mimetype": "image/jpeg", "url": "https://files/a1", "date": when, "user": {"id": 7}},
+                    {"id": "a2.mp4", "mimetype": "video/mp4", "title": "walkthrough.mp4", "url": "https://files/a2", "date": when}]}
 
+    files = {"https://files/a1": b"\xff\xd8a1", "https://files/a2": b"mp4", "https://files/c1": b"\xff\xd8c1"}
     report = ci.import_task_files(env.tasks, env.tasks.store("palmetto"), get=get,
-                                  download=lambda url: (b"\xff\xd8jpeg", "image/jpeg"), workers=1)
-    assert report["photos"] == 1 and report["comments"] == 1 and report["not_images"] == 1
+                                  download=lambda url: (files[url], "application/octet-stream"), workers=1)
+    assert (report["photos"], report["files"], report["comments"], report["checklists"]) == (2, 1, 27, 1)
     doc = env.tasks.docs.get(st.TASKS, "cu_x1")
-    assert doc["photos"][0]["by"] == ci.staff_id(7) and env.tasks.photos.get(doc["photos"][0]["path"])[0] == b"\xff\xd8jpeg"
-    assert doc["comments"][0]["text"] == "freezer done"
-    # A second run skips tasks already done: no ClickUp calls, nothing doubled.
+    assert doc["files"][0]["name"] == "walkthrough.mp4" and env.tasks.photos.get(doc["files"][0]["path"])[0] == b"mp4"
+    assert any(p.get("comment_id") == "cu0" for p in doc["photos"])
+    assert {"oldest", "thanks"} <= {c["text"] for c in doc["comments"]}
+    assert next(c for c in doc["comments"] if c["text"] == "thanks")["reply_to"] == "cu0"
+    assert doc["checklists"] == [{"name": "Steps", "items": [{"name": "fridge", "done": True}]}]
+    assert doc["clickup"]["tags"] == ["deep clean"] and doc["clickup"]["priority"] == "high"
+    raw = json.loads(env.tasks.photos.get(ci.archive_path("palmetto", "tasks", "x1.json"))[0])
+    assert raw["task"]["priority"]["priority"] == "high" and len(raw["comments"]) == ci.COMMENT_PAGE + 1
     calls.clear()
     assert ci.import_task_files(env.tasks, env.tasks.store("palmetto"), get=get, workers=1)["tasks"] == 0 and not calls
     assert ci.seed_recent_photos(env.tasks, env.tasks.store("palmetto")) == 1
     assert env.tasks.docs.get(st.TEMPLATES, tid)["recent_photos"][0]["date"] == "2026-11-10"
+
+
+def test_chat_is_archived_with_replies_and_files(env):
+    cfg = env.tasks.store("palmetto")
+    url = "https://t1.p.clickup-attachments.com/t1/abc/photo.jpg?view=open"
+
+    def get(path):
+        if "/channels?" in path:
+            return {"data": [{"id": "ch1", "name": "running-austin"}], "next_cursor": None}
+        if "/messages?" in path and "cursor=" not in path:
+            return {"data": [{"id": "m1", "content": f"Match [photo.jpg]({url})", "replies_count": "1"}], "next_cursor": "n2"}
+        if "/messages?" in path:
+            return {"data": [{"id": "m2", "content": "older", "replies_count": "0"}], "next_cursor": None}
+        if "/replies" in path:
+            return {"data": [{"id": "r1", "content": "done"}], "next_cursor": None}
+        raise AssertionError(path)
+
+    report = ci.archive_chat(env.tasks, cfg, get=get, download=lambda u: (b"jpg", "image/jpeg"),
+                             get_v2=lambda p: {"teams": [{"id": cfg.clickup["team_id"], "members": [{"user": {"id": 7}}]}]})
+    assert report == {"channels": 1, "messages": 2, "replies": 1, "files": 1}
+    saved = json.loads(env.tasks.photos.get(ci.archive_path("palmetto", "chat", "channels", "ch1.json"))[0])
+    assert saved["messages"][0]["replies"][0]["content"] == "done"
+    assert env.tasks.photos.get(saved["files"][url])[0] == b"jpg"

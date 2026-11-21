@@ -6,7 +6,8 @@ re-running is an upsert.
     python3 -m cloud.store_tasks.clickup_import --store palmetto --dry-run
     python3 -m cloud.store_tasks.clickup_import --store palmetto --all
     python3 -m cloud.store_tasks.clickup_import --store palmetto --mirror
-    python3 -m cloud.store_tasks.clickup_import --store palmetto --files   # task photos + comments (resumable)
+    python3 -m cloud.store_tasks.clickup_import --store palmetto --files   # everything on each task (resumable)
+    python3 -m cloud.store_tasks.clickup_import --store palmetto --chat    # raw archive of the workspace chat
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from zoneinfo import ZoneInfo
 from cloud.store_tasks import auth, model, service as svc, store as st
 
 API = "https://api.clickup.com/api/v2"
+API_V3 = "https://api.clickup.com/api/v3"  # chat lives only in v3
 TEMPLATE_WINDOW_DAYS = 21
 MIRROR_LOOKBACK_DAYS = 3
 FORM_TAG = "closing submission"
@@ -38,13 +40,13 @@ PHOTO_TAG = "needs photo submission"
 DATE_ONLY_HOUR = 4  # ClickUp stores a date with no time as 04:00 local
 
 
-def _get(path: str, pat: str | None = None):
+def _get(path: str, pat: str | None = None, api: str = API):
     pat = pat or os.environ.get("CLICKUP_PAT", "")
     if not pat:
         raise RuntimeError("CLICKUP_PAT is not set")
     for attempt in range(8):
         try:
-            req = urllib.request.Request(API + path, headers={"Authorization": pat})
+            req = urllib.request.Request(api + path, headers={"Authorization": pat})
             with urllib.request.urlopen(req, timeout=60) as r:
                 return json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
@@ -358,16 +360,71 @@ def _download(url: str) -> tuple[bytes, str]:
         return resp.read(), resp.headers.get_content_type()
 
 
-def _extras(task_id: str, get=_get) -> tuple[list[dict], list[dict]]:
-    """A task's attachments and comments: the list download carries neither."""
-    return get(f"/task/{task_id}").get("attachments") or [], get(f"/task/{task_id}/comment").get("comments") or []
+COMMENT_PAGE = 25  # ClickUp returns a task's newest 25 comments per call
+
+
+def _comments(path: str, get=_get) -> list[dict]:
+    """Every comment, oldest pages included, each with its replies under ``replies``."""
+    out: list[dict] = []
+    query = ""
+    while True:
+        page = get(f"{path}{query}").get("comments") or []
+        out += page
+        if len(page) < COMMENT_PAGE:
+            break
+        last = page[-1]
+        query = f"?start={last['date']}&start_id={last['id']}"
+    for c in out:
+        c["replies"] = get(f"/comment/{c['id']}/reply").get("comments") or [] if c.get("reply_count") else []
+    return out
+
+
+def _extras(task_id: str, get=_get) -> tuple[dict, list[dict]]:
+    """A task in full (attachments, checklists, every field) and its comments: the list download has neither."""
+    return get(f"/task/{task_id}?include_markdown_description=true"), _comments(f"/task/{task_id}/comment", get)
+
+
+def _comment_files(c: dict) -> list[dict]:
+    """Images and files pasted into a comment, as attachment-shaped dicts."""
+    out = []
+    for block in c.get("comment") or []:
+        for key in ("image", "attachment"):
+            obj = block.get(key)
+            if isinstance(obj, dict) and obj.get("url"):
+                out.append({"id": f"{c['id']}-{obj.get('id') or len(out)}", "url": obj["url"],
+                            "mimetype": obj.get("mimetype") or ("image/jpeg" if key == "image" else ""),
+                            "title": obj.get("title") or obj.get("name") or "", "size": obj.get("size"),
+                            "date": c.get("date"), "user": c.get("user"), "comment_id": f"cu{c['id']}"})
+    return out
+
+
+def _note(c: dict, tz: ZoneInfo, reply_to: str | None = None) -> dict:
+    return {"id": f"cu{c['id']}", "by": staff_id(c["user"]["id"]) if c.get("user") else None,
+            "at": _local(c.get("date"), tz).isoformat(), "text": (c.get("comment_text") or "").strip(),
+            "reply_to": reply_to}
+
+
+def _meta(t: dict) -> dict:
+    """ClickUp fields the app does not act on, kept on the task (the raw archive keeps the rest)."""
+    fields = {f["name"]: f.get("value") for f in t.get("custom_fields") or [] if f.get("value") not in (None, "", [])}
+    return {"tags": sorted(_tags(t)), "priority": (t.get("priority") or {}).get("priority"),
+            "creator": (t.get("creator") or {}).get("username"), "status": (t.get("status") or {}).get("status"),
+            "start_date": t.get("start_date"), "time_estimate": t.get("time_estimate"),
+            "custom_fields": {k: v for k, v in fields.items() if not isinstance(v, (list, dict))},
+            "markdown_description": t.get("markdown_description") or ""}
+
+
+def archive_path(store_id: str, *parts: str) -> str:
+    """Raw ClickUp copies sit outside the store's photo prefix, so the app never serves them."""
+    return "/".join(("archive", store_id, "clickup", *parts))
 
 
 def import_task_files(tasks: svc.Tasks, cfg: model.StoreConfig, get=_get, download=_download,
                       workers: int = 6) -> dict:
-    """Copy every mirrored task's photos (into our bucket) and comments. Resumable: done tasks are marked."""
+    """Copy everything ClickUp holds on each mirrored task: files (into our bucket), comments with
+    replies, checklists and other fields, plus the raw task and comments as JSON. Resumable."""
     tz = ZoneInfo(cfg.tz)
-    todo = [d for d in tasks.docs.query(st.TASKS, store=cfg.id, source="clickup") if not d.get("clickup_files_at")]
+    todo = [d for d in tasks.docs.query(st.TASKS, store=cfg.id, source="clickup") if not d.get("clickup_full_at")]
     # ClickUp allows ~100 calls a minute, so a full run takes hours: photo tasks first, then newest first.
     todo.sort(key=lambda d: d["date"], reverse=True)
     todo.sort(key=lambda d: not d.get("needs_photo"))
@@ -378,40 +435,110 @@ def import_task_files(tasks: svc.Tasks, cfg: model.StoreConfig, get=_get, downlo
         for i, job in enumerate(concurrent.futures.as_completed(jobs), 1):
             d = jobs[job]
             try:
-                files, comments = job.result()
+                full, comments = job.result()
             except RuntimeError as e:
                 print(f"store-tasks fail reason=clickup_files task={d['id']} err={e}", file=sys.stderr)
                 out["failed"] += 1
                 continue
-            photos = list(d.get("photos") or [])
-            have = {p.get("clickup_attachment_id") for p in photos}
-            for a in files:
-                if a.get("deleted") or a.get("id") in have:
-                    continue
-                if not (a.get("mimetype") or "").startswith("image/"):
-                    out["not_images"] += 1  # videos and documents: counted, left in ClickUp
+            tasks.photos.put(archive_path(cfg.id, "tasks", f"{d['clickup_id']}.json"),
+                             json.dumps({"task": full, "comments": comments}).encode(), "application/json")
+            photos, files = list(d.get("photos") or []), list(d.get("files") or [])
+            have = {p.get("clickup_attachment_id") for p in photos + files}
+            every = [a for a in full.get("attachments") or [] if not a.get("deleted")]
+            every += [f for c in comments for r in [c, *c["replies"]] for f in _comment_files(r)]
+            for a in every:
+                if a.get("id") in have:
                     continue
                 try:
                     data, ctype = download(a["url"])
-                except (urllib.error.URLError, TimeoutError) as e:
-                    print(f"store-tasks fail reason=photo_download task={d['id']} err={e!r}", file=sys.stderr)
-                    out["photo_failed"] += 1
+                except (urllib.error.URLError, TimeoutError, ValueError) as e:
+                    print(f"store-tasks fail reason=file_download task={d['id']} err={e!r}", file=sys.stderr)
+                    out["file_failed"] += 1
                     continue
-                path = f"{cfg.id}/{d['date']}/{d['id']}/{a['id']}"
+                ctype = a.get("mimetype") or ctype
+                safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", a["id"])
+                path = f"{cfg.id}/{d['date']}/{d['id']}/{safe_id}"
                 tasks.photos.put(path, data, ctype)
-                photos.append({"path": path, "by": staff_id(a["user"]["id"]) if a.get("user") else None,
-                               "at": _local(a.get("date"), tz).isoformat(), "clickup_attachment_id": a["id"]})
-                out["photos"] += 1
+                entry = {"path": path, "by": staff_id(a["user"]["id"]) if a.get("user") else None,
+                         "at": _local(a.get("date"), tz).isoformat() if a.get("date") else None,
+                         "clickup_attachment_id": a["id"]}
+                if a.get("comment_id"):
+                    entry["comment_id"] = a["comment_id"]
+                if ctype.startswith("image/"):
+                    photos.append(entry)
+                    out["photos"] += 1
+                else:
+                    files.append({**entry, "name": a.get("title") or safe_id, "type": ctype, "size": len(data)})
+                    out["files"] += 1
             known = {c["id"] for c in d.get("comments") or []}
-            new = [{"id": f"cu{c['id']}", "by": staff_id(c["user"]["id"]) if c.get("user") else None,
-                    "at": _local(c.get("date"), tz).isoformat(), "text": (c.get("comment_text") or "").strip()}
-                   for c in comments if f"cu{c['id']}" not in known and (c.get("comment_text") or "").strip()]
-            out["comments"] += len(new)
+            notes = [n for c in comments for n in [_note(c, tz)] + [_note(r, tz, f"cu{c['id']}") for r in c["replies"]]
+                     if n["id"] not in known and n["text"]]
+            out["comments"] += len(notes)
+            checklists = [{"name": c.get("name") or "Checklist",
+                           "items": [{"name": it.get("name") or "", "done": bool(it.get("resolved"))}
+                                     for it in c.get("items") or []]}
+                          for c in full.get("checklists") or [] if c.get("items")]
+            out["checklists"] += len(checklists)
             tasks.docs.set(st.TASKS, d["id"], {
-                "photos": photos, "comments": sorted((d.get("comments") or []) + new, key=lambda c: c["at"]),
-                "clickup_files_at": stamp}, merge=True)
+                "photos": photos, "files": files, "checklists": checklists, "clickup": _meta(full),
+                "comments": sorted((d.get("comments") or []) + notes, key=lambda c: c["at"]),
+                "clickup_full_at": stamp}, merge=True)
             if i % 500 == 0:
                 print(f"clickup files: {i}/{len(todo)} {dict(out)}", file=sys.stderr, flush=True)
+    return dict(out)
+
+
+def _get_v3(path: str):
+    return _get(path, api=API_V3)
+
+
+def _pages(path: str, get) -> list[dict]:
+    out, cursor = [], ""
+    while True:
+        sep = "&" if "?" in path else "?"
+        page = get(f"{path}{sep}limit=100" + (f"&cursor={urllib.parse.quote(cursor)}" if cursor else ""))
+        out += page.get("data") or []
+        cursor = page.get("next_cursor") or ""
+        if not cursor or not page.get("data"):
+            return out
+
+
+CHAT_FILE = re.compile(r"https://t\d+\.p\.clickup-attachments\.com/[^\s)\]]+")
+
+
+def archive_chat(tasks: svc.Tasks, cfg: model.StoreConfig, get=_get_v3, download=_download, get_v2=_get) -> dict:
+    """Every chat channel and direct message, with replies, files and the member list, as raw JSON in
+    the archive. Not shown in the app; it keeps ClickUp chat once ClickUp is gone. Re-running rewrites it."""
+    team = cfg.clickup["team_id"]
+    base = f"/workspaces/{team}/chat"
+    out = collections.Counter()
+    members = fetch_members(team, get_v2)
+    tasks.photos.put(archive_path(cfg.id, "chat", "members.json"), json.dumps(members).encode(), "application/json")
+    for ch in _pages(f"{base}/channels?is_follower=false", get):
+        messages = _pages(f"{base}/channels/{ch['id']}/messages", get)
+        for m in messages:
+            m["replies"] = _pages(f"{base}/messages/{m['id']}/replies", get) if int(m.get("replies_count") or 0) else []
+        files = {}
+        for text in (x.get("content") or "" for m in messages for x in [m, *m["replies"]]):
+            for url in CHAT_FILE.findall(text):
+                if url in files:
+                    continue
+                name = re.sub(r"[^A-Za-z0-9._-]", "_", url.split("?")[0].rsplit("/", 1)[-1])[-80:]
+                path = archive_path(cfg.id, "chat", "files", f"{hashlib.sha1(url.split('?')[0].encode()).hexdigest()[:12]}-{name}")
+                try:
+                    data, ctype = download(url)
+                except (urllib.error.URLError, TimeoutError, ValueError) as e:
+                    print(f"store-tasks fail reason=chat_file channel={ch['id']} err={e!r}", file=sys.stderr)
+                    out["file_failed"] += 1
+                    continue
+                tasks.photos.put(path, data, ctype)
+                files[url] = path
+        tasks.photos.put(archive_path(cfg.id, "chat", "channels", f"{ch['id']}.json"),
+                         json.dumps({"channel": ch, "messages": messages, "files": files}).encode(), "application/json")
+        out["channels"] += 1
+        out["messages"] += len(messages)
+        out["replies"] += sum(len(m["replies"]) for m in messages)
+        out["files"] += len(files)
     return dict(out)
 
 
@@ -483,11 +610,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--all", action="store_true", help="staff, templates, history, counts, photos")
     ap.add_argument("--mirror", action="store_true", help="only what changed in the last few days")
     ap.add_argument("--photos-only", action="store_true", help="copy photos for submissions already stored")
-    ap.add_argument("--files", action="store_true", help="task photos and comments for tasks already stored")
+    ap.add_argument("--files", action="store_true", help="everything on each task already stored")
+    ap.add_argument("--chat", action="store_true", help="raw archive of the workspace chat")
     args = ap.parse_args(argv)
 
     tasks = svc.from_env()
     cfg = tasks.store(args.store)
+    if args.chat:
+        print(json.dumps({"store": args.store, **archive_chat(tasks, cfg)}))
+        return 0
     if args.files:
         report = import_task_files(tasks, cfg)
         report["templates_with_earlier_photos"] = seed_recent_photos(tasks, cfg)

@@ -52,6 +52,20 @@ export interface Comment {
   by: string;
   at: string;
   text: string;
+  /** Set on a reply (copied from ClickUp): the comment it answers. */
+  reply_to?: string | null;
+}
+
+/** A video or document attached to a task (photos are in `photos`). */
+export interface TaskFile extends Photo {
+  name: string;
+  type: string;
+  size: number;
+}
+
+export interface Checklist {
+  name: string;
+  items: { name: string; done: boolean }[];
 }
 
 export interface Task {
@@ -73,6 +87,9 @@ export interface Task {
   note?: string;
   photos?: Photo[];
   comments?: Comment[];
+  files?: TaskFile[];
+  /** ClickUp checklists, kept as they were. */
+  checklists?: Checklist[];
   template_id?: string | null;
   created_by?: string;
   clickup_url?: string | null;

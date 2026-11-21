@@ -315,6 +315,29 @@ def test_editing_a_definition_never_touches_clickup_copies(env):
     assert env.tasks.docs.get(st.TASKS, "cu_m1")["title"] == "Mop"
 
 
+def test_a_clickup_task_shows_its_definitions_how_to(env):
+    cfg = dataclasses.replace(env.tasks.store("palmetto"), cutover_date=None)
+    env.tasks.put_store(cfg)
+    tid = ci.template_id("closing", None, "Mop")
+    env.tasks.save_template("palmetto", {"id": tid, "shift": "closing", "title": "Mop"}, "test")
+    docs = [ci.to_task(cfg, "closing", {"id": "m1", "name": "Mop", "status": {"type": "open"}, "start_date": None,
+                                        "due_date": None, "date_created": "1795600800000",
+                                        "text_content": "ClickUp's words"}, datetime.date(2026, 11, 19))]
+    ci._reparent(docs)
+    ci.write_tasks(env.tasks, cfg, docs)
+    c, h = env.client, env.boss_h
+
+    def listed():
+        return next(t for t in c.get("/v1/days/2026-11-19", headers=h).get_json()["tasks"] if t["id"] == "cu_m1")
+    assert listed()["instructions"] == "ClickUp's words"  # no how-to of ours yet: ClickUp's text
+    r = c.post("/v1/tasks/cu_m1/instructions", json={"instructions": "1. Wet floor sign out."}, headers=h)
+    assert r.get_json()["instructions"] == "1. Wet floor sign out."
+    assert listed()["instructions"] == "1. Wet floor sign out."
+    assert c.get("/v1/tasks/cu_m1", headers=h).get_json()["task"]["instructions"] == "1. Wet floor sign out."
+    assert c.post("/v1/tasks/cu_m1/complete", json={}, headers=h).get_json()["instructions"] == "1. Wet floor sign out."
+    assert env.tasks.docs.get(st.TASKS, "cu_m1")["instructions"] == "ClickUp's words"  # ClickUp's copy untouched
+
+
 def test_link_templates_gives_clickup_tasks_their_definition_and_earlier_photos(env):
     cfg = env.tasks.store("palmetto")
     tid = ci.template_id("closing", "Deep clean", "Fridge")

@@ -62,6 +62,13 @@ def shrink(data: bytes, longest: int) -> bytes | None:
         return None
 
 
+def _show_how_to(t: dict, definition: dict | None) -> None:
+    """A ClickUp task shows its definition's how-to when there is one (ClickUp's text otherwise).
+    Only what is shown: ClickUp's own text stays on the stored task."""
+    if definition and definition.get("instructions"):
+        t["instructions"] = definition["instructions"]
+
+
 def public_staff(s: dict) -> dict:
     return {"id": s["id"], "name": s["name"], "role": s.get("role", auth.CREW),
             "active": s.get("active", True), "has_pin": bool(s.get("pin_hash")),
@@ -395,8 +402,10 @@ class Tasks:
         if not cfg.generated(day):
             # ClickUp never enforced photos: show our rule on its tasks, so a missing photo is visible.
             rules = {t.id for t in templates if t.needs_photo}
+            how_to = {t.id: {"instructions": t.instructions} for t in templates}
             for t in tasks:
                 t["needs_photo"] = bool(t.get("needs_photo") or t.get("template_id") in rules)
+                _show_how_to(t, how_to.get(t.get("template_id") or ""))
         if cfg.generated(day):
             have = {t["id"] for t in tasks}
             missing = [t for t in model.build_day(cfg, templates, day) if t["id"] not in have]
@@ -466,6 +475,8 @@ class Tasks:
         t = self.docs.get(st.TASKS, task_id)
         if t is None or t["store"] != store_id:
             raise NotFound("task")
+        if t.get("source") == "clickup" and t.get("template_id"):
+            _show_how_to(t, self.docs.get(st.TEMPLATES, t["template_id"]))
         return t
 
     def _trial(self, t: dict) -> dict:

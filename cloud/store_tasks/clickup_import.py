@@ -33,6 +33,8 @@ from cloud.store_tasks import auth, model, service as svc, store as st
 API = "https://api.clickup.com/api/v2"
 TEMPLATE_WINDOW_DAYS = 21
 MIRROR_LOOKBACK_DAYS = 3
+MIRROR_FILES_SECONDS = 150  # the scheduled tick has 300 s; what is left over is copied on the next one
+MIRROR_MAX_FILE_BYTES = 100 * 1024 * 1024  # larger videos stay in ClickUp until the laptop backfill copies them
 FORM_TAG = "closing submission"
 PHOTO_TAG = "needs photo submission"
 DATE_ONLY_HOUR = 4  # ClickUp stores a date with no time as 04:00 local
@@ -418,11 +420,18 @@ def archive_path(store_id: str, *parts: str) -> str:
 
 
 def import_task_files(tasks: svc.Tasks, cfg: model.StoreConfig, get=_get, download=_download,
-                      workers: int = 6) -> dict:
+                      workers: int = 6, only: list[str] | None = None, deadline: float | None = None,
+                      max_bytes: int | None = None) -> dict:
     """Copy everything ClickUp holds on each mirrored task: files (into our bucket), comments with
-    replies, checklists and other fields, plus the raw task and comments as JSON. Resumable."""
+    replies, checklists and other fields, plus the raw task and comments as JSON. Resumable.
+
+    ``only``: these task ids, copied again even if done before (the mirror passes what changed).
+    ``deadline`` (epoch seconds): stop starting new tasks after it."""
     tz = ZoneInfo(cfg.tz)
-    todo = [d for d in tasks.docs.query(st.TASKS, store=cfg.id, source="clickup") if not d.get("clickup_full_at")]
+    if only is not None:
+        todo = [d for d in (tasks.docs.get(st.TASKS, i) for i in only) if d and d.get("source") == "clickup"]
+    else:
+        todo = [d for d in tasks.docs.query(st.TASKS, store=cfg.id, source="clickup") if not d.get("clickup_full_at")]
     # ClickUp allows ~100 calls a minute, so a full run takes hours: photo tasks first, then newest first.
     todo.sort(key=lambda d: d["date"], reverse=True)
     todo.sort(key=lambda d: not d.get("needs_photo"))
@@ -432,6 +441,10 @@ def import_task_files(tasks: svc.Tasks, cfg: model.StoreConfig, get=_get, downlo
         jobs = {pool.submit(_extras, d["clickup_id"], get): d for d in todo}
         for i, job in enumerate(concurrent.futures.as_completed(jobs), 1):
             d = jobs[job]
+            if deadline and time.time() > deadline:
+                pool.shutdown(wait=False, cancel_futures=True)
+                out["deferred"] = len(todo) - i + 1
+                break
             try:
                 full, comments = job.result()
             except RuntimeError as e:
@@ -446,6 +459,10 @@ def import_task_files(tasks: svc.Tasks, cfg: model.StoreConfig, get=_get, downlo
             every += [f for c in comments for r in [c, *c["replies"]] for f in _comment_files(r)]
             for a in every:
                 if a.get("id") in have:
+                    continue
+                if max_bytes and int(a.get("size") or 0) > max_bytes:
+                    print(f"store-tasks fail reason=file_too_big task={d['id']} bytes={a.get('size')}", file=sys.stderr)
+                    out["too_big"] += 1
                     continue
                 try:
                     data, ctype = download(a["url"])
@@ -486,10 +503,12 @@ def import_task_files(tasks: svc.Tasks, cfg: model.StoreConfig, get=_get, downlo
     return dict(out)
 
 
-def seed_recent_photos(tasks: svc.Tasks, cfg: model.StoreConfig) -> int:
-    """Give each recurring task the last few photos ClickUp holds for it ("photos from earlier days")."""
-    docs = tasks.docs.query(st.TASKS, store=cfg.id, source="clickup")
-    titles = {d["id"]: d["title"] for d in docs}
+def seed_recent_photos(tasks: svc.Tasks, cfg: model.StoreConfig, docs: list[dict] | None = None,
+                       titles: dict[str, str] | None = None) -> int:
+    """Give each recurring task the last few photos ClickUp holds for it ("photos from earlier days").
+    ``docs``: only these tasks (the mirror passes what changed); ``titles`` names their parents."""
+    docs = tasks.docs.query(st.TASKS, store=cfg.id, source="clickup") if docs is None else docs
+    titles = {**(titles or {}), **{d["id"]: d["title"] for d in docs}}
     by_template: dict[str, list[dict]] = collections.defaultdict(list)
     for d in docs:
         parent = titles.get(d["parent_id"]) if d.get("parent_id") else None
@@ -529,14 +548,30 @@ def write_templates(tasks: svc.Tasks, templates: list[model.Template]) -> int:
     return n
 
 
-def mirror(tasks: svc.Tasks, store_id: str, get=_get) -> dict:
-    """Re-sync what changed in ClickUp recently. Safe to run any time; a no-op after cutover."""
+def _stale(doc: dict, stored: dict | None) -> bool:
+    """ClickUp changed the task (a comment, a photo, a tick) after its files and comments were copied."""
+    copied = (stored or {}).get("clickup_full_at")
+    return not copied or datetime.datetime.fromisoformat(doc["updated_at"]) > datetime.datetime.fromisoformat(copied)
+
+
+def mirror(tasks: svc.Tasks, store_id: str, get=_get, download=_download) -> dict:
+    """Re-sync what changed in ClickUp recently: fields and status, then comments, photos and files.
+    Safe to run any time; ClickUp days from the cutover date on are left alone."""
     cfg = tasks.store(store_id)
     since = int((tasks.now() - datetime.timedelta(days=MIRROR_LOOKBACK_DAYS)).timestamp() * 1000)
     raw = fetch_all(cfg, since, get)
     docs, counts = split(cfg, raw)
-    return {"store": store_id, "tasks": write_tasks(tasks, cfg, docs), "counts": write_counts(tasks, counts),
-            "staff": import_staff(tasks, cfg, get)}
+    mirrored = [d for d in docs if not cfg.generated(datetime.date.fromisoformat(d["date"]))]
+    changed = [d["id"] for d in mirrored if _stale(d, tasks.docs.get(st.TASKS, d["id"]))]
+    out = {"store": store_id, "tasks": write_tasks(tasks, cfg, docs), "counts": write_counts(tasks, counts),
+           "staff": import_staff(tasks, cfg, get)}
+    if changed:
+        out["files"] = import_task_files(tasks, cfg, get, download, only=changed,
+                                         deadline=time.time() + MIRROR_FILES_SECONDS, max_bytes=MIRROR_MAX_FILE_BYTES)
+        if out["files"].get("photos"):
+            out["files"]["earlier_photos"] = seed_recent_photos(
+                tasks, cfg, [tasks.docs.get(st.TASKS, i) for i in changed], {d["id"]: d["title"] for d in docs})
+    return out
 
 
 def summarize(docs: list[dict]) -> dict:

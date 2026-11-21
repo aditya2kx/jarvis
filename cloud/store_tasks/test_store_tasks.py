@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import io
 import json
@@ -551,3 +552,34 @@ def test_everything_clickup_holds_on_a_task_is_copied_once(env):
     assert ci.seed_recent_photos(env.tasks, env.tasks.store("palmetto")) == 1
     assert env.tasks.docs.get(st.TEMPLATES, tid)["recent_photos"][0]["date"] == "2026-11-10"
 
+
+
+def test_mirror_keeps_copying_status_comments_and_photos_of_changed_tasks(env):
+    cfg = env.tasks.store("palmetto")
+    env.tasks.put_store(dataclasses.replace(cfg, cutover_date=None))  # ClickUp still runs the store
+    env.clock.at = datetime.datetime(2026, 11, 19, 9, 0, tzinfo=TZ)
+    task = {**_cu("live", "Wipe tables", 19, st="closed"), "date_updated": _ms(2026, 11, 19, 8)}
+    lists = list(env.tasks.store("palmetto").clickup["lists"])
+
+    def get(path):
+        if path.startswith(f"/list/{lists[0]}/task"):
+            return {"tasks": [task], "last_page": True}
+        if path.startswith("/list/"):
+            return {"tasks": [], "last_page": True}
+        if path == "/team":
+            return {"teams": [{"id": cfg.clickup["team_id"], "members": []}]}
+        if path.endswith("/comment"):
+            return {"comments": [{"id": "c9", "user": {"id": 7}, "date": _ms(2026, 11, 19, 8), "comment_text": "done!"}]}
+        return {"attachments": [{"id": "p9.jpg", "mimetype": "image/jpeg", "url": "https://files/p9",
+                                 "date": _ms(2026, 11, 19, 8), "user": {"id": 7}}]}
+
+    first = ci.mirror(env.tasks, "palmetto", get=get, download=lambda u: (b"\xff\xd8", "image/jpeg"))
+    doc = env.tasks.docs.get(st.TASKS, "cu_live")
+    assert first["files"]["photos"] == 1 and doc["status"] == "done" and doc["comments"][0]["text"] == "done!"
+    # Nothing changed in ClickUp since: the next run copies no files again.
+    env.clock.at += datetime.timedelta(hours=2)
+    assert "files" not in ci.mirror(env.tasks, "palmetto", get=get, download=lambda u: 1 / 0)
+    # A new comment bumps ClickUp's update time: the task is copied again, without doubling the photo.
+    task["date_updated"] = _ms(2026, 11, 19, 12)
+    again = ci.mirror(env.tasks, "palmetto", get=get, download=lambda u: 1 / 0)
+    assert again["files"]["tasks"] == 1 and len(env.tasks.docs.get(st.TASKS, "cu_live")["photos"]) == 1

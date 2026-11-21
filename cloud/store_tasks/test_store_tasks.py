@@ -368,7 +368,9 @@ def test_shift_summary_counts_shoutouts_open_tasks_and_missing_photos(env):
 def test_a_clickup_day_waits_for_fresh_clickup_data_before_its_summary(env):
     tasks = env.tasks
     tasks.put_store(dataclasses.replace(tasks.store("palmetto"), cutover_date=None))
-    env.clock.at = datetime.datetime(2026, 11, 19, 7, 45, tzinfo=TZ)
+    env.clock.at = datetime.datetime(2026, 11, 19, 8, 29, tzinfo=TZ)
+    assert summaries.pending(tasks, "palmetto") == []  # the opening crew is still on until 08:00, + 30 min
+    env.clock.at = datetime.datetime(2026, 11, 19, 8, 45, tzinfo=TZ)
     assert summaries.wants_mirror(tasks, "palmetto")
     sent = []
     assert summaries.post_due(tasks, "palmetto", lambda c, t: sent.append(t)) == [] and sent == []
@@ -376,9 +378,9 @@ def test_a_clickup_day_waits_for_fresh_clickup_data_before_its_summary(env):
     assert not summaries.wants_mirror(tasks, "palmetto")
     assert summaries.post_due(tasks, "palmetto", lambda c, t: sent.append(t)) == ["palmetto_2026-11-19_opening"]
     # ClickUp unreachable: after an hour the summary goes out from what is stored.
-    env.clock.at = datetime.datetime(2026, 11, 19, 14, 35, tzinfo=TZ)
+    env.clock.at = datetime.datetime(2026, 11, 19, 15, 35, tzinfo=TZ)
     assert summaries.wants_mirror(tasks, "palmetto")
-    env.clock.at = datetime.datetime(2026, 11, 19, 15, 31, tzinfo=TZ)
+    env.clock.at = datetime.datetime(2026, 11, 19, 16, 31, tzinfo=TZ)
     assert summaries.post_due(tasks, "palmetto", lambda c, t: sent.append(t)) == ["palmetto_2026-11-19_shift_change"]
 
 

@@ -1,6 +1,6 @@
 """Shift and closing-count summaries, posted to the store's ClickUp chat channel.
 
-One post per shift (its due time + ``svc.ALERT_GRACE_MINUTES``) and one per closing count.
+One post per shift (``SUMMARY_DELAY`` after its crew window ends) and one per closing count.
 Each post is recorded in ``posts`` before it is sent, so a retry or a second instance
 never posts twice; a send that fails is logged and left recorded (never re-sent blindly).
 """
@@ -23,6 +23,7 @@ OPEN_LISTED = 8
 SHOUTOUTS = 5
 OTHER = "Other"
 TITLE_CHARS = 60
+SUMMARY_DELAY = datetime.timedelta(minutes=30)  # ClickUp ticks for a shift mostly land before its crew leaves
 MIRROR_WAIT = datetime.timedelta(hours=1)  # then post from what is stored rather than not at all
 
 
@@ -117,8 +118,8 @@ def closing_update(tasks: svc.Tasks, store_id: str, day: datetime.date) -> str |
 
 
 def _due(cfg: model.StoreConfig, shift_id: str, day: datetime.date) -> datetime.datetime:
-    return (datetime.datetime.fromisoformat(model.due_at(cfg, shift_id, day))
-            + datetime.timedelta(minutes=svc.ALERT_GRACE_MINUTES))
+    end = datetime.time.fromisoformat(cfg.shift(shift_id).team_to)
+    return datetime.datetime.combine(day, end, ZoneInfo(cfg.tz)) + SUMMARY_DELAY
 
 
 def _mirrored_at(tasks: svc.Tasks, store_id: str) -> datetime.datetime | None:

@@ -682,8 +682,8 @@ class Tasks:
         last = (self.docs.get(st.JOBS, store_id) or {}).get(job)
         return last is None or self.now() - datetime.datetime.fromisoformat(last) >= every
 
-    def job_done(self, store_id: str, job: str) -> None:
-        self.docs.set(st.JOBS, store_id, {"id": store_id, job: self.now().isoformat()}, merge=True)
+    def job_done(self, store_id: str, job: str, started: datetime.datetime | None = None) -> None:
+        self.docs.set(st.JOBS, store_id, {"id": store_id, job: (started or self.now()).isoformat()}, merge=True)
 
 
 def _as_pin(code_doc: dict) -> dict:

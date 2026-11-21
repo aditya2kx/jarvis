@@ -152,7 +152,7 @@ With `clickup.summary_channel` in `stores/<id>.json` (today the operator's priva
 
 | When | Post |
 |---|---|
-| Each shift's due time + 30 min | Done of total, shoutouts (ticks per person), what is still open, steps left unticked under a ticked task, done without the photo it needs |
+| 30 min after the shift's crew window ends (`team_to`: opening 08:30, shift change 15:30, closing 22:00) | Done of total, shoutouts (ticks per person), what is still open, steps left unticked under a ticked task, done without the photo it needs |
 | A closing count is sent (or sent again) | Who and when, notes, then every field under the closing form's sections |
 
 Before cutover a shift summary waits for a ClickUp mirror run after the shift was due (the

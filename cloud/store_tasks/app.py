@@ -387,9 +387,10 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
                     continue
                 if not (tasks.job_due(sid, job, every) or (job == "mirror" and summaries.wants_mirror(tasks, sid))):
                     continue
+                started = tasks.now()
                 try:
                     out[sid][job] = run(tasks, sid)
-                    tasks.job_done(sid, job)
+                    tasks.job_done(sid, job, started)
                 except Exception as e:
                     log.error("store-tasks fail reason=%s store=%s err=%r", job, sid, e)
                     out[sid][job] = "failed"

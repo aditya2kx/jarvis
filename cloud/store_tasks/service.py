@@ -372,7 +372,7 @@ class Tasks:
         if t["status"] == model.DONE:
             return t
         self._writable(t)
-        if t.get("needs_photo") and not t.get("photos") and staff["role"] != auth.MANAGER:
+        if t.get("needs_photo") and not t.get("photos"):
             raise Invalid("add a photo first")
         stamp = self.now().isoformat()
         # The shop device is not a person: the tick counts for whoever the task is assigned to.
@@ -520,6 +520,8 @@ class Tasks:
         return self.task_detail(store_id, task_id)
 
     def add_one_off(self, store_id: str, data: dict, by: str) -> dict:
+        if by == auth.SHOP:
+            raise auth.AuthError("the shop account can't add tasks — a manager signs in first", 403)
         cfg = self.store(store_id)
         title = (data.get("title") or "").strip()
         if not title:

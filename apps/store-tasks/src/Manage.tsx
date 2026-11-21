@@ -91,7 +91,7 @@ function Templates({ boot, session }: { boot: Bootstrap; session: Session }) {
 
   if (error) return <Notice tone="error">{error}</Notice>;
   if (!templates) return <p className="text-muted-foreground">Loading…</p>;
-  const when = (t: Template) => repeatLabel(t, boot.today);
+  const when = (t: Template) => [repeatLabel(t, boot.today), t.needs_photo ? "Photo needed" : ""].filter(Boolean).join(" · ");
 
   return (
     <div className="space-y-6">
@@ -307,6 +307,7 @@ function Accounts({ token, mine }: { token: string; mine: string }) {
   if (error) return <Notice tone="error">{error}</Notice>;
   if (!data) return <p className="text-muted-foreground">Loading…</p>;
   const names = new Map(data.staff.map((s) => [s.id, s.name]));
+  const managers = new Set(data.staff.filter((s) => s.role === "manager").map((s) => s.id));
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -327,7 +328,7 @@ function Accounts({ token, mine }: { token: string; mine: string }) {
 
   return (
     <div className="space-y-4">
-      <Notice>Only these Google accounts can open Store Tasks. A shared account (a store iPad) asks each person for their name and PIN; a person's own account signs them straight in.</Notice>
+      <Notice>Only these Google accounts can open Store Tasks. A shared account (a store iPad) asks each person for their name and PIN; a person's own account signs them straight in. To make a shop manager, set their role to Manager under People, then give their Google account access here — they can then add and change tasks.</Notice>
       <form onSubmit={add} className="space-y-3 rounded-xl border border-border bg-card p-4">
         <Field label="Google account">
           <Input type="email" inputMode="email" autoCapitalize="off" placeholder="name@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -337,7 +338,7 @@ function Accounts({ token, mine }: { token: string; mine: string }) {
             <select value={staffId} onChange={(e) => setStaffId(e.target.value)} className={inputClass}>
               <option value="">Shared (store iPad)</option>
               {data.staff.filter((s) => s.active).map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
+                <option key={s.id} value={s.id}>{s.role === "manager" ? `${s.name} · Manager` : s.name}</option>
               ))}
             </select>
           </Field>
@@ -356,7 +357,7 @@ function Accounts({ token, mine }: { token: string; mine: string }) {
             key={a.email}
             onClick={() => a.email !== mine && setRemoving(a)}
             title={a.email}
-            meta={[a.staff_id ? names.get(a.staff_id) ?? "Person" : a.label || "Shared", a.email === mine ? "this one" : ""].filter(Boolean).join(" · ")}
+            meta={[a.staff_id ? names.get(a.staff_id) ?? "Person" : a.label || "Shared", a.staff_id && managers.has(a.staff_id) ? "Manager" : "", a.email === mine ? "this one" : ""].filter(Boolean).join(" · ")}
           />
         ))}
       </Card>

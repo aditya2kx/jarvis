@@ -26,6 +26,9 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
 - **Templates → daily lists.** A manager edits task templates (title, how-to, shift, order,
   weekdays, photo needed). Each day's list is built from them the first time anyone opens
   the day. Document ids are `{store}_{date}_{template}`, so building twice changes nothing.
+  A task that needs a photo cannot be marked done without one, by anyone — a manager who
+  wants an exception turns the requirement off for that task. `admin photo-rules` lists the
+  tasks ClickUp history says need one (the how-to asks for a photo, or photos on 3+ days).
 - **Who ticked.** The app sits behind Google sign-in (Cloud Run direct IAP, the same building
   blocks as the Operator Console: [`skills/google_signin/`](../../skills/google_signin/README.md)).
   A shared account (the store iPad) then asks for a name and PIN; a person's own Google
@@ -80,7 +83,7 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
 | Anyone | none | `GET /health` |
 | Google account not on the list | Google sign-in | Nothing (Google refuses; the API also answers 403) |
 | Shared account (store iPad) | Google sign-in | See the store's shifts and staff names |
-| Shop device | shop code → device token (`X-Shop-Device`) | Crew rights as "Shop" (no PIN); managers sign in on it with their PIN |
+| Shop device | shop code → device token (`X-Shop-Device`) | Tick, assign, add photos and notes as "Shop" (no PIN); cannot add or change tasks; managers sign in on it with their PIN |
 | Crew | Google sign-in + PIN session (`X-Staff-Session`) | Read days, tick, undo own ticks, assign anyone, add photos and notes, remove own photos, send the count, add a one-off task and delete their own |
 | Manager | Google sign-in + 6-digit PIN session, or their own Google account | Also: how-to text and example photos, templates, people and PINs, sign-in accounts, history, undo anyone's tick, remove any photo or one-off task |
 | Scheduler, nightly job, Slack bridge | `Authorization: Bearer` internal token | `/internal/*` |
@@ -102,6 +105,7 @@ python3 -m cloud.store_tasks.admin manager --store palmetto --name "First Last" 
 python3 -m cloud.store_tasks.admin account --store palmetto --email ipad@example.com --label "Front iPad"
 python3 -m cloud.store_tasks.admin account --store palmetto --email me@example.com --staff "First Last"   # own account, no PIN
 python3 -m cloud.store_tasks.admin cutover --store palmetto --date 2026-12-01
+python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]   # tasks that need a photo, from ClickUp history
 ```
 
 Every import write is keyed by the ClickUp task id, so re-running is an upsert. Until

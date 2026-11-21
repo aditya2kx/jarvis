@@ -5,6 +5,7 @@
     python3 -m cloud.store_tasks.admin account --store palmetto --email a@b.com --staff "First Last"
     python3 -m cloud.store_tasks.admin account --store palmetto --email ipad@b.com --label "Front iPad"
     python3 -m cloud.store_tasks.admin cutover --store palmetto --date 2026-12-01
+    python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import sys
 
 from skills.google_signin import access
 
-from cloud.store_tasks import auth, model, service as svc, store as st
+from cloud.store_tasks import auth, clickup_import, model, service as svc, store as st
 
 SIGNIN_SERVICE = "store-tasks-app"
 STORES_DIR = pathlib.Path(__file__).parent / "stores"
@@ -41,7 +42,7 @@ def seed(tasks: svc.Tasks, store_id: str) -> model.StoreConfig:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("seed", "manager", "account", "cutover"):
+    for name in ("seed", "manager", "account", "cutover", "photo-rules"):
         sp = sub.add_parser(name)
         sp.add_argument("--store", required=True)
         if name == "manager":
@@ -53,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
             sp.add_argument("--label", default="")
         if name == "cutover":
             sp.add_argument("--date", required=True, help="first day generated here; 'none' to clear")
+        if name == "photo-rules":
+            sp.add_argument("--apply", action="store_true", help="turn on 'needs a photo' for the listed tasks")
     args = ap.parse_args(argv)
     tasks = svc.from_env()
 
@@ -86,6 +89,13 @@ def main(argv: list[str] | None = None) -> int:
         for t in stale:
             tasks.docs.delete(st.TASKS, t["id"])
         print(f"store {args.store}: cutover {day}; removed {len(stale)} trial tasks from ClickUp-owned days")
+    elif args.cmd == "photo-rules":
+        for r in clickup_import.photo_rules(tasks, args.store):
+            why = "asks for one" if r["asks"] else f"photos on {r['photo_days']} days, last {r['last_photo']}"
+            print(f"{'on ' if r['needs_photo'] else 'off'} {r['shift']:<12} {r['title'][:60]:<60} {why}")
+            if args.apply and not r["needs_photo"]:
+                cur = tasks.docs.get(st.TEMPLATES, r["id"])
+                tasks.save_template(args.store, {**cur, "needs_photo": True}, "photo-rules")
     return 0
 
 

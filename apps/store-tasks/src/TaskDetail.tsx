@@ -81,7 +81,7 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
   const comments = task.comments ?? [];
   const files = task.files ?? [];
   const checklists = task.checklists ?? [];
-  const blocked = !done && task.needs_photo && !photos.length && !isManager;
+  const blocked = !done && task.needs_photo && !photos.length;
   const assignee = task.assignee_id ? names.get(task.assignee_id) : undefined;
   const reference = detail?.reference_photos ?? [];
   const earlier = detail?.recent_photos ?? [];

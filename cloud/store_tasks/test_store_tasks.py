@@ -139,6 +139,8 @@ def test_shop_device_signs_in_with_the_store_code_and_ticks_for_the_assignee(env
     assert boot["account"]["shop"] is True and boot["own"]["staff"]["id"] == auth.SHOP and boot["device"]
     h = {**shop, "X-Staff-Session": boot["own"]["session"]}
     assert c.get("/v1/templates", headers=h).status_code == 403
+    # The shop ticks, photographs and comments; adding tasks waits for a manager.
+    assert c.post("/v1/tasks", json={"title": "Extra", "date": "2026-11-19"}, headers=h).status_code == 403
     tid = "palmetto_2026-11-19_t1"
     c.get("/v1/days/2026-11-19", headers=h)
     c.post("/v1/assign", json={"task_ids": [tid], "assignee_id": env.crew["id"]}, headers=h)
@@ -148,7 +150,9 @@ def test_shop_device_signs_in_with_the_store_code_and_ticks_for_the_assignee(env
     # Only managers sign in on the shop device; crew just use it.
     assert c.post("/v1/sessions", json={"staff_id": env.crew["id"], "pin": "1234"}, headers=shop).status_code == 403
     boss = c.post("/v1/sessions", json={"staff_id": env.boss["id"], "pin": "123456"}, headers=shop).get_json()
-    assert c.get("/v1/templates", headers={**shop, "X-Staff-Session": boss["session"]}).status_code == 200
+    boss_on_shop = {**shop, "X-Staff-Session": boss["session"]}
+    assert c.get("/v1/templates", headers=boss_on_shop).status_code == 200
+    assert c.post("/v1/tasks", json={"title": "Extra", "date": "2026-11-19"}, headers=boss_on_shop).status_code == 200
     # The shop session is no Google session and no staff session is a device token.
     assert c.get("/v1/bootstrap", headers={"X-Shop-Device": env.crew_h["X-Staff-Session"]}).status_code == 401
     assert c.get("/v1/days/2026-11-19", headers={**env.ipad, "X-Staff-Session": device}).status_code == 401
@@ -192,10 +196,11 @@ def test_tick_records_who_and_is_idempotent_and_undo_is_limited(env):
         env.tasks.reopen("palmetto", tid, {"sid": other["id"], "role": "crew"})
 
 
-def test_photo_task_needs_a_photo(env):
+def test_photo_task_needs_a_photo_whoever_ticks_it(env):
     tid = "palmetto_2026-11-19_t3"
     env.client.get("/v1/days/2026-11-19", headers=env.crew_h)
     assert env.client.post(f"/v1/tasks/{tid}/complete", json={}, headers=env.crew_h).status_code == 400
+    assert env.client.post(f"/v1/tasks/{tid}/complete", json={}, headers=env.boss_h).status_code == 400
     up = env.client.post(f"/v1/tasks/{tid}/photo", headers=env.crew_h,
                          data={"photo": (io.BytesIO(b"\xff\xd8jpeg"), "a.jpg", "image/jpeg")})
     path = up.get_json()["photos"][0]["path"]
@@ -584,3 +589,23 @@ def test_mirror_keeps_copying_status_comments_and_photos_of_changed_tasks(env):
     task["date_updated"] = _ms(2026, 11, 19, 12)
     again = ci.mirror(env.tasks, "palmetto", get=get, download=lambda u: 1 / 0)
     assert again["files"]["tasks"] == 1 and len(env.tasks.docs.get(st.TASKS, "cu_live")["photos"]) == 1
+
+
+def test_photo_rules_come_from_what_clickup_holds(env):
+    def tpl(title, **kw):
+        tid = ci.template_id("closing", kw.pop("parent", None), title)
+        env.tasks.save_template("palmetto", {"id": tid, "shift": "closing", "title": title, **kw}, "test")
+        return tid
+    deep = tpl("Deep clean")
+    tpl("Tue: freezer", parent="Deep clean", parent_id=deep)
+    tpl("Acai thaw", instructions="Weekdays: 2 - ATTACH PHOTO")
+    tpl("Stow deliveries - confirm match w/ photo of invoice")
+    tpl("Wipe sink")
+    for i, (title, parent) in enumerate([("Tue: freezer", "Deep clean")] * 3 + [("Deep clean", None)] * 3 + [("Wipe sink", None)] * 2):
+        env.tasks.docs.set(st.TASKS, f"cu_p{i}", {
+            "id": f"cu_p{i}", "store": "palmetto", "date": f"2026-10-{i + 1:02d}", "shift": "closing", "title": title,
+            "parent_id": "cu_p3" if parent else None, "source": "clickup", "photos": [{"path": "x"}]})
+    rules = {r["title"]: r for r in ci.photo_rules(env.tasks, "palmetto")}
+    # Steps carry the rule, not the task that holds them; a passing mention of a photo is not a request.
+    assert set(rules) == {"Tue: freezer", "Acai thaw"}
+    assert rules["Tue: freezer"]["photo_days"] == 3 and rules["Acai thaw"]["asks"]

@@ -134,7 +134,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
 
   const toggle = (t: Task) => {
     if (t.source === "clickup") return;
-    if (t.status === "open" && t.needs_photo && !t.photos?.length && !isManager) {
+    if (t.status === "open" && t.needs_photo && !t.photos?.length) {
       setOpen(t.id);
       return;
     }
@@ -444,7 +444,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
                       : "Nothing to show."}
               </li>
             )}
-            {!readOnly && (
+            {!readOnly && !shop && (
               <li>
                 <button
                   onClick={() => activeShift && setForm({ title: "Add a task", initial: blankDraft(activeShift), once: true })}

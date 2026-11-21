@@ -527,6 +527,33 @@ def seed_recent_photos(tasks: svc.Tasks, cfg: model.StoreConfig, docs: list[dict
     return n
 
 
+ASKS_FOR_PHOTO = re.compile(r"\b(attach|upload|take|send|add)\s+(a\s+)?(photo|picture|pic)s?\b", re.I)
+PHOTO_DAYS = 3
+
+
+def photo_rules(tasks: svc.Tasks, store_id: str, min_days: int = PHOTO_DAYS) -> list[dict]:
+    """Recurring tasks that should need a photo: the how-to asks for one, or ClickUp holds photos
+    for it on ``min_days`` or more days. A task with steps is left alone; its steps carry the rule."""
+    docs = tasks.docs.query(st.TASKS, store=store_id, source="clickup")
+    titles = {d["id"]: d["title"] for d in docs}
+    days: dict[str, set[str]] = collections.defaultdict(set)
+    for d in docs:
+        if d.get("photos"):
+            parent = titles.get(d["parent_id"]) if d.get("parent_id") else None
+            days[template_id(d["shift"], parent, d["title"])].add(d["date"])
+    templates = [t for t in tasks.templates(store_id) if t.active]
+    parents = {t.parent_id for t in templates if t.parent_id}
+    out = []
+    for t in templates:
+        asks = bool(ASKS_FOR_PHOTO.search(f"{t.title} {t.instructions}"))
+        seen = days.get(t.id, set())
+        if t.id in parents or not (asks or len(seen) >= min_days):
+            continue
+        out.append({"id": t.id, "shift": t.shift, "title": t.title, "needs_photo": t.needs_photo,
+                    "asks": asks, "photo_days": len(seen), "last_photo": max(seen, default=None)})
+    return sorted(out, key=lambda r: (r["shift"], -r["photo_days"]))
+
+
 def write_counts(tasks: svc.Tasks, counts: list[dict]) -> int:
     n = 0
     for c in counts:

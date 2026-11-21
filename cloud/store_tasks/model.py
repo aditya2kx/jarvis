@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import datetime
 import re
 from dataclasses import dataclass, field
@@ -9,6 +10,8 @@ from zoneinfo import ZoneInfo
 
 OPEN = "open"
 DONE = "done"
+LAST_DAY = -1  # in ``Template.month_days``: the last day of whatever month it is
+MAX_EVERY_WEEKS = 12
 
 _TIME = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*(AM|PM)?\s*$", re.IGNORECASE)
 
@@ -96,6 +99,10 @@ class Template:
     parent_id: str | None = None
     needs_photo: bool = False
     active: bool = True
+    every_weeks: int = 1  # 2 = every other week, counted from the week of ``start_date``
+    month_days: tuple[int, ...] = ()  # days of the month (LAST_DAY allowed); replaces ``weekdays``
+    start_date: str | None = None  # first and last day it can appear, inclusive
+    end_date: str | None = None
 
     @staticmethod
     def from_dict(d: dict) -> "Template":
@@ -104,17 +111,36 @@ class Template:
             instructions=d.get("instructions") or "", order=float(d.get("order") or 0),
             weekdays=tuple(sorted(d.get("weekdays") or ())), parent_id=d.get("parent_id"),
             needs_photo=bool(d.get("needs_photo")), active=d.get("active", True),
+            every_weeks=int(d.get("every_weeks") or 1), month_days=tuple(sorted(d.get("month_days") or ())),
+            start_date=d.get("start_date") or None, end_date=d.get("end_date") or None,
         )
 
     def to_dict(self) -> dict:
         return {"id": self.id, "store": self.store, "shift": self.shift, "title": self.title,
                 "instructions": self.instructions, "order": self.order,
                 "weekdays": list(self.weekdays), "parent_id": self.parent_id,
-                "needs_photo": self.needs_photo, "active": self.active}
+                "needs_photo": self.needs_photo, "active": self.active,
+                "every_weeks": self.every_weeks, "month_days": list(self.month_days),
+                "start_date": self.start_date, "end_date": self.end_date}
+
+
+def _monday(day: datetime.date) -> datetime.date:
+    return day - datetime.timedelta(days=day.weekday())
 
 
 def due_on(t: Template, day: datetime.date) -> bool:
-    return t.active and (not t.weekdays or day.weekday() in t.weekdays)
+    iso = day.isoformat()
+    if not t.active or (t.start_date and iso < t.start_date) or (t.end_date and iso > t.end_date):
+        return False
+    if t.month_days:
+        last = calendar.monthrange(day.year, day.month)[1]
+        return day.day in t.month_days or (LAST_DAY in t.month_days and day.day == last)
+    if t.weekdays and day.weekday() not in t.weekdays:
+        return False
+    if t.every_weeks > 1:
+        anchor = datetime.date.fromisoformat(t.start_date) if t.start_date else datetime.date(2026, 1, 5)
+        return ((_monday(day) - _monday(anchor)).days // 7) % t.every_weeks == 0
+    return True
 
 
 def task_id(store: str, day: datetime.date, template_id: str) -> str:

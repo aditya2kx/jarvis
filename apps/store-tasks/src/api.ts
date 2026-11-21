@@ -78,6 +78,8 @@ export interface TaskDetail {
   task: Task;
   reference_photos: Photo[];
   recent_photos: Photo[];
+  /** The repeating task this one comes from; null for a task added for one day. */
+  definition: Template | null;
 }
 
 export interface Day {
@@ -101,13 +103,24 @@ export interface Count {
   photos?: Photo[];
 }
 
-export interface Template {
+/** When a repeating task is on the list. Weekday 0 is Monday. */
+export interface Repeat {
+  /** Empty = every day of the week. */
+  weekdays: number[];
+  /** 2 = every other week, counted from the week of `start_date`. */
+  every_weeks: number;
+  /** Days of the month (-1 = the last day). When set, weekdays do not apply. */
+  month_days: number[];
+  start_date: string | null;
+  end_date: string | null;
+}
+
+export interface Template extends Repeat {
   id: string;
   shift: string;
   title: string;
   instructions: string;
   order: number;
-  weekdays: number[];
   parent_id: string | null;
   needs_photo: boolean;
   active: boolean;
@@ -215,13 +228,14 @@ export const api = {
     }
     return url;
   },
-  addTask: (token: string, body: { title: string; shift: string; date: string; instructions?: string; assignee_id?: string | null }) =>
+  addTask: (token: string, body: { title: string; shift: string; date: string; instructions?: string; assignee_id?: string | null; needs_photo?: boolean }) =>
     call<Task>("POST", "/v1/tasks", { token, body }),
   count: (token: string, date: string) => call<{ count: Count | null }>("GET", `/v1/counts/${date}`, { token }),
   submitCount: (token: string, date: string, body: Pick<Count, "items" | "notes" | "tips">) =>
     call<{ count: Count }>("PUT", `/v1/counts/${date}`, { token, body }),
   templates: (token: string) => call<{ templates: Template[] }>("GET", "/v1/templates", { token }),
-  saveTemplate: (token: string, body: Partial<Template>) =>
+  /** `copy_from` starts a new task with another one's example photos. */
+  saveTemplate: (token: string, body: Partial<Template> & { copy_from?: string }) =>
     call<{ template: Template }>("POST", "/v1/templates", { token, body }),
   staff: (token: string) => call<{ staff: Staff[] }>("GET", "/v1/staff", { token }),
   saveStaff: (token: string, body: Partial<Staff>) => call<{ staff: Staff }>("POST", "/v1/staff", { token, body }),

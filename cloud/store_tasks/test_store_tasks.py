@@ -310,6 +310,66 @@ def test_template_edit_keeps_history(env):
     assert [h["title"] for h in env.tasks.docs.query(st.TEMPLATE_HISTORY, template_id="t1")] == ["Unlock"]
 
 
+def _tpl(**kw):
+    return model.Template.from_dict({"id": "x", "store": "palmetto", "shift": "opening", "title": "x", **kw})
+
+
+def test_repeat_rules_decide_which_days_a_task_is_on():
+    d = datetime.date
+    assert model.due_on(_tpl(), d(2026, 11, 19))
+    assert not model.due_on(_tpl(active=False), d(2026, 11, 19))
+    assert [model.due_on(_tpl(weekdays=[3]), d(2026, 11, n)) for n in (19, 20)] == [True, False]
+    # Every other Thursday, counted from the week it starts.
+    other = _tpl(weekdays=[3], every_weeks=2, start_date="2026-11-19")
+    assert [model.due_on(other, d(2026, 11, 19) + datetime.timedelta(days=7 * n)) for n in range(4)] == [
+        True, False, True, False]
+    assert [model.due_on(_tpl(month_days=[1, 15]), d(2026, 12, n)) for n in (1, 2, 15)] == [True, False, True]
+    last = _tpl(month_days=[model.LAST_DAY])
+    assert model.due_on(last, d(2027, 2, 28)) and not model.due_on(last, d(2027, 2, 27))
+    window = _tpl(start_date="2026-11-20", end_date="2026-11-21")
+    assert [model.due_on(window, d(2026, 11, n)) for n in (19, 20, 21, 22)] == [False, True, True, False]
+
+
+def test_manager_adds_a_repeating_task_and_a_schedule_change_updates_days_already_built(env):
+    c = env.client
+    assert c.post("/v1/templates", headers=env.crew_h, json={"shift": "closing", "title": "x"}).status_code == 403
+    bad = c.post("/v1/templates", headers=env.boss_h, json={"shift": "closing", "title": "x", "every_weeks": 99})
+    assert bad.status_code == 400
+    t = c.post("/v1/templates", headers=env.boss_h, json={
+        "shift": "closing", "title": "Filter", "weekdays": [3], "every_weeks": 2}).get_json()["template"]
+    assert t["start_date"] == "2026-11-19"  # the weeks are counted from the day it was set up
+    titles = lambda day: [x["title"] for x in c.get(f"/v1/days/{day}", headers=env.crew_h).get_json()["tasks"]]
+    assert "Filter" in titles("2026-11-19") and "Filter" not in titles("2026-11-26")
+    detail = c.get(f"/v1/tasks/palmetto_2026-11-19_{t['id']}", headers=env.crew_h).get_json()
+    assert detail["definition"]["every_weeks"] == 2
+
+    # Moved to Fridays in the other shift: today's untouched copy goes, tomorrow's appears there.
+    c.post("/v1/templates", headers=env.boss_h, json={**t, "weekdays": [4], "every_weeks": 1, "shift": "opening"})
+    assert "Filter" not in titles("2026-11-19")
+    fri = c.get("/v1/days/2026-11-20", headers=env.crew_h).get_json()["tasks"]
+    assert [x["shift"] for x in fri if x["title"] == "Filter"] == ["opening"]
+
+    # Taking a parent off the list takes its steps with it.
+    assert "Thu: blender" in titles("2026-11-19")
+    c.post("/v1/templates", headers=env.boss_h, json={"id": "t2", "shift": "opening", "title": "Deep Clean",
+                                                      "order": 2, "active": False})
+    assert not {"Deep Clean", "Thu: blender"} & set(titles("2026-11-19"))
+
+
+def test_duplicate_starts_with_the_originals_example_photos(env):
+    c = env.client
+    c.get("/v1/days/2026-11-19", headers=env.crew_h)
+    c.post("/v1/tasks/palmetto_2026-11-19_t1/reference-photo", headers=env.boss_h,
+           data={"photo": (io.BytesIO(b"jpg"), "p.jpg", "image/jpeg")})
+    copy = c.post("/v1/templates", headers=env.boss_h, json={
+        "shift": "closing", "title": "Lock up", "copy_from": "t1"}).get_json()["template"]
+    detail = c.get(f"/v1/tasks/palmetto_2026-11-19_{copy['id']}", headers=env.crew_h)
+    assert detail.status_code == 404  # not built until the day is read
+    c.get("/v1/days/2026-11-19", headers=env.crew_h)
+    detail = c.get(f"/v1/tasks/palmetto_2026-11-19_{copy['id']}", headers=env.crew_h).get_json()
+    assert len(detail["reference_photos"]) == 1
+
+
 def test_shift_team_comes_from_shared_schedule(env):
     rows = [{"date": "2026-11-19", "name": "Johnson, Dolce J", "ranges": ["6:30 AM - 2:30 PM"]},
             {"date": "2026-11-19", "name": "Vu, Phong", "ranges": ["3:00 PM - 8:30 PM"]}]

@@ -1,13 +1,17 @@
-import { Camera, Check, ChevronLeft, ChevronRight, ClipboardList, CloudOff, FileText, ListChecks, Lock, MessageSquare, MousePointerClick, Plus, Settings, UserPlus, Users, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, isOffline, type Bootstrap, type Day, type Session, type Staff, type Task } from "./api";
+import { Camera, Check, ChevronLeft, ChevronRight, ClipboardList, CloudOff, FileText, ListChecks, Lock, MessageSquare, MousePointerClick, PartyPopper, Plus, Settings, UserPlus, Users, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, isOffline, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
 import { PersonPicker } from "./People";
 import { applyPending, flush, loadQueue, push, type Pending } from "./queue";
 import { TaskDetail } from "./TaskDetail";
-import { addDays, Avatar, Button, cx, dayLabel, Field, firstName, Input, inputClass, Notice, Sheet, time, useWide } from "./ui";
+import { blankDraft, TaskForm, type TaskDraft } from "./TaskForm";
+import { addDays, Avatar, Button, cx, dayLabel, firstName, Notice, Sheet, shiftTone, Tick, time, Toast, useWide } from "./ui";
 
 const REFRESH_MS = 60 * 1000;
+const TOAST_MS = 2800;
+const CONFETTI_MS = 1600;
+const CONFETTI = ["var(--success)", "var(--tone)", "oklch(0.8 0.16 85)", "oklch(0.7 0.17 20)", "var(--primary)"];
 
 const FILTERS = ["all", "mine", "unassigned"] as const;
 type Filter = (typeof FILTERS)[number];
@@ -36,6 +40,13 @@ interface Picking {
   current?: string | null;
 }
 
+/** The task form, opened to add, copy or change a task. */
+interface Forming {
+  title: string;
+  initial: TaskDraft;
+  once: boolean;
+}
+
 export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const [date, setDate] = useState(boot.today);
   const [server, setServer] = useState<Day | null>(() => readCache(boot.today));
@@ -45,7 +56,9 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const [hideDone, setHideDone] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [picking, setPicking] = useState<Picking | null>(null);
-  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState<Forming | null>(null);
+  const [toast, setToast] = useState("");
+  const [party, setParty] = useState("");
   const [counting, setCounting] = useState(false);
   const [offline, setOffline] = useState(false);
   const [error, setError] = useState("");
@@ -88,6 +101,26 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const tasks = useMemo(() => (day ? day.tasks.filter((t) => t.shift === activeShift) : []), [day, activeShift]);
   const scheduled = useMemo(() => new Set(Object.values(day?.teams ?? {}).flatMap((team) => team.map((m) => m.id ?? ""))), [day]);
   const openTask = day?.tasks.find((t) => t.id === open) ?? null;
+  const left = tasks.filter((t) => t.status === "open").length;
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), TOAST_MS);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  // Confetti only when the last task of a list is ticked here and now, not when a finished list is opened.
+  const listKey = `${date}/${activeShift}`;
+  const before = useRef({ key: "", left: 0 });
+  useEffect(() => {
+    if (before.current.key === listKey && before.current.left > 0 && left === 0 && tasks.length > 0) {
+      setParty(listKey);
+      const timer = window.setTimeout(() => setParty(""), CONFETTI_MS);
+      before.current = { key: listKey, left };
+      return () => window.clearTimeout(timer);
+    }
+    before.current = { key: listKey, left };
+  }, [listKey, left, tasks.length]);
 
   const change = (...changes: Omit<Pending, "at" | "token" | "staff_id">[]) => {
     const at = new Date().toISOString();
@@ -106,17 +139,31 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
       setError(`${firstName(names.get(t.completed_by ?? "")) || "Someone else"} ticked this. Ask them or a manager to undo it.`);
       return;
     }
+    if (t.status === "open") navigator.vibrate?.(12);
     change({ id: t.id, kind: t.status === "open" ? "complete" : "reopen" });
   };
 
-  const assign = (ids: string[], assignee_id: string | null) => change(...ids.map((id) => ({ id, kind: "assign" as const, assignee_id })));
+  const assign = (ids: string[], assignee_id: string | null) => {
+    change(...ids.map((id) => ({ id, kind: "assign" as const, assignee_id })));
+    const who = assignee_id === me ? "you" : firstName(names.get(assignee_id ?? ""));
+    setToast(assignee_id ? `${ids.length > 1 ? `${ids.length} tasks` : "Task"} assigned to ${who}` : "No one is on it now");
+  };
   const replaceTask = (t: Task) => setServer((d) => (d ? { ...d, tasks: d.tasks.map((x) => (x.id === t.id ? t : x)) } : d));
   const pickFor = (t: Task) => setPicking({ title: "Who is doing this?", ids: [t.id], current: t.assignee_id });
 
   if (!day) {
+    if (offline) return <div className="flex min-h-full items-center justify-center p-6 text-muted-foreground">No connection, and this day is not saved on the device yet.</div>;
     return (
-      <div className="flex min-h-full items-center justify-center p-6 text-muted-foreground">
-        {offline ? "No connection, and this day is not saved on the device yet." : "Loading…"}
+      <div role="status" aria-label="Loading" className="mx-auto max-w-7xl space-y-4 p-4 sm:p-6">
+        <div className="skeleton h-10 w-48" />
+        <div className="grid grid-cols-3 gap-2">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="skeleton h-16" />
+          ))}
+        </div>
+        {[0, 1, 2, 3, 4, 5].map((i) => (
+          <div key={i} className="skeleton h-14" />
+        ))}
       </div>
     );
   }
@@ -131,7 +178,6 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const counts: Record<Filter, number> = { all: tasks.length, mine: tasks.filter((t) => t.assignee_id === me).length, unassigned: tasks.filter((t) => !t.assignee_id).length };
   const labels: Record<Filter, string> = { all: "All", mine: "Mine", unassigned: "Unassigned" };
   const shiftInfo = day.shifts.find((s) => s.id === activeShift);
-  const left = tasks.filter((t) => t.status === "open").length;
   const overdue = left > 0 && date === day.today && Boolean(shiftInfo?.due_at) && new Date() > new Date(shiftInfo!.due_at!);
   const isLastShift = activeShift === day.shifts.at(-1)?.id;
   const showCount = isLastShift && boot.store.count_items.length > 0 && (!readOnly || day.count_submitted);
@@ -164,6 +210,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
       onAssignMe={(t) => assign([t.id], me)}
       onChanged={replaceTask}
       onOpen={setOpen}
+      onDuplicate={(initial, once) => setForm({ title: "Duplicate task", initial, once })}
+      onEditDefinition={(definition) => setForm({ title: "Edit repeating task", initial: definition, once: false })}
       onRemoved={() => {
         setOpen(null);
         refresh();
@@ -172,8 +220,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   );
 
   return (
-    <div className="mx-auto flex h-full max-w-7xl flex-col">
-      <header className="space-y-3 border-b border-border px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6">
+    <div className="mx-auto flex h-full max-w-7xl flex-col" data-tone={shiftInfo ? shiftTone(shiftInfo.due).tone : undefined}>
+      <header className="space-y-3 border-b border-border bg-card px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1">
             <button aria-label="Previous day" onClick={() => setDate(addDays(date, -1))} className="rounded-full p-2 text-muted-foreground hover:bg-muted">
@@ -188,7 +236,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
                 ) : (
                   <>
                     {" · "}
-                    <button onClick={() => setDate(boot.today)} className="font-medium text-foreground underline underline-offset-2">
+                    <button onClick={() => setDate(boot.today)} className="font-medium text-primary underline underline-offset-2">
                       Back to today
                     </button>
                   </>
@@ -235,31 +283,36 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             const done = mine.filter((t) => t.status === "done").length;
             const selected = s.id === activeShift;
             const complete = mine.length > 0 && done === mine.length;
+            const { tone, Icon } = shiftTone(s.due);
             return (
               <button
                 key={s.id}
                 role="tab"
+                data-tone={tone}
                 aria-selected={selected}
                 onClick={() => {
                   setShift(s.id);
                   setOpen(null);
                 }}
                 className={cx(
-                  "min-w-0 rounded-xl border px-2.5 py-2 text-left transition sm:px-3",
-                  selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-muted",
+                  "min-w-0 rounded-xl border px-2.5 py-2 text-left transition duration-200 active:scale-[0.98] sm:px-3",
+                  selected ? "border-tone bg-tone-soft shadow-card" : "border-border bg-card hover:border-ring hover:bg-muted/60",
                 )}
               >
-                <span className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[13px] font-medium sm:text-[15px]">{s.label}</span>
-                  {complete && <Check className={cx("size-4 shrink-0", !selected && "text-success")} strokeWidth={3} />}
+                <span className="flex items-center gap-1.5">
+                  <Icon className={cx("hidden size-4 shrink-0 sm:block", selected ? "text-tone-ink" : "text-tone")} />
+                  <span className={cx("min-w-0 flex-1 truncate text-[13px] font-semibold sm:text-[15px]", selected && "text-tone-ink")}>{s.label}</span>
+                  {complete && <Check className="pop hidden size-4 shrink-0 text-success sm:block" strokeWidth={3.5} />}
                 </span>
-                <span className={cx("block truncate text-sm tabular-nums", selected ? "text-primary-foreground/70" : "text-muted-foreground")}>
+                <span className="flex items-center gap-1.5 truncate text-sm tabular-nums text-muted-foreground">
+                  <Icon className={cx("size-3.5 shrink-0 sm:hidden", selected ? "text-tone-ink" : "text-tone")} />
                   {done}/{mine.length}
                   <span className="hidden sm:inline"> · by {time(s.due_at)}</span>
+                  {complete && <Check className="pop size-3.5 shrink-0 text-success sm:hidden" strokeWidth={3.5} />}
                 </span>
-                <span className={cx("mt-1.5 block h-1 overflow-hidden rounded-full", selected ? "bg-primary-foreground/20" : "bg-muted")}>
+                <span className={cx("mt-1.5 block h-1.5 overflow-hidden rounded-full", selected ? "bg-card" : "bg-muted")}>
                   <span
-                    className={cx("block h-full rounded-full transition-all", complete ? "bg-success" : selected ? "bg-primary-foreground" : "bg-foreground")}
+                    className={cx("block h-full rounded-full transition-[width,background-color] duration-500 ease-out", complete ? "bg-success" : "bg-tone")}
                     style={{ width: `${mine.length ? (100 * done) / mine.length : 0}%` }}
                   />
                 </span>
@@ -278,7 +331,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
                   key={f}
                   aria-pressed={filter === f}
                   onClick={() => setFilter(f)}
-                  className={cx("min-h-9 rounded-md px-3 text-sm font-medium", filter === f ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground")}
+                  className={cx("min-h-9 rounded-md px-3 text-sm font-medium transition", filter === f ? "bg-card text-foreground shadow-card" : "text-muted-foreground hover:text-foreground")}
                 >
                   {labels[f]} <span className="tabular-nums opacity-60">{counts[f]}</span>
                 </button>
@@ -286,7 +339,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             </div>
             <div className="flex items-center gap-3">
               <label className="flex min-h-9 items-center gap-2 text-sm text-muted-foreground">
-                <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} className="size-4 accent-foreground" />
+                <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} className="size-4 accent-primary" />
                 Hide done
               </label>
               {!readOnly && unassigned.length > 0 && (
@@ -302,9 +355,23 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             </div>
           </div>
 
-          <p className={cx("mb-2 text-sm", overdue ? "font-medium text-destructive" : "text-muted-foreground")}>
-            {tasks.length === 0 ? "" : left === 0 ? "All done for this shift." : `${left} left · ${overdue ? "was due" : "due"} ${time(shiftInfo?.due_at)}`}
-          </p>
+          {tasks.length > 0 && left === 0 ? (
+            <div key={listKey} className="pop relative mb-3 flex items-center gap-3 rounded-xl bg-success/10 px-4 py-3 font-medium text-success">
+              <PartyPopper className="size-5 shrink-0" />
+              {shiftInfo?.label} is all done{readOnly ? "." : ". Nice work."}
+              {party === listKey &&
+                Array.from({ length: 22 }, (_, i) => {
+                  const angle = (i / 22) * 2 * Math.PI;
+                  const reach = 70 + ((i * 37) % 80);
+                  const style = { "--dx": `${Math.cos(angle) * reach * 1.6}px`, "--dy": `${Math.sin(angle) * reach - 30}px`, "--rot": `${(i % 2 ? 1 : -1) * (200 + i * 20)}deg`, "--c": CONFETTI[i % CONFETTI.length], "--delay": `${(i % 5) * 25}ms` };
+                  return <span key={i} aria-hidden className="confetti" style={style as React.CSSProperties} />;
+                })}
+            </div>
+          ) : (
+            <p className={cx("mb-2 text-sm", overdue ? "font-medium text-destructive" : "text-muted-foreground")}>
+              {tasks.length > 0 && `${left} left · ${overdue ? "was due" : "due"} ${time(shiftInfo?.due_at)}`}
+            </p>
+          )}
           {readOnly && (
             <div className="mb-2">
               <Notice>This day was done in ClickUp. It is shown here for reference.</Notice>
@@ -324,9 +391,9 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
           {showCount && (
             <button
               onClick={() => setCounting(true)}
-              className="mb-3 flex min-h-14 w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-2 text-left hover:bg-muted"
+              className="mb-3 flex min-h-14 w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-2 text-left shadow-card transition hover:border-ring hover:bg-accent active:scale-[0.99]"
             >
-              <ClipboardList className={cx("size-5 shrink-0", day.count_submitted ? "text-success" : "text-muted-foreground")} />
+              <ClipboardList className={cx("size-5 shrink-0", day.count_submitted ? "text-success" : "text-tone-ink")} />
               <span className="flex-1">
                 <span className="block font-medium">Closing count</span>
                 <span className="block text-sm text-muted-foreground">
@@ -337,9 +404,9 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             </button>
           )}
 
-          <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-            {top.filter(shows).map((t) => (
-              <li key={t.id}>
+          <ul key={listKey} className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card shadow-card">
+            {top.filter(shows).map((t, i) => (
+              <li key={t.id} className="rise" style={{ "--i": i } as React.CSSProperties}>
                 {row(t)}
                 {childrenOf(t.id).filter(matches).length > 0 && (
                   <ul className="divide-y divide-border border-t border-border bg-muted/40">
@@ -355,7 +422,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             {top.filter(shows).length === 0 && (
               <li className="px-4 py-12 text-center text-muted-foreground">
                 {tasks.length === 0
-                  ? "Nothing on this list."
+                  ? "Nothing on this list yet."
                   : filter === "mine"
                     ? "Nothing here is yours yet. Tap the person icon on a task to take it."
                     : hideDone && left === 0
@@ -365,9 +432,12 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             )}
             {!readOnly && (
               <li>
-                <button onClick={() => setAdding(true)} className="flex min-h-13 w-full items-center gap-3 px-4 text-left text-muted-foreground hover:bg-muted">
-                  <Plus className="size-5" />
-                  Add a task for this day
+                <button
+                  onClick={() => activeShift && setForm({ title: "Add a task", initial: blankDraft(activeShift), once: true })}
+                  className="group flex min-h-13 w-full items-center gap-3 px-4 text-left font-medium text-primary hover:bg-accent"
+                >
+                  <Plus className="size-5 transition-transform group-hover:rotate-90" />
+                  Add a task
                 </button>
               </li>
             )}
@@ -377,7 +447,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
         {wide && (
           <aside className="w-[26rem] shrink-0 overflow-y-auto border-l border-border bg-card xl:w-[30rem]">
             {openTask ? (
-              <div className="p-6">
+              <div key={openTask.id} className="slide-in p-6">
                 <div className="mb-4 flex items-start justify-between gap-3">
                   <h2 className="text-xl font-semibold leading-snug">{openTask.title}</h2>
                   <button aria-label="Close" onClick={() => setOpen(null)} className="-m-2 rounded-full p-2 text-muted-foreground hover:bg-muted">
@@ -387,8 +457,10 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
                 {detail}
               </div>
             ) : (
-              <div className="flex h-full flex-col items-center justify-center gap-3 p-10 text-center text-muted-foreground">
-                <MousePointerClick className="size-8" />
+              <div className="fade flex h-full flex-col items-center justify-center gap-3 p-10 text-center text-muted-foreground">
+                <span className="flex size-14 items-center justify-center rounded-full bg-tone-soft text-tone-ink">
+                  <MousePointerClick className="size-6" />
+                </span>
                 <p>Pick a task to see how to do it, who is doing it, photos and notes.</p>
               </div>
             )}
@@ -415,21 +487,25 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
           }}
         />
       )}
-      {adding && activeShift && (
-        <AddTask
-          shifts={day.shifts}
-          shift={activeShift}
-          staff={boot.staff}
-          onClose={() => setAdding(false)}
-          onAdd={async (body) => {
-            const t = await api.addTask(session.token, { ...body, date });
-            setAdding(false);
-            setShift(t.shift);
+      {form && (
+        <TaskForm
+          boot={boot}
+          session={session}
+          date={date}
+          title={form.title}
+          initial={form.initial}
+          once={form.once}
+          onClose={() => setForm(null)}
+          onSaved={async (saved) => {
+            setForm(null);
+            setShift(saved.shift);
+            setToast(saved.message);
             await refresh();
-            setOpen(t.id);
+            setOpen(saved.taskId);
           }}
         />
       )}
+      {toast && <Toast key={toast} text={toast} />}
       {counting && (
         <CountForm
           boot={boot}
@@ -466,20 +542,22 @@ function TaskRow({ task, sub, steps, names, selected, readOnly, onToggle, onOpen
   const notes = task.comments?.length ?? 0;
   const meta = "flex items-center gap-1";
   return (
-    <div className={cx("flex items-stretch", sub && "pl-6 sm:pl-8", selected && "bg-muted")}>
+    <div className={cx("flex items-stretch transition-colors", sub && "pl-6 sm:pl-8", selected && "bg-tone-soft shadow-[inset_3px_0_0_var(--tone)]")}>
       <button
         aria-label={done ? `Undo ${task.title}` : `Done: ${task.title}`}
         aria-pressed={done}
         disabled={readOnly}
         onClick={() => onToggle(task)}
-        className="flex w-14 shrink-0 items-center justify-center hover:bg-muted disabled:opacity-60 sm:w-16"
+        className="flex w-14 shrink-0 items-center justify-center disabled:opacity-60 sm:w-16"
       >
-        <span className={cx("flex size-7 items-center justify-center rounded-full border-2 transition", done ? "border-success bg-success text-white" : "border-ring", task.pending && "opacity-60")}>
-          {done && <Check className="size-4" strokeWidth={3} />}
-        </span>
+        <Tick done={done} dim={task.pending} />
       </button>
-      <button onClick={() => onOpen(task.id)} className="flex min-h-15 min-w-0 flex-1 flex-col justify-center gap-0.5 py-2.5 pr-2 text-left hover:bg-muted">
-        <span className={cx("text-[16px] leading-snug", done && "text-muted-foreground line-through")}>{task.title}</span>
+      <button onClick={() => onOpen(task.id)} className={cx("flex min-h-15 min-w-0 flex-1 flex-col justify-center gap-0.5 py-2.5 pr-2 text-left", !selected && "hover:bg-muted/70")}>
+        <span className="text-[16px] leading-snug">
+          <span className="strike" data-done={done}>
+            {task.title}
+          </span>
+        </span>
         <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[13px] text-muted-foreground empty:hidden">
           {done && (
             <span className={cx(meta, "text-success")}>
@@ -517,86 +595,21 @@ function TaskRow({ task, sub, steps, names, selected, readOnly, onToggle, onOpen
         disabled={readOnly}
         onClick={() => onAssign(task)}
         aria-label={assignee ? `Doing it: ${assignee}. Change` : "Pick who is doing it"}
-        className="flex shrink-0 items-center gap-2 px-3 hover:bg-muted disabled:hover:bg-transparent sm:px-4"
+        className="group flex shrink-0 items-center gap-2 px-3 sm:px-4"
       >
         {task.assignee_id && assignee ? (
           <>
             <span className="hidden max-w-28 truncate text-sm text-muted-foreground md:inline">{firstName(assignee)}</span>
-            <Avatar id={task.assignee_id} name={assignee} />
+            <span key={task.assignee_id} className="pop inline-flex transition-transform group-enabled:group-hover:scale-110">
+              <Avatar id={task.assignee_id} name={assignee} />
+            </span>
           </>
         ) : (
-          <span className={cx("flex size-8 items-center justify-center rounded-full border border-dashed border-ring text-muted-foreground", readOnly && "opacity-0")}>
+          <span className={cx("flex size-8 items-center justify-center rounded-full border border-dashed border-ring text-muted-foreground transition group-enabled:group-hover:border-primary group-enabled:group-hover:bg-accent group-enabled:group-hover:text-primary", readOnly && "opacity-0")}>
             <UserPlus className="size-4" />
           </span>
         )}
       </button>
     </div>
-  );
-}
-
-interface AddTaskProps {
-  shifts: Day["shifts"];
-  shift: string;
-  staff: Staff[];
-  onClose: () => void;
-  onAdd: (body: { title: string; shift: string; instructions: string; assignee_id: string | null }) => Promise<void>;
-}
-
-function AddTask({ shifts, shift, staff, onClose, onAdd }: AddTaskProps) {
-  const [title, setTitle] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [shiftId, setShiftId] = useState(shift);
-  const [assignee, setAssignee] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      await onAdd({ title: title.trim(), shift: shiftId, instructions: instructions.trim(), assignee_id: assignee || null });
-    } catch (err) {
-      setError(isOffline(err) ? "No connection. Try again when Wi-Fi is back." : (err as Error).message);
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Sheet title="Add a task for this day" onClose={onClose}>
-      <form onSubmit={submit} className="space-y-4">
-        <Field label="What needs doing">
-          <Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Shift">
-            <select value={shiftId} onChange={(e) => setShiftId(e.target.value)} className={inputClass}>
-              {shifts.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Who is doing it">
-            <select value={assignee} onChange={(e) => setAssignee(e.target.value)} className={inputClass}>
-              <option value="">No one yet</option>
-              {staff.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
-        <Field label="How to do it (optional)">
-          <textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} rows={3} className={cx(inputClass, "py-2")} />
-        </Field>
-        <p className="text-sm text-muted-foreground">Photos and notes can be added once the task is on the list.</p>
-        {error && <Notice tone="error">{error}</Notice>}
-        <Button type="submit" disabled={!title.trim() || busy} className="w-full">
-          Add task
-        </Button>
-      </form>
-    </Sheet>
   );
 }

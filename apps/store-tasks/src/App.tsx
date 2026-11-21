@@ -101,7 +101,7 @@ function SignIn({ boot, onSignedIn }: { boot: Bootstrap; onSignedIn: (s: Session
             <button
               key={s.id}
               onClick={() => setWho(s)}
-              className="flex min-h-16 items-center gap-3 rounded-xl border border-border bg-card px-4 text-left text-lg font-medium transition hover:bg-muted active:scale-[0.98]"
+              className="flex min-h-16 items-center gap-3 rounded-xl border border-border bg-card px-4 text-left text-lg font-medium shadow-card transition hover:border-ring hover:bg-accent active:scale-[0.98]"
             >
               <Avatar id={s.id} name={s.name} size="lg" />
               <span className="min-w-0 truncate">{s.name}</span>
@@ -156,7 +156,7 @@ function PinPad({ who, onBack, onSignedIn }: { who: Staff; onBack: () => void; o
         </div>
         <div className="flex justify-center gap-3" aria-label={`${pin.length} of ${length} digits entered`}>
           {Array.from({ length }, (_, i) => (
-            <span key={i} className={cx("size-4 rounded-full border-2 border-foreground", i < pin.length && "bg-foreground")} />
+            <span key={i} className={cx("size-4 rounded-full border-2 border-primary transition", i < pin.length && "scale-110 bg-primary")} />
           ))}
         </div>
         <div className="min-h-9">{error && <Notice tone="error">{error}</Notice>}</div>

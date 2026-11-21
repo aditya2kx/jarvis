@@ -164,15 +164,38 @@ class Tasks:
         rows = [model.Template.from_dict(d) for d in self.docs.query(st.TEMPLATES, store=store_id)]
         return sorted(rows, key=lambda t: (t.shift, t.order, t.title))
 
+    @staticmethod
+    def _schedule(data: dict, today: datetime.date) -> dict:
+        weekdays = tuple(sorted({int(w) for w in data.get("weekdays") or ()}))
+        if any(w < 0 or w > 6 for w in weekdays):
+            raise Invalid("weekdays are 0 (Monday) to 6 (Sunday)")
+        month_days = tuple(sorted({int(d) for d in data.get("month_days") or ()}))
+        if any(d != model.LAST_DAY and not 1 <= d <= 31 for d in month_days):
+            raise Invalid("days of the month are 1 to 31")
+        every = int(data.get("every_weeks") or 1)
+        if not 1 <= every <= model.MAX_EVERY_WEEKS:
+            raise Invalid(f"repeat every 1 to {model.MAX_EVERY_WEEKS} weeks")
+        try:
+            start, end = (datetime.date.fromisoformat(data[k]).isoformat() if data.get(k) else None
+                          for k in ("start_date", "end_date"))
+        except ValueError:
+            raise Invalid("dates are YYYY-MM-DD") from None
+        if start and end and end < start:
+            raise Invalid("the last day is before the first day")
+        if month_days:
+            weekdays, every = (), 1
+        elif every > 1 and not start:
+            start = today.isoformat()  # the weeks are counted from here
+        return {"weekdays": weekdays, "month_days": month_days, "every_weeks": every,
+                "start_date": start, "end_date": end}
+
     def save_template(self, store_id: str, data: dict, by: str) -> model.Template:
         cfg = self.store(store_id)
+        today = cfg.today(self.now())
         title = (data.get("title") or "").strip()
         if not title:
             raise Invalid("title is required")
         cfg.shift(data.get("shift") or "")  # KeyError → 400 in the route
-        weekdays = tuple(sorted({int(w) for w in data.get("weekdays") or ()}))
-        if any(w < 0 or w > 6 for w in weekdays):
-            raise Invalid("weekdays are 0 (Monday) to 6 (Sunday)")
         tid = data.get("id") or f"t{uuid.uuid4().hex[:10]}"
         cur = self.docs.get(st.TEMPLATES, tid)
         if cur and cur.get("store") != store_id:
@@ -180,13 +203,13 @@ class Tasks:
         parent_id = data.get("parent_id") or None
         if parent_id:
             parent = self.docs.get(st.TEMPLATES, parent_id)
-            if parent is None or parent.get("store") != store_id or parent.get("parent_id"):
+            if parent is None or parent.get("store") != store_id or parent.get("parent_id") or parent_id == tid:
                 raise Invalid("parent must be a top-level task in this store")
         t = model.Template(
             id=tid, store=store_id, shift=data["shift"], title=title,
             instructions=(data.get("instructions") or "").strip(), order=float(data.get("order") or 0),
-            weekdays=weekdays, parent_id=parent_id, needs_photo=bool(data.get("needs_photo")),
-            active=bool(data.get("active", True)),
+            parent_id=parent_id, needs_photo=bool(data.get("needs_photo")),
+            active=bool(data.get("active", True)), **self._schedule(data, today),
         )
         stamp = self.now().isoformat()
         if cur:
@@ -194,16 +217,33 @@ class Tasks:
             self.docs.set(st.TEMPLATE_HISTORY, f"{tid}_{stamp}", {
                 **cur, "template_id": tid, "superseded_at": stamp, "superseded_by": by})
         kept = {k: cur[k] for k in ("reference_photos", "recent_photos") if cur and k in cur}
+        if not cur and data.get("copy_from"):
+            # A duplicate starts with the original's example photos.
+            src = self.docs.get(st.TEMPLATES, data["copy_from"])
+            if src and src.get("store") == store_id and src.get("reference_photos"):
+                kept["reference_photos"] = src["reference_photos"]
         self.docs.set(st.TEMPLATES, tid, {**kept, **t.to_dict(), "updated_at": stamp, "updated_by": by})
         if cur:
-            # Lists already built for today and later follow the edit; finished tasks keep what was done.
-            today = cfg.today(self.now()).isoformat()
-            patch = {"title": t.title, "instructions": t.instructions, "needs_photo": t.needs_photo,
-                     "order": t.order, "updated_at": stamp}
-            for task in self.docs.query(st.TASKS, store=store_id, template_id=tid):
-                if task["date"] >= today and task["status"] == model.OPEN:
-                    self.docs.set(st.TASKS, task["id"], patch, merge=True)
+            self._follow_edit(cfg, t, today, stamp)
         return t
+
+    def _follow_edit(self, cfg: model.StoreConfig, t: model.Template, today: datetime.date, stamp: str) -> None:
+        """Lists already built for today and later follow an edit; finished tasks keep what was done."""
+        family = [t] + [c for c in self.templates(cfg.id) if c.parent_id == t.id]
+        for tpl in family:
+            for task in self.docs.query(st.TASKS, store=cfg.id, template_id=tpl.id):
+                day = datetime.date.fromisoformat(task["date"])
+                if day < today or task["status"] != model.OPEN:
+                    continue
+                if not (model.due_on(tpl, day) and model.due_on(t, day)):
+                    # No longer scheduled that day. Something already attached to it is kept.
+                    if not (task.get("photos") or task.get("comments")):
+                        self.docs.delete(st.TASKS, task["id"])
+                elif tpl is t:
+                    self.docs.set(st.TASKS, task["id"], {
+                        "title": t.title, "instructions": t.instructions, "needs_photo": t.needs_photo,
+                        "order": t.order, "shift": t.shift, "due_at": model.due_at(cfg, t.shift, day),
+                        "updated_at": stamp}, merge=True)
 
     # ── days ────────────────────────────────────────────────────────────────
 
@@ -376,7 +416,8 @@ class Tasks:
         own = {p["path"] for p in t.get("photos") or []}
         recent = holder.get("recent_photos") or [] if coll == st.TEMPLATES else []
         return {"task": t, "reference_photos": holder.get("reference_photos") or [],
-                "recent_photos": [p for p in recent if p["path"] not in own]}
+                "recent_photos": [p for p in recent if p["path"] not in own],
+                "definition": model.Template.from_dict(holder).to_dict() if coll == st.TEMPLATES else None}
 
     def set_instructions(self, store_id: str, task_id: str, text: str, staff: dict) -> dict:
         """A manager's edit to the how-to. On a recurring task it changes every day from today."""

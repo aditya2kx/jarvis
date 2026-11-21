@@ -44,6 +44,12 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   computer's files), its steps and the team's notes. A manager edits the how-to and example
   photos there; on a recurring task the edit applies every day from today. A task added for
   one day can be deleted by whoever added it or a manager.
+- **Adding, repeating, copying.** One form creates, copies and changes tasks. Anyone adds a
+  task for the day. A manager can make it repeat: every day, chosen weekdays every 1–12
+  weeks, or a day of the month, with optional first and last dates. A day's list holds only
+  what is due that day. Changing a repeating task's schedule or shift updates lists already
+  built from today on (open, untouched tasks only). Duplicate on any task opens the form
+  filled in from it, and a copied repeating task keeps its example photos.
 - **Any screen.** Phone: one column, a task opens as a sheet. iPad landscape and desktop:
   the list and the open task side by side.
 - **Offline.** The app shell and the day are kept on the device. Ticks and assignments made

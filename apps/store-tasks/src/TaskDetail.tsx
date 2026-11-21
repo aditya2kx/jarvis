@@ -1,8 +1,10 @@
-import { Check, ExternalLink, Pencil, Send, Trash2, UserPlus } from "lucide-react";
+import { CalendarDays, Check, Copy, ExternalLink, Pencil, Repeat2, Send, Trash2, UserPlus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { api, isOffline, type Photo, type Session, type Shift, type Task, type TaskDetail as Detail } from "./api";
+import { api, isOffline, type Photo, type Session, type Shift, type Task, type TaskDetail as Detail, type Template } from "./api";
 import { AddPhotos, PhotoGrid } from "./Photos";
-import { Avatar, Button, cx, firstName, inputClass, Notice, time } from "./ui";
+import { repeatLabel } from "./Repeat";
+import type { TaskDraft } from "./TaskForm";
+import { Avatar, Button, cx, firstName, inputClass, Notice, Tick, time } from "./ui";
 
 const URL_PATTERN = /(https?:\/\/[^\s)]+)/g;
 
@@ -18,6 +20,10 @@ interface Props {
   onAssignMe: (t: Task) => void;
   onChanged: (t: Task) => void;
   onOpen: (id: string) => void;
+  /** Start a new task from this one. `once` is false when the original repeats and can be copied as such. */
+  onDuplicate: (draft: TaskDraft, once: boolean) => void;
+  /** A manager changes when a repeating task comes back, its shift or its place in the list. */
+  onEditDefinition: (definition: Template) => void;
   /** The task was deleted: close it and reload the list. */
   onRemoved: () => void;
 }
@@ -37,7 +43,7 @@ function Section({ title, action, children }: { title: string; action?: ReactNod
 const offlineOr = (e: unknown, what: string) => (isOffline(e) ? `No connection. ${what} — try again when Wi-Fi is back.` : (e as Error).message);
 
 /** Everything about one task: how to do it, who is doing it, photos and notes. */
-export function TaskDetail({ task, subtasks, shift, names, session, readOnly, onToggle, onAssign, onAssignMe, onChanged, onOpen, onRemoved }: Props) {
+export function TaskDetail({ task, subtasks, shift, names, session, readOnly, onToggle, onAssign, onAssignMe, onChanged, onOpen, onDuplicate, onEditDefinition, onRemoved }: Props) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
@@ -77,6 +83,14 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
   const assignee = task.assignee_id ? names.get(task.assignee_id) : undefined;
   const reference = detail?.reference_photos ?? [];
   const earlier = detail?.recent_photos ?? [];
+  const definition = detail?.definition ?? null;
+  const duplicate = () => {
+    const { id: _id, ...copy } = definition ?? ({} as Partial<Template>);
+    onDuplicate(
+      { ...copy, title: task.title, instructions: task.instructions, shift: task.shift, needs_photo: task.needs_photo, order: undefined, copy_from: definition?.id },
+      !(definition && isManager),
+    );
+  };
 
   const saveInstructions = () =>
     run("The change was not saved", async () => {
@@ -100,11 +114,22 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <p className="text-sm text-muted-foreground">
-          {[shift?.label, task.due_at && `due ${time(task.due_at)}`].filter(Boolean).join(" · ")}
-        </p>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+          <span>{[shift?.label, task.due_at && `due ${time(task.due_at)}`].filter(Boolean).join(" · ")}</span>
+          {task.source !== "clickup" && detail && (
+            <span className="fade flex items-center gap-1.5">
+              {definition ? <Repeat2 className="size-3.5" /> : <CalendarDays className="size-3.5" />}
+              {definition ? repeatLabel(definition) : "This day only"}
+              {definition && isManager && !readOnly && (
+                <button onClick={() => onEditDefinition(definition)} className="rounded font-medium text-primary underline-offset-2 hover:underline">
+                  Change
+                </button>
+              )}
+            </span>
+          )}
+        </div>
         {done ? (
-          <div className="flex items-center justify-between gap-3 rounded-xl bg-success/10 px-4 py-3">
+          <div className="pop flex items-center justify-between gap-3 rounded-xl bg-success/10 px-4 py-3">
             <p className="flex items-center gap-2 font-medium text-success">
               <Check className="size-5" strokeWidth={3} />
               <span>
@@ -136,10 +161,12 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
           <button
             disabled={readOnly}
             onClick={() => onAssign(task)}
-            className="flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-lg border border-border bg-card px-3 text-left hover:bg-muted disabled:hover:bg-card"
+            className="flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-lg border border-border bg-card px-3 text-left transition enabled:hover:border-ring enabled:hover:bg-accent"
           >
             {task.assignee_id && assignee ? (
-              <Avatar id={task.assignee_id} name={assignee} />
+              <span key={task.assignee_id} className="pop inline-flex">
+                <Avatar id={task.assignee_id} name={assignee} />
+              </span>
             ) : (
               <span className="flex size-8 items-center justify-center rounded-full border border-dashed border-ring text-muted-foreground">
                 <UserPlus className="size-4" />
@@ -160,7 +187,7 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
         title="How to do it"
         action={
           isManager && !readOnly && editing === null ? (
-            <button onClick={() => setEditing(task.instructions)} className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-muted">
+            <button onClick={() => setEditing(task.instructions)} className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-primary hover:bg-accent">
               <Pencil className="size-3.5" />
               {task.instructions ? "Edit" : "Add"}
             </button>
@@ -250,12 +277,12 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
                   onClick={() => onToggle(s)}
                   className="flex w-12 shrink-0 items-center justify-center hover:bg-muted"
                 >
-                  <span className={cx("flex size-6 items-center justify-center rounded-full border-2", s.status === "done" ? "border-success bg-success text-white" : "border-ring")}>
-                    {s.status === "done" && <Check className="size-4" strokeWidth={3} />}
-                  </span>
+                  <Tick done={s.status === "done"} dim={s.pending} small />
                 </button>
-                <button onClick={() => onOpen(s.id)} className={cx("min-h-12 flex-1 py-2 pr-3 text-left hover:bg-muted", s.status === "done" && "text-muted-foreground line-through")}>
-                  {s.title}
+                <button onClick={() => onOpen(s.id)} className="min-h-12 flex-1 py-2 pr-3 text-left hover:bg-muted">
+                  <span className="strike" data-done={s.status === "done"}>
+                    {s.title}
+                  </span>
                 </button>
               </li>
             ))}
@@ -270,7 +297,7 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
               {comments.map((c) => (
                 <li key={c.id} className="flex gap-3">
                   <Avatar id={c.by} name={names.get(c.by) ?? "?"} />
-                  <div className="min-w-0 flex-1 rounded-lg bg-muted px-3 py-2">
+                  <div className="rise min-w-0 flex-1 rounded-lg bg-muted px-3 py-2">
                     <p className="text-sm text-muted-foreground">
                       {firstName(names.get(c.by)) || "Someone"} · {time(c.at)}
                     </p>
@@ -298,20 +325,28 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
         </div>
       </Section>
 
-      {!readOnly && !task.template_id && task.source !== "clickup" && (isManager || task.created_by === me) && (
-        <Button
-          variant="danger"
-          onClick={() =>
-            window.confirm("Delete this task?") &&
-            run("The task was not deleted", async () => {
-              await api.removeTask(session.token, task.id);
-              onRemoved();
-            })
-          }
-        >
-          <Trash2 className="size-4" />
-          Delete task
-        </Button>
+      {!readOnly && (
+        <div className="flex flex-wrap gap-2 border-t border-border pt-5">
+          <Button variant="outline" disabled={!detail} onClick={duplicate}>
+            <Copy className="size-4" />
+            Duplicate
+          </Button>
+          {!task.template_id && (isManager || task.created_by === me) && (
+            <Button
+              variant="danger"
+              onClick={() =>
+                window.confirm("Delete this task?") &&
+                run("The task was not deleted", async () => {
+                  await api.removeTask(session.token, task.id);
+                  onRemoved();
+                })
+              }
+            >
+              <Trash2 className="size-4" />
+              Delete task
+            </Button>
+          )}
+        </div>
       )}
 
       {task.clickup_url && (

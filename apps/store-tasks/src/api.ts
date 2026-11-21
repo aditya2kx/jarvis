@@ -90,6 +90,8 @@ export interface Task {
   completed_at: string | null;
   note?: string;
   photos?: Photo[];
+  /** How many "how it should look" photos and videos the task has (sent with the day's list). */
+  examples?: { photos: number; videos: number };
   comments?: Comment[];
   files?: TaskFile[];
   /** ClickUp checklists, kept as they were. */

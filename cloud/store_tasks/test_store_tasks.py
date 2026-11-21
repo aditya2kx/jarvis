@@ -339,6 +339,9 @@ def test_example_media_takes_a_short_video(env):
     r = env.client.post(f"/v1/tasks/{tid}/reference-photo", headers=env.boss_h,
                         data={"photo": (io.BytesIO(b"\x00\x00\x00\x18ftypmp42"), "how.mp4", "video/mp4")})
     assert r.status_code == 200 and r.get_json()["reference_photos"][0]["type"] == "video/mp4"
+    listed = {t["id"]: t for t in env.client.get("/v1/days/2026-11-19", headers=env.crew_h).get_json()["tasks"]}
+    assert listed[tid]["examples"] == {"photos": 0, "videos": 1}
+    assert listed["palmetto_2026-11-19_t5"]["examples"] == {"photos": 0, "videos": 0}
     r = env.client.post(f"/v1/tasks/{tid}/photo", headers=env.boss_h,
                         data={"photo": (io.BytesIO(b"\x00\x00\x00\x18ftypmp42"), "how.mp4", "video/mp4")})
     assert r.status_code == 400  # a task's own proof is a photo

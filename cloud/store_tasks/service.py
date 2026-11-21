@@ -375,12 +375,19 @@ class Tasks:
         cfg = self.store(store_id)
         staff = self.staff(store_id)
         count = self.docs.get(st.COUNTS, f"{store_id}_{day.isoformat()}")
+        tasks = self.ensure_day(cfg, day)
+        examples = {d["id"]: d["reference_photos"] for d in self.docs.query(st.TEMPLATES, store=store_id)
+                    if d.get("reference_photos")}
+        for t in tasks:  # the list shows which tasks have "how it should look" media
+            media = examples.get(t.get("template_id") or "") or t.get("reference_photos") or []
+            t["examples"] = {"photos": sum(1 for p in media if not p.get("type")),
+                             "videos": sum(1 for p in media if p.get("type"))}
         return {
             "store": store_id, "date": day.isoformat(), "today": cfg.today(self.now()).isoformat(),
             "generated": cfg.generated(day),
             "shifts": [{**s.to_dict(), "due_at": model.due_at(cfg, s.id, day)} for s in cfg.shifts],
             "teams": self.teams(cfg, day, staff),
-            "tasks": self.ensure_day(cfg, day),
+            "tasks": tasks,
             "count_submitted": bool(count and count.get("submitted_at")),
         }
 

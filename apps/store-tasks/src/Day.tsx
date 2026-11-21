@@ -1,4 +1,4 @@
-import { Camera, Check, ChevronLeft, ChevronRight, ClipboardList, CloudOff, FileText, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, PartyPopper, Plus, Settings, UserPlus, Users, X } from "lucide-react";
+import { Camera, Check, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, PartyPopper, Plus, Settings, UserPlus, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
@@ -597,10 +597,23 @@ function TaskRow({ task, sub, steps, names, selected, readOnly, onToggle, onOpen
               How-to
             </span>
           )}
-          {(photos > 0 || task.needs_photo) && (
-            <span className={cx(meta, photos === 0 && !done && "font-medium text-foreground")}>
+          {task.needs_photo && photos === 0 ? (
+            <span className={cx(meta, "rounded-full px-1.5 font-medium", done ? "bg-destructive/10 text-destructive" : "bg-tone-soft text-tone-ink")}>
               <Camera className="size-3.5" />
-              {photos || "Photo needed"}
+              {done ? "No photo" : "Photo needed"}
+            </span>
+          ) : (
+            photos > 0 && (
+              <span className={meta}>
+                <Camera className="size-3.5" />
+                {photos}
+              </span>
+            )
+          )}
+          {task.examples && task.examples.photos + task.examples.videos > 0 && (
+            <span className={meta} title="Has examples of how it should look">
+              {task.examples.videos > 0 ? <Clapperboard className="size-3.5" /> : <Images className="size-3.5" />}
+              {task.examples.videos > 0 ? "Video" : "Example"}
             </span>
           )}
           {notes > 0 && (

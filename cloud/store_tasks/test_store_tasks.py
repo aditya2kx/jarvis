@@ -751,3 +751,12 @@ def test_a_clickup_change_lands_in_seconds_and_its_files_on_the_next_tick(env, m
     assert c["items"] == {FIELD: "25+40%"} and c["notes"]["shift"] == "Steady" and c["submitted_by"] == "cu7"
     cw.receive(env.tasks, "palmetto", lists[0], {"event": "taskDeleted", "task_id": "live"})
     assert env.tasks.docs.get(st.TASKS, "cu_live") is None
+
+
+def test_paced_calls_keep_under_the_budget(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ci.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(ci.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    get = ci.paced(lambda p: p, per_minute=30)
+    assert [get(str(i)) for i in range(4)] == ["0", "1", "2", "3"]
+    assert clock["t"] == 6.0  # 2 s apart: the 4th call starts at 6 s

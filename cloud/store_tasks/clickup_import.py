@@ -22,6 +22,7 @@ import os
 import re
 import statistics
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -57,6 +58,21 @@ def _get(path: str, pat: str | None = None):
         except (urllib.error.URLError, TimeoutError):
             time.sleep(5 * (attempt + 1))
     raise RuntimeError(f"ClickUp GET {path.split('?')[0]} kept failing")
+
+
+def paced(get, per_minute: int):
+    """``get`` limited to ``per_minute`` calls, so a long backfill leaves ClickUp's shared limit
+    (~100 a minute per token) for the live webhooks and the mirror."""
+    lock, gap, nxt = threading.Lock(), 60.0 / per_minute, [0.0]
+
+    def call(path: str):
+        with lock:
+            wait = nxt[0] - time.monotonic()
+            nxt[0] = max(nxt[0], time.monotonic()) + gap
+        if wait > 0:
+            time.sleep(wait)
+        return get(path)
+    return call
 
 
 def _send(method: str, path: str, body: dict | None = None, pat: str | None = None) -> dict:
@@ -634,12 +650,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mirror", action="store_true", help="only what changed in the last few days")
     ap.add_argument("--photos-only", action="store_true", help="copy photos for submissions already stored")
     ap.add_argument("--files", action="store_true", help="everything on each task already stored")
+    ap.add_argument("--per-minute", type=int, default=0, help="cap ClickUp calls (--files), e.g. 40")
     args = ap.parse_args(argv)
 
     tasks = svc.from_env()
     cfg = tasks.store(args.store)
     if args.files:
-        report = import_task_files(tasks, cfg)
+        get = paced(_get, args.per_minute) if args.per_minute else _get
+        report = import_task_files(tasks, cfg, get, workers=2 if args.per_minute else 6)
         report["templates_with_earlier_photos"] = seed_recent_photos(tasks, cfg)
         print(json.dumps({"store": args.store, **report}))
         return 0

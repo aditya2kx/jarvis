@@ -1,12 +1,38 @@
-import { storeDisplayName } from "@/lib/config/stores";
+"use client";
 
-// Single-store today (Austin/"palmetto"); Houston launches Sept 2026. Kept as
-// its own component so multi-store selection is a drop-in later, not a rewrite.
-export function StoreFilter({ store }: { store: string }) {
+import { useRouter } from "next/navigation";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { STORE_COOKIE, STORE_IDS, storeDisplayName, type StoreId } from "@/lib/config/stores";
+import { writeFilterCookie } from "@/lib/filters/range";
+
+const OPTIONS = STORE_IDS.map((id) => ({ value: id, label: storeDisplayName(id) }));
+
+/**
+ * Top-bar store switcher. The choice is a cookie (like Period), so it follows the
+ * operator across every page; the refresh re-renders the current page for that store.
+ */
+export function StoreFilter({ store }: { store: StoreId }) {
+  const router = useRouter();
+
+  function onChange(next: string | null) {
+    if (next == null || next === store) return;
+    writeFilterCookie(STORE_COOKIE, next);
+    router.refresh();
+  }
+
   return (
-    <div className="flex items-center gap-1.5 rounded-md border border-border bg-secondary px-2.5 py-1 text-sm text-secondary-foreground">
-      <span className="size-1.5 rounded-full bg-emerald-500" />
-      {storeDisplayName(store)}
-    </div>
+    <Select value={store} onValueChange={onChange} items={OPTIONS}>
+      <SelectTrigger size="sm" aria-label="Store" className="min-w-24 max-md:h-10 max-md:text-sm">
+        <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden />
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {OPTIONS.map((opt) => (
+          <SelectItem key={opt.value} value={opt.value}>
+            {opt.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }

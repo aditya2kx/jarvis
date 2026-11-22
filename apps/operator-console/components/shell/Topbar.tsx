@@ -1,7 +1,7 @@
 import { StoreFilter } from "./StoreFilter";
 import { MobilePageTitle } from "./MobilePageTitle";
 import { ThemeToggle } from "./ThemeToggle";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import type { StoreId } from "@/lib/config/stores";
 import { pipelineRuns } from "@/lib/bq/queries";
 import { cn } from "@/lib/utils";
 import { runTone } from "@/lib/run-status";
@@ -32,7 +32,15 @@ async function PipelineDot() {
 }
 
 /** `canViewAs`: an owner not already viewing as someone gets the View as… picker. */
-export function Topbar({ operatorEmail, canViewAs }: { operatorEmail?: string; canViewAs?: boolean }) {
+export function Topbar({
+  store,
+  operatorEmail,
+  canViewAs,
+}: {
+  store: StoreId;
+  operatorEmail?: string;
+  canViewAs?: boolean;
+}) {
   return (
     <header className="shrink-0 border-b border-border bg-background pt-[env(safe-area-inset-top)]">
       <div className="flex h-14 items-center justify-between gap-2 px-4">
@@ -57,7 +65,7 @@ export function Topbar({ operatorEmail, canViewAs }: { operatorEmail?: string; c
         <div className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground sm:gap-3">
           {canViewAs ? <ViewAsButton /> : null}
           <ThemeToggle />
-          <StoreFilter store={DEFAULT_STORE} />
+          <StoreFilter store={store} />
           {operatorEmail ? <span className="hidden sm:inline">{operatorEmail}</span> : null}
         </div>
       </div>

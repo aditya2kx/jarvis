@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/shell/PageHeader";
+import { austinOnly } from "@/components/shell/AustinOnly";
 import { sectionPageDenied } from "@/components/access/guards";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import { listPayPeriodsWithPaidStatus, type PayPeriodOption } from "@/lib/bq/queries";
@@ -35,6 +36,8 @@ export default async function MonthlyRecognitionPage({
 }) {
   const denied = await sectionPageDenied("automations", "monthly-recognition");
   if (denied) return denied;
+  const only = await austinOnly("Monthly recognition");
+  if (only) return only;
   const sp = await searchParams;
   let error: string | undefined;
   let periods: PayPeriodOption[] = [];

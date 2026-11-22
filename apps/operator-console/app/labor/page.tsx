@@ -28,7 +28,7 @@ import {
   punchFixesNotInHours,
   type PunchFixNotInHoursRow,
 } from "@/lib/bq/queries";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { dateSortKey, formatCents } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { FEATURES } from "@/lib/config/features";
@@ -160,6 +160,7 @@ export default async function LaborPage({
     person?: string;
   }>;
 }) {
+  const store = await currentStore();
   const denied = await pageDenied("labor");
   if (denied) return denied;
   const can = await sectionAccess("labor");
@@ -312,7 +313,7 @@ export default async function LaborPage({
       trend,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
-      storeConfig(DEFAULT_STORE),
+      storeConfig(store),
       punchWin ? laborHoursPerPersonDaily(punchWin).catch(() => []) : Promise.resolve([]),
       punchWin
         ? laborConcurrentByGrain(punchWin, grain, stat).catch(() => [])
@@ -321,13 +322,13 @@ export default async function LaborPage({
         ? laborScheduledHoursByGrain(schedWin, grain, { excludePto }).catch(() => [])
         : Promise.resolve([]),
       (chartSchedule || coverageSchedule) && schedWin
-        ? laborScheduledShiftDays(schedWin, { store: DEFAULT_STORE, excludePto }).catch(
+        ? laborScheduledShiftDays(schedWin, { store: store, excludePto }).catch(
             () => [],
           )
         : Promise.resolve([]),
       coverageSchedule
         ? laborScheduledShiftDays(chartWin, {
-            store: DEFAULT_STORE,
+            store: store,
             excludePto,
             allowPast: true,
           }).catch(
@@ -347,30 +348,30 @@ export default async function LaborPage({
       laborOpenShiftDays(chartWin).catch(() => []),
       // Gaps are keyed on the Period itself (not the chart/punch windows): a
       // forgotten clock-out is a past-day fact regardless of schedule handoff.
-      laborPunchGaps(win, DEFAULT_STORE).catch(() => []),
+      laborPunchGaps(win, store).catch(() => []),
       laborActualShiftDays(win).catch(() => []),
-      laborPunchDays(win, DEFAULT_STORE).catch(() => []),
+      laborPunchDays(win, store).catch(() => []),
       laborDemandProfile(todayIso).catch(() => []),
-      upcomingRestockDates(DEFAULT_STORE, todayIso).catch(() => []),
-      scheduleRulesHistory(DEFAULT_STORE).catch(() => []),
-      adpUnavailability(DEFAULT_STORE).catch(() => []),
+      upcomingRestockDates(store, todayIso).catch(() => []),
+      scheduleRulesHistory(store).catch(() => []),
+      adpUnavailability(store).catch(() => []),
       laborScheduledShiftDays(
         { start: todayIso, end: shiftCalendarDate(todayIso, "day", 56), label: "Next 8 weeks", preset: "custom" },
-        { store: DEFAULT_STORE, excludePto: true },
+        { store: store, excludePto: true },
       ).catch(() => []),
       weeklyPunchWin ? laborHoursPerPersonDaily(weeklyPunchWin).catch(() => []) : Promise.resolve([]),
       weeklySchedWin
-        ? laborScheduledShiftDays(weeklySchedWin, { store: DEFAULT_STORE, excludePto }).catch(() => [])
+        ? laborScheduledShiftDays(weeklySchedWin, { store: store, excludePto }).catch(() => [])
         : Promise.resolve([]),
       weeklySchedWin ? laborOpenShiftDays(weeklySchedWin).catch(() => []) : Promise.resolve([]),
-      adpDirectoryRoster(DEFAULT_STORE).catch(() => []),
+      adpDirectoryRoster(store).catch(() => []),
       laborWageRates().catch(() => ({ byName: {}, avgPartTime: null })),
-      upcomingPushRows(DEFAULT_STORE, weekStartOf(todayIso)).catch(() => []),
-      punchFixesNotInHours(DEFAULT_STORE, win.start, win.end).catch(() => []),
+      upcomingPushRows(store, weekStartOf(todayIso)).catch(() => []),
+      punchFixesNotInHours(store, win.start, win.end).catch(() => []),
       // Table lands with migration 092; until then history is simply empty.
-      can("availability") ? adpUnavailabilityEvents(DEFAULT_STORE).catch(() => []) : Promise.resolve([]),
+      can("availability") ? adpUnavailabilityEvents(store).catch(() => []) : Promise.resolve([]),
       // New-hire training (#450): table lands with migration 097; until then the first ADP shift stands in.
-      can("coverage") ? adpHireDates(DEFAULT_STORE).catch(() => []) : Promise.resolve([]),
+      can("coverage") ? adpHireDates(store).catch(() => []) : Promise.resolve([]),
       can("coverage")
         ? laborActualShiftDays({
             start: TRAINING_HISTORY_FROM,
@@ -653,7 +654,7 @@ export default async function LaborPage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Labor"
-        subtitle={`ADP hours & schedule · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`ADP hours & schedule · ${storeDisplayName(store)}`}
         right={
           <>
             <FilterPills
@@ -869,7 +870,7 @@ export default async function LaborPage({
           {can("coverage") ? (
             <CollapsibleSection id="coverage" title="Coverage & shift draft">
             <LaborCoveragePanel
-              store={DEFAULT_STORE}
+              store={store}
               win={chartWin}
               actuals={coverageActuals}
               scheduled={coverageScheduled}

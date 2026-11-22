@@ -28,20 +28,52 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import pathlib
 import re
 import sys
+import urllib.parse
+import urllib.request
 import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
-from skills.clickup_tasks.runner import LIST_CLOSING, list_tasks
+from skills.clickup_tasks.runner import list_tasks
 from skills.inventory_parse.parse import FIELD_REGISTRY, parse_qty
 from core.datastore import load_rows, get_client
 
-# ClickUp list hosting all closing-form submissions for Palmetto Austin.
-_LIST_CLOSING = LIST_CLOSING
+_STORE_PROFILES = (pathlib.Path(__file__).resolve().parents[1]
+                   / "knowledge-base" / "store-profiles")
+
+
+def _closing_list_id(store: str) -> str:
+    """The store's ClickUp closing-form list (profile ``clickup.closing_list_id``), or ""."""
+    profile = json.loads((_STORE_PROFILES / f"{store}.json").read_text())
+    return (profile.get("clickup") or {}).get("closing_list_id", "")
+
+
+
+def _closing_source(store: str) -> str:
+    """Where closing counts come from: ``clickup`` (default) or ``store_tasks`` (profile key)."""
+    profile = json.loads((_STORE_PROFILES / f"{store}.json").read_text())
+    return profile.get("closing_source", "clickup")
+
+
+def _store_tasks_counts(store: str, since_ts_ms: int | None) -> list[dict]:
+    """Closing counts from the Store Tasks API, already in the ClickUp form-task shape."""
+    base = os.environ["STORE_TASKS_API_URL"].rstrip("/")
+    query = ""
+    if since_ts_ms is not None:
+        since = datetime.datetime.fromtimestamp(since_ts_ms / 1000, datetime.timezone.utc)
+        query = "?" + urllib.parse.urlencode({"since": since.isoformat()})
+    req = urllib.request.Request(
+        f"{base}/internal/stores/{store}/closing-counts{query}",
+        headers={"Authorization": f"Bearer {os.environ['STORE_TASKS_INTERNAL_TOKEN']}"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode())["tasks"]
+
 
 # Natural key for idempotent MERGE upsert.
 _MERGE_KEYS = ["store", "source_task_id", "field_id"]
@@ -236,8 +268,16 @@ def ingest(
     print(f"[ingest_inventory] store={store} since_ts_ms={since_ts_ms} "
           f"dry_run={dry_run} run_id={run_id[:8]}...")
 
-    tasks = list_tasks(_LIST_CLOSING, since_ts_ms=since_ts_ms)
-    print(f"[ingest_inventory] Fetched {len(tasks)} task(s) from ClickUp.")
+    source = _closing_source(store)
+    if source == "store_tasks":
+        tasks = _store_tasks_counts(store, since_ts_ms)
+    else:
+        list_id = _closing_list_id(store)
+        if not list_id:
+            print(f"[ingest_inventory] SKIPPED — store={store} has no clickup.closing_list_id")
+            return 0
+        tasks = list_tasks(list_id, since_ts_ms=since_ts_ms)
+    print(f"[ingest_inventory] Fetched {len(tasks)} task(s) from {source}.")
 
     all_rows: list[dict] = []
     skipped = 0

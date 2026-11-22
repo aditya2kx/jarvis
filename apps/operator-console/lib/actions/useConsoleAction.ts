@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { unstable_isUnrecognizedActionError } from "next/navigation";
 import type { ActionAck } from "@/lib/actions/types";
 import { useActionToast, type ToastAction } from "@/lib/actions/ActionToast";
+import { staleStoreMessage, useRenderedStore } from "@/components/shell/StoreGuard";
 
 /** Next throws UnrecognizedActionError before the action runs — the tab predates a deploy. */
 export const STALE_ACTION_MESSAGE =
@@ -30,6 +31,7 @@ export function useConsoleAction() {
   const [stage, setStage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const toast = useActionToast();
+  const rendered = useRenderedStore();
 
   const run = useCallback(
     async <T,>(
@@ -38,6 +40,14 @@ export function useConsoleAction() {
     ): Promise<ActionAck<T>> => {
       if (busyRef.current) {
         return { ok: false, error: "Another action is still in progress." };
+      }
+      // Server actions write to the store in the cookie, not the one on screen.
+      const stale = staleStoreMessage(rendered?.store ?? null);
+      if (stale) {
+        setError(stale);
+        toast.push(stale, "error");
+        rendered?.refresh();
+        return { ok: false, error: stale };
       }
       busyRef.current = true;
       const saving = labels?.saving ?? "Saving…";
@@ -78,7 +88,7 @@ export function useConsoleAction() {
         setIsPending(false);
       }
     },
-    [toast],
+    [toast, rendered],
   );
 
   return { isPending, stage, error, run, setStage, setError };

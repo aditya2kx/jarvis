@@ -19,6 +19,7 @@ Jarvis (this workspace)
 - **CHITRA / CHANAKYA / AKSHAYA: local laptop** — Slack-listener + `/tmp/jarvis-*.json` protocol applies.
   See `jarvis-hard-lessons.mdc` § Session Continuity.
 - **tesla-aladdin-garage: Cloud Run always-on** (min=1, max=1, CPU never throttled). Geofence Dhanno → Big Peach. See `RUNBOOK.md` § Tesla Aladdin garage and `cloud/tesla_aladdin_garage/README.md`.
+- **store-tasks: Cloud Run, scale-to-zero** — Tasks API + staff app + Slack bridge; its own Firestore database. Not part of BHAGA or the console; reach it only through its API or events. See `cloud/store_tasks/README.md`.
 
 ## Routing
 1. Tax → CHITRA (`chitra.mdc`, `chitra-workflows.mdc`, `chitra-playbook.mdc`)

@@ -212,6 +212,7 @@ class TestAttachedAdpSession(unittest.TestCase):
 
         with mock.patch.object(runner, "attach_cdp", fake_attach), \
              mock.patch.object(runner, "_ensure_logged_in", side_effect=login) as ensure, \
+             mock.patch.object(runner, "_ensure_company") as self.company, \
              mock.patch.object(runner, "_persist_adp_session"):
             with runner._attached_adp_session("http://127.0.0.1:9333", store="palmetto"):
                 page.url = "https://runpayrollmain.adp.com/team-schedule"
@@ -221,6 +222,11 @@ class TestAttachedAdpSession(unittest.TestCase):
         ensure, gotos = self._run(self.DASH, reload_lands_on=self.DASH)
         ensure.assert_not_called()
         self.assertEqual(gotos[-1], self.DASH.split("#")[0])
+
+    def test_reused_session_is_switched_to_this_stores_company(self):
+        self._run(self.DASH, reload_lands_on=self.DASH)
+        self.company.assert_called_once()
+        self.assertEqual(self.company.call_args.kwargs["store"], "palmetto")
 
     def test_bounced_reload_logs_in(self):
         ensure, _ = self._run(self.DASH, reload_lands_on="https://online.adp.com/signin/v1/")

@@ -1,6 +1,14 @@
 import "server-only";
 import { GoogleAuth } from "google-auth-library";
 import { pickRecomputeAnchorDate } from "@/lib/bhaga/recomputeAnchor";
+import { storeDataset } from "@/lib/bq/bigquery";
+import { currentStore } from "@/lib/config/current-store";
+import {
+  DEFAULT_STORE_ID,
+  STORE_FIRESTORE_COLLECTION,
+  STORE_GCS_CACHE_BUCKET,
+  type StoreId,
+} from "@/lib/config/stores";
 
 export { pickRecomputeAnchorDate } from "@/lib/bhaga/recomputeAnchor";
 
@@ -19,13 +27,37 @@ function adpJobResource(): string {
   return preview ? `projects/${PROJECT}/locations/${REGION}/jobs/${preview}` : JOB_RESOURCE;
 }
 
-async function runJob(
+/**
+ * Point one execution at `store`. The job's own defaults are Austin's, so Austin
+ * runs are sent unchanged; any other store overrides store, dataset, run-state
+ * collection and scrape-cache bucket together — the job refuses to start if they
+ * disagree with the store profile.
+ */
+export function withStoreEnv(
   env: { name: string; value: string }[],
+  store: StoreId,
+): { name: string; value: string }[] {
+  if (store === DEFAULT_STORE_ID) return env;
+  const scoped = {
+    BHAGA_STORE: store,
+    BHAGA_BQ_DATASET: storeDataset(store),
+    BHAGA_FIRESTORE_COLLECTION: STORE_FIRESTORE_COLLECTION[store],
+    BHAGA_GCS_CACHE_BUCKET: STORE_GCS_CACHE_BUCKET[store],
+  };
+  return [
+    ...env.filter((e) => !(e.name in scoped)),
+    ...Object.entries(scoped).map(([name, value]) => ({ name, value })),
+  ];
+}
+
+async function runJob(
+  baseEnv: { name: string; value: string }[],
   label: string,
   jobResource: string = JOB_RESOURCE,
   /** Per-execution task timeout (e.g. "7200s"); the job's own 1h applies otherwise. */
   timeout?: string,
 ): Promise<{ executionName: string }> {
+  const env = withStoreEnv(baseEnv, await currentStore());
   const auth = new GoogleAuth({
     scopes: ["https://www.googleapis.com/auth/cloud-platform"],
   });

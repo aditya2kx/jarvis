@@ -484,6 +484,71 @@ def _ensure_logged_in(page, *, store: str, timeout_ms: int = 60_000) -> None:
     _login(page, store=store, timeout_ms=timeout_ms)
     _select_company(page, store=store)
     _confirm_dashboard(page, store=store)
+    _ensure_company(page, store=store)
+
+
+_OPEN_COMPANY_LIST_JS = (
+    "() => { const a = document.querySelector('a[href=\"#xfm-SSOGROUP\"]'); if (a) a.click(); }"
+)
+
+_FOOTER_CLIENT_ID_JS = r"""
+() => [...new Set(((document.body && document.body.innerText) || '')
+  .match(/Client ID:\s*\d+/g) || [])].map(s => s.replace(/\D/g, ''))
+"""
+
+
+def _active_client_id(page, *, wait_s: float = 10.0) -> str:
+    """The open company's ADP client ID from the RUN footer, or "" if not shown."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        ids = page.evaluate(_FOOTER_CLIENT_ID_JS)
+        if len(ids) == 1:
+            return ids[0]
+        if time.monotonic() > deadline:
+            return ""
+        page.wait_for_timeout(500)
+
+
+def _ensure_company(page, *, store: str) -> None:
+    """Make sure the open RUN company is this store's (``adp_run.iid``).
+
+    One ADP login serves both stores and the tenant UUID in the URL is the
+    same for each company, so a reused or restored session can be sitting on
+    the other store. Switch through the Company List rather than trust it.
+    """
+    iid = (_load_store_profile(store).get("adp_run") or {}).get("iid", "")
+    if not iid:
+        return
+    active = _active_client_id(page)
+    if active == iid:
+        print(f"[adp_login] step=company-ok store={store} iid={iid}")
+        return
+    if not active:
+        print(f"[adp_login] BREADCRUMB adp_company_unverified store={store} want={iid} url={page.url}")
+        return
+    print(f"[adp_login] BREADCRUMB adp_company_mismatch store={store} active={active} want={iid}")
+    # A click right after a page load can land before RUN binds its menu, so
+    # re-click until the list shows. The link navigates; reads mid-reload throw.
+    listed = time.monotonic() + 45.0
+    next_click = 0.0
+    while time.monotonic() < listed:
+        try:
+            if page.evaluate(COMPANY_ROW_JS, iid)["list"]:
+                break
+            if time.monotonic() >= next_click:
+                page.evaluate(_OPEN_COMPANY_LIST_JS)
+                next_click = time.monotonic() + 8.0
+        except Exception:  # noqa: BLE001 — execution context replaced mid-navigation
+            pass
+        page.wait_for_timeout(500)
+    _select_company(page, store=store, wait_s=5.0)
+    if _active_client_id(page, wait_s=20.0) != iid:
+        _raise_with_evidence(
+            page, store=store,
+            reason=f"ADP is open on company {active}, not {store}'s client ID {iid}, "
+                   f"and switching through the Company List did not take.",
+        )
+    print(f"[adp_login] step=company-switched store={store} iid={iid}")
 
 
 def _confirm_dashboard(page, *, store: str, wait_ms: int = 20_000) -> None:
@@ -2637,6 +2702,7 @@ def _attached_adp_session(cdp_url: str, *, store: str):
                 pass
         if POST_LOGIN_URL_RE.search(page.url):
             print(f"[adp_login] reusing signed-in browser session url={page.url}")
+            _ensure_company(page, store=store)
         else:
             _ensure_logged_in(page, store=store)
             _persist_adp_session(ctx, store=store)

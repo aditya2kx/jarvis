@@ -634,12 +634,17 @@ def main(argv: list[str] | None = None) -> int:
     # Load store profile.
     profile_path = _STORE_PROFILE_DIR / f"{args.store}.json"
     try:
-        json.loads(profile_path.read_text())
+        profile = json.loads(profile_path.read_text())
     except FileNotFoundError:
         print(f"ERROR: store profile not found: {profile_path}")
         return 2
     except json.JSONDecodeError as exc:
         print(f"ERROR: could not parse store profile {profile_path}: {exc}")
+        return 2
+    want_dataset = profile.get("bq_dataset", "bhaga")
+    if want_dataset != _DATASET:
+        print(f"ERROR: store {args.store} lives in dataset {want_dataset}, not {_DATASET}. "
+              f"Re-run with BHAGA_BQ_DATASET={want_dataset}.")
         return 2
 
     results: list[CheckResult] = []

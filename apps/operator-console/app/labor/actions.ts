@@ -2,7 +2,8 @@
 
 import { failAck, okAck, type ActionAck } from "@/lib/actions/types";
 import { FEATURES } from "@/lib/config/features";
-import { DEFAULT_STORE, operatorEmail } from "@/lib/auth/identity";
+import { operatorEmail } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { revalidatePath } from "next/cache";
 import { punchGapFor } from "@/lib/bq/queries";
 import { recordPunchGapDecision } from "@/lib/bq/writes";
@@ -45,11 +46,12 @@ export async function saveScheduleRulesAction(
   baseVersion: number,
   note?: string,
 ): Promise<ActionAck<{ version: number }>> {
+  const store = await currentStore();
   const denied = await actionDenied("saveScheduleRulesAction");
   if (denied) return denied;
   try {
     const by = await operatorEmail();
-    const version = await saveScheduleRules(DEFAULT_STORE, rules, baseVersion, by, note?.trim() || undefined);
+    const version = await saveScheduleRules(store, rules, baseVersion, by, note?.trim() || undefined);
     revalidatePath("/labor");
     return okAck({ data: { version }, message: `Rules saved (version ${version}).` });
   } catch (e) {
@@ -71,6 +73,7 @@ export async function sendPublishMessageAction(
   weekStarts: string[],
   to: "dm" | "channel" = "dm",
 ): Promise<ActionAck<{ weekStarts: string[] }>> {
+  const store = await currentStore();
   const denied = await actionDenied("sendPublishMessageAction");
   if (denied) return denied;
   try {
@@ -82,7 +85,7 @@ export async function sendPublishMessageAction(
     if (!weeks.length || weeks.length > MAX_MESSAGE_WEEKS || !weeks.every(isMonday)) {
       throw new Error(`Pick 1 to ${MAX_MESSAGE_WEEKS} weeks.`);
     }
-    await startScheduleWrite(DEFAULT_STORE, { mode: "dm", weekStarts: weeks, to });
+    await startScheduleWrite(store, { mode: "dm", weekStarts: weeks, to });
     return okAck({
       data: { weekStarts: weeks },
       queued: ["adp-schedule-write"],
@@ -134,6 +137,7 @@ export async function schedulePushStatusAction(): Promise<ActionAck<{ running: S
 export async function applyAdpChangesAction(
   changes: unknown,
 ): Promise<ActionAck<{ batchId: string; ids: string[] }>> {
+  const store = await currentStore();
   const denied = await actionDenied("applyAdpChangesAction");
   if (denied) return denied;
   try {
@@ -154,8 +158,8 @@ export async function applyAdpChangesAction(
     if (await runningAdpExecution("BHAGA_ADP_SCHEDULE_WRITE")) {
       throw new Error("ADP is busy with another schedule write — try again when it finishes.");
     }
-    const { batchId, ids } = await queueAdpChanges(DEFAULT_STORE, valid, await operatorEmail());
-    await startScheduleWrite(DEFAULT_STORE, { mode: "apply", batchId });
+    const { batchId, ids } = await queueAdpChanges(store, valid, await operatorEmail());
+    await startScheduleWrite(store, { mode: "apply", batchId });
     return okAck({
       data: { batchId, ids },
       queued: ["adp-schedule-write"],
@@ -186,6 +190,7 @@ export async function adpChangesStatusAction(
 export async function approveUnavailabilityAction(
   rowKey: string,
 ): Promise<ActionAck<{ executionName: string }>> {
+  const store = await currentStore();
   const denied = await actionDenied("approveUnavailabilityAction");
   if (denied) return denied;
   try {
@@ -193,7 +198,7 @@ export async function approveUnavailabilityAction(
       throw new Error("Approving in ADP is turned off (CONSOLE_ADP_UNAVAIL_APPROVE).");
     }
     if (typeof rowKey !== "string" || !rowKey) throw new Error("Missing request.");
-    const data = await startUnavailabilityApprove(DEFAULT_STORE, rowKey, await operatorEmail());
+    const data = await startUnavailabilityApprove(store, rowKey, await operatorEmail());
     return okAck({
       data,
       queued: ["adp-unavail-approve"],
@@ -219,10 +224,11 @@ export async function pollUnavailabilityApproveAction(opts: {
 
 /** Start "Sync ADP" — every ADP read in one Cloud Run login. */
 export async function syncAdpAction(targetDate: string): Promise<ActionAck<AdpSyncStart>> {
+  const store = await currentStore();
   const denied = await actionDenied("syncAdpAction");
   if (denied) return denied;
   try {
-    const data = await startAdpSync(DEFAULT_STORE, targetDate);
+    const data = await startAdpSync(store, targetDate);
     return okAck({ data, queued: ["adp-sync"], message: data.message });
   } catch (e) {
     return failAck(e);
@@ -265,10 +271,11 @@ export async function pollAdpSyncAction(opts: {
 export async function decidePunchGapAction(
   input: DecisionInput,
 ): Promise<ActionAck<{ decisionId: string }>> {
+  const store = await currentStore();
   const denied = await actionDenied("decidePunchGapAction");
   if (denied) return denied;
   try {
-    const row = await punchGapFor(DEFAULT_STORE, input.date, input.employee);
+    const row = await punchGapFor(store, input.date, input.employee);
     if (!row) throw new Error("This gap is no longer open in ADP — refresh the page.");
     const gap = buildPunchGaps([row], [])[0]!;
     const problem = validateDecision(gap, input);
@@ -282,7 +289,7 @@ export async function decidePunchGapAction(
           ? gap.suggestedIn
           : input.inTime!;
     const decisionId = await recordPunchGapDecision({
-      store: DEFAULT_STORE,
+      store: store,
       date: input.date,
       employee_id: input.employee,
       action: input.action,
@@ -312,6 +319,7 @@ export async function decidePunchGapAction(
 export async function acceptPunchGapsAction(
   items: { date: string; employee: string }[],
 ): Promise<ActionAck<{ accepted: number; skipped: string[] }>> {
+  const store = await currentStore();
   const denied = await actionDenied("acceptPunchGapsAction");
   if (denied) return denied;
   try {
@@ -319,7 +327,7 @@ export async function acceptPunchGapsAction(
     let accepted = 0;
     const skipped: string[] = [];
     for (const { date, employee } of items) {
-      const row = await punchGapFor(DEFAULT_STORE, date, employee);
+      const row = await punchGapFor(store, date, employee);
       const gap = row ? buildPunchGaps([row], [])[0]! : null;
       const problem = gap
         ? validateDecision(gap, { action: "accept" })
@@ -329,7 +337,7 @@ export async function acceptPunchGapsAction(
         continue;
       }
       await recordPunchGapDecision({
-        store: DEFAULT_STORE,
+        store: store,
         date,
         employee_id: employee,
         action: "accept",
@@ -360,6 +368,7 @@ export async function acceptPunchGapsAction(
 export async function dismissPunchGapsAction(
   items: { date: string; employee: string }[],
 ): Promise<ActionAck<{ dismissed: number; skipped: string[] }>> {
+  const store = await currentStore();
   const denied = await actionDenied("dismissPunchGapsAction");
   if (denied) return denied;
   try {
@@ -367,7 +376,7 @@ export async function dismissPunchGapsAction(
     let dismissed = 0;
     const skipped: string[] = [];
     for (const { date, employee } of items) {
-      const row = await punchGapFor(DEFAULT_STORE, date, employee);
+      const row = await punchGapFor(store, date, employee);
       if (!row) {
         skipped.push(`${employee} ${date}: no longer open in ADP`);
         continue;
@@ -377,7 +386,7 @@ export async function dismissPunchGapsAction(
         continue;
       }
       await recordPunchGapDecision({
-        store: DEFAULT_STORE,
+        store: store,
         date,
         employee_id: employee,
         action: "reject",
@@ -406,12 +415,13 @@ export async function dismissPunchGapsAction(
 export async function writePunchGapsToAdpAction(
   decisionIds: string[],
 ): Promise<ActionAck<PunchFixStart>> {
+  const store = await currentStore();
   const denied = await actionDenied("writePunchGapsToAdpAction");
   if (denied) return denied;
   try {
     if (!FEATURES.punchFixWriteback) throw new Error("Writing to ADP is switched off.");
     const ids = decisionIds.filter((id) => typeof id === "string" && id.length > 0);
-    const data = await startPunchFixApply(DEFAULT_STORE, ids);
+    const data = await startPunchFixApply(store, ids);
     return okAck({ data, queued: ["adp-punch-fix"], message: data.message });
   } catch (e) {
     return failAck(e);
@@ -423,10 +433,11 @@ export async function pollPunchGapWriteAction(opts: {
   decisionIds: string[];
   executionName?: string | null;
 }): Promise<ActionAck<PunchFixPoll>> {
+  const store = await currentStore();
   const denied = await actionDenied("pollPunchGapWriteAction");
   if (denied) return denied;
   try {
-    const data = await pollPunchFixApply({ store: DEFAULT_STORE, ...opts });
+    const data = await pollPunchFixApply({ store: store, ...opts });
     return okAck({ data });
   } catch (e) {
     return failAck(e);

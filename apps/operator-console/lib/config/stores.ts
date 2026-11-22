@@ -1,10 +1,42 @@
-// Single source of truth for the internal store key -> human display name
-// (Figma shows "Austin", BQ/config use the "palmetto" key everywhere —
-// see docs/operator-console/PLAN.md). Add Houston here when it launches
-// Sept 2026; never hardcode the display string at a call site.
+// Single source of truth for the stores the console serves. `palmetto` is the
+// historical internal key for Austin (BQ/config use it everywhere — see
+// docs/operator-console/PLAN.md); never hardcode a display string at a call site.
+export const STORE_IDS = ["palmetto", "houston"] as const;
+export type StoreId = (typeof STORE_IDS)[number];
+
+export const DEFAULT_STORE_ID: StoreId = "palmetto";
+
 export const STORE_DISPLAY: Record<string, string> = {
   palmetto: "Austin",
+  houston: "Houston",
 };
+
+/** Firestore collection holding each store's pipeline run state (halt breaker, OTP). */
+export const STORE_FIRESTORE_COLLECTION: Record<StoreId, string> = {
+  palmetto: process.env.BHAGA_FIRESTORE_COLLECTION ?? "runs",
+  houston: "runs_houston",
+};
+
+/** GCS scrape-cache bucket per store (store profile `gcs_cache_bucket`). */
+export const STORE_GCS_CACHE_BUCKET: Record<StoreId, string> = {
+  palmetto: "bhaga-scrape-cache",
+  houston: "bhaga-scrape-cache-houston",
+};
+
+/** Which store the operator is looking at; shared by every page like the Period cookie. */
+export const STORE_COOKIE = "oc_store";
+
+/** Anything that is not a known store id resolves to the default store, never to an error. */
+export function parseStore(raw: unknown): StoreId {
+  return (STORE_IDS as readonly string[]).includes(String(raw)) ? (raw as StoreId) : DEFAULT_STORE_ID;
+}
+
+/** Browser-side read of the store cookie (null on the server or when unset). */
+export function readStoreCookie(): StoreId | null {
+  if (typeof document === "undefined") return null;
+  const m = document.cookie.match(new RegExp(`(?:^|;\\s*)${STORE_COOKIE}=([^;]*)`));
+  return m ? parseStore(decodeURIComponent(m[1])) : null;
+}
 
 /** ADP RUN tenant from agents/bhaga/knowledge-base/store-profiles/palmetto.json adp_run.tenant_uuid */
 export const ADP_RUN_TENANT_UUID = "836d254c-789b-41b8-8052-d48a639e95d8";

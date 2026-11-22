@@ -4,6 +4,9 @@
   "display_name": "Austin",
   "legal_entity": "",
   "google_account_key": "palmetto",
+  "bq_dataset": "bhaga",
+  "firestore_collection": "runs",
+  "gcs_cache_bucket": "bhaga-scrape-cache",
   "_doc_google_account_key": "Matches the key in core/config.yaml accounts.{key}. Determines which Google credentials refresh_access_token() uses.",
   "timezone": {
     "shop_tz": "America/Chicago",
@@ -87,6 +90,8 @@
       "name": "monthly-recognition",
       "_doc": "Monthly MVP / High Five nomination threads + results (Issue #369). Mirrored in apps/operator-console/lib/config/stores.ts RECOGNITION."
     },
+    "closing_list_id": "901711373136",
+    "_doc_closing_list_id": "ClickUp \"Closing\" list holding the nightly closing-form submissions (inventory counts). Read by ingest_inventory.py.",
     "credential_handle": "jarvis-clickup-palmetto-pat",
     "_doc": "Source channel where the upstream Google-review automation posts each new review. Read by skills/clickup_chat via PAT in Keychain."
   },

@@ -1,0 +1,55 @@
+{
+  "_doc": "Bootstrap pointer for store_id=houston (Houston Heights, opens 2026-11-23). Same Square merchant and ADP login as Austin; its own Square location, ADP company, BQ dataset, Firestore collection and scrape-cache bucket. No Google Sheets (BQ is the system of record). Roster, aliases and exclusions live in bhaga_houston BQ tables, not in git.",
+  "store_id": "houston",
+  "display_name": "Houston",
+  "opening_date": "2026-11-23",
+  "_doc_opening_date": "Before this date an empty square_transactions is expected (pre-opening payroll only); materialize skips instead of failing.",
+  "legal_entity": "",
+  "google_account_key": "palmetto",
+  "bq_dataset": "bhaga_houston",
+  "firestore_collection": "runs_houston",
+  "gcs_cache_bucket": "bhaga-scrape-cache-houston",
+  "_doc_isolation": "daily_refresh refuses to run unless BHAGA_BQ_DATASET, BHAGA_FIRESTORE_COLLECTION and BHAGA_GCS_CACHE_BUCKET match these three values (store_target_mismatch).",
+  "timezone": {
+    "shop_tz": "America/Chicago",
+    "square_account_display_tz": "America/Chicago",
+    "_doc": "Square location L6AQ95CN5NG4W timezone is America/Chicago (verified 2026-11-16 via GET /v2/locations)."
+  },
+  "shop_hours": {
+    "open_local_time": "09:00",
+    "close_local_time": "18:00",
+    "_doc": "From the Square location's business_hours (2026-11-16)."
+  },
+  "square": {
+    "oauth_secret": "square_palmetto_oauth",
+    "location_id": "L6AQ95CN5NG4W",
+    "_doc": "Same Square merchant as Austin, so the same OAuth secret serves both locations."
+  },
+  "adp_run": {
+    "credential_handle": "adp_palmetto_login",
+    "tenant_uuid": "836d254c-789b-41b8-8052-d48a639e95d8",
+    "iid": "32653321",
+    "pay_frequency": "Biweekly",
+    "pay_periods_anchor_end_date": "2026-11-15",
+    "check_date_lag_days": 5,
+    "wage_rate_report_name": "Earnings and Hours V1",
+    "_doc": "Same ADP login as Austin; the company is picked by Client ID (iid). The tenant UUID is the login's, shared by both companies. Pay schedule read from RUN Settings > Pay schedule 2026-11-16: biweekly, period 11/02-11/15, check 11/20."
+  },
+  "employees": {
+    "_doc": "Roster, aliases and exclusions live in BQ (bhaga_houston.employee_aliases, store_config).",
+    "aliases": {},
+    "excluded_from_tip_pool_and_labor_pct": []
+  },
+  "forecast_horizon_days": 30,
+  "labor_config": {
+    "saturation_orders_per_labor_hour": 4,
+    "forecast_target_completion_time_per_item_sec": 420
+  },
+  "calibration": {
+    "first_data_window": {
+      "start": "2026-10-19",
+      "end": "2026-11-23",
+      "_doc": "First ADP pay period 2026-10-19..11-01 (pre-opening payroll); Square location created 2026-11-09; store opens 2026-11-23."
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import { loadHealthScorecard, type HealthScorecard as HealthScorecardData } from "@/lib/kpi/health";
 import { storeConfig } from "@/lib/bq/queries";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { storeDisplayName } from "@/lib/config/stores";
 import { HealthScorecard } from "@/components/kpi/HealthScorecard";
 import { PageHeader } from "@/components/shell/PageHeader";
@@ -21,6 +21,7 @@ export default async function HomePage({
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
+  const store = await currentStore();
   const denied = await pageDenied("home");
   if (denied) return denied;
   const can = await sectionAccess("home");
@@ -32,7 +33,7 @@ export default async function HomePage({
   let error: string | undefined;
   try {
     if (can("scorecard")) health = await loadHealthScorecard(win);
-    const config = await storeConfig(DEFAULT_STORE);
+    const config = await storeConfig(store);
     goals = Object.fromEntries(
       config.filter((r) => r.key.startsWith("goal_")).map((r) => [r.key as GoalKey, r.value]),
     );
@@ -44,7 +45,7 @@ export default async function HomePage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Home"
-        subtitle={`Your store at a glance · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`Your store at a glance · ${storeDisplayName(store)}`}
         right={
           <FilterSelect
             label="Period"

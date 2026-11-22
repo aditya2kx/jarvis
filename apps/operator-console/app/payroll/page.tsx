@@ -28,7 +28,7 @@ import { RecognitionDrawer } from "@/components/drawers/RecognitionDrawer";
 import { PerkDrawer } from "@/components/drawers/PerkDrawer";
 import { TipExemptionsEditor } from "@/components/drawers/TipExemptionsEditor";
 import { FEATURES } from "@/lib/config/features";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { payPeriodKey } from "@/lib/payroll/periodKey";
 import { rowMatchesLaborType } from "@/lib/payroll/laborBucket";
 import { PayrollDraftButton } from "@/components/payroll/PayrollDraftButton";
@@ -114,6 +114,7 @@ export default async function PayrollPage({
 }: {
   searchParams: Promise<{ period?: string; labor_type?: string }>;
 }) {
+  const store = await currentStore();
   const denied = await pageDenied("payroll");
   if (denied) return denied;
   const can = await sectionAccess("payroll");
@@ -142,7 +143,7 @@ export default async function PayrollPage({
     const settled = await Promise.all([
       listPayPeriodsWithPaidStatus(6),
       reviewBonusDetail(30),
-      recognitionBonuses(DEFAULT_STORE, 2),
+      recognitionBonuses(store, 2),
     ]);
     periodOptions = settled[0];
     reviews = settled[1];
@@ -163,12 +164,12 @@ export default async function PayrollPage({
       const [periodRowsAll, run, solo, delta, gap] = await Promise.all([
         payrollPeriod(6),
         FEATURES.adpPayrollDraft
-          ? payrollDraftRun(DEFAULT_STORE, selectedPeriodStart, periodEnd)
+          ? payrollDraftRun(store, selectedPeriodStart, periodEnd)
           : Promise.resolve(null),
         // A missing solo table must never blank the payroll table — base hours
         // and wages are correct without it (same contract as the draft backend).
         payrollSoloPremium(selectedPeriodStart).catch(() => []),
-        soloPremiumDeltaDollars(DEFAULT_STORE).catch(() => null),
+        soloPremiumDeltaDollars(store).catch(() => null),
         // An unreadable coverage check counts as stale, not as clean: the point is
         // to refuse to vouch for a premium we cannot verify.
         soloCoverageGap(selectedPeriodStart, periodEnd).catch(() => ["unknown"]),
@@ -214,15 +215,15 @@ export default async function PayrollPage({
   if (!error && tipStart && tipEnd) {
     try {
       const [s, e, empRows, hoursScraped, running, notInHours] = await Promise.all([
-        adpShiftsForPeriod(DEFAULT_STORE, tipStart, tipEnd),
-        tipExemptions(DEFAULT_STORE, tipStart, tipEnd),
-        listCanonicalEmployees(DEFAULT_STORE),
+        adpShiftsForPeriod(store, tipStart, tipEnd),
+        tipExemptions(store, tipStart, tipEnd),
+        listCanonicalEmployees(store),
         adpHoursScrapedAt().catch(() => null),
         // Applying exemptions queues a model recompute, which the server will
         // refuse while a run is live. Ask up front so the button is disabled
         // instead of accepting a click it cannot honour.
         hasRunningBhagaJob().catch(() => false),
-        punchFixesNotInHours(DEFAULT_STORE, tipStart, tipEnd).catch(() => []),
+        punchFixesNotInHours(store, tipStart, tipEnd).catch(() => []),
       ]);
       fixesNotInHours = notInHours;
       shifts = s;
@@ -372,7 +373,7 @@ export default async function PayrollPage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Payroll & People"
-        subtitle={`Wages, tips, bonuses, and tip exemptions · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`Wages, tips, bonuses, and tip exemptions · ${storeDisplayName(store)}`}
         right={
           <>
             {periodSelectOptions.length ? (

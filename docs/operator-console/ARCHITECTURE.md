@@ -32,7 +32,11 @@ per-screen node IDs and the Figma-tooling path-length caveat.
 3. **Prod runs on hosted infra.** Cloud Run (native IAM) + BigQuery + Secret Manager.
    No laptop runtime. (Matches the repo-wide convention.)
 4. **Config-driven, multi-store from day one.** `store` is a first-class filter;
-   goals and capacity live in `store_config`, never hardcoded.
+   goals and capacity live in `store_config`, never hardcoded. Each store has its own BigQuery
+   dataset (`bhaga` Austin, `bhaga_houston` Houston; `lib/config/stores.ts`). The top-bar switcher
+   sets the `oc_store` cookie, `currentStore()` reads it, `forStore()` rewrites dataset references
+   in each query, and jobs launched for a non-default store get its dataset / collection / bucket
+   via `withStoreEnv`. Order Quality and Automations stay Austin-only (`austinOnly()`).
 5. **Grafana BHAGA Analytics is retired (Issue #276).** Operator Console is the store UI.
    Jarvis Development Grafana (`grafana/jarvis_dev`) remains for PR cost. Both console and
    leftover Grafana (if any) read the same BQ views.

@@ -1,7 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
+import { operatorEmail } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { FEATURES } from "@/lib/config/features";
 import {
   addTrainingShift,
@@ -24,12 +25,13 @@ export async function addTrainingShiftAction(
   date: string,
   note: string,
 ): Promise<ActionAck> {
+  const store = await currentStore();
   const denied = await actionDenied("addTrainingShiftAction");
   if (denied) return denied;
   try {
     if (!FEATURES.writeTraining) throw new Error("Training quick-add is disabled");
     const by = await operatorEmail();
-    await addTrainingShift(DEFAULT_STORE, employeeName, date, by, note);
+    await addTrainingShift(store, employeeName, date, by, note);
     revalidatePath("/payroll");
     return okAck({ message: "Training shift added." });
   } catch (e) {
@@ -44,12 +46,13 @@ export async function addRecognitionBonusAction(
   amountDollars: number,
   reason: string,
 ): Promise<ActionAck> {
+  const store = await currentStore();
   const denied = await actionDenied("addRecognitionBonusAction");
   if (denied) return denied;
   try {
     const by = await operatorEmail();
     const amountCents = Math.round(amountDollars * 100);
-    await addRecognitionBonus(DEFAULT_STORE, payPeriod, employee, amountCents, reason, by);
+    await addRecognitionBonus(store, payPeriod, employee, amountCents, reason, by);
     revalidatePath("/payroll");
     return okAck({ message: "Recognition bonus added." });
   } catch (e) {
@@ -67,6 +70,7 @@ export async function addEmployeePerkAction(
   cadence: "once" | "biweekly",
   note: string,
 ): Promise<ActionAck> {
+  const store = await currentStore();
   const denied = await actionDenied("addEmployeePerkAction");
   if (denied) return denied;
   try {
@@ -80,7 +84,7 @@ export async function addEmployeePerkAction(
     }
     const desc = note.trim() || "Misc reimbursement";
     await addEmployeePerk(
-      DEFAULT_STORE,
+      store,
       employee,
       perkId,
       amountCents,
@@ -100,6 +104,7 @@ export async function addEmployeePerkAction(
 export async function applyTipExemptionsAction(
   drafts: TipExemptionDraft[],
 ): Promise<ActionAck<{ recomputed: string[] }>> {
+  const store = await currentStore();
   const denied = await actionDenied("applyTipExemptionsAction");
   if (denied) return denied;
   try {
@@ -108,7 +113,7 @@ export async function applyTipExemptionsAction(
     }
     if (!drafts.length) return okAck({ data: { recomputed: [] }, message: "No changes." });
     const by = await operatorEmail();
-    await applyTipExemptions(DEFAULT_STORE, drafts, by);
+    await applyTipExemptions(store, drafts, by);
     // One FORCE_MODEL job rematerializes tip alloc for all touched dates —
     // do not fire N concurrent jobs (races + Slack tip-pool failure spam).
     const { started, touched, blockedReason } = await triggerModelRecompute(
@@ -135,6 +140,7 @@ export async function runPayrollDraftAction(
   periodStart: string,
   periodEnd: string,
 ): Promise<ActionAck<{ executionName?: string; mode: "local" | "cloud" }>> {
+  const store = await currentStore();
   const denied = await actionDenied("runPayrollDraftAction");
   if (denied) return denied;
   try {
@@ -150,7 +156,7 @@ export async function runPayrollDraftAction(
       throw new Error("ADP Preview is only for unpaid periods that are not yet submitted");
     }
     const started = await startPayrollDraft(
-      DEFAULT_STORE,
+      store,
       periodStart,
       periodEnd,
     );

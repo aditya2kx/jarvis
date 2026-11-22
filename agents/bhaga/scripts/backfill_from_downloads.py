@@ -267,7 +267,8 @@ def main() -> int:
     from skills.store_profile import load_aliases, load_exclusions
     aliases = load_aliases(args.store)
     excluded = load_exclusions(args.store)["permanent"]
-    adp_raw_sid = resolve_sheet_id("bhaga_adp_raw", profile)
+    adp_raw_sid = (resolve_sheet_id("bhaga_adp_raw", profile)
+                   if "bhaga_adp_raw" in profile.get("google_sheets", {}) else None)
     shop_tz = profile["timezone"]["shop_tz"]
     google_account = profile["google_account_key"]
 
@@ -757,7 +758,8 @@ def main() -> int:
                 from skills.store_profile import load_employee_roster
                 roster = load_employee_roster(args.store)
                 rate_names = {r["employee_name"] for r in rates}
-                existing_rates = read_raw_adp_rates(adp_raw_sid, account=google_account)
+                existing_rates = (read_raw_adp_rates(adp_raw_sid, account=google_account)
+                                  if adp_raw_sid else [])
                 existing_ids = {r["employee_id"] for r in existing_rates}
                 excluded_set = set(excluded)
                 roster_stubs = 0

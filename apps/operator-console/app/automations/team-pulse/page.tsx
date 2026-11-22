@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/shell/PageHeader";
+import { austinOnly } from "@/components/shell/AustinOnly";
 import { sectionPageDenied } from "@/components/access/guards";
 import { FilterSelect } from "@/components/filters/FilterSelect";
 import {
@@ -39,6 +40,8 @@ export default async function TeamPulsePage({
 }) {
   const denied = await sectionPageDenied("automations", "team-pulse");
   if (denied) return denied;
+  const only = await austinOnly("Team pulse");
+  if (only) return only;
   const sp = await searchParams;
   let error: string | undefined;
   let cfg = null;

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { austinOnly } from "@/components/shell/AustinOnly";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { ManageAccess } from "@/components/access/ManageAccess";
 import { pageDenied, sectionAccess } from "@/components/access/guards";
@@ -24,6 +25,8 @@ export const dynamic = "force-dynamic";
 export default async function AutomationsPage() {
   const denied = await pageDenied("automations");
   if (denied) return denied;
+  const only = await austinOnly("Automations");
+  if (only) return only;
   const can = await sectionAccess("automations");
   let error: string | undefined;
   let cfg = null;

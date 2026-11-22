@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/shell/PageHeader";
+import { austinOnly } from "@/components/shell/AustinOnly";
 import { sectionPageDenied } from "@/components/access/guards";
 import { getAutomation, listAutomationPosts } from "@/lib/bq/queries";
 import { DEFAULT_STORE } from "@/lib/auth/identity";
@@ -11,6 +12,8 @@ export const dynamic = "force-dynamic";
 export default async function UnavailabilityReminderPage() {
   const denied = await sectionPageDenied("automations", "unavailability-reminder");
   if (denied) return denied;
+  const only = await austinOnly("Unavailability reminder");
+  if (only) return only;
   let error: string | undefined;
   let cfg = null;
   let posts: Awaited<ReturnType<typeof listAutomationPosts>> = [];

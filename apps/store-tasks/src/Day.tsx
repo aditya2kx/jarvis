@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
 import { FeedbackButton } from "./Feedback";
-import { ProjectSwitch } from "./Projects";
+import { ProjectSwitch, usePlaces } from "./Projects";
 import { shrink } from "./Photos";
 import { PersonPicker } from "./People";
 import { applyPending, flush, loadQueue, push, type Pending } from "./queue";
@@ -80,6 +80,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const wide = useWide();
   const isManager = session.staff.role === "manager";
   const me = session.staff.id;
+  const places = usePlaces(!boot.account.shop);
+  const switchable = places.length > 1;
   const shop = me === SHOP;
   const names = useMemo(() => new Map([[SHOP, "Shop"], ...boot.staff.map((s): [string, string] => [s.id, s.name])]), [boot.staff]);
 
@@ -302,14 +304,18 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
       <header className="space-y-3 border-b border-border bg-card px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1">
-            <span aria-hidden className="brand-mark brand-palm mr-1 hidden h-9 shrink-0 text-primary sm:inline-block" />
-            <button aria-label="Previous day" onClick={() => setDate(addDays(date, -1))} className="rounded-full p-2 text-muted-foreground hover:bg-muted">
+            {switchable ? (
+              <ProjectSwitch places={places} current="store" label={boot.store.name} compact />
+            ) : (
+              <span aria-hidden className="brand-mark brand-palm mr-1 hidden h-9 shrink-0 text-primary sm:inline-block" />
+            )}
+            <button aria-label="Previous day" onClick={() => setDate(addDays(date, -1))} className="rounded-full p-1.5 text-muted-foreground hover:bg-muted sm:p-2">
               <ChevronLeft className="size-5" />
             </button>
             <div className="min-w-0 px-1">
               <h1 className="truncate text-xl font-extrabold leading-tight tracking-tight">{date === day.today ? "Today" : dayLabel(date)}</h1>
               <p className="truncate text-sm text-muted-foreground">
-                {boot.account.shop ? boot.store.name : <ProjectSwitch current="store" inline={boot.store.name} />}
+                {boot.store.name}
                 {date === day.today ? (
                   ` · ${dayLabel(date)}`
                 ) : (
@@ -326,7 +332,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
               aria-label="Next day"
               disabled={date >= addDays(day.today, 7)}
               onClick={() => setDate(addDays(date, 1))}
-              className="rounded-full p-2 text-muted-foreground hover:bg-muted disabled:opacity-30"
+              className="rounded-full p-1.5 text-muted-foreground hover:bg-muted disabled:opacity-30 sm:p-2"
             >
               <ChevronRight className="size-5" />
             </button>
@@ -336,11 +342,6 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
               <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1.5 text-sm text-muted-foreground">
                 <CloudOff className="size-4" />
                 {queue.length ? `${queue.length} to send` : "Offline"}
-              </span>
-            )}
-            {!boot.account.shop && (
-              <span className="hidden sm:block">
-                <ProjectSwitch current="store" />
               </span>
             )}
             <FeedbackButton session={session} />
@@ -363,7 +364,11 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
                 disabled={!onLock}
                 onClick={onLock ?? undefined}
                 aria-label={onLock ? `Lock (signed in as ${session.staff.name})` : session.staff.name}
-                className="flex items-center gap-2 rounded-full border border-border bg-card py-1 pl-1 pr-1 text-[15px] font-medium enabled:hover:bg-muted sm:pr-3"
+                className={cx(
+                  "flex items-center gap-2 rounded-full border border-border bg-card py-1 pl-1 pr-1 text-[15px] font-medium enabled:hover:bg-muted sm:pr-3",
+                  // A phone has no room for both; on a person's own account the avatar only shows who they are.
+                  switchable && !onLock && "hidden sm:flex",
+                )}
               >
                 <Avatar id={me} name={session.staff.name} />
                 <span className="hidden sm:inline">{firstName(session.staff.name)}</span>

@@ -2,7 +2,7 @@ import { CalendarDays, ListTree, MessageSquare, Plus, Trash2, Users, X } from "l
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, device, isOffline, type Project, type TrackerDraft, type TrackerItem } from "./api";
 import { GoogleSignIn } from "./App";
-import { ProjectSwitch } from "./Projects";
+import { ProjectSwitch, usePlaces } from "./Projects";
 import { setWhere, track } from "./steps";
 import { Avatar, Button, cx, dayLabel, Field, firstName, Input, inputClass, Notice, Sheet, Tick, time } from "./ui";
 
@@ -44,6 +44,7 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
   const [sharing, setSharing] = useState(false);
   const [justDone, setJustDone] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
+  const places = usePlaces();
   const names = useMemo(() => new Map((data?.members ?? []).map((m) => [m.id, m.name])), [data?.members]);
 
   const load = useCallback(() => {
@@ -118,15 +119,20 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
     <div className="mx-auto flex h-full max-w-4xl flex-col">
       <header className="space-y-3 px-4 pt-[max(1rem,env(safe-area-inset-top))] sm:px-6">
         <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <span aria-hidden className="brand-mark brand-palm block h-10 w-8 shrink-0 text-primary" />
-            <div className="min-w-0">
-              <h1 className="truncate text-2xl font-extrabold tracking-tight">{data.name}</h1>
-              <p className="text-sm text-muted-foreground">Only {data.members.map((m) => firstName(m.name)).join(", ")} can see this.</p>
-            </div>
+          <div className="min-w-0">
+            {places.length > 1 ? (
+              <h1>
+                <ProjectSwitch places={places} current={data.id} label={data.name} big />
+              </h1>
+            ) : (
+              <div className="flex items-center gap-3">
+                <span aria-hidden className="brand-mark brand-palm block h-10 w-8 shrink-0 text-primary" />
+                <h1 className="truncate text-2xl font-extrabold tracking-tight">{data.name}</h1>
+              </div>
+            )}
+            <p className="mt-0.5 text-sm text-muted-foreground">Only {data.members.map((m) => firstName(m.name)).join(", ")} can see this.</p>
           </div>
           <div className="flex items-center gap-2">
-            <ProjectSwitch current={data.id} />
             {data.admin && (
               <Button variant="outline" onClick={() => setSharing(true)}>
                 <Users className="size-4" />

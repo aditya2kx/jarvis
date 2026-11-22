@@ -18,7 +18,7 @@ from skills.google_signin import identity
 from agents.bhaga.scripts.ingest_inventory import rows_from_task
 from cloud.store_tasks import app as app_mod
 from cloud.store_tasks import auth, clickup_import as ci, clickup_webhooks as cw, events as ev, model, service as svc
-from cloud.store_tasks import notify, shared_sync, store as st, summaries, verify_backfill
+from cloud.store_tasks import notify, shared_sync, store as st, summaries, tracker as tr, verify_backfill
 
 TZ = datetime.timezone(datetime.timedelta(hours=-6))
 INTERNAL = "internal-token-for-tests-0123456789"
@@ -1046,3 +1046,78 @@ def test_paced_calls_keep_under_the_budget(monkeypatch):
     get = ci.paced(lambda p: p, per_minute=30)
     assert [get(str(i)) for i in range(4)] == ["0", "1", "2", "3"]
     assert clock["t"] == 6.0  # 2 s apart: the 4th call starts at 6 s
+
+
+NOTES = """Action items for Thursday. Please post here as you finish them.
+
+[@Lee Manager](#user_mention#77)
+1. \\[Houston + Austin\\] Branding material for events, with [@Sam Other](#user_mention#99)
+2. Order QR codes
+
+Dolce \\+ Lee
+1. Put up laminations
+    *   Sink and filter
+    *   Frozen delivery
+        *   Emailed already
+2. 100% shift coverage
+Call the landlord
+"""
+
+
+def _board(env):
+    lead = env.tasks.save_staff("palmetto", {"id": "cu77", "name": "Lee Manager", "role": "manager"}, "test")
+    env.tasks.set_pin("palmetto", lead["id"], "123456")
+    r = env.client.post("/v1/sessions", json={"staff_id": "cu77", "pin": "123456"}, headers=env.ipad).get_json()
+    assert r.get("tracker") is None  # no board yet
+    tr.Tracker(env.tasks).create("palmetto", "Leadership", ["cu77"], [env.crew["id"]], ["Austin", "Houston"], "test")
+    return {**env.ipad, "X-Staff-Session": r["session"]}
+
+
+def test_pasted_meeting_notes_become_items_per_owner(env):
+    lead_h = _board(env)
+    drafts = env.client.post("/v1/tracker/parse", json={"text": NOTES}, headers=lead_h).get_json()["items"]
+    crew = env.crew["id"]
+    assert [(d["title"], d["owners"], d["tags"]) for d in drafts] == [
+        ("Branding material for events, with Sam Other", ["cu77"], ["Austin", "Houston"]),
+        ("Order QR codes", ["cu77"], []),
+        ("Put up laminations", [crew, "cu77"], []),
+        ("100% shift coverage", [crew, "cu77"], []),
+        ("Call the landlord", [crew, "cu77"], []),
+    ]
+    assert drafts[2]["detail"] == "- Sink and filter\n- Frozen delivery\n  - Emailed already"
+    plain = env.client.post("/v1/tracker/parse", json={"text": "Buy an iPad\nCall the landlord"}, headers=lead_h)
+    assert [(d["title"], d["owners"]) for d in plain.get_json()["items"]] == [
+        ("Buy an iPad", ["cu77"]), ("Call the landlord", ["cu77"])]
+
+
+def test_the_tracker_is_seen_only_by_its_members_and_keeps_what_changed(env):
+    lead_h = _board(env)
+    c = env.client
+    signed = c.post("/v1/sessions", json={"staff_id": env.crew["id"], "pin": "1234"}, headers=env.ipad).get_json()
+    assert signed["tracker"] == "Leadership"
+    assert c.get("/v1/tracker", headers=env.boss_h).status_code == 404  # a manager who is not on it
+    assert c.post("/v1/tracker/items", json={"items": [{"title": "x"}]}, headers=env.boss_h).status_code == 404
+
+    made = c.post("/v1/tracker/items", headers=env.crew_h, json={"items": [
+        {"title": "Order QR codes", "owners": [env.crew["id"]], "tags": ["Houston", "Mars"], "due": "2026-11-25"}]})
+    item = made.get_json()["items"][0]
+    assert (item["tags"], item["due"], item["status"]) == (["Houston"], "2026-11-25", "open")
+    bad = c.post("/v1/tracker/items", json={"items": [{"title": "x", "owners": [env.boss["id"]]}]}, headers=lead_h)
+    assert bad.status_code == 400
+
+    env.clock.at += datetime.timedelta(hours=1)
+    done = c.patch(f"/v1/tracker/items/{item['id']}", json={"status": "done", "title": "Order 20 QR codes"},
+                   headers=lead_h).get_json()
+    assert (done["status"], done["done_by"], done["title"]) == ("done", "cu77", "Order 20 QR codes")
+    assert done["log"][-1]["was"] == {"title": "Order QR codes", "status": "open"}
+    noted = c.post(f"/v1/tracker/items/{item['id']}/notes", json={"text": "Arrived"}, headers=env.crew_h).get_json()
+    assert [(n["by"], n["text"]) for n in noted["notes"]] == [(env.crew["id"], "Arrived")]
+    view = c.get("/v1/tracker", headers=env.crew_h).get_json()
+    assert (view["name"], view["admin"], len(view["items"])) == ("Leadership", False, 1)
+
+    assert c.put("/v1/tracker/members", json={"members": []}, headers=env.crew_h).status_code == 403
+    left = c.put("/v1/tracker/members", json={"members": []}, headers=lead_h).get_json()
+    assert left["members"] == ["cu77"] and c.get("/v1/tracker", headers=env.crew_h).status_code == 404
+    assert [h["members"] for h in env.tasks.docs.get(st.TRACKERS, "palmetto")["history"]] == [
+        ["cu77", env.crew["id"]], ["cu77"]]
+    assert c.delete(f"/v1/tracker/items/{item['id']}", headers=lead_h).status_code == 200

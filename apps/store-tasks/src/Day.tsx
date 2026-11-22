@@ -1,4 +1,4 @@
-import { CalendarClock, Camera, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, Plus, Search, Settings, UserPlus, Users, X } from "lucide-react";
+import { CalendarClock, Camera, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, ListTodo, Lock, MessageSquare, MousePointerClick, Plus, Search, Settings, UserPlus, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
@@ -43,6 +43,7 @@ interface Props {
   /** Null on a person's own Google account: there is nobody to hand the screen to. On the shop session: manager sign-in. */
   onLock: (() => void) | null;
   onManage: () => void;
+  onTracker: () => void;
 }
 
 /** Who to ask for when assigning: one task, or every task in `ids`. */
@@ -59,7 +60,7 @@ interface Forming {
   once: boolean;
 }
 
-export function DayScreen({ boot, session, onLock, onManage }: Props) {
+export function DayScreen({ boot, session, onLock, onManage, onTracker }: Props) {
   const [date, setDate] = useState(boot.today);
   const [server, setServer] = useState<Day | null>(() => readCache(boot.today));
   const [queue, setQueue] = useState<Pending[]>(loadQueue);
@@ -67,6 +68,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
   const [hideDone, setHideDone] = useState(false);
   const [query, setQuery] = useState("");
+  const [myActions, setMyActions] = useState<number | null>(null);
   const [unfolded, setUnfolded] = useState<Set<string>>(() => new Set());
   const [open, setOpen] = useState<string | null>(null);
   const [picking, setPicking] = useState<Picking | null>(null);
@@ -117,6 +119,13 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const activeShift = shift ?? (day ? currentShift(day) : null);
   const tasks = useMemo(() => (day ? day.tasks.filter((t) => t.shift === activeShift) : []), [day, activeShift]);
   const scheduled = useMemo(() => new Set(Object.values(day?.teams ?? {}).flatMap((team) => team.map((m) => m.id ?? ""))), [day]);
+  useEffect(() => {
+    if (!session.tracker) return;
+    api
+      .tracker(session.token)
+      .then((t) => setMyActions(t.items.filter((i) => i.status === "open" && i.owners.includes(session.staff.id)).length))
+      .catch(() => undefined);
+  }, [session.tracker, session.token, session.staff.id]);
   const openTask = day?.tasks.find((t) => t.id === open) ?? null;
   useEffect(() => {
     setWhere({ screen: "List", date, shift: activeShift, task: openTask?.title, task_id: openTask?.id, source: openTask?.source });
@@ -339,7 +348,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             )}
             <FeedbackButton session={session} />
             {isManager && (
-              <button aria-label="Manage" onClick={onManage} className="rounded-full p-2.5 text-muted-foreground hover:bg-muted">
+              <button aria-label="Manage" onClick={onManage} className="rounded-full p-2 text-muted-foreground hover:bg-muted sm:p-2.5">
                 <Settings className="size-5" />
               </button>
             )}
@@ -357,11 +366,11 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
                 disabled={!onLock}
                 onClick={onLock ?? undefined}
                 aria-label={onLock ? `Lock (signed in as ${session.staff.name})` : session.staff.name}
-                className="flex items-center gap-2 rounded-full border border-border bg-card py-1 pl-1 pr-3 text-[15px] font-medium enabled:hover:bg-muted"
+                className="flex items-center gap-2 rounded-full border border-border bg-card py-1 pl-1 pr-1 text-[15px] font-medium enabled:hover:bg-muted sm:pr-3"
               >
                 <Avatar id={me} name={session.staff.name} />
                 <span className="hidden sm:inline">{firstName(session.staff.name)}</span>
-                {onLock && <Lock className="size-4 text-muted-foreground" />}
+                {onLock && <Lock className="hidden size-4 text-muted-foreground sm:block" />}
               </button>
             )}
           </div>
@@ -501,6 +510,21 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             </div>
           )}
 
+          {session.tracker && !words.length && (
+            <button
+              onClick={onTracker}
+              className="mb-3 flex min-h-14 w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-2 text-left shadow-card transition hover:border-ring hover:bg-accent active:scale-[0.99]"
+            >
+              <ListTodo className="size-5 shrink-0 text-primary" />
+              <span className="flex-1">
+                <span className="block font-medium">{session.tracker} action items</span>
+                <span className="block text-sm text-muted-foreground">
+                  {myActions === null ? "Private to the leads." : myActions ? `${myActions} open for you.` : "Nothing open for you."}
+                </span>
+              </span>
+              <ChevronRight className="size-5 text-muted-foreground" />
+            </button>
+          )}
           {showCount && (
             <button
               onClick={() => setCounting(true)}

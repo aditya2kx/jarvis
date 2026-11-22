@@ -29,6 +29,8 @@ COUNTS = "counts"
 SHIFTS = "shared_shifts"  # read-only shared data, written by shared_sync only
 ALERTS = "shift_alerts"
 JOBS = "jobs"
+TRACKERS = "trackers"  # per store: a private action-item list and the few people who see it
+TRACKER_ITEMS = "tracker_items"
 FEEDBACK = "feedback"  # problems and ideas from the crew, with what was on screen and their last steps
 
 _BATCH = 400

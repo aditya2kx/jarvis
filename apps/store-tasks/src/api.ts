@@ -35,7 +35,7 @@ export interface Bootstrap {
   /** `shop`: a shop device signed in with the store's code, not a Google account. */
   account: { email: string; label: string; shop: boolean };
   /** Set on a person's own Google account (signed in without a PIN) and on a shop device (signed in as the shop). */
-  own: { session: string; staff: Staff } | null;
+  own: { session: string; staff: Staff; tracker?: string | null } | null;
   /** A shop device's renewed token. */
   device: string | null;
   staff: Staff[];
@@ -198,6 +198,45 @@ export interface HistoryDay {
 export interface Session {
   token: string;
   staff: Staff;
+  /** The private tracker's name, when this person is one of its members. */
+  tracker?: string | null;
+}
+
+export interface TrackerNote {
+  id: string;
+  by: string;
+  at: string;
+  text: string;
+}
+
+/** What a person fills in for an action item. */
+export interface TrackerDraft {
+  title: string;
+  /** Sub-points, one per line. */
+  detail: string;
+  owners: string[];
+  /** Which stores it is about. */
+  tags: string[];
+  due: string | null;
+}
+
+export interface TrackerItem extends TrackerDraft {
+  id: string;
+  status: "open" | "done";
+  created_by: string;
+  created_at: string;
+  done_by: string | null;
+  done_at: string | null;
+  notes: TrackerNote[];
+}
+
+export interface Tracker {
+  name: string;
+  members: string[];
+  /** This person runs the list: they choose who sees it. */
+  admin: boolean;
+  tags: string[];
+  items: TrackerItem[];
 }
 
 export class ApiError extends Error {
@@ -274,7 +313,7 @@ export type PhotoSize = "thumb" | "view";
 export const api = {
   bootstrap: () => call<Bootstrap>("GET", "/v1/bootstrap"),
   signIn: (staff_id: string, pin: string) =>
-    call<{ session: string; staff: Staff }>("POST", "/v1/sessions", { body: { staff_id, pin } }),
+    call<{ session: string; staff: Staff; tracker?: string | null }>("POST", "/v1/sessions", { body: { staff_id, pin } }),
   enrollShop: (code: string) => call<{ device: string }>("POST", "/v1/shop/enroll", { body: { code } }),
   shopCode: (token: string) => call<ShopCode>("GET", "/v1/shop-code", { token }),
   setShopCode: (token: string, code: string) => call<ShopCode & { device: string | null }>("PUT", "/v1/shop-code", { token, body: { code } }),
@@ -338,6 +377,14 @@ export const api = {
     call<{ account: Account }>("POST", "/v1/accounts", { token, body }),
   removeAccount: (token: string, email: string) =>
     call<{ ok: true }>("DELETE", `/v1/accounts/${encodeURIComponent(email)}`, { token }),
+  tracker: (token: string) => call<Tracker>("GET", "/v1/tracker", { token }),
+  trackerParse: (token: string, text: string) => call<{ items: TrackerDraft[] }>("POST", "/v1/tracker/parse", { token, body: { text } }),
+  trackerAdd: (token: string, items: TrackerDraft[]) => call<{ items: TrackerItem[] }>("POST", "/v1/tracker/items", { token, body: { items } }),
+  trackerUpdate: (token: string, id: string, body: Partial<TrackerDraft> & { status?: TrackerItem["status"] }) =>
+    call<TrackerItem>("PATCH", `/v1/tracker/items/${id}`, { token, body }),
+  trackerNote: (token: string, id: string, text: string) => call<TrackerItem>("POST", `/v1/tracker/items/${id}/notes`, { token, body: { text } }),
+  trackerRemove: (token: string, id: string) => call<{ ok: true }>("DELETE", `/v1/tracker/items/${id}`, { token }),
+  trackerMembers: (token: string, members: string[]) => call<Tracker>("PUT", "/v1/tracker/members", { token, body: { members } }),
   history: (token: string, from: string, to: string) =>
     call<{ days: HistoryDay[] }>("GET", `/v1/history?from=${from}&to=${to}`, { token }),
 };

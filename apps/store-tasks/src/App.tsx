@@ -3,12 +3,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, device, isOffline, SHOP, type Bootstrap, type Session, type Staff } from "./api";
 import { DayScreen } from "./Day";
 import { Manage } from "./Manage";
+import { TrackerScreen } from "./Tracker";
 import { Avatar, cx, Notice } from "./ui";
 
 const BOOT_KEY = "st.bootstrap";
 const IDLE_LOCK_MS = 3 * 60 * 1000;
 const RENEW_MS = 60 * 60 * 1000; // a shop device stays open for days; its 12-hour session is renewed well before then
-const toSession = (own: Bootstrap["own"]): Session | null => (own ? { token: own.session, staff: own.staff } : null);
+const toSession = (own: Bootstrap["own"]): Session | null => (own ? { token: own.session, staff: own.staff, tracker: own.tracker } : null);
 
 /** Back from "Sign in with Google": keep the token it carries in the URL fragment, then drop the fragment. */
 function takeSignIn(): string {
@@ -29,6 +30,7 @@ export function App() {
   const [boot, setBoot] = useState<Bootstrap | null>(() => JSON.parse(localStorage.getItem(BOOT_KEY) ?? "null"));
   const [session, setSession] = useState<Session | null>(null);
   const [managing, setManaging] = useState(false);
+  const [tracking, setTracking] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
   const [signedOut, setSignedOut] = useState(false);
   const [error, setError] = useState(signInError);
@@ -76,6 +78,7 @@ export function App() {
   const lock = useCallback(() => {
     setSession(shop ? toSession(boot?.own ?? null) : null);
     setManaging(false);
+    setTracking(false);
     setSigningIn(false);
   }, [shop, boot]);
 
@@ -115,6 +118,7 @@ export function App() {
     );
   }
   if (managing) return <Manage boot={boot} session={session} onBack={() => { setManaging(false); loadBoot(); }} />;
+  if (tracking && session.tracker) return <TrackerScreen boot={boot} session={session} onBack={() => setTracking(false)} />;
   const onShop = shop && session.staff.id === SHOP;
   return (
     <DayScreen
@@ -122,6 +126,7 @@ export function App() {
       session={session}
       onLock={onShop ? () => setSigningIn(true) : shared || shop ? lock : null}
       onManage={() => setManaging(true)}
+      onTracker={() => setTracking(true)}
     />
   );
 }
@@ -249,7 +254,7 @@ function PinPad({ who, onBack, onSignedIn }: { who: Staff; onBack: () => void; o
       onBack={onBack}
       submit={async (pin) => {
         const r = await api.signIn(who.id, pin);
-        onSignedIn({ token: r.session, staff: r.staff });
+        onSignedIn({ token: r.session, staff: r.staff, tracker: r.tracker });
       }}
     />
   );

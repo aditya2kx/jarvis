@@ -8,6 +8,8 @@
     python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]
     python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737
     python3 -m cloud.store_tasks.admin link-templates --store palmetto
+    python3 -m cloud.store_tasks.admin tracker --store palmetto --name Leadership --admin "First Last" \
+        --member "First Last" --member "First Last" --tag Austin --tag Houston
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from zoneinfo import ZoneInfo
 from skills.clickup_chat import runner as clickup_chat
 from skills.google_signin import access
 
-from cloud.store_tasks import auth, clickup_import, model, service as svc, store as st, summaries
+from cloud.store_tasks import auth, clickup_import, model, service as svc, store as st, summaries, tracker as tr
 
 SIGNIN_SERVICE = "store-tasks-app"
 STORES_DIR = pathlib.Path(__file__).parent / "stores"
@@ -48,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("seed", "manager", "account", "cutover", "photo-rules", "count-sections", "link-templates",
-                 "photo-sizes"):
+                 "photo-sizes", "tracker"):
         sp = sub.add_parser(name)
         sp.add_argument("--store", required=True)
         if name == "manager":
@@ -62,6 +64,11 @@ def main(argv: list[str] | None = None) -> int:
             sp.add_argument("--date", required=True, help="first day generated here; 'none' to clear")
         if name == "count-sections":
             sp.add_argument("--channel", required=True, help="ClickUp chat channel ClickUp's closing updates go to")
+        if name == "tracker":
+            sp.add_argument("--name", required=True, help="what the private list is called")
+            sp.add_argument("--admin", action="append", required=True, help="who runs it and chooses its members")
+            sp.add_argument("--member", action="append", default=[], help="who else sees it")
+            sp.add_argument("--tag", action="append", default=[], help="a store an item can be about")
         if name == "photo-rules":
             sp.add_argument("--apply", action="store_true", help="turn on 'needs a photo' for the listed tasks")
     args = ap.parse_args(argv)
@@ -129,6 +136,15 @@ def main(argv: list[str] | None = None) -> int:
         cfg = tasks.store(args.store)
         print(f"linked {clickup_import.link_templates(tasks, cfg)} tasks; "
               f"earlier photos on {clickup_import.seed_recent_photos(tasks, cfg)} definitions")
+    elif args.cmd == "tracker":
+        ids = {s["name"].lower(): s["id"] for s in tasks.staff(args.store)}
+        missing = [n for n in args.admin + args.member if n.lower() not in ids]
+        if missing:
+            print(f"no active person named {missing} in {args.store}", file=sys.stderr)
+            return 1
+        b = tr.Tracker(tasks).create(args.store, args.name, [ids[n.lower()] for n in args.admin],
+                                     [ids[n.lower()] for n in args.member], args.tag, "admin-cli")
+        print(f"tracker {b['name']!r}: {len(b['members'])} members, {len(b['admins'])} admin")
     elif args.cmd == "photo-sizes":
         print(f"made smaller copies of {photo_sizes(tasks, args.store)} photos")
     return 0

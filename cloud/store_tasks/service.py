@@ -225,7 +225,12 @@ class Tasks:
             return None
         role = s.get("role", auth.CREW)
         return {"session": auth.sign_session(s["id"], s["store"], role, account["email"], self.now().timestamp()),
-                "staff": public_staff(s)}
+                "staff": public_staff(s), "tracker": self.tracker_name(s["store"], s["id"])}
+
+    def tracker_name(self, store_id: str, staff_id: str) -> str | None:
+        """The private tracker's name for one of its members; None tells everyone else nothing."""
+        b = self.docs.get(st.TRACKERS, store_id)
+        return b["name"] if b and staff_id in b.get("members", []) else None
 
     def sign_in(self, account: dict, staff_id: str, pin: str) -> dict:
         s = self.docs.get(st.STAFF, staff_id)
@@ -247,7 +252,7 @@ class Tasks:
             self.docs.set(st.STAFF, staff_id, {"pin_misses": 0}, merge=True)
         role = s.get("role", auth.CREW)
         return {"session": auth.sign_session(staff_id, s["store"], role, account["email"], now),
-                "staff": public_staff(s)}
+                "staff": public_staff(s), "tracker": self.tracker_name(s["store"], staff_id)}
 
     # ── shop devices ────────────────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ consume its events. See cloud/store_tasks/README.md.
     GET|PUT /v1/counts/<date>        closing count
     POST /v1/feedback                a problem or idea, with what was on screen and the last steps
     GET|POST /v1/templates (+ /order), /v1/staff, /v1/accounts, GET /v1/history, GET /v1/feedback   (manager)
+    /v1/tracker (+ /parse, /items, /items/<id>/notes, /members)   the leads' private action items (its members)
     POST /webhooks/clickup/<s>/<list> ClickUp change (signed with that webhook's secret)
     POST /internal/tick              scheduled: alerts, shared-shift sync, ClickUp webhooks + mirror, chat summaries
     POST /internal/stores/<s>/check-shifts | mirror | sync-shifts | tasks, GET …/closing-counts
@@ -39,6 +40,7 @@ from skills.clickup_chat import runner as clickup_chat
 
 from cloud.store_tasks import auth, clickup_import, clickup_webhooks, notify, shared_sync, summaries
 from cloud.store_tasks import service as svc
+from cloud.store_tasks import tracker as tr
 from cloud.store_tasks import store as st
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -58,6 +60,7 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     tasks = tasks or svc.from_env()
     signin_service = os.environ.get("STORE_TASKS_SIGNIN_SERVICE", "store-tasks-app")
     aud = identity.audience(signin_service)
+    tracker = tr.Tracker(tasks)
     signed_in = signed_in or (lambda headers: identity.email_from_headers(headers, aud))
     signin_access = signin_access or access.Access(signin_service)
 
@@ -333,6 +336,44 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
         b = body()
         return jsonify(changed=tasks.reorder_templates(g.store, str(b.get("shift", "")), list(b.get("ids") or []),
                                                        g.staff["sid"]))
+
+    # ── the leads' private tracker: members only (tr.Tracker.board), never the shop device ──
+
+    @app.get("/v1/tracker")
+    @staff_required
+    def tracker_view():
+        return jsonify(tracker.view(g.store, g.staff))
+
+    @app.post("/v1/tracker/parse")
+    @staff_required
+    def tracker_parse():
+        return jsonify(items=tracker.parse(g.store, g.staff, body().get("text", "")))
+
+    @app.post("/v1/tracker/items")
+    @staff_required
+    def tracker_add():
+        return jsonify(items=tracker.add(g.store, g.staff, body().get("items") or []))
+
+    @app.patch("/v1/tracker/items/<item_id>")
+    @staff_required
+    def tracker_update(item_id: str):
+        return jsonify(tracker.update(g.store, g.staff, item_id, body()))
+
+    @app.post("/v1/tracker/items/<item_id>/notes")
+    @staff_required
+    def tracker_note(item_id: str):
+        return jsonify(tracker.note(g.store, g.staff, item_id, body().get("text", "")))
+
+    @app.delete("/v1/tracker/items/<item_id>")
+    @staff_required
+    def tracker_remove(item_id: str):
+        tracker.remove(g.store, g.staff, item_id)
+        return jsonify(ok=True)
+
+    @app.put("/v1/tracker/members")
+    @staff_required
+    def tracker_members():
+        return jsonify(tracker.set_members(g.store, g.staff, body().get("members") or []))
 
     @app.get("/v1/staff")
     @manager_required

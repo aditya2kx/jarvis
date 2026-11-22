@@ -93,11 +93,16 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   staff record, PIN or store access, and a Google account that is on a project but not a store is
   sent to its project from the front page. Someone on more than one place (their store's tasks and a
   project, or two projects) gets a workspace switcher top left on every screen (`GET /v1/projects`,
-  `Projects.tsx`): a tile with the place's name; a menu on wide screens, a sheet on a phone. Everyone else, and the shop device, sees nothing of projects. An item has
-  owners (members), store tags, an optional due date, points, and a thread of updates, and stays open
-  until ticked. "Add items" takes one item per line or pasted meeting notes (`tracker.parse`): a line
-  of only names starts a group those people own, numbered or bulleted lines are items, indented lines
-  are points; the person checks the split before anything is added. Each change to an item keeps
+  `Projects.tsx`): a tile with the place's name; a menu on wide screens, a sheet on a phone. Everyone else, and the shop device, sees nothing of projects.
+  A project is built from the same pieces as a store's day (`parts.tsx`: task row, search, All / Mine /
+  Unassigned with Hide done, the side panel or sheet, done bar, who is doing it, notes; `People.tsx`
+  picker, which picks several people on a project), so both work alike. A task has the people doing
+  it, store tags, an optional due date, points and notes, and stays open until ticked; Hide done
+  starts on, as a project never starts over like a day. "Add a task" takes one task per line or pasted
+  meeting notes (`tracker.parse`): a line of only names starts a group those people do, numbered or
+  bulleted lines are tasks, indented lines are points; the person checks the split before anything
+  is added. Report a problem works there too (`POST /v1/projects/<id>/feedback`): it lands in
+  Manage → Feedback and the Slack DM of the store whose manager runs the project (`Tracker.home`). Each change to an item keeps
   what it said before (`log`), and each change to who is on it is added to the project's `history`.
   No reminders.
 - **Any screen.** Phone: one column, a task opens as a sheet. iPad landscape and desktop:

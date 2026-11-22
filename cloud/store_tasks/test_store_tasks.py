@@ -1139,3 +1139,24 @@ def test_a_project_is_apart_from_the_store_and_seen_only_by_its_members(env):
     assert c.get("/v1/projects/leads", headers=sam).status_code == 404
     assert len(env.tasks.docs.get(st.TRACKERS, "leads")["history"]) == 2
     assert c.delete(f"/v1/projects/leads/items/{item['id']}", headers=lee).status_code == 200
+
+
+def test_a_problem_reported_in_a_project_goes_to_the_store_of_whoever_runs_it(env, monkeypatch):
+    sent = []
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("STORE_TASKS_FEEDBACK_SLACK_USER", "U1")
+    monkeypatch.setattr(notify, "_slack", lambda token, method, payload: sent.append((method, payload)) or {"channel": {"id": "D1"}})
+    c = env.client
+    lee, sam = _project(env)
+    report = {"kind": "problem", "text": "Cannot add an item", "context": {"screen": "Project · All"}}
+    # Lee has no store account, so the project has nowhere to send it yet.
+    assert c.post("/v1/projects/leads/feedback", json=report, headers=sam).status_code == 400
+    tr.Tracker(env.tasks).create("leads", "Leadership", [
+        {"id": "o1", "name": "Lee Owner", "emails": [OWNER]},
+        {"id": "m2", "name": "Dolce Johnson", "emails": [SAM]},
+    ], ["o1"], [], "test")
+    assert c.post("/v1/projects/leads/feedback", json=report, headers={"X-Test-Google": "stranger@gmail.example"}).status_code == 404
+    assert c.post("/v1/projects/leads/feedback", json=report, headers=sam).status_code == 200
+    f = c.get("/v1/feedback", headers=env.boss_h).get_json()["feedback"][0]
+    assert (f["staff_name"], f["device"], f["context"]["project"]) == ("Dolce Johnson", "Leadership", "leads")
+    assert "Dolce Johnson on Leadership" in [p for m, p in sent if m == "chat.postMessage"][0]["text"]

@@ -12,8 +12,11 @@ const KINDS: { id: FeedbackKind; label: string; prompt: string }[] = [
 ];
 const TOAST_MS = 2600;
 
+/** From a store (a staff session) or from a project (the member's Google account). */
+type Target = { session: Session } | { project: string };
+
 /** The one way to report a problem or an idea, from any screen. */
-export function FeedbackButton({ session }: { session: Session }) {
+export function FeedbackButton(target: Target) {
   const [open, setOpen] = useState(false);
   const [thanks, setThanks] = useState(false);
 
@@ -39,7 +42,7 @@ export function FeedbackButton({ session }: { session: Session }) {
       </button>
       {open && (
         <FeedbackSheet
-          session={session}
+          target={target}
           onClose={() => setOpen(false)}
           onSent={() => {
             setOpen(false);
@@ -52,7 +55,7 @@ export function FeedbackButton({ session }: { session: Session }) {
   );
 }
 
-function FeedbackSheet({ session, onClose, onSent }: { session: Session; onClose: () => void; onSent: () => void }) {
+function FeedbackSheet({ target, onClose, onSent }: { target: Target; onClose: () => void; onSent: () => void }) {
   const [kind, setKind] = useState<FeedbackKind>("problem");
   const [text, setText] = useState("");
   const [photo, setPhoto] = useState<Blob | null>(null);
@@ -65,7 +68,8 @@ function FeedbackSheet({ session, onClose, onSent }: { session: Session; onClose
     setError("");
     try {
       const context = { ...snapshot(), queued: loadQueue().length };
-      await api.sendFeedback(session.token, { kind, text: text.trim(), context, events: recentSteps() }, photo ?? undefined);
+      const body = { kind, text: text.trim(), context, events: recentSteps() };
+      await ("project" in target ? api.projectFeedback(target.project, body, photo ?? undefined) : api.sendFeedback(target.session.token, body, photo ?? undefined));
       onSent();
     } catch (e) {
       setError(isOffline(e) ? "No connection. Keep this open and send again when you are back online." : (e as Error).message);

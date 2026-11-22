@@ -1,14 +1,13 @@
-import { CalendarDays, ListTree, MessageSquare, Plus, Trash2, Users, X } from "lucide-react";
+import { CalendarDays, ListChecks, MessageSquare, Pencil, Plus, Settings, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, device, isOffline, type Project, type TrackerDraft, type TrackerItem } from "./api";
 import { GoogleSignIn } from "./App";
+import { FeedbackButton } from "./Feedback";
+import { AddRow, DetailPane, DoneBar, FilterBar, matchesWords, Notes, SearchBox, searchWords, Section, TaskRow, WhoButton } from "./parts";
+import { PersonPicker } from "./People";
 import { ProjectSwitch, usePlaces } from "./Projects";
 import { setWhere, track } from "./steps";
-import { Avatar, Button, cx, dayLabel, Field, firstName, Input, inputClass, Notice, Sheet, Tick, time } from "./ui";
-
-const VIEWS = ["mine", "everyone", "done"] as const;
-type View = (typeof VIEWS)[number];
-const VIEW_LABEL: Record<View, string> = { mine: "Mine", everyone: "Everyone", done: "Done" };
+import { Avatar, Button, cx, dayLabel, Field, firstName, Input, inputClass, Notice, Sheet, time, useWide } from "./ui";
 
 const said = (e: unknown, offline: string) => (isOffline(e) ? offline : (e as Error).message);
 const when = (iso: string) =>
@@ -34,16 +33,25 @@ function Door({ id, notice }: { id: string; notice: string }) {
   );
 }
 
-/** A private project: who owns what, what is still open, and the updates on each. Apart from the stores. */
+const FILTERS = ["all", "mine", "unassigned"] as const;
+type Filter = (typeof FILTERS)[number];
+const FILTER_LABEL: Record<Filter, string> = { all: "All", mine: "Mine", unassigned: "Unassigned" };
+
+/** A private project: the same list, detail and people picker as a store's day, apart from the stores. */
 export function ProjectScreen({ id, signInError }: { id: string; signInError: string }) {
   const [data, setData] = useState<Project | null>(null);
   const [door, setDoor] = useState<string | null>(null);
-  const [view, setView] = useState<View>("mine");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<Filter>("mine");
+  // A project never starts over like a day does, so what is done stays out of the way unless asked for.
+  const [hideDone, setHideDone] = useState(true);
   const [open, setOpen] = useState<string | null>(null);
+  const [picking, setPicking] = useState<TrackerItem | null>(null);
   const [adding, setAdding] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [justDone, setJustDone] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
+  const wide = useWide();
   const places = usePlaces();
   const names = useMemo(() => new Map((data?.members ?? []).map((m) => [m.id, m.name])), [data?.members]);
 
@@ -67,16 +75,26 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
       });
   }, [id, signInError]);
   useEffect(load, [load]);
-  useEffect(() => setWhere({ screen: `Project · ${VIEW_LABEL[view]}`, task_id: open ?? undefined }), [view, open]);
+  useEffect(() => setWhere({ screen: `Project · ${FILTER_LABEL[filter]}`, task_id: open ?? undefined }), [filter, open]);
 
   const put = (item: TrackerItem) => setData((d) => d && { ...d, items: d.items.map((i) => (i.id === item.id ? item : i)) });
+  const save = async (item: TrackerItem, patch: Partial<TrackerDraft>, offline: string) => {
+    setError("");
+    put({ ...item, ...patch });
+    try {
+      put(await api.projectUpdate(id, item.id, patch));
+    } catch (e) {
+      put(item);
+      setError(said(e, offline));
+    }
+  };
 
   const toggle = async (item: TrackerItem) => {
     const status = item.status === "open" ? "done" : "open";
-    track("action", `${status === "done" ? "tick" : "undo"} action item ${item.title}`);
+    track("action", `${status === "done" ? "tick" : "undo"} project task ${item.title}`);
     setError("");
     if (status === "done") navigator.vibrate?.(12);
-    put({ ...item, status });
+    put({ ...item, status, done_by: data?.me ?? null, done_at: new Date().toISOString() });
     setJustDone((s) => new Set(s).add(item.id));
     try {
       put(await api.projectUpdate(id, item.id, { status }));
@@ -96,110 +114,136 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
   }
 
   const me = data.me;
-  const openItems = data.items.filter((i) => i.status === "open");
-  const counts: Record<View, number> = {
-    mine: openItems.filter((i) => i.owners.includes(me)).length,
-    everyone: openItems.length,
-    done: data.items.length - openItems.length,
-  };
-  const shown = data.items.filter((i) =>
-    view === "done" ? i.status === "done" : (i.status === "open" || justDone.has(i.id)) && (view === "everyone" || i.owners.includes(me)),
-  );
-  // One group per set of owners, in the order the members are listed.
+  const words = searchWords(query);
+  const found = (i: TrackerItem) => matchesWords(words, i.title, i.detail);
+  const inFilter = (i: TrackerItem, f: Filter) => f === "all" || (f === "mine" ? i.owners.includes(me) : !i.owners.length);
+  const visible = (i: TrackerItem) => !hideDone || i.status === "open" || justDone.has(i.id);
+  const counts = Object.fromEntries(FILTERS.map((f) => [f, data.items.filter((i) => found(i) && visible(i) && inFilter(i, f)).length])) as Record<Filter, number>;
+  // Grouped by who is doing it, in the order the members are listed; no one last.
   const order = data.members.map((m) => m.id);
   const rank = (i: TrackerItem) => (i.owners.length ? Math.min(...i.owners.map((o) => order.indexOf(o))) * 10 + i.owners.length : 1e6);
-  const groups = new Map<string, TrackerItem[]>();
-  for (const i of [...shown].sort((a, b) => rank(a) - rank(b))) {
-    const key = i.owners.join("+");
-    groups.set(key, [...(groups.get(key) ?? []), i]);
-  }
+  const shown = data.items.filter((i) => found(i) && visible(i) && inFilter(i, filter)).sort((a, b) => rank(a) - rank(b));
+  const left = data.items.filter((i) => i.status === "open" && inFilter(i, filter)).length;
   const item = data.items.find((i) => i.id === open) ?? null;
+  const switchable = places.length > 1;
+  const seenBy = `Only ${data.members.map((m) => firstName(m.name)).join(", ")} can see this`;
+  const meName = names.get(me) ?? "";
 
   return (
-    <div className="mx-auto flex h-full max-w-4xl flex-col">
-      <header className="space-y-3 px-4 pt-[max(1rem,env(safe-area-inset-top))] sm:px-6">
-        <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
-          <div className="min-w-0">
-            {places.length > 1 ? (
-              <h1>
-                <ProjectSwitch places={places} current={data.id} label={data.name} big />
+    <div className="mx-auto flex h-full max-w-7xl flex-col">
+      <header className="border-b border-border bg-card px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            {switchable ? (
+              <h1 className="min-w-0">
+                <ProjectSwitch places={places} current={data.id} label={data.name} />
               </h1>
             ) : (
-              <div className="flex items-center gap-3">
-                <span aria-hidden className="brand-mark brand-palm block h-10 w-8 shrink-0 text-primary" />
-                <h1 className="truncate text-2xl font-extrabold tracking-tight">{data.name}</h1>
-              </div>
+              <>
+                <span aria-hidden className="brand-mark brand-palm hidden h-9 shrink-0 text-primary sm:inline-block" />
+                <h1 className="truncate text-xl font-extrabold leading-tight tracking-tight">{data.name}</h1>
+              </>
             )}
-            <p className="mt-0.5 text-sm text-muted-foreground">Only {data.members.map((m) => firstName(m.name)).join(", ")} can see this.</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1">
+            <FeedbackButton project={data.id} />
             {data.admin && (
-              <Button variant="outline" onClick={() => setSharing(true)}>
-                <Users className="size-4" />
-                People
-              </Button>
+              <button aria-label="People on this project" onClick={() => setSharing(true)} className="rounded-full p-2 text-muted-foreground hover:bg-muted sm:p-2.5">
+                <Settings className="size-5" />
+              </button>
             )}
-            <Button onClick={() => setAdding(true)}>
-              <Plus className="size-4" />
-              Add items
-            </Button>
+            <span aria-label={meName} className="hidden items-center gap-2 rounded-full border border-border bg-card py-1 pl-1 pr-3 text-[15px] font-medium sm:flex">
+              <Avatar id={me} name={meName} />
+              {firstName(meName)}
+            </span>
           </div>
-        </div>
-        <div role="tablist" className="grid grid-cols-3 gap-1 rounded-xl bg-muted p-1">
-          {VIEWS.map((v) => (
-            <button
-              key={v}
-              role="tab"
-              aria-selected={v === view}
-              onClick={() => setView(v)}
-              className={cx("min-h-10 rounded-lg text-[15px] font-medium", v === view ? "bg-card shadow-sm" : "text-muted-foreground")}
-            >
-              {VIEW_LABEL[v]} <span className="tabular-nums opacity-60">{counts[v]}</span>
-            </button>
-          ))}
         </div>
       </header>
 
-      <main className="flex-1 space-y-5 overflow-y-auto px-4 pb-10 pt-4 sm:px-6">
-        {error && <Notice tone="error">{error}</Notice>}
-        {[...groups].map(([key, items]) => (
-          <section key={key}>
-            <h2 className="mb-2 flex items-center gap-2 text-sm font-medium text-muted-foreground">
-              {items[0].owners.map((o) => (
-                <Avatar key={o} id={o} name={names.get(o) ?? "?"} size="sm" />
-              ))}
-              {items[0].owners.length ? items[0].owners.map((o) => firstName(names.get(o))).join(" + ") : "No owner yet"}
-              <span className="tabular-nums opacity-70">{items.length}</span>
-            </h2>
-            <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card shadow-card">
-              {items.map((i) => (
-                <li key={i.id}>
-                  <Row item={i} today={today()} names={names} onToggle={() => toggle(i)} onOpen={() => setOpen(i.id)} />
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))}
-        {groups.size === 0 && (
-          <p className="rounded-xl border border-border bg-card px-4 py-12 text-center text-muted-foreground shadow-card">
-            {view === "mine" ? "Nothing open for you." : view === "everyone" ? "Nothing open. Add items after your next meeting." : "Nothing ticked off yet."}
+      <div className="flex min-h-0 flex-1">
+        <main className="min-w-0 flex-1 overflow-y-auto px-4 pb-10 pt-3 sm:px-6">
+          <SearchBox query={query} onChange={setQuery} onDone={() => query.trim() && track("action", `search "${query.trim()}"`)} />
+          <FilterBar options={FILTERS.map((f) => ({ id: f, label: FILTER_LABEL[f], n: counts[f] }))} value={filter} onChange={setFilter} hideDone={hideDone} onHideDone={setHideDone} />
+          <p className="mb-2 text-sm text-muted-foreground">
+            {left} left · {seenBy}
           </p>
-        )}
-      </main>
+          {error && (
+            <div className="mb-2 flex items-start gap-2">
+              <div className="flex-1">
+                <Notice tone="error">{error}</Notice>
+              </div>
+              <button aria-label="Dismiss" onClick={() => setError("")} className="rounded-full p-2 text-muted-foreground hover:bg-muted">
+                <X className="size-4" />
+              </button>
+            </div>
+          )}
 
-      {item && (
-        <ItemSheet
-          key={item.id}
-          project={data}
-          item={item}
-          names={names}
-          onChange={put}
-          onToggle={() => toggle(item)}
-          onRemoved={() => {
-            setOpen(null);
-            load();
+          <ul key={filter} className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card shadow-card">
+            {shown.map((i, n) => (
+              <li key={i.id} className="rise" style={{ "--i": n } as React.CSSProperties}>
+                <ProjectRow
+                  item={i}
+                  names={names}
+                  selected={wide && i.id === open}
+                  onToggle={() => toggle(i)}
+                  onOpen={() => setOpen(open === i.id && wide ? null : i.id)}
+                  onAssign={() => setPicking(i)}
+                />
+              </li>
+            ))}
+            {shown.length === 0 && (
+              <li className="px-4 py-12 text-center text-muted-foreground">
+                {data.items.length === 0
+                  ? "Nothing on this list yet."
+                  : words.length
+                    ? `No task matches “${query.trim()}”.`
+                    : filter === "mine"
+                      ? "Nothing open for you. Tap the person icon on a task to take it."
+                      : hideDone && left === 0
+                        ? "All done."
+                        : "Nothing to show."}
+              </li>
+            )}
+            <AddRow onClick={() => setAdding(true)} />
+          </ul>
+        </main>
+
+        <DetailPane wide={wide} title={item?.title ?? null} empty="Pick a task to see its details, who is doing it and its notes." onClose={() => setOpen(null)}>
+          {item && (
+            <ProjectDetail
+              key={item.id}
+              project={data}
+              item={item}
+              names={names}
+              onSave={(patch, offline) => save(item, patch, offline)}
+              onChanged={put}
+              onToggle={() => toggle(item)}
+              onAssign={() => setPicking(item)}
+              onRemoved={() => {
+                setOpen(null);
+                load();
+              }}
+            />
+          )}
+        </DetailPane>
+      </div>
+
+      {picking && (
+        <PersonPicker
+          title={`Who is doing “${picking.title}”?`}
+          staff={data.members}
+          me={me}
+          onPick={() => undefined}
+          onClose={() => setPicking(null)}
+          footnote="Everyone on this project. Someone missing? Whoever runs it adds them with the gear."
+          many={{
+            picked: picking.owners,
+            onSave: (owners) => {
+              track("action", `owners of ${picking.title}`);
+              save(picking, { owners }, "No connection. Who is doing it was not saved.");
+              setPicking(null);
+            },
           }}
-          onClose={() => setOpen(null)}
         />
       )}
       {adding && (
@@ -207,7 +251,7 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
           project={data}
           onAdded={() => {
             setAdding(false);
-            setView("everyone");
+            setFilter("all");
             load();
           }}
           onClose={() => setAdding(false)}
@@ -246,28 +290,29 @@ const flip = (list: string[], id: string) => (list.includes(id) ? list.filter((x
 
 interface RowProps {
   item: TrackerItem;
-  today: string;
   names: Map<string, string>;
+  selected: boolean;
   onToggle: () => void;
   onOpen: () => void;
+  onAssign: () => void;
 }
 
-function Row({ item, today, names, onToggle, onOpen }: RowProps) {
+function ProjectRow({ item, names, selected, onToggle, onOpen, onAssign }: RowProps) {
   const done = item.status === "done";
   const sub = points(item.detail);
+  const late = !done && item.due !== null && item.due < today();
   const meta = "flex items-center gap-1";
   return (
-    <div className="flex items-stretch">
-      <button aria-label={done ? `Undo ${item.title}` : `Done: ${item.title}`} aria-pressed={done} onClick={onToggle} className="flex w-14 shrink-0 items-center justify-center sm:w-16">
-        <Tick done={done} />
-      </button>
-      <button onClick={onOpen} className="flex min-h-15 min-w-0 flex-1 flex-col justify-center gap-0.5 py-2.5 pr-4 text-left hover:bg-muted/70">
-        <span className="text-[16px] leading-snug">
-          <span className="strike" data-done={done}>
-            {item.title}
-          </span>
-        </span>
-        <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[13px] text-muted-foreground empty:hidden">
+    <TaskRow
+      title={item.title}
+      done={done}
+      selected={selected}
+      people={item.owners.map((o) => ({ id: o, name: names.get(o) ?? "?" }))}
+      onToggle={onToggle}
+      onOpen={onOpen}
+      onAssign={onAssign}
+      meta={
+        <>
           {done && item.done_at && <span className={cx(meta, "text-success")}>{[firstName(names.get(item.done_by ?? "")), when(item.done_at)].filter(Boolean).join(" · ")}</span>}
           {item.tags.map((t) => (
             <span key={t} className="rounded-full bg-muted px-1.5 font-medium">
@@ -275,14 +320,14 @@ function Row({ item, today, names, onToggle, onOpen }: RowProps) {
             </span>
           ))}
           {item.due && (
-            <span className={cx(meta, !done && item.due < today && "font-medium text-destructive")}>
+            <span className={cx(meta, late && "font-medium text-destructive")}>
               <CalendarDays className="size-3.5" />
-              {!done && item.due < today ? "Was due" : "Due"} {dayLabel(item.due)}
+              {late ? "Was due" : "Due"} {dayLabel(item.due)}
             </span>
           )}
           {sub > 0 && (
             <span className={meta}>
-              <ListTree className="size-3.5" />
+              <ListChecks className="size-3.5" />
               {sub} {sub === 1 ? "point" : "points"}
             </span>
           )}
@@ -292,159 +337,154 @@ function Row({ item, today, names, onToggle, onOpen }: RowProps) {
               {item.notes.length}
             </span>
           )}
-        </span>
-      </button>
-    </div>
+        </>
+      }
+    />
   );
 }
 
-interface ItemSheetProps {
+interface DetailProps {
   project: Project;
   item: TrackerItem;
   names: Map<string, string>;
-  onChange: (item: TrackerItem) => void;
+  onSave: (patch: Partial<TrackerDraft>, offline: string) => Promise<void>;
+  onChanged: (item: TrackerItem) => void;
   onToggle: () => void;
+  onAssign: () => void;
   onRemoved: () => void;
-  onClose: () => void;
 }
 
-function ItemSheet({ project, item, names, onChange, onToggle, onRemoved, onClose }: ItemSheetProps) {
-  const { members, admin, tags } = project;
-  const [draft, setDraft] = useState<TrackerDraft>({ title: item.title, detail: item.detail, owners: item.owners, tags: item.tags, due: item.due });
-  const [note, setNote] = useState("");
+/** Laid out like a store task's detail: done, who, details, store and due date, notes. */
+function ProjectDetail({ project, item, names, onSave, onChanged, onToggle, onAssign, onRemoved }: DetailProps) {
+  const { me, tags } = project;
+  const [editing, setEditing] = useState<{ title: string; detail: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState("");
-  const dirty = (Object.keys(draft) as (keyof TrackerDraft)[]).some((k) => JSON.stringify(draft[k]) !== JSON.stringify(item[k]));
   const done = item.status === "done";
-  const mayDelete = admin || item.created_by === project.me;
+  const owners = item.owners.map((o) => ({ id: o, name: names.get(o) ?? "?" }));
 
-  const run = async (work: () => Promise<void>, offline: string) => {
+  const saveText = async () => {
+    if (!editing?.title.trim()) return;
     setBusy(true);
+    await onSave(editing, "No connection. Your changes are not saved yet.");
+    setBusy(false);
+    setEditing(null);
+  };
+  const sendNote = async (text: string) => {
     setError("");
     try {
-      await work();
+      onChanged(await api.projectNote(project.id, item.id, text));
     } catch (e) {
-      setError(said(e, offline));
-    } finally {
-      setBusy(false);
+      setError(said(e, "No connection. The note was not saved."));
+      throw e;
     }
   };
-  const save = () => run(async () => onChange(await api.projectUpdate(project.id, item.id, draft)), "No connection. Your changes are not saved yet.");
-  const post = () =>
-    run(async () => {
-      onChange(await api.projectNote(project.id, item.id, note));
-      setNote("");
-    }, "No connection. Your update was not posted.");
-  const remove = () =>
-    run(async () => {
+  const remove = async () => {
+    if (!window.confirm("Delete this task?")) return;
+    setError("");
+    try {
       await api.projectRemove(project.id, item.id);
       onRemoved();
-    }, "No connection. It was not deleted.");
+    } catch (e) {
+      setError(said(e, "No connection. It was not deleted."));
+    }
+  };
 
   return (
-    <Sheet title="Action item" onClose={onClose}>
-      <div className="space-y-4">
-        {error && <Notice tone="error">{error}</Notice>}
-        <Field label="What needs doing">
-          <textarea rows={rowsFor(draft.title, 6)} value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} className={cx(inputClass, "py-2.5 leading-snug")} />
-        </Field>
-        <Field label="Points and details">
-          <textarea
-            rows={rowsFor(draft.detail, 12)}
-            value={draft.detail}
-            onChange={(e) => setDraft((d) => ({ ...d, detail: e.target.value }))}
-            placeholder="One point per line"
-            className={cx(inputClass, "py-2.5 leading-relaxed")}
-          />
-        </Field>
-        <div>
-          <p className="mb-1.5 text-sm font-medium text-muted-foreground">Who owns it</p>
-          <div className="flex flex-wrap gap-2">
-            {members.map((m) => (
-              <Chip key={m.id} on={draft.owners.includes(m.id)} onClick={() => setDraft((d) => ({ ...d, owners: flip(d.owners, m.id) }))}>
-                <Avatar id={m.id} name={m.name} size="sm" />
-                {firstName(m.name)}
-              </Chip>
-            ))}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-end gap-x-6 gap-y-4">
-          {tags.length > 0 && (
-            <div>
-              <p className="mb-1.5 text-sm font-medium text-muted-foreground">Store</p>
-              <div className="flex flex-wrap gap-2">
-                {tags.map((t) => (
-                  <Chip key={t} on={draft.tags.includes(t)} onClick={() => setDraft((d) => ({ ...d, tags: tags.filter((x) => flip(d.tags, t).includes(x)) }))}>
-                    {t}
-                  </Chip>
-                ))}
-              </div>
-            </div>
-          )}
-          <Field label="Due (optional)">
-            <Input type="date" value={draft.due ?? ""} onChange={(e) => setDraft((d) => ({ ...d, due: e.target.value || null }))} className="w-44" />
-          </Field>
-        </div>
-        {dirty && (
-          <Button className="w-full" disabled={busy || !draft.title.trim()} onClick={save}>
-            Save changes
-          </Button>
-        )}
-
-        <section className="space-y-3 border-t border-border pt-4">
-          <h3 className="text-sm font-medium text-muted-foreground">Updates</h3>
-          {item.notes.length === 0 && <p className="text-sm text-muted-foreground">No updates yet. Post one as you make progress.</p>}
-          <ul className="space-y-3">
-            {item.notes.map((n) => (
-              <li key={n.id} className="flex gap-3">
-                <Avatar id={n.by} name={names.get(n.by) ?? "?"} />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm text-muted-foreground">
-                    <span className="font-medium text-foreground">{firstName(names.get(n.by)) || "Someone"}</span> · {when(n.at)}
-                  </p>
-                  <p className="whitespace-pre-wrap text-[15px] leading-snug">{n.text}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <div className="flex items-end gap-2">
-            <textarea
-              rows={2}
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              aria-label="Write an update"
-              placeholder="Write an update"
-              className={cx(inputClass, "flex-1 py-2.5 leading-snug")}
-            />
-            <Button variant="outline" disabled={busy || !note.trim()} onClick={post}>
-              Post
-            </Button>
-          </div>
-        </section>
-
-        <div className="flex items-center justify-between gap-3 border-t border-border pt-4">
-          <Button variant={done ? "outline" : "primary"} className="flex-1" onClick={onToggle}>
-            {done ? "Reopen" : "Mark done"}
-          </Button>
-          {mayDelete &&
-            (confirming ? (
-              <Button variant="danger" disabled={busy} onClick={remove}>
-                Yes, delete it
-              </Button>
-            ) : (
-              <Button variant="ghost" aria-label="Delete this item" onClick={() => setConfirming(true)}>
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
-            ))}
-        </div>
+    <div className="space-y-6">
+      <div className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          Added by {firstName(names.get(item.created_by)) || "someone"} on {when(item.created_at)}.
-          {done && item.done_at && ` Done by ${firstName(names.get(item.done_by ?? "")) || "someone"} on ${when(item.done_at)}.`}
+          Added by {firstName(names.get(item.created_by)) || "someone"} on {when(item.created_at)}
         </p>
+        {error && <Notice tone="error">{error}</Notice>}
+        <DoneBar
+          done={done}
+          readOnly={false}
+          onToggle={onToggle}
+          said={`Done${item.done_by ? ` by ${firstName(names.get(item.done_by)) || "someone"}` : ""}${item.done_at ? ` on ${when(item.done_at)}` : ""}`}
+        />
       </div>
-    </Sheet>
+
+      <Section title="Who is doing it">
+        <div className="flex gap-2">
+          <WhoButton people={owners} readOnly={false} onClick={onAssign} />
+          {!item.owners.includes(me) && (
+            <Button variant="outline" onClick={() => onSave({ owners: [...item.owners, me] }, "No connection. Who is doing it was not saved.")} className="min-h-12 shrink-0">
+              I'll do it
+            </Button>
+          )}
+        </div>
+      </Section>
+
+      <Section
+        title="Details"
+        action={
+          editing === null ? (
+            <button onClick={() => setEditing({ title: item.title, detail: item.detail })} className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-primary hover:bg-accent">
+              <Pencil className="size-3.5" />
+              Edit
+            </button>
+          ) : undefined
+        }
+      >
+        {editing !== null ? (
+          <div className="space-y-2">
+            <Field label="What needs doing">
+              <textarea rows={rowsFor(editing.title, 6)} value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} className={cx(inputClass, "py-2 leading-snug")} />
+            </Field>
+            <Field label="Points">
+              <textarea
+                rows={rowsFor(editing.detail, 12)}
+                value={editing.detail}
+                onChange={(e) => setEditing({ ...editing, detail: e.target.value })}
+                placeholder="One point per line"
+                className={cx(inputClass, "py-2 leading-relaxed")}
+              />
+            </Field>
+            <div className="flex gap-2">
+              <Button disabled={busy || !editing.title.trim()} onClick={saveText}>
+                {busy ? "Saving…" : "Save"}
+              </Button>
+              <Button variant="ghost" onClick={() => setEditing(null)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : item.detail ? (
+          <p className="whitespace-pre-wrap break-words text-[16px] leading-relaxed">{item.detail}</p>
+        ) : (
+          <p className="text-muted-foreground">No details yet.</p>
+        )}
+      </Section>
+
+      <Section title={tags.length ? "Store and due date" : "Due date"}>
+        <div className="flex flex-wrap items-center gap-2">
+          {tags.map((t) => (
+            <Chip key={t} on={item.tags.includes(t)} onClick={() => onSave({ tags: tags.filter((x) => flip(item.tags, t).includes(x)) }, "No connection. The store was not saved.")}>
+              {t}
+            </Chip>
+          ))}
+          <Input
+            type="date"
+            aria-label="Due date"
+            value={item.due ?? ""}
+            onChange={(e) => onSave({ due: e.target.value || null }, "No connection. The due date was not saved.")}
+            className="w-44"
+          />
+        </div>
+      </Section>
+
+      <Notes notes={item.notes} names={names} readOnly={false} when={when} onSend={sendNote} />
+
+      {(project.admin || item.created_by === me) && (
+        <div className="flex flex-wrap gap-2 border-t border-border pt-5">
+          <Button variant="danger" onClick={remove}>
+            <Trash2 className="size-4" />
+            Delete task
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -477,47 +517,47 @@ function AddSheet({ project, onAdded, onClose }: AddSheetProps) {
   const check = () =>
     run(async () => {
       const { items } = await api.projectParse(project.id, text);
-      if (!items.length) throw new Error("No items found. Put each item on its own line.");
+      if (!items.length) throw new Error("No tasks found. Put each task on its own line.");
       setDrafts(items);
     });
   const add = () =>
     run(async () => {
       await api.projectAdd(project.id, drafts ?? []);
-      track("action", `add ${drafts?.length} action items`);
+      track("action", `add ${drafts?.length} project tasks`);
       onAdded();
     });
   const edit = (n: number, patch: Partial<TrackerDraft>) => setDrafts((d) => d && d.map((x, i) => (i === n ? { ...x, ...patch } : x)));
 
   if (!drafts) {
     return (
-      <Sheet title="Add action items" onClose={onClose}>
+      <Sheet title="Add tasks" onClose={onClose}>
         <div className="space-y-4">
           <textarea
             rows={9}
             autoFocus
             value={text}
             onChange={(e) => setText(e.target.value)}
-            aria-label="Items, one per line, or pasted meeting notes"
-            placeholder={`One item per line, or paste your meeting notes.\n\n${example}\n1. First item\n2. Second item`}
+            aria-label="Tasks, one per line, or pasted meeting notes"
+            placeholder={`One task per line, or paste your meeting notes.\n\n${example}\n1. First task\n2. Second task`}
             className={cx(inputClass, "py-2.5 leading-relaxed")}
           />
-          <p className="text-sm text-muted-foreground">A line with only names ({example}) sets who owns the items under it. Without one, the items are yours. Indented lines become points of the item above.</p>
+          <p className="text-sm text-muted-foreground">A line with only names ({example}) sets who is doing the tasks under it. Without one, they are yours. Indented lines become points of the task above.</p>
           {error && <Notice tone="error">{error}</Notice>}
           <Button className="min-h-12 w-full text-base" disabled={busy || !text.trim()} onClick={check}>
-            {busy ? "Checking…" : "Check the items"}
+            {busy ? "Checking…" : "Check the tasks"}
           </Button>
         </div>
       </Sheet>
     );
   }
   return (
-    <Sheet title={`Add ${drafts.length} ${drafts.length === 1 ? "item" : "items"}`} onClose={onClose}>
+    <Sheet title={`Add ${drafts.length} ${drafts.length === 1 ? "task" : "tasks"}`} onClose={onClose}>
       <div className="space-y-4">
         <ul className="space-y-3">
           {drafts.map((d, n) => (
             <li key={n} className="space-y-2 rounded-xl border border-border p-3">
               <div className="flex items-start gap-2">
-                <textarea rows={rowsFor(d.title, 6)} aria-label="Item" value={d.title} onChange={(e) => edit(n, { title: e.target.value })} className={cx(inputClass, "flex-1 py-2 leading-snug")} />
+                <textarea rows={rowsFor(d.title, 6)} aria-label="Task" value={d.title} onChange={(e) => edit(n, { title: e.target.value })} className={cx(inputClass, "flex-1 py-2 leading-snug")} />
                 <button aria-label="Leave this one out" onClick={() => setDrafts(drafts.filter((_, i) => i !== n))} className="rounded-full p-2.5 text-muted-foreground hover:bg-muted">
                   <X className="size-4" />
                 </button>
@@ -544,7 +584,7 @@ function AddSheet({ project, onAdded, onClose }: AddSheetProps) {
             Back
           </Button>
           <Button className="min-h-12 flex-1 text-base" disabled={busy || drafts.length === 0 || drafts.some((d) => !d.title.trim())} onClick={add}>
-            {busy ? "Adding…" : `Add ${drafts.length} ${drafts.length === 1 ? "item" : "items"}`}
+            {busy ? "Adding…" : `Add ${drafts.length} ${drafts.length === 1 ? "task" : "tasks"}`}
           </Button>
         </div>
       </div>

@@ -15,6 +15,7 @@ consume its events. See cloud/store_tasks/README.md.
     POST /v1/tasks                   one-off task
     GET|PUT /v1/counts/<date>        closing count
     POST /v1/feedback                a problem or idea, with what was on screen and the last steps
+    POST /v1/projects/<id>/feedback  the same from a project; it goes to the store of whoever runs it
     GET|POST /v1/templates (+ /order), /v1/staff, /v1/accounts, GET /v1/history, GET /v1/feedback   (manager)
     /v1/projects[/<id> (+ /parse, /items, /items/<id>/notes, /members)]   private projects, by Google account (members)
     POST /webhooks/clickup/<s>/<list> ClickUp change (signed with that webhook's secret)
@@ -305,13 +306,15 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     def save_template():
         return jsonify(template=tasks.save_template(g.store, body(), g.staff["sid"]).to_dict())
 
+    def feedback_body() -> tuple[dict, tuple[bytes, str] | None]:
+        if request.files.get("photo") is not None:
+            return json.loads(request.form.get("data") or "{}"), upload()
+        return body(), None
+
     @app.post("/v1/feedback")
     @staff_required
     def add_feedback():
-        if request.files.get("photo") is not None:
-            data, photo = json.loads(request.form.get("data") or "{}"), upload()
-        else:
-            data, photo = body(), None
+        data, photo = feedback_body()
         f = tasks.add_feedback(g.store, g.staff, g.account, data, photo)
         ctx = f["context"]
         log.info("store-tasks feedback id=%s store=%s staff=%s kind=%s screen=%s date=%s shift=%s task_id=%s",
@@ -400,6 +403,25 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     def project_remove(pid: str, item_id: str):
         tracker.remove(pid, g.email, item_id)
         return jsonify(ok=True)
+
+    @app.post("/v1/projects/<pid>/feedback")
+    @person_required
+    def project_feedback(pid: str):
+        """Report a problem from a project: it lands with the problems of the store whose manager runs it."""
+        p, mid = tracker.member(pid, g.email)
+        store_id = tracker.home(p)
+        if store_id is None:
+            log.error("store-tasks fail reason=project_feedback_no_store project=%s", pid)
+            raise svc.Invalid("this project has nowhere to send problems yet")
+        data, photo = feedback_body()
+        context = data.get("context") if isinstance(data.get("context"), dict) else {}
+        name = next(m["name"] for m in p["members"] if m["id"] == mid)
+        f = tasks.add_feedback(store_id, {"sid": mid}, {"email": g.email, "label": p["name"]},
+                               {**data, "context": {**context, "project": pid}}, photo, name=name)
+        log.info("store-tasks feedback id=%s store=%s project=%s member=%s kind=%s screen=%s",
+                 f["id"], store_id, pid, mid, f["kind"], f["context"].get("screen"))
+        notify.feedback(tasks.store(store_id), f)
+        return jsonify(id=f["id"])
 
     @app.put("/v1/projects/<pid>/members")
     @person_required

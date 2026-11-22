@@ -107,6 +107,16 @@ class Tracker:
             raise svc.NotFound("project")
         return p, mid
 
+    def home(self, p: dict) -> str | None:
+        """The store whose manager runs the project: its problems go to that store's Feedback and Slack."""
+        for m in p["members"]:
+            if m["id"] in p["admins"]:
+                for e in m["emails"]:
+                    acct = self.docs.get(st.ACCOUNTS, e)
+                    if acct and acct.get("active", True):
+                        return acct["store"]
+        return None
+
     def create(self, pid: str, name: str, members: list[dict], admins: list[str], tags: list[str], by: str) -> dict:
         """Provisioning (not a route). ``members``: ``{"id", "name", "emails"}``; ``admins``: member ids."""
         cur = self.docs.get(st.TRACKERS, pid) or {}

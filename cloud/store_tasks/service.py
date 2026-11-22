@@ -861,7 +861,7 @@ class Tasks:
     # ── feedback ────────────────────────────────────────────────────────────
 
     def add_feedback(self, store_id: str, staff: dict, account: dict, data: dict,
-                     photo: tuple[bytes, str] | None = None) -> dict:
+                     photo: tuple[bytes, str] | None = None, name: str | None = None) -> dict:
         """A problem or an idea from the crew, kept with what was on screen and their last steps."""
         text = (data.get("text") or "").strip()[:MAX_FEEDBACK_TEXT]
         if not text and photo is None:
@@ -877,7 +877,7 @@ class Tasks:
         doc = {
             "id": fid, "store": store_id, "at": self.now().isoformat(), "status": "new",
             "kind": data.get("kind") if data.get("kind") in FEEDBACK_KINDS else FEEDBACK_KINDS[0],
-            "text": text, "staff_id": staff["sid"], "staff_name": names.get(staff["sid"], "Shop"),
+            "text": text, "staff_id": staff["sid"], "staff_name": name or names.get(staff["sid"], "Shop"),
             "account": account.get("email"), "device": account.get("label") or "",
             "context": context, "events": events, "photos": [],
         }

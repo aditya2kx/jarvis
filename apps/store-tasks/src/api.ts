@@ -398,6 +398,12 @@ export const api = {
     call<TrackerItem>("PATCH", `/v1/projects/${id}/items/${item}`, { body }),
   projectNote: (id: string, item: string, text: string) => call<TrackerItem>("POST", `/v1/projects/${id}/items/${item}/notes`, { body: { text } }),
   projectRemove: (id: string, item: string) => call<{ ok: true }>("DELETE", `/v1/projects/${id}/items/${item}`),
+  projectFeedback: (id: string, body: FeedbackNew, photo?: Blob) => {
+    if (!photo) return call<{ id: string }>("POST", `/v1/projects/${id}/feedback`, { body });
+    const form = photoForm(photo);
+    form.append("data", JSON.stringify(body));
+    return call<{ id: string }>("POST", `/v1/projects/${id}/feedback`, { form });
+  },
   projectMembers: (id: string, members: { id?: string; name: string; emails: string[] }[]) =>
     call<Project>("PUT", `/v1/projects/${id}/members`, { body: { members } }),
   history: (token: string, from: string, to: string) =>

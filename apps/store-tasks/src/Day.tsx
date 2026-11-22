@@ -1,16 +1,17 @@
-import { CalendarClock, Camera, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, Lock, MessageSquare, MousePointerClick, Plus, Search, Settings, UserPlus, Users, X } from "lucide-react";
+import { CalendarClock, Camera, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, ClipboardList, CloudOff, FileText, Images, KeyRound, ListChecks, Lock, MessageSquare,  Settings, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
 import { FeedbackButton } from "./Feedback";
 import { ProjectSwitch, usePlaces } from "./Projects";
 import { shrink } from "./Photos";
+import { AddRow, DetailPane, FilterBar, matchesWords, SearchBox, searchWords, TaskRow } from "./parts";
 import { PersonPicker } from "./People";
 import { applyPending, flush, loadQueue, push, type Pending } from "./queue";
 import { setWhere, track } from "./steps";
 import { TaskDetail } from "./TaskDetail";
 import { blankDraft, TaskForm, type TaskDraft } from "./TaskForm";
-import { addDays, Avatar, Button, cx, dayLabel, firstName, inputClass, Notice, Sheet, shiftTone, Tick, time, Toast, useWide } from "./ui";
+import { addDays, Avatar, Button, cx, dayLabel, firstName, Notice, shiftTone, time, Toast, useWide } from "./ui";
 
 const REFRESH_MS = 60 * 1000;
 const TOAST_MS = 2800;
@@ -224,8 +225,8 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const clickupDay = !day.generated;
   const readOnly = clickupDay && date < day.today;
   const childrenOf = (id: string) => tasks.filter((t) => t.parent_id === id);
-  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const found = (t: Task) => words.every((w) => t.title.toLowerCase().includes(w));
+  const words = searchWords(query);
+  const found = (t: Task) => matchesWords(words, t.title);
   const matches = (t: Task) =>
     found(t) && (filter === "all" || (filter === "mine" ? t.assignee_id === me : !t.assignee_id)) && (!hideDone || t.status === "open");
   const shows = (t: Task) => matches(t) || childrenOf(t.id).some(matches);
@@ -261,7 +262,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
   const showCount = isLastShift && hasCount && countFound;
 
   const row = (t: Task, sub = false) => (
-    <TaskRow
+    <StoreRow
       key={t.id}
       task={t}
       sub={sub}
@@ -425,54 +426,25 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
 
       <div className="flex min-h-0 flex-1">
         <main className="min-w-0 flex-1 overflow-y-auto px-4 pb-10 pt-3 sm:px-6">
-          <div className="relative mb-2">
-            <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onBlur={() => query.trim() && track("action", `search "${query.trim()}"`)}
-              placeholder="Find a task"
-              aria-label="Find a task"
-              enterKeyHint="search"
-              className={cx(inputClass, "pl-10 pr-11 [&::-webkit-search-cancel-button]:hidden")}
-            />
-            {query && (
-              <button aria-label="Clear search" onClick={() => setQuery("")} className="absolute right-1 top-1/2 flex size-10 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted">
-                <X className="size-4" />
-              </button>
+          <SearchBox query={query} onChange={setQuery} onDone={() => query.trim() && track("action", `search "${query.trim()}"`)} />
+          <FilterBar
+            options={FILTERS.filter((f) => !(shop && f === "mine")).map((f) => ({ id: f, label: labels[f], n: counts[f] }))}
+            value={filter}
+            onChange={setFilter}
+            hideDone={hideDone}
+            onHideDone={setHideDone}
+          >
+            {!readOnly && unassigned.length > 0 && (
+              <Button
+                variant="outline"
+                onClick={() => setPicking({ title: `Who is doing the ${openUnassigned} unassigned ${shiftInfo?.label ?? ""} tasks?`, ids: unassigned.map((t) => t.id) })}
+                className="min-h-9 px-3 text-sm"
+              >
+                <Users className="size-4" />
+                Assign {openUnassigned} unassigned
+              </Button>
             )}
-          </div>
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <div role="group" aria-label="Show" className="flex gap-1 rounded-lg bg-muted p-1">
-              {FILTERS.filter((f) => !(shop && f === "mine")).map((f) => (
-                <button
-                  key={f}
-                  aria-pressed={filter === f}
-                  onClick={() => setFilter(f)}
-                  className={cx("min-h-9 rounded-md px-3 text-sm font-medium transition", filter === f ? "bg-card text-foreground shadow-card" : "text-muted-foreground hover:text-foreground")}
-                >
-                  {labels[f]} <span className="tabular-nums opacity-60">{counts[f]}</span>
-                </button>
-              ))}
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="flex min-h-9 items-center gap-2 text-sm text-muted-foreground">
-                <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} className="size-4 accent-primary" />
-                Hide done
-              </label>
-              {!readOnly && unassigned.length > 0 && (
-                <Button
-                  variant="outline"
-                  onClick={() => setPicking({ title: `Who is doing the ${openUnassigned} unassigned ${shiftInfo?.label ?? ""} tasks?`, ids: unassigned.map((t) => t.id) })}
-                  className="min-h-9 px-3 text-sm"
-                >
-                  <Users className="size-4" />
-                  Assign {openUnassigned} unassigned
-                </Button>
-              )}
-            </div>
-          </div>
+          </FilterBar>
 
           {whole.length > 0 && left === 0 ? (
             <div key={`cheer-${listKey}`} ref={cheerBanner} className="pop relative mb-3 flex scroll-mt-3 items-center gap-3 rounded-xl bg-success/10 px-4 py-3 font-medium text-success">
@@ -565,15 +537,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
               </li>
             )}
             {!clickupDay && !shop && (
-              <li>
-                <button
-                  onClick={() => activeShift && setForm({ title: "Add a task", initial: blankDraft(activeShift), once: true })}
-                  className="group flex min-h-13 w-full items-center gap-3 px-4 text-left font-medium text-primary hover:bg-accent"
-                >
-                  <Plus className="size-5 transition-transform group-hover:rotate-90" />
-                  Add a task
-                </button>
-              </li>
+              <AddRow onClick={() => activeShift && setForm({ title: "Add a task", initial: blankDraft(activeShift), once: true })} />
             )}
           </ul>
           {elsewhere.length > 0 && (
@@ -596,35 +560,11 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
           )}
         </main>
 
-        {wide && (
-          <aside className="w-[26rem] shrink-0 overflow-y-auto border-l border-border bg-card xl:w-[30rem]">
-            {openTask ? (
-              <div key={openTask.id} className="slide-in p-6">
-                <div className="mb-4 flex items-start justify-between gap-3">
-                  <h2 className="text-xl font-semibold leading-snug">{openTask.title}</h2>
-                  <button aria-label="Close" onClick={() => setOpen(null)} className="-m-2 rounded-full p-2 text-muted-foreground hover:bg-muted">
-                    <X className="size-5" />
-                  </button>
-                </div>
-                {detail}
-              </div>
-            ) : (
-              <div className="fade flex h-full flex-col items-center justify-center gap-3 p-10 text-center text-muted-foreground">
-                <span className="flex size-14 items-center justify-center rounded-full bg-tone-soft text-tone-ink">
-                  <MousePointerClick className="size-6" />
-                </span>
-                <p>Pick a task to see how to do it, who is doing it, photos and notes.</p>
-              </div>
-            )}
-          </aside>
-        )}
+        <DetailPane wide={wide} title={openTask?.title ?? null} empty="Pick a task to see how to do it, who is doing it, photos and notes." onClose={() => setOpen(null)}>
+          {detail}
+        </DetailPane>
       </div>
 
-      {!wide && openTask && (
-        <Sheet title={openTask.title} onClose={() => setOpen(null)}>
-          {detail}
-        </Sheet>
-      )}
       {picking && (
         <PersonPicker
           title={picking.title}
@@ -693,30 +633,39 @@ interface RowProps {
 
 const isPlanned = (t: Task) => t.source === "planned";
 
-function TaskRow({ task, sub, steps, expanded, onExpand, names, selected, readOnly, onToggle, onOpen, onAssign }: RowProps) {
+function StoreRow({ task, sub, steps, expanded, onExpand, names, selected, readOnly, onToggle, onOpen, onAssign }: RowProps) {
   const done = task.status === "done";
   const assignee = task.assignee_id ? names.get(task.assignee_id) : undefined;
   const photos = task.photos?.length ?? 0;
   const notes = task.comments?.length ?? 0;
   const meta = "flex items-center gap-1";
   return (
-    <div className={cx("flex items-stretch transition-colors", sub && "pl-6 sm:pl-8", selected && "bg-tone-soft shadow-[inset_3px_0_0_var(--tone)]")}>
-      <button
-        aria-label={done ? `Undo ${task.title}` : `Done: ${task.title}`}
-        aria-pressed={done}
-        disabled={readOnly}
-        onClick={() => onToggle(task)}
-        className="flex w-14 shrink-0 items-center justify-center disabled:opacity-60 sm:w-16"
-      >
-        <Tick done={done} dim={task.pending} />
-      </button>
-      <button onClick={() => onOpen(task.id)} className={cx("flex min-h-15 min-w-0 flex-1 flex-col justify-center gap-0.5 py-2.5 pr-2 text-left", !selected && "hover:bg-muted/70")}>
-        <span className="text-[16px] leading-snug">
-          <span className="strike" data-done={done}>
-            {task.title}
-          </span>
-        </span>
-        <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[13px] text-muted-foreground empty:hidden">
+    <TaskRow
+      title={task.title}
+      done={done}
+      pending={task.pending}
+      sub={sub}
+      selected={selected}
+      readOnly={readOnly}
+      people={task.assignee_id && assignee ? [{ id: task.assignee_id, name: assignee }] : []}
+      onToggle={() => onToggle(task)}
+      onOpen={() => onOpen(task.id)}
+      onAssign={() => onAssign(task)}
+      expander={
+        expanded !== undefined && steps.length > 0 ? (
+          <button
+            aria-expanded={expanded}
+            aria-label={`${expanded ? "Hide" : "Show"} the ${steps.length} steps of ${task.title}`}
+            onClick={onExpand}
+            className="flex shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
+          >
+            <span className="hidden sm:inline">{expanded ? "Hide" : "Show"} steps</span>
+            <ChevronDown className={cx("size-5 transition-transform", expanded && "rotate-180")} />
+          </button>
+        ) : undefined
+      }
+      meta={
+        <>
           {isPlanned(task) && (
             <span className={cx(meta, "rounded-full bg-muted px-1.5 font-medium")}>
               <CalendarClock className="size-3.5" />
@@ -766,38 +715,8 @@ function TaskRow({ task, sub, steps, expanded, onExpand, names, selected, readOn
               {notes}
             </span>
           )}
-        </span>
-      </button>
-      {expanded !== undefined && steps.length > 0 && (
-        <button
-          aria-expanded={expanded}
-          aria-label={`${expanded ? "Hide" : "Show"} the ${steps.length} steps of ${task.title}`}
-          onClick={onExpand}
-          className="flex shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
-        >
-          <span className="hidden sm:inline">{expanded ? "Hide" : "Show"} steps</span>
-          <ChevronDown className={cx("size-5 transition-transform", expanded && "rotate-180")} />
-        </button>
-      )}
-      <button
-        disabled={readOnly}
-        onClick={() => onAssign(task)}
-        aria-label={assignee ? `Doing it: ${assignee}. Change` : "Pick who is doing it"}
-        className="group flex shrink-0 items-center gap-2 px-3 sm:px-4"
-      >
-        {task.assignee_id && assignee ? (
-          <>
-            <span className="hidden max-w-28 truncate text-sm text-muted-foreground md:inline">{firstName(assignee)}</span>
-            <span key={task.assignee_id} className="pop inline-flex transition-transform group-enabled:group-hover:scale-110">
-              <Avatar id={task.assignee_id} name={assignee} />
-            </span>
-          </>
-        ) : (
-          <span className={cx("flex size-8 items-center justify-center rounded-full border border-dashed border-ring text-muted-foreground transition group-enabled:group-hover:border-primary group-enabled:group-hover:bg-accent group-enabled:group-hover:text-primary", readOnly && "opacity-0")}>
-            <UserPlus className="size-4" />
-          </span>
-        )}
-      </button>
-    </div>
+        </>
+      }
+    />
   );
 }

@@ -1,10 +1,11 @@
-import { CalendarDays, Check, Copy, FileText, Film, Pencil, Repeat2, Send, Trash2, UserPlus } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { CalendarDays, Copy, FileText, Film, Pencil, Repeat2, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { api, isOffline, type Photo, type TaskFile, type Session, type Shift, type Task, type TaskDetail as Detail, type Template } from "./api";
 import { AddPhotos, PhotoGrid } from "./Photos";
 import { repeatLabel } from "./Repeat";
 import type { TaskDraft } from "./TaskForm";
-import { Avatar, Button, cx, firstName, inputClass, Notice, Tick, time } from "./ui";
+import { DoneBar, Notes, Section, WhoButton } from "./parts";
+import { Button, cx, firstName, inputClass, Notice, Tick, time } from "./ui";
 
 const URL_PATTERN = /(https?:\/\/[^\s)]+)/g;
 
@@ -28,18 +29,6 @@ interface Props {
   onRemoved: () => void;
 }
 
-function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
-  return (
-    <section>
-      <div className="mb-2 flex min-h-7 items-center justify-between gap-3">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
-        {action}
-      </div>
-      {children}
-    </section>
-  );
-}
-
 const offlineOr = (e: unknown, what: string) => (isOffline(e) ? `No connection. ${what} — try again when Wi-Fi is back.` : (e as Error).message);
 
 /** Everything about one task: how to do it, who is doing it, photos and notes. */
@@ -48,7 +37,6 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [note, setNote] = useState("");
   const isManager = session.staff.role === "manager";
   const me = session.staff.id;
 
@@ -57,7 +45,6 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
     setDetail(null);
     setError("");
     setEditing(null);
-    setNote("");
     api
       .task(session.token, task.id)
       .then((d) => live && setDetail(d))
@@ -105,13 +92,15 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
       }
     });
 
-  const sendNote = () =>
-    run("The note was not saved", async () => {
-      const text = note.trim();
-      if (!text) return;
+  const sendNote = async (text: string) => {
+    setError("");
+    try {
       onChanged(await api.comment(session.token, task.id, text));
-      setNote("");
-    });
+    } catch (e) {
+      setError(offlineOr(e, "The note was not saved"));
+      throw e;
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -130,53 +119,20 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
             </span>
           )}
         </div>
-        {done ? (
-          <div className="pop flex items-center justify-between gap-3 rounded-xl bg-success/10 px-4 py-3">
-            <p className="flex items-center gap-2 font-medium text-success">
-              <Check className="size-5" strokeWidth={3} />
-              <span>
-                Done{task.completed_by && ` by ${firstName(names.get(task.completed_by)) || "someone"}`}
-                {task.completed_at && ` at ${time(task.completed_at)}`}
-                {task.pending && " (not sent yet)"}
-              </span>
-            </p>
-            {!readOnly && (
-              <Button variant="outline" onClick={() => onToggle(task)}>
-                Undo
-              </Button>
-            )}
-          </div>
-        ) : (
-          !readOnly && (
-            <Button disabled={blocked} onClick={() => onToggle(task)} className="min-h-13 w-full text-base">
-              <Check className="size-5" />
-              Mark done
-            </Button>
-          )
-        )}
+        <DoneBar
+          done={done}
+          readOnly={readOnly}
+          blocked={blocked}
+          onToggle={() => onToggle(task)}
+          said={`Done${task.completed_by ? ` by ${firstName(names.get(task.completed_by)) || "someone"}` : ""}${task.completed_at ? ` at ${time(task.completed_at)}` : ""}${task.pending ? " (not sent yet)" : ""}`}
+        />
         {blocked && !readOnly && <Notice>Add a photo below first — this one needs a photo to be marked done.</Notice>}
         {error && <Notice tone="error">{error}</Notice>}
       </div>
 
       <Section title="Who is doing it">
         <div className="flex gap-2">
-          <button
-            disabled={readOnly}
-            onClick={() => onAssign(task)}
-            className="flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-lg border border-border bg-card px-3 text-left transition enabled:hover:border-ring enabled:hover:bg-accent"
-          >
-            {task.assignee_id && assignee ? (
-              <span key={task.assignee_id} className="pop inline-flex">
-                <Avatar id={task.assignee_id} name={assignee} />
-              </span>
-            ) : (
-              <span className="flex size-8 items-center justify-center rounded-full border border-dashed border-ring text-muted-foreground">
-                <UserPlus className="size-4" />
-              </span>
-            )}
-            <span className={cx("min-w-0 flex-1 truncate text-[16px]", !assignee && "text-muted-foreground")}>{assignee ?? (readOnly ? "No one" : "Pick a person")}</span>
-            {!readOnly && assignee && <span className="text-sm text-muted-foreground">Change</span>}
-          </button>
+          <WhoButton people={task.assignee_id && assignee ? [{ id: task.assignee_id, name: assignee }] : []} readOnly={readOnly} onClick={() => onAssign(task)} />
           {!readOnly && task.assignee_id !== me && session.staff.assignable && (
             <Button variant="outline" onClick={() => onAssignMe(task)} className="min-h-12 shrink-0">
               I'll do it
@@ -317,40 +273,7 @@ export function TaskDetail({ task, subtasks, shift, names, session, readOnly, on
         </Section>
       )}
 
-      <Section title={comments.length ? `Notes · ${comments.length}` : "Notes"}>
-        <div className="space-y-3">
-          {comments.length > 0 && (
-            <ul className="space-y-3">
-              {comments.map((c) => (
-                <li key={c.id} className={cx("flex gap-3", c.reply_to && "pl-11")}>
-                  <Avatar id={c.by} name={names.get(c.by) ?? "?"} />
-                  <div className="rise min-w-0 flex-1 rounded-lg bg-muted px-3 py-2">
-                    <p className="text-sm text-muted-foreground">
-                      {firstName(names.get(c.by)) || "Someone"} · {time(c.at)}
-                    </p>
-                    <p className="whitespace-pre-wrap break-words">{c.text}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-          {!comments.length && readOnly && <p className="text-muted-foreground">No notes.</p>}
-          {!readOnly && (
-            <form
-              className="flex gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                sendNote();
-              }}
-            >
-              <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Add a note for the team…" className={inputClass} />
-              <Button type="submit" aria-label="Send note" disabled={!note.trim()} className="shrink-0 px-3">
-                <Send className="size-4" />
-              </Button>
-            </form>
-          )}
-        </div>
-      </Section>
+      <Notes notes={comments} names={names} readOnly={readOnly} onSend={sendNote} />
 
       {!readOnly && (
         <div className="flex flex-wrap gap-2 border-t border-border pt-5">

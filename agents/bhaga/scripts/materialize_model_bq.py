@@ -708,13 +708,17 @@ def materialize(
     print(f"  earnings={len(earnings)} actuals_periods={len(actuals)} last_data_date={last_data_date}")
 
     # ── Load training exclusions from the model Sheet ────────────────────────
-    model_sid = profile["google_sheets"]["bhaga_model"]["spreadsheet_id"]
-    training_through = _read_training_excluded_from_sheet(
-        spreadsheet_id=model_sid, store=store
-    )
-    training_shifts = _read_training_shifts_from_sheet(
-        spreadsheet_id=model_sid, store=store
-    )
+    # A store without a model Sheet (Houston: BQ is the system of record) has none.
+    training_through: dict = {}
+    training_shifts: dict = {}
+    model_sid = profile.get("google_sheets", {}).get("bhaga_model", {}).get("spreadsheet_id")
+    if model_sid:
+        training_through = _read_training_excluded_from_sheet(
+            spreadsheet_id=model_sid, store=store
+        )
+        training_shifts = _read_training_shifts_from_sheet(
+            spreadsheet_id=model_sid, store=store
+        )
 
     # ── Normalize training input names through the alias map ─────────────────
     # training_shifts is {(raw_name, date_iso): meta}; training_through is {raw_name: date}.

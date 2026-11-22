@@ -9,6 +9,7 @@ from agents.bhaga import notify
 from agents.bhaga.scripts import daily_refresh as dr
 from agents.bhaga.scripts import ingest_inventory
 from agents.bhaga.scripts import materialize_model_bq as mm
+from skills.adp_run_automation import runner as adp_runner
 from skills.square_api import auth as square_auth
 
 HOUSTON_ENV = {
@@ -79,6 +80,17 @@ class SquareSecret(unittest.TestCase):
 
     def test_store_without_a_profile_keeps_the_naming_rule(self):
         self.assertEqual(square_auth._secret_name("dallas"), "square_dallas_oauth")
+
+
+class AdpCredential(unittest.TestCase):
+    def test_houston_logs_in_with_the_shared_austin_login(self):
+        self.assertEqual(adp_runner._adp_credential_name("houston"), "adp_palmetto_login")
+
+    def test_austin_credential_is_unchanged(self):
+        self.assertEqual(adp_runner._adp_credential_name("palmetto"), "adp_palmetto_login")
+
+    def test_store_without_a_profile_keeps_the_naming_rule(self):
+        self.assertEqual(adp_runner._adp_credential_name("nosuchstore"), "adp_nosuchstore_login")
 
 
 class ClosingFormSource(unittest.TestCase):

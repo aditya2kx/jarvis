@@ -91,7 +91,9 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   people (`tracker.py`, collections `trackers` and `tracker_items`), at `/p/<id>` on the same link,
   created with `admin project`. A member is known only by their own Google account: they need no
   staff record, PIN or store access, and a Google account that is on a project but not a store is
-  sent to its project from the front page. The store app shows nothing of projects. An item has
+  sent to its project from the front page. Someone on more than one place (their store's tasks and a
+  project, or two projects) gets a switcher (`GET /v1/projects`): a Projects button, or on a phone's
+  day list the store name. Everyone else, and the shop device, sees nothing of projects. An item has
   owners (members), store tags, an optional due date, points, and a thread of updates, and stays open
   until ticked. "Add items" takes one item per line or pasted meeting notes (`tracker.parse`): a line
   of only names starts a group those people own, numbered or bulleted lines are items, indented lines

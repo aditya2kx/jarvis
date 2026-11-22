@@ -362,7 +362,12 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     @app.get("/v1/projects")
     @person_required
     def projects():
-        return jsonify(projects=tracker.projects(g.email))
+        """Everywhere this Google account can go: its store's tasks (if any) and its projects, for the switcher."""
+        acct = tasks.docs.get(st.ACCOUNTS, g.email)
+        store = None
+        if acct and acct.get("active", True):
+            store = {"id": acct["store"], "name": tasks.store(acct["store"]).name}
+        return jsonify(store=store, projects=tracker.projects(g.email))
 
     @app.get("/v1/projects/<pid>")
     @person_required

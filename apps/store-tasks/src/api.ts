@@ -389,7 +389,8 @@ export const api = {
     call<{ account: Account }>("POST", "/v1/accounts", { token, body }),
   removeAccount: (token: string, email: string) =>
     call<{ ok: true }>("DELETE", `/v1/accounts/${encodeURIComponent(email)}`, { token }),
-  projects: () => call<{ projects: { id: string; name: string }[] }>("GET", "/v1/projects"),
+  /** Where this Google account can go: its store's tasks, if any, and its projects. */
+  projects: () => call<{ store: { id: string; name: string } | null; projects: { id: string; name: string }[] }>("GET", "/v1/projects"),
   project: (id: string) => call<Project>("GET", `/v1/projects/${id}`),
   projectParse: (id: string, text: string) => call<{ items: TrackerDraft[] }>("POST", `/v1/projects/${id}/parse`, { body: { text } }),
   projectAdd: (id: string, items: TrackerDraft[]) => call<{ items: TrackerItem[] }>("POST", `/v1/projects/${id}/items`, { body: { items } }),

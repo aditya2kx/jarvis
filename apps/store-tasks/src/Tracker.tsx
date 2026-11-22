@@ -2,6 +2,7 @@ import { CalendarDays, ListTree, MessageSquare, Plus, Trash2, Users, X } from "l
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, device, isOffline, type Project, type TrackerDraft, type TrackerItem } from "./api";
 import { GoogleSignIn } from "./App";
+import { ProjectSwitch } from "./Projects";
 import { setWhere, track } from "./steps";
 import { Avatar, Button, cx, dayLabel, Field, firstName, Input, inputClass, Notice, Sheet, Tick, time } from "./ui";
 
@@ -124,7 +125,8 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
               <p className="text-sm text-muted-foreground">Only {data.members.map((m) => firstName(m.name)).join(", ")} can see this.</p>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            <ProjectSwitch current={data.id} />
             {data.admin && (
               <Button variant="outline" onClick={() => setSharing(true)}>
                 <Users className="size-4" />

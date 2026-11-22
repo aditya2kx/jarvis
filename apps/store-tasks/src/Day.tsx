@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
 import { FeedbackButton } from "./Feedback";
+import { ProjectSwitch } from "./Projects";
 import { shrink } from "./Photos";
 import { PersonPicker } from "./People";
 import { applyPending, flush, loadQueue, push, type Pending } from "./queue";
@@ -308,7 +309,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
             <div className="min-w-0 px-1">
               <h1 className="truncate text-xl font-extrabold leading-tight tracking-tight">{date === day.today ? "Today" : dayLabel(date)}</h1>
               <p className="truncate text-sm text-muted-foreground">
-                {boot.store.name}
+                {boot.account.shop ? boot.store.name : <ProjectSwitch current="store" inline={boot.store.name} />}
                 {date === day.today ? (
                   ` · ${dayLabel(date)}`
                 ) : (
@@ -335,6 +336,11 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
               <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1.5 text-sm text-muted-foreground">
                 <CloudOff className="size-4" />
                 {queue.length ? `${queue.length} to send` : "Offline"}
+              </span>
+            )}
+            {!boot.account.shop && (
+              <span className="hidden sm:block">
+                <ProjectSwitch current="store" />
               </span>
             )}
             <FeedbackButton session={session} />

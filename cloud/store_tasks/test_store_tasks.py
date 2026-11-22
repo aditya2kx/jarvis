@@ -1099,7 +1099,10 @@ def test_a_project_is_apart_from_the_store_and_seen_only_by_its_members(env):
     token = env.tasks.google_device(SAM)
     dev = {"X-Shop-Device": token}
     assert c.get("/v1/bootstrap", headers=dev).status_code == 403
-    assert c.get("/v1/projects", headers=dev).get_json()["projects"] == [{"id": "leads", "name": "Leadership"}]
+    assert c.get("/v1/projects", headers=dev).get_json() == {"store": None, "projects": [{"id": "leads", "name": "Leadership"}]}
+    tr.Tracker(env.tasks).create("owners", "Owners", [{"id": "o1", "name": "Lee", "emails": [OWNER]}], ["o1"], [], "test")
+    both = c.get("/v1/projects", headers={"X-Test-Google": OWNER}).get_json()
+    assert (both["store"]["id"], both["projects"]) == ("palmetto", [{"id": "owners", "name": "Owners"}])
     with pytest.raises(auth.AuthError):
         env.tasks.google_device("stranger@gmail.example")
     # The store's people, its manager, and the shop device see nothing of it.

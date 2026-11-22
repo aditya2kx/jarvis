@@ -47,6 +47,10 @@ export type Availability = {
   trainsOnly?: "open" | "close";
   /** Operator rule: on these weekdays each shift fits entirely inside one window. */
   shiftWindows?: ShiftWindowRule[];
+  /** In their first month this week (Issue #539): weekly cap already lowered to this. */
+  firstMonthCap?: number;
+  /** Day after their first month ends; absent = no ADP shift yet. */
+  firstMonthUntil?: string;
 };
 
 /**

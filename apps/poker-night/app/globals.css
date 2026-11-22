@@ -1206,6 +1206,8 @@ select:focus {
 .board2 {
   display: flex;
   gap: 5px;
+  /* Set by fitBoard so no seat covers a card. */
+  transform: translateY(var(--board-dy, 0px)) scale(var(--board-k, 1));
 }
 
 .dim-board {

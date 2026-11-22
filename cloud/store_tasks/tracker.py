@@ -22,6 +22,8 @@ MAX_DETAIL = 4000
 MAX_NOTE = 4000
 MAX_ADDED = 100
 EDITABLE = ("title", "detail", "owners", "tags", "due")
+# Photo paths start with this instead of a store id, so no store's photo route can reach them.
+PHOTO_ROOT = "_projects"
 
 _MENTION = re.compile(r"\[@([^\]]+)\]\(#user_mention#(\d+)\)")
 _NUMBERED = re.compile(r"^(\d+)[.)]\s+(.*)$")
@@ -228,6 +230,33 @@ class Tracker:
             {"id": f"n{uuid.uuid4().hex[:10]}", "by": by or me, "at": at or self.tasks.now().isoformat(), "text": text}]
         self.docs.set(st.TRACKER_ITEMS, item_id, item)
         return item
+
+    def add_photo(self, pid: str, email: str, item_id: str, data: bytes, content_type: str) -> dict:
+        _, me, item = self._item(pid, email, item_id)
+        path = self.tasks._photo(PHOTO_ROOT, f"{pid}/{item_id}", data, content_type)
+        self.tasks.photos.put(path, data, content_type)
+        item["photos"] = (item.get("photos") or []) + [{"path": path, "by": me, "at": self.tasks.now().isoformat()}]
+        self.docs.set(st.TRACKER_ITEMS, item_id, item)
+        return item
+
+    def remove_photo(self, pid: str, email: str, item_id: str, path: str) -> dict:
+        p, me, item = self._item(pid, email, item_id)
+        photo = next((x for x in item.get("photos") or [] if x["path"] == path), None)
+        if photo is None:
+            return item
+        if me not in (photo["by"], *p["admins"]):
+            raise auth.AuthError("only the person who added it or who runs this project can remove it", 403)
+        item["photos"] = [x for x in item["photos"] if x["path"] != path]
+        self.docs.set(st.TRACKER_ITEMS, item_id, item)
+        return item
+
+    def photo(self, pid: str, email: str, path: str, size: str | None) -> tuple[bytes, str]:
+        """A project's photos are only for its members, like the rest of it."""
+        self.member(pid, email)
+        found = self.tasks.photo(path, size) if path.startswith(f"{PHOTO_ROOT}/{pid}/") else None
+        if found is None:
+            raise svc.NotFound("photo")
+        return found
 
     def remove(self, pid: str, email: str, item_id: str) -> None:
         p, me, item = self._item(pid, email, item_id)

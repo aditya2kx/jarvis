@@ -96,8 +96,10 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   `Projects.tsx`): a tile with the place's name; a menu on wide screens, a sheet on a phone. Everyone else, and the shop device, sees nothing of projects.
   A project is built from the same pieces as a store's day (`parts.tsx`: task row, search, All / Mine /
   Unassigned with Hide done, the side panel or sheet, done bar, who is doing it, notes; `People.tsx`
-  picker, which picks several people on a project), so both work alike. A task has the people doing
-  it, store tags, an optional due date, points and notes, and stays open until ticked; Hide done
+  picker, which picks several people on a project; `Photos.tsx` grid, viewer and Add photo), so both
+  work alike. A task has the people doing it, store tags, an optional due date, points, photos and
+  notes, and Duplicate; it stays open until ticked. Its photos are kept under `_projects/<id>/` and
+  served only to members (`GET /v1/projects/<id>/photos/<path>`), never by a store's photo route; Hide done
   starts on, as a project never starts over like a day. "Add a task" takes one task per line or pasted
   meeting notes (`tracker.parse`): a line of only names starts a group those people do, numbered or
   bulleted lines are tasks, indented lines are points; the person checks the split before anything

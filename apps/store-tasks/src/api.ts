@@ -226,6 +226,7 @@ export interface TrackerItem extends TrackerDraft {
   done_by: string | null;
   done_at: string | null;
   notes: TrackerNote[];
+  photos?: Photo[];
 }
 
 /** Someone on a project. `emails` (their Google accounts) is sent only to the project's admin. */
@@ -353,7 +354,9 @@ export const api = {
     const key = size ? `${path}?size=${size}` : path;
     let url = photoUrls.get(key);
     if (!url) {
-      url = fetch(`/v1/photos/${key}`, { headers: authHeaders(token) }).then(async (res) => {
+      // A project's photos are served by the project, to its members only.
+      const project = path.startsWith("_projects/") ? path.split("/")[1] : null;
+      url = fetch(project ? `/v1/projects/${project}/photos/${key}` : `/v1/photos/${key}`, { headers: authHeaders(token) }).then(async (res) => {
         if (!res.ok) throw new ApiError("Photo not available", res.status);
         return URL.createObjectURL(await res.blob());
       });
@@ -397,6 +400,8 @@ export const api = {
   projectUpdate: (id: string, item: string, body: Partial<TrackerDraft> & { status?: TrackerItem["status"] }) =>
     call<TrackerItem>("PATCH", `/v1/projects/${id}/items/${item}`, { body }),
   projectNote: (id: string, item: string, text: string) => call<TrackerItem>("POST", `/v1/projects/${id}/items/${item}/notes`, { body: { text } }),
+  projectPhoto: (id: string, item: string, file: Blob) => call<TrackerItem>("POST", `/v1/projects/${id}/items/${item}/photo`, { form: photoForm(file) }),
+  projectRemovePhoto: (id: string, item: string, path: string) => call<TrackerItem>("DELETE", `/v1/projects/${id}/items/${item}/photos/${path}`),
   projectRemove: (id: string, item: string) => call<{ ok: true }>("DELETE", `/v1/projects/${id}/items/${item}`),
   projectFeedback: (id: string, body: FeedbackNew, photo?: Blob) => {
     if (!photo) return call<{ id: string }>("POST", `/v1/projects/${id}/feedback`, { body });

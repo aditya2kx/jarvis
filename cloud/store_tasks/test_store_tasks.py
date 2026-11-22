@@ -1160,3 +1160,24 @@ def test_a_problem_reported_in_a_project_goes_to_the_store_of_whoever_runs_it(en
     f = c.get("/v1/feedback", headers=env.boss_h).get_json()["feedback"][0]
     assert (f["staff_name"], f["device"], f["context"]["project"]) == ("Dolce Johnson", "Leadership", "leads")
     assert "Dolce Johnson on Leadership" in [p for m, p in sent if m == "chat.postMessage"][0]["text"]
+
+
+def test_project_tasks_take_photos_that_only_members_can_see(env):
+    lee, sam = _project(env)
+    c = env.client
+    item = c.post("/v1/projects/leads/items", json={"items": [{"title": "Fix the sign"}]}, headers=lee).get_json()["items"][0]
+    url = f"/v1/projects/leads/items/{item['id']}"
+    shot = lambda: {"photo": (io.BytesIO(JPEG), "shot.jpg", "image/jpeg")}
+    got = c.post(f"{url}/photo", data=shot(), headers=sam, content_type="multipart/form-data").get_json()
+    path = got["photos"][0]["path"]
+    assert path.startswith("_projects/leads/") and got["photos"][0]["by"] == "m2"
+    assert c.get("/v1/projects/leads", headers=lee).get_json()["items"][0]["photos"][0]["path"] == path
+    assert c.get(f"/v1/projects/leads/photos/{path}", headers=lee).status_code == 200
+    assert c.get(f"/v1/projects/leads/photos/{path}?size=thumb", headers=sam).status_code == 200
+    assert c.get(f"/v1/projects/leads/photos/{path}", headers={"X-Test-Google": "stranger@gmail.example"}).status_code == 404
+    assert c.get(f"/v1/photos/{path}", headers=env.boss_h).status_code == 404
+    assert c.get(f"/v1/projects/leads/photos/palmetto/x", headers=lee).status_code == 404
+    # The person who added it or whoever runs the project may remove it.
+    mine = c.post(f"{url}/photo", data=shot(), headers=lee, content_type="multipart/form-data").get_json()["photos"][1]["path"]
+    assert c.delete(f"{url}/photos/{mine}", headers=sam).status_code == 403
+    assert [x["path"] for x in c.delete(f"{url}/photos/{path}", headers=lee).get_json()["photos"]] == [mine]

@@ -1,10 +1,11 @@
-import { CalendarDays, ListChecks, MessageSquare, Pencil, Plus, Settings, Trash2, X } from "lucide-react";
+import { CalendarDays, Camera, Copy, ListChecks, MessageSquare, Pencil, Plus, Settings, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, device, isOffline, type Project, type TrackerDraft, type TrackerItem } from "./api";
 import { GoogleSignIn } from "./App";
 import { FeedbackButton } from "./Feedback";
 import { AddRow, DetailPane, DoneBar, FilterBar, matchesWords, Notes, SearchBox, searchWords, Section, TaskRow, WhoButton } from "./parts";
 import { PersonPicker } from "./People";
+import { AddPhotos, PhotoGrid } from "./Photos";
 import { ProjectSwitch, usePlaces } from "./Projects";
 import { setWhere, track } from "./steps";
 import { Avatar, Button, cx, dayLabel, Field, firstName, Input, inputClass, Notice, Sheet, time, useWide } from "./ui";
@@ -47,7 +48,7 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
   const [hideDone, setHideDone] = useState(true);
   const [open, setOpen] = useState<string | null>(null);
   const [picking, setPicking] = useState<TrackerItem | null>(null);
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<TrackerDraft[] | null>(null);
   const [sharing, setSharing] = useState(false);
   const [justDone, setJustDone] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
@@ -204,7 +205,7 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
                         : "Nothing to show."}
               </li>
             )}
-            <AddRow onClick={() => setAdding(true)} />
+            <AddRow onClick={() => setAdding([])} />
           </ul>
         </main>
 
@@ -219,6 +220,7 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
               onChanged={put}
               onToggle={() => toggle(item)}
               onAssign={() => setPicking(item)}
+              onDuplicate={() => setAdding([{ title: item.title, detail: item.detail, owners: item.owners, tags: item.tags, due: item.due }])}
               onRemoved={() => {
                 setOpen(null);
                 load();
@@ -249,12 +251,13 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
       {adding && (
         <AddSheet
           project={data}
+          initial={adding}
           onAdded={() => {
-            setAdding(false);
+            setAdding(null);
             setFilter("all");
             load();
           }}
-          onClose={() => setAdding(false)}
+          onClose={() => setAdding(null)}
         />
       )}
       {sharing && (
@@ -331,6 +334,12 @@ function ProjectRow({ item, names, selected, onToggle, onOpen, onAssign }: RowPr
               {sub} {sub === 1 ? "point" : "points"}
             </span>
           )}
+          {(item.photos?.length ?? 0) > 0 && (
+            <span className={meta}>
+              <Camera className="size-3.5" />
+              {item.photos!.length}
+            </span>
+          )}
           {item.notes.length > 0 && (
             <span className={meta}>
               <MessageSquare className="size-3.5" />
@@ -351,17 +360,28 @@ interface DetailProps {
   onChanged: (item: TrackerItem) => void;
   onToggle: () => void;
   onAssign: () => void;
+  onDuplicate: () => void;
   onRemoved: () => void;
 }
 
 /** Laid out like a store task's detail: done, who, details, store and due date, notes. */
-function ProjectDetail({ project, item, names, onSave, onChanged, onToggle, onAssign, onRemoved }: DetailProps) {
+function ProjectDetail({ project, item, names, onSave, onChanged, onToggle, onAssign, onDuplicate, onRemoved }: DetailProps) {
   const { me, tags } = project;
   const [editing, setEditing] = useState<{ title: string; detail: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const done = item.status === "done";
   const owners = item.owners.map((o) => ({ id: o, name: names.get(o) ?? "?" }));
+  const photos = item.photos ?? [];
+
+  const run = async (offline: string, work: () => Promise<void>) => {
+    setError("");
+    try {
+      await work();
+    } catch (e) {
+      setError(said(e, offline));
+    }
+  };
 
   const saveText = async () => {
     if (!editing?.title.trim()) return;
@@ -474,31 +494,50 @@ function ProjectDetail({ project, item, names, onSave, onChanged, onToggle, onAs
         </div>
       </Section>
 
+      <Section title="Photos">
+        <div className="space-y-3">
+          <PhotoGrid
+            token=""
+            photos={photos}
+            names={names}
+            canRemove={(p) => project.admin || p.by === me}
+            onRemove={(p) => run("No connection. The photo was not removed.", async () => onChanged(await api.projectRemovePhoto(project.id, item.id, p.path)))}
+          />
+          <AddPhotos label="Add photo" onFile={(f) => run("No connection. The photo was not saved.", async () => onChanged(await api.projectPhoto(project.id, item.id, f)))} />
+        </div>
+      </Section>
+
       <Notes notes={item.notes} names={names} readOnly={false} when={when} onSend={sendNote} />
 
-      {(project.admin || item.created_by === me) && (
-        <div className="flex flex-wrap gap-2 border-t border-border pt-5">
+      <div className="flex flex-wrap gap-2 border-t border-border pt-5">
+        <Button variant="outline" onClick={onDuplicate}>
+          <Copy className="size-4" />
+          Duplicate
+        </Button>
+        {(project.admin || item.created_by === me) && (
           <Button variant="danger" onClick={remove}>
             <Trash2 className="size-4" />
             Delete task
           </Button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
 
 interface AddSheetProps {
   project: Project;
+  /** Starts at the check step with these (a duplicate); empty starts with the text box. */
+  initial: TrackerDraft[];
   onAdded: () => void;
   onClose: () => void;
 }
 
 /** Type or paste, check how it was split up, then add. */
-function AddSheet({ project, onAdded, onClose }: AddSheetProps) {
+function AddSheet({ project, initial, onAdded, onClose }: AddSheetProps) {
   const { members } = project;
   const [text, setText] = useState("");
-  const [drafts, setDrafts] = useState<TrackerDraft[] | null>(null);
+  const [drafts, setDrafts] = useState<TrackerDraft[] | null>(initial.length ? initial : null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const example = members.length > 1 ? `${firstName(members[0].name)} + ${firstName(members[1].name)}` : "a name";

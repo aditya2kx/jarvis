@@ -16,6 +16,7 @@ consume its events. See cloud/store_tasks/README.md.
     GET|PUT /v1/counts/<date>        closing count
     POST /v1/feedback                a problem or idea, with what was on screen and the last steps
     POST /v1/projects/<id>/feedback  the same from a project; it goes to the store of whoever runs it
+    POST /v1/projects/<id>/items/<item>/photo, DELETE …/photos/<path>, GET /v1/projects/<id>/photos/<path>
     GET|POST /v1/templates (+ /order), /v1/staff, /v1/accounts, GET /v1/history, GET /v1/feedback   (manager)
     /v1/projects[/<id> (+ /parse, /items, /items/<id>/notes, /members)]   private projects, by Google account (members)
     POST /webhooks/clickup/<s>/<list> ClickUp change (signed with that webhook's secret)
@@ -397,6 +398,22 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     @person_required
     def project_note(pid: str, item_id: str):
         return jsonify(tracker.note(pid, g.email, item_id, body().get("text", "")))
+
+    @app.post("/v1/projects/<pid>/items/<item_id>/photo")
+    @person_required
+    def project_photo(pid: str, item_id: str):
+        return jsonify(tracker.add_photo(pid, g.email, item_id, *upload()))
+
+    @app.delete("/v1/projects/<pid>/items/<item_id>/photos/<path:path>")
+    @person_required
+    def project_remove_photo(pid: str, item_id: str, path: str):
+        return jsonify(tracker.remove_photo(pid, g.email, item_id, path))
+
+    @app.get("/v1/projects/<pid>/photos/<path:path>")
+    @person_required
+    def project_get_photo(pid: str, path: str):
+        data, mimetype = tracker.photo(pid, g.email, path, request.args.get("size"))
+        return Response(data, mimetype=mimetype, headers={"Cache-Control": "private, max-age=604800, immutable"})
 
     @app.delete("/v1/projects/<pid>/items/<item_id>")
     @person_required

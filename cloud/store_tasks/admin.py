@@ -8,8 +8,8 @@
     python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]
     python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737
     python3 -m cloud.store_tasks.admin link-templates --store palmetto
-    python3 -m cloud.store_tasks.admin tracker --store palmetto --name Leadership --admin "First Last" \
-        --member "First Last" --member "First Last" --tag Austin --tag Houston
+    python3 -m cloud.store_tasks.admin project --id leadership --name Leadership \
+        --admin "First Last=a@b.com" --member "First Last=c@d.com" --tag Austin --tag Houston
 """
 
 from __future__ import annotations
@@ -50,8 +50,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("seed", "manager", "account", "cutover", "photo-rules", "count-sections", "link-templates",
-                 "photo-sizes", "tracker"):
+                 "photo-sizes", "project"):
         sp = sub.add_parser(name)
+        if name == "project":
+            sp.add_argument("--id", required=True, help="the project's address: /p/<id>")
+            sp.add_argument("--name", required=True, help="what the project is called")
+            sp.add_argument("--admin", action="append", required=True, help='"Name=email": runs it, chooses its members')
+            sp.add_argument("--member", action="append", default=[], help='"Name=email": also on it')
+            sp.add_argument("--tag", action="append", default=[], help="a store an item can be about")
+            continue
         sp.add_argument("--store", required=True)
         if name == "manager":
             sp.add_argument("--name", required=True)
@@ -64,11 +71,6 @@ def main(argv: list[str] | None = None) -> int:
             sp.add_argument("--date", required=True, help="first day generated here; 'none' to clear")
         if name == "count-sections":
             sp.add_argument("--channel", required=True, help="ClickUp chat channel ClickUp's closing updates go to")
-        if name == "tracker":
-            sp.add_argument("--name", required=True, help="what the private list is called")
-            sp.add_argument("--admin", action="append", required=True, help="who runs it and chooses its members")
-            sp.add_argument("--member", action="append", default=[], help="who else sees it")
-            sp.add_argument("--tag", action="append", default=[], help="a store an item can be about")
         if name == "photo-rules":
             sp.add_argument("--apply", action="store_true", help="turn on 'needs a photo' for the listed tasks")
     args = ap.parse_args(argv)
@@ -136,15 +138,16 @@ def main(argv: list[str] | None = None) -> int:
         cfg = tasks.store(args.store)
         print(f"linked {clickup_import.link_templates(tasks, cfg)} tasks; "
               f"earlier photos on {clickup_import.seed_recent_photos(tasks, cfg)} definitions")
-    elif args.cmd == "tracker":
-        ids = {s["name"].lower(): s["id"] for s in tasks.staff(args.store)}
-        missing = [n for n in args.admin + args.member if n.lower() not in ids]
-        if missing:
-            print(f"no active person named {missing} in {args.store}", file=sys.stderr)
-            return 1
-        b = tr.Tracker(tasks).create(args.store, args.name, [ids[n.lower()] for n in args.admin],
-                                     [ids[n.lower()] for n in args.member], args.tag, "admin-cli")
-        print(f"tracker {b['name']!r}: {len(b['members'])} members, {len(b['admins'])} admin")
+    elif args.cmd == "project":
+        people = [dict(zip(("name", "email"), x.rsplit("=", 1))) for x in args.admin + args.member]
+        known = {e: m["id"] for m in (tasks.docs.get(st.TRACKERS, args.id) or {}).get("members", []) for e in m["emails"]}
+        for n, person in enumerate(people):
+            person["id"] = known.get(person["email"].strip().lower(), f"m{n + 1}")  # a re-run keeps owners intact
+        p = tr.Tracker(tasks).create(args.id, args.name, people, [x["id"] for x in people[:len(args.admin)]],
+                                     args.tag, "admin-cli")
+        for person in people:
+            print(person["name"], "Google sign-in:", access.Access(SIGNIN_SERVICE).set(person["email"].lower(), True))
+        print(f"project {p['name']!r} at /p/{p['id']}: {len(p['members'])} members")
     elif args.cmd == "photo-sizes":
         print(f"made smaller copies of {photo_sizes(tasks, args.store)} photos")
     return 0

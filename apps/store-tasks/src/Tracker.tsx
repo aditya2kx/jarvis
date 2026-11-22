@@ -1,7 +1,7 @@
-import { CalendarDays, ChevronLeft, ListTree, MessageSquare, Plus, Trash2, Users, X } from "lucide-react";
+import { CalendarDays, ListTree, MessageSquare, Plus, Trash2, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, isOffline, type Bootstrap, type Session, type Staff, type Tracker, type TrackerDraft, type TrackerItem } from "./api";
-import { FeedbackButton } from "./Feedback";
+import { api, ApiError, device, isOffline, type Project, type TrackerDraft, type TrackerItem } from "./api";
+import { GoogleSignIn } from "./App";
 import { setWhere, track } from "./steps";
 import { Avatar, Button, cx, dayLabel, Field, firstName, Input, inputClass, Notice, Sheet, Tick, time } from "./ui";
 
@@ -12,36 +12,60 @@ const VIEW_LABEL: Record<View, string> = { mine: "Mine", everyone: "Everyone", d
 const said = (e: unknown, offline: string) => (isOffline(e) ? offline : (e as Error).message);
 const when = (iso: string) =>
   `${new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/Chicago" })}, ${time(iso)}`;
+const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
 const points = (detail: string) => detail.split("\n").filter((l) => l.trim()).length;
 /** Enough rows to show the whole text on a phone without scrolling inside the box. */
 const rowsFor = (text: string, max: number) => Math.min(max, Math.max(2, text.split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / 34)), 0)));
 
-interface Props {
-  boot: Bootstrap;
-  session: Session;
-  onBack: () => void;
+/** A project's own front door: sign in with Google, or be told this account is not on it. */
+function Door({ id, notice }: { id: string; notice: string }) {
+  return (
+    <div className="flex min-h-full items-center justify-center bg-primary p-6 text-primary-foreground">
+      <div className="w-full max-w-xs space-y-8 text-center">
+        <div className="rise">
+          <span role="img" aria-label="Palmetto Superfoods" className="brand-mark brand-word mx-auto block w-60" />
+          <p className="mt-4 text-[15px] text-primary-foreground/80">Sign in with your own Google account to see this project</p>
+        </div>
+        {notice && <Notice tone="error">{notice}</Notice>}
+        <GoogleSignIn next={`/p/${id}`} />
+      </div>
+    </div>
+  );
 }
 
-/** The leads' private action items: who owns what, what is still open, and the updates on each. */
-export function TrackerScreen({ boot, session, onBack }: Props) {
-  const me = session.staff.id;
-  const [data, setData] = useState<Tracker | null>(null);
+/** A private project: who owns what, what is still open, and the updates on each. Apart from the stores. */
+export function ProjectScreen({ id, signInError }: { id: string; signInError: string }) {
+  const [data, setData] = useState<Project | null>(null);
+  const [door, setDoor] = useState<string | null>(null);
   const [view, setView] = useState<View>("mine");
   const [open, setOpen] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [justDone, setJustDone] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
-  const names = useMemo(() => new Map(boot.staff.map((s) => [s.id, s.name])), [boot.staff]);
+  const names = useMemo(() => new Map((data?.members ?? []).map((m) => [m.id, m.name])), [data?.members]);
 
   const load = useCallback(() => {
     api
-      .tracker(session.token)
-      .then(setData)
-      .catch((e) => setError(said(e, "No connection. The list needs Wi-Fi.")));
-  }, [session.token]);
+      .project(id)
+      .then((p) => {
+        if (p.device) device.set(p.device);
+        setData(p);
+        setDoor(null);
+      })
+      .catch((e) => {
+        if (e instanceof ApiError && e.status === 404) {
+          // Signed in, but not on this project: offer another Google account.
+          device.set(null);
+          setDoor("This Google account is not on this project. Sign in with the one you were added with.");
+        } else if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+          device.set(null);
+          setDoor(signInError);
+        } else setError(said(e, "No connection. The project needs Wi-Fi."));
+      });
+  }, [id, signInError]);
   useEffect(load, [load]);
-  useEffect(() => setWhere({ screen: `Action items · ${VIEW_LABEL[view]}`, task_id: open ?? undefined }), [view, open]);
+  useEffect(() => setWhere({ screen: `Project · ${VIEW_LABEL[view]}`, task_id: open ?? undefined }), [view, open]);
 
   const put = (item: TrackerItem) => setData((d) => d && { ...d, items: d.items.map((i) => (i.id === item.id ? item : i)) });
 
@@ -53,23 +77,23 @@ export function TrackerScreen({ boot, session, onBack }: Props) {
     put({ ...item, status });
     setJustDone((s) => new Set(s).add(item.id));
     try {
-      put(await api.trackerUpdate(session.token, item.id, { status }));
+      put(await api.projectUpdate(id, item.id, { status }));
     } catch (e) {
       put(item);
       setError(said(e, "No connection. That tick was not saved."));
     }
   };
 
+  if (door !== null) return <Door id={id} notice={door} />;
   if (!data) {
     return (
-      <div className="mx-auto max-w-4xl space-y-3 p-4">
-        <BackButton onBack={onBack} />
+      <div className="flex min-h-full items-center justify-center p-6">
         {error ? <Notice tone="error">{error}</Notice> : <p className="text-muted-foreground">Loading…</p>}
       </div>
     );
   }
 
-  const members = data.members.map((id) => ({ id, name: names.get(id) ?? "Someone" }));
+  const me = data.me;
   const openItems = data.items.filter((i) => i.status === "open");
   const counts: Record<View, number> = {
     mine: openItems.filter((i) => i.owners.includes(me)).length,
@@ -80,7 +104,8 @@ export function TrackerScreen({ boot, session, onBack }: Props) {
     view === "done" ? i.status === "done" : (i.status === "open" || justDone.has(i.id)) && (view === "everyone" || i.owners.includes(me)),
   );
   // One group per set of owners, in the order the members are listed.
-  const rank = (i: TrackerItem) => (i.owners.length ? Math.min(...i.owners.map((o) => data.members.indexOf(o))) * 10 + i.owners.length : 1e6);
+  const order = data.members.map((m) => m.id);
+  const rank = (i: TrackerItem) => (i.owners.length ? Math.min(...i.owners.map((o) => order.indexOf(o))) * 10 + i.owners.length : 1e6);
   const groups = new Map<string, TrackerItem[]>();
   for (const i of [...shown].sort((a, b) => rank(a) - rank(b))) {
     const key = i.owners.join("+");
@@ -90,21 +115,20 @@ export function TrackerScreen({ boot, session, onBack }: Props) {
 
   return (
     <div className="mx-auto flex h-full max-w-4xl flex-col">
-      <header className="space-y-3 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6">
-        <div className="flex items-center justify-between">
-          <BackButton onBack={onBack} />
-          <FeedbackButton session={session} />
-        </div>
-        <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-extrabold tracking-tight">{data.name} action items</h1>
-            <p className="text-sm text-muted-foreground">Only {members.map((m) => firstName(m.name)).join(", ")} can see this.</p>
+      <header className="space-y-3 px-4 pt-[max(1rem,env(safe-area-inset-top))] sm:px-6">
+        <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span aria-hidden className="brand-mark brand-palm block h-10 w-8 shrink-0 text-primary" />
+            <div className="min-w-0">
+              <h1 className="truncate text-2xl font-extrabold tracking-tight">{data.name}</h1>
+              <p className="text-sm text-muted-foreground">Only {data.members.map((m) => firstName(m.name)).join(", ")} can see this.</p>
+            </div>
           </div>
           <div className="flex gap-2">
             {data.admin && (
               <Button variant="outline" onClick={() => setSharing(true)}>
                 <Users className="size-4" />
-                Who sees this
+                People
               </Button>
             )}
             <Button onClick={() => setAdding(true)}>
@@ -142,7 +166,7 @@ export function TrackerScreen({ boot, session, onBack }: Props) {
             <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card shadow-card">
               {items.map((i) => (
                 <li key={i.id}>
-                  <Row item={i} today={boot.today} names={names} onToggle={() => toggle(i)} onOpen={() => setOpen(i.id)} />
+                  <Row item={i} today={today()} names={names} onToggle={() => toggle(i)} onOpen={() => setOpen(i.id)} />
                 </li>
               ))}
             </ul>
@@ -158,10 +182,8 @@ export function TrackerScreen({ boot, session, onBack }: Props) {
       {item && (
         <ItemSheet
           key={item.id}
-          session={session}
+          project={data}
           item={item}
-          tracker={data}
-          members={members}
           names={names}
           onChange={put}
           onToggle={() => toggle(item)}
@@ -174,8 +196,7 @@ export function TrackerScreen({ boot, session, onBack }: Props) {
       )}
       {adding && (
         <AddSheet
-          session={session}
-          members={members}
+          project={data}
           onAdded={() => {
             setAdding(false);
             setView("everyone");
@@ -186,27 +207,15 @@ export function TrackerScreen({ boot, session, onBack }: Props) {
       )}
       {sharing && (
         <MembersSheet
-          session={session}
-          staff={boot.staff}
-          current={data.members}
-          me={me}
-          onSaved={(t) => {
-            setData(t);
+          project={data}
+          onSaved={(p) => {
+            setData(p);
             setSharing(false);
           }}
           onClose={() => setSharing(false)}
         />
       )}
     </div>
-  );
-}
-
-function BackButton({ onBack }: { onBack: () => void }) {
-  return (
-    <button onClick={onBack} className="-ml-2 flex items-center gap-1 rounded-lg p-2 text-muted-foreground active:bg-muted">
-      <ChevronLeft className="size-5" />
-      Back to today
-    </button>
   );
 }
 
@@ -282,10 +291,8 @@ function Row({ item, today, names, onToggle, onOpen }: RowProps) {
 }
 
 interface ItemSheetProps {
-  session: Session;
+  project: Project;
   item: TrackerItem;
-  tracker: Tracker;
-  members: { id: string; name: string }[];
   names: Map<string, string>;
   onChange: (item: TrackerItem) => void;
   onToggle: () => void;
@@ -293,7 +300,8 @@ interface ItemSheetProps {
   onClose: () => void;
 }
 
-function ItemSheet({ session, item, tracker, members, names, onChange, onToggle, onRemoved, onClose }: ItemSheetProps) {
+function ItemSheet({ project, item, names, onChange, onToggle, onRemoved, onClose }: ItemSheetProps) {
+  const { members, admin, tags } = project;
   const [draft, setDraft] = useState<TrackerDraft>({ title: item.title, detail: item.detail, owners: item.owners, tags: item.tags, due: item.due });
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -301,7 +309,7 @@ function ItemSheet({ session, item, tracker, members, names, onChange, onToggle,
   const [error, setError] = useState("");
   const dirty = (Object.keys(draft) as (keyof TrackerDraft)[]).some((k) => JSON.stringify(draft[k]) !== JSON.stringify(item[k]));
   const done = item.status === "done";
-  const mayDelete = tracker.admin || item.created_by === session.staff.id;
+  const mayDelete = admin || item.created_by === project.me;
 
   const run = async (work: () => Promise<void>, offline: string) => {
     setBusy(true);
@@ -314,15 +322,15 @@ function ItemSheet({ session, item, tracker, members, names, onChange, onToggle,
       setBusy(false);
     }
   };
-  const save = () => run(async () => onChange(await api.trackerUpdate(session.token, item.id, draft)), "No connection. Your changes are not saved yet.");
+  const save = () => run(async () => onChange(await api.projectUpdate(project.id, item.id, draft)), "No connection. Your changes are not saved yet.");
   const post = () =>
     run(async () => {
-      onChange(await api.trackerNote(session.token, item.id, note));
+      onChange(await api.projectNote(project.id, item.id, note));
       setNote("");
     }, "No connection. Your update was not posted.");
   const remove = () =>
     run(async () => {
-      await api.trackerRemove(session.token, item.id);
+      await api.projectRemove(project.id, item.id);
       onRemoved();
     }, "No connection. It was not deleted.");
 
@@ -354,12 +362,12 @@ function ItemSheet({ session, item, tracker, members, names, onChange, onToggle,
           </div>
         </div>
         <div className="flex flex-wrap items-end gap-x-6 gap-y-4">
-          {tracker.tags.length > 0 && (
+          {tags.length > 0 && (
             <div>
               <p className="mb-1.5 text-sm font-medium text-muted-foreground">Store</p>
               <div className="flex flex-wrap gap-2">
-                {tracker.tags.map((t) => (
-                  <Chip key={t} on={draft.tags.includes(t)} onClick={() => setDraft((d) => ({ ...d, tags: tracker.tags.filter((x) => flip(d.tags, t).includes(x)) }))}>
+                {tags.map((t) => (
+                  <Chip key={t} on={draft.tags.includes(t)} onClick={() => setDraft((d) => ({ ...d, tags: tags.filter((x) => flip(d.tags, t).includes(x)) }))}>
                     {t}
                   </Chip>
                 ))}
@@ -433,14 +441,14 @@ function ItemSheet({ session, item, tracker, members, names, onChange, onToggle,
 }
 
 interface AddSheetProps {
-  session: Session;
-  members: { id: string; name: string }[];
+  project: Project;
   onAdded: () => void;
   onClose: () => void;
 }
 
 /** Type or paste, check how it was split up, then add. */
-function AddSheet({ session, members, onAdded, onClose }: AddSheetProps) {
+function AddSheet({ project, onAdded, onClose }: AddSheetProps) {
+  const { members } = project;
   const [text, setText] = useState("");
   const [drafts, setDrafts] = useState<TrackerDraft[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -460,13 +468,13 @@ function AddSheet({ session, members, onAdded, onClose }: AddSheetProps) {
   };
   const check = () =>
     run(async () => {
-      const { items } = await api.trackerParse(session.token, text);
+      const { items } = await api.projectParse(project.id, text);
       if (!items.length) throw new Error("No items found. Put each item on its own line.");
       setDrafts(items);
     });
   const add = () =>
     run(async () => {
-      await api.trackerAdd(session.token, drafts ?? []);
+      await api.projectAdd(project.id, drafts ?? []);
       track("action", `add ${drafts?.length} action items`);
       onAdded();
     });
@@ -537,28 +545,31 @@ function AddSheet({ session, members, onAdded, onClose }: AddSheetProps) {
 }
 
 interface MembersSheetProps {
-  session: Session;
-  staff: Staff[];
-  current: string[];
-  me: string;
-  onSaved: (t: Tracker) => void;
+  project: Project;
+  onSaved: (p: Project) => void;
   onClose: () => void;
 }
 
-function MembersSheet({ session, staff, current, me, onSaved, onClose }: MembersSheetProps) {
-  const [picked, setPicked] = useState(current);
-  const [query, setQuery] = useState("");
+/** Who is on the project, by their own Google account. Whoever runs it always stays. */
+function MembersSheet({ project, onSaved, onClose }: MembersSheetProps) {
+  const [people, setPeople] = useState(project.members.map((m) => ({ id: m.id, name: m.name, emails: m.emails ?? [] })));
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const q = query.trim().toLowerCase();
-  // People already on the list first, so removing someone needs no search.
-  const people = staff.filter((s) => s.name.toLowerCase().includes(q)).sort((a, b) => Number(current.includes(b.id)) - Number(current.includes(a.id)));
+  const ready = name.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const changed = JSON.stringify(people) !== JSON.stringify(project.members.map((m) => ({ id: m.id, name: m.name, emails: m.emails ?? [] })));
 
+  const add = () => {
+    setPeople((p) => [...p, { id: "", name: name.trim(), emails: [email.trim().toLowerCase()] }]);
+    setName("");
+    setEmail("");
+  };
   const save = async () => {
     setBusy(true);
     setError("");
     try {
-      onSaved(await api.trackerMembers(session.token, picked));
+      onSaved(await api.projectMembers(project.id, people.map(({ id, ...p }) => (id ? { id, ...p } : p))));
     } catch (e) {
       setError(said(e, "No connection. Nothing was changed."));
       setBusy(false);
@@ -566,25 +577,41 @@ function MembersSheet({ session, staff, current, me, onSaved, onClose }: Members
   };
 
   return (
-    <Sheet title="Who sees this list" onClose={onClose}>
-      <div className="space-y-3">
-        <p className="text-sm text-muted-foreground">Only the people ticked here can open it. Each signs in as themselves; it never shows on the shop iPad.</p>
-        <Input placeholder="Search people" value={query} onChange={(e) => setQuery(e.target.value)} />
-        <ul className="max-h-[45dvh] overflow-y-auto">
-          {people.map((s) => (
-            <li key={s.id}>
-              <label className="flex min-h-12 items-center gap-3 rounded-lg px-2 hover:bg-muted">
-                <input type="checkbox" className="size-5 accent-primary" checked={picked.includes(s.id)} disabled={s.id === me} onChange={() => setPicked((p) => flip(p, s.id))} />
-                <Avatar id={s.id} name={s.name} />
-                <span className="flex-1 truncate text-[16px]">{s.name}</span>
-                {s.id === me && <span className="text-sm text-muted-foreground">You</span>}
-              </label>
+    <Sheet title="People on this project" onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-sm text-muted-foreground">Each person signs in with their own Google account. Store staff and the shop iPad never see this project.</p>
+        <ul className="divide-y divide-border rounded-xl border border-border">
+          {people.map((p) => (
+            <li key={p.id || p.emails[0]} className="flex min-h-14 items-center gap-3 px-3 py-2">
+              <Avatar id={p.id || p.emails[0]} name={p.name} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[16px]">{p.name}</span>
+                <span className="block truncate text-sm text-muted-foreground">{p.emails.join(", ")}</span>
+              </span>
+              {project.admins.includes(p.id) ? (
+                <span className="text-sm text-muted-foreground">Runs it</span>
+              ) : (
+                <button aria-label={`Remove ${p.name}`} onClick={() => setPeople((all) => all.filter((x) => x !== p))} className="rounded-full p-2.5 text-muted-foreground hover:bg-muted">
+                  <X className="size-4" />
+                </button>
+              )}
             </li>
           ))}
         </ul>
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-muted-foreground">Add someone</p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} className="sm:w-40" />
+            <Input type="email" placeholder="Their Google account email" value={email} onChange={(e) => setEmail(e.target.value)} className="flex-1" />
+            <Button variant="outline" disabled={!ready} onClick={add}>
+              <Plus className="size-4" />
+              Add
+            </Button>
+          </div>
+        </div>
         {error && <Notice tone="error">{error}</Notice>}
-        <Button className="min-h-12 w-full text-base" disabled={busy} onClick={save}>
-          Save
+        <Button className="min-h-12 w-full text-base" disabled={busy || !changed} onClick={save}>
+          {busy ? "Saving…" : "Save"}
         </Button>
       </div>
     </Sheet>

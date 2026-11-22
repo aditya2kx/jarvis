@@ -3,16 +3,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, device, isOffline, SHOP, type Bootstrap, type Session, type Staff } from "./api";
 import { DayScreen } from "./Day";
 import { Manage } from "./Manage";
-import { TrackerScreen } from "./Tracker";
 import { Avatar, cx, Notice } from "./ui";
 
 const BOOT_KEY = "st.bootstrap";
+export const NEXT_KEY = "st.next";
 const IDLE_LOCK_MS = 3 * 60 * 1000;
 const RENEW_MS = 60 * 60 * 1000; // a shop device stays open for days; its 12-hour session is renewed well before then
-const toSession = (own: Bootstrap["own"]): Session | null => (own ? { token: own.session, staff: own.staff, tracker: own.tracker } : null);
+const toSession = (own: Bootstrap["own"]): Session | null => (own ? { token: own.session, staff: own.staff } : null);
 
 /** Back from "Sign in with Google": keep the token it carries in the URL fragment, then drop the fragment. */
-function takeSignIn(): string {
+export function takeSignIn(): string {
   const hash = new URLSearchParams(location.hash.slice(1));
   const token = hash.get("signin");
   const error = hash.get("signin_error");
@@ -21,16 +21,18 @@ function takeSignIn(): string {
   if (token) {
     device.set(token);
     localStorage.removeItem(BOOT_KEY);
+    // Signed in from a project's page: the sign-in hop always comes back to the front page.
+    const next = localStorage.getItem(NEXT_KEY);
+    localStorage.removeItem(NEXT_KEY);
+    if (next && next !== location.pathname) location.replace(next);
   }
   return error ?? "";
 }
 
-export function App() {
-  const [signInError] = useState(takeSignIn);
+export function App({ signInError }: { signInError: string }) {
   const [boot, setBoot] = useState<Bootstrap | null>(() => JSON.parse(localStorage.getItem(BOOT_KEY) ?? "null"));
   const [session, setSession] = useState<Session | null>(null);
   const [managing, setManaging] = useState(false);
-  const [tracking, setTracking] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
   const [signedOut, setSignedOut] = useState(false);
   const [error, setError] = useState(signInError);
@@ -47,8 +49,13 @@ export function App() {
         setSignedOut(false);
         setSession((cur) => (cur && cur.staff.id !== SHOP ? cur : toSession(b.own) ?? cur));
       })
-      .catch((e) => {
+      .catch(async (e) => {
         if (isOffline(e)) return;
+        if (e instanceof ApiError && e.status === 403 && device.get()) {
+          // Signed in with Google but not part of a store: maybe on a project instead.
+          const projects = await api.projects().catch(() => ({ projects: [] }));
+          if (projects.projects.length) return location.replace(`/p/${projects.projects[0].id}`);
+        }
         if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
           // Never signed in is not an error; a refused account or a changed shop code is.
           const explain = e.status === 403 || device.get() !== null;
@@ -78,7 +85,6 @@ export function App() {
   const lock = useCallback(() => {
     setSession(shop ? toSession(boot?.own ?? null) : null);
     setManaging(false);
-    setTracking(false);
     setSigningIn(false);
   }, [shop, boot]);
 
@@ -118,7 +124,6 @@ export function App() {
     );
   }
   if (managing) return <Manage boot={boot} session={session} onBack={() => { setManaging(false); loadBoot(); }} />;
-  if (tracking && session.tracker) return <TrackerScreen boot={boot} session={session} onBack={() => setTracking(false)} />;
   const onShop = shop && session.staff.id === SHOP;
   return (
     <DayScreen
@@ -126,12 +131,24 @@ export function App() {
       session={session}
       onLock={onShop ? () => setSigningIn(true) : shared || shop ? lock : null}
       onManage={() => setManaging(true)}
-      onTracker={() => setTracking(true)}
     />
   );
 }
 
 /** The one link's front door: a person signs in with Google; the shop iPad enters the store's code, once. */
+export function GoogleSignIn({ next }: { next?: string }) {
+  return (
+    <a
+      href="/signin"
+      onClick={() => (next ? localStorage.setItem(NEXT_KEY, next) : localStorage.removeItem(NEXT_KEY))}
+      className="inline-flex min-h-12 items-center justify-center gap-3 rounded-full bg-card px-5 text-[15px] font-semibold text-foreground shadow-float transition hover:brightness-95 active:scale-[0.97]"
+    >
+      <GoogleMark />
+      Sign in with Google
+    </a>
+  );
+}
+
 function Welcome({ error, onEnrolled }: { error: string; onEnrolled: () => void }) {
   const [shop, setShop] = useState(false);
   if (shop) {
@@ -157,13 +174,7 @@ function Welcome({ error, onEnrolled }: { error: string; onEnrolled: () => void 
         </div>
         {error && <Notice tone="error">{error}</Notice>}
         <div className="rise flex flex-col gap-3" style={{ "--i": 3 } as React.CSSProperties}>
-          <a
-            href="/signin"
-            className="inline-flex min-h-12 items-center justify-center gap-3 rounded-full bg-card px-5 text-[15px] font-semibold text-foreground shadow-float transition hover:brightness-95 active:scale-[0.97]"
-          >
-            <GoogleMark />
-            Sign in with Google
-          </a>
+          <GoogleSignIn />
           <button
             onClick={() => setShop(true)}
             className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full px-4 text-[15px] font-medium text-primary-foreground/85 transition hover:bg-white/10 hover:text-primary-foreground active:scale-[0.97]"
@@ -254,7 +265,7 @@ function PinPad({ who, onBack, onSignedIn }: { who: Staff; onBack: () => void; o
       onBack={onBack}
       submit={async (pin) => {
         const r = await api.signIn(who.id, pin);
-        onSignedIn({ token: r.session, staff: r.staff, tracker: r.tracker });
+        onSignedIn({ token: r.session, staff: r.staff });
       }}
     />
   );

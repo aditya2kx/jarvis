@@ -35,7 +35,7 @@ export interface Bootstrap {
   /** `shop`: a shop device signed in with the store's code, not a Google account. */
   account: { email: string; label: string; shop: boolean };
   /** Set on a person's own Google account (signed in without a PIN) and on a shop device (signed in as the shop). */
-  own: { session: string; staff: Staff; tracker?: string | null } | null;
+  own: { session: string; staff: Staff } | null;
   /** A shop device's renewed token. */
   device: string | null;
   staff: Staff[];
@@ -198,8 +198,6 @@ export interface HistoryDay {
 export interface Session {
   token: string;
   staff: Staff;
-  /** The private tracker's name, when this person is one of its members. */
-  tracker?: string | null;
 }
 
 export interface TrackerNote {
@@ -230,13 +228,27 @@ export interface TrackerItem extends TrackerDraft {
   notes: TrackerNote[];
 }
 
-export interface Tracker {
+/** Someone on a project. `emails` (their Google accounts) is sent only to the project's admin. */
+export interface ProjectMember {
+  id: string;
   name: string;
-  members: string[];
-  /** This person runs the list: they choose who sees it. */
+  emails?: string[];
+}
+
+/** A private project: apart from the stores, for the people on it, each signed in with their own Google account. */
+export interface Project {
+  id: string;
+  name: string;
+  /** This person's member id. */
+  me: string;
+  /** This person runs the project: they choose who is on it. */
   admin: boolean;
+  admins: string[];
+  members: ProjectMember[];
   tags: string[];
   items: TrackerItem[];
+  /** The renewed sign-in for this browser. */
+  device: string | null;
 }
 
 export class ApiError extends Error {
@@ -313,7 +325,7 @@ export type PhotoSize = "thumb" | "view";
 export const api = {
   bootstrap: () => call<Bootstrap>("GET", "/v1/bootstrap"),
   signIn: (staff_id: string, pin: string) =>
-    call<{ session: string; staff: Staff; tracker?: string | null }>("POST", "/v1/sessions", { body: { staff_id, pin } }),
+    call<{ session: string; staff: Staff }>("POST", "/v1/sessions", { body: { staff_id, pin } }),
   enrollShop: (code: string) => call<{ device: string }>("POST", "/v1/shop/enroll", { body: { code } }),
   shopCode: (token: string) => call<ShopCode>("GET", "/v1/shop-code", { token }),
   setShopCode: (token: string, code: string) => call<ShopCode & { device: string | null }>("PUT", "/v1/shop-code", { token, body: { code } }),
@@ -377,14 +389,16 @@ export const api = {
     call<{ account: Account }>("POST", "/v1/accounts", { token, body }),
   removeAccount: (token: string, email: string) =>
     call<{ ok: true }>("DELETE", `/v1/accounts/${encodeURIComponent(email)}`, { token }),
-  tracker: (token: string) => call<Tracker>("GET", "/v1/tracker", { token }),
-  trackerParse: (token: string, text: string) => call<{ items: TrackerDraft[] }>("POST", "/v1/tracker/parse", { token, body: { text } }),
-  trackerAdd: (token: string, items: TrackerDraft[]) => call<{ items: TrackerItem[] }>("POST", "/v1/tracker/items", { token, body: { items } }),
-  trackerUpdate: (token: string, id: string, body: Partial<TrackerDraft> & { status?: TrackerItem["status"] }) =>
-    call<TrackerItem>("PATCH", `/v1/tracker/items/${id}`, { token, body }),
-  trackerNote: (token: string, id: string, text: string) => call<TrackerItem>("POST", `/v1/tracker/items/${id}/notes`, { token, body: { text } }),
-  trackerRemove: (token: string, id: string) => call<{ ok: true }>("DELETE", `/v1/tracker/items/${id}`, { token }),
-  trackerMembers: (token: string, members: string[]) => call<Tracker>("PUT", "/v1/tracker/members", { token, body: { members } }),
+  projects: () => call<{ projects: { id: string; name: string }[] }>("GET", "/v1/projects"),
+  project: (id: string) => call<Project>("GET", `/v1/projects/${id}`),
+  projectParse: (id: string, text: string) => call<{ items: TrackerDraft[] }>("POST", `/v1/projects/${id}/parse`, { body: { text } }),
+  projectAdd: (id: string, items: TrackerDraft[]) => call<{ items: TrackerItem[] }>("POST", `/v1/projects/${id}/items`, { body: { items } }),
+  projectUpdate: (id: string, item: string, body: Partial<TrackerDraft> & { status?: TrackerItem["status"] }) =>
+    call<TrackerItem>("PATCH", `/v1/projects/${id}/items/${item}`, { body }),
+  projectNote: (id: string, item: string, text: string) => call<TrackerItem>("POST", `/v1/projects/${id}/items/${item}/notes`, { body: { text } }),
+  projectRemove: (id: string, item: string) => call<{ ok: true }>("DELETE", `/v1/projects/${id}/items/${item}`),
+  projectMembers: (id: string, members: { id?: string; name: string; emails: string[] }[]) =>
+    call<Project>("PUT", `/v1/projects/${id}/members`, { body: { members } }),
   history: (token: string, from: string, to: string) =>
     call<{ days: HistoryDay[] }>("GET", `/v1/history?from=${from}&to=${to}`, { token }),
 };

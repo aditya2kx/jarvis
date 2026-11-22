@@ -87,16 +87,17 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   the BHAGA bot (`SLACK_BOT_TOKEN` from secret `slack-bot-token`,
   `STORE_TASKS_FEEDBACK_SLACK_USER`); a failed DM logs `reason=feedback_notify` and never
   fails the send. Managers read and close it in Manage → Feedback.
-- **Private tracker.** Beside the daily lists, a store can have one private list of action items
-  for a few named people (`tracker.py`, collections `trackers` and `tracker_items`), created with
-  `admin tracker`. Members reach it from a card on the day list; a sign-in tells the app the list's
-  name only when that person is a member, and every `/v1/tracker` route answers 404 to anyone else,
-  so nothing shows on the shop iPad or to the rest of the crew. An item has owners (members), store
-  tags, an optional due date, points, and a thread of updates, and stays open until ticked. "Add
-  items" takes one item per line or pasted meeting notes (`tracker.parse`): a line of only names
-  starts a group those people own, numbered or bulleted lines are items, indented lines are points;
-  the person checks the split before anything is added. Each change to an item keeps what it said
-  before (`log`), and each change to the member list is added to the board's `history`. No reminders.
+- **Projects.** Apart from the stores, a project is a private list of action items for a few named
+  people (`tracker.py`, collections `trackers` and `tracker_items`), at `/p/<id>` on the same link,
+  created with `admin project`. A member is known only by their own Google account: they need no
+  staff record, PIN or store access, and a Google account that is on a project but not a store is
+  sent to its project from the front page. The store app shows nothing of projects. An item has
+  owners (members), store tags, an optional due date, points, and a thread of updates, and stays open
+  until ticked. "Add items" takes one item per line or pasted meeting notes (`tracker.parse`): a line
+  of only names starts a group those people own, numbered or bulleted lines are items, indented lines
+  are points; the person checks the split before anything is added. Each change to an item keeps
+  what it said before (`log`), and each change to who is on it is added to the project's `history`.
+  No reminders.
 - **Any screen.** Phone: one column, a task opens as a sheet. iPad landscape and desktop:
   the list and the open task side by side.
 - **Offline.** The app shell and the day are kept on the device. Ticks and assignments made
@@ -121,7 +122,7 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
 | Shop device | shop code → device token (`X-Shop-Device`) | Tick, assign, add photos and notes as "Shop" (no PIN); cannot add or change tasks; managers sign in on it with their PIN |
 | Crew | Google sign-in + PIN session (`X-Staff-Session`) | Read days, tick, undo own ticks, assign anyone, add photos and notes, remove own photos, send the count, add a one-off task and delete their own |
 | Manager | Google sign-in + 6-digit PIN session, or their own Google account | Also: how-to text and example photos, templates, people and PINs, sign-in accounts, history, undo anyone's tick, remove any photo or one-off task |
-| A member of the private tracker | Their own session (crew or manager; never the shop device) | `/v1/tracker*`: see, add, change, tick and comment on the action items. Everyone else gets 404. Only its admin changes who is on it |
+| A project member | Their own Google account (sign-in hop → device token, kind `google`); no staff record, PIN or store access | `/v1/projects*`: see, add, change, tick and comment on that project's action items. Everyone else, the shop device included, gets 404; store routes still refuse a project-only account. Only its admin changes who is on it, which also adds or removes them on the Google sign-in list |
 | Scheduler, nightly job, Slack bridge | `Authorization: Bearer` internal token | `/internal/*` |
 
 PINs and shop codes are stored as scrypt hashes; five wrong PINs lock that person for five minutes. An

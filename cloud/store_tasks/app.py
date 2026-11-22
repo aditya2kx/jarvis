@@ -16,7 +16,7 @@ consume its events. See cloud/store_tasks/README.md.
     GET|PUT /v1/counts/<date>        closing count
     POST /v1/feedback                a problem or idea, with what was on screen and the last steps
     GET|POST /v1/templates (+ /order), /v1/staff, /v1/accounts, GET /v1/history, GET /v1/feedback   (manager)
-    /v1/tracker (+ /parse, /items, /items/<id>/notes, /members)   the leads' private action items (its members)
+    /v1/projects[/<id> (+ /parse, /items, /items/<id>/notes, /members)]   private projects, by Google account (members)
     POST /webhooks/clickup/<s>/<list> ClickUp change (signed with that webhook's secret)
     POST /internal/tick              scheduled: alerts, shared-shift sync, ClickUp webhooks + mirror, chat summaries
     POST /internal/stores/<s>/check-shifts | mirror | sync-shifts | tasks, GET …/closing-counts
@@ -337,43 +337,76 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
         return jsonify(changed=tasks.reorder_templates(g.store, str(b.get("shift", "")), list(b.get("ids") or []),
                                                        g.staff["sid"]))
 
-    # ── the leads' private tracker: members only (tr.Tracker.board), never the shop device ──
+    # ── projects: apart from the stores; a member is known by their own Google account ──
 
-    @app.get("/v1/tracker")
-    @staff_required
-    def tracker_view():
-        return jsonify(tracker.view(g.store, g.staff))
+    def person_required(fn):
+        @functools.wraps(fn)
+        def wrapped(*a, **kw):
+            device = request.headers.get(DEVICE_HEADER, "")
+            if device:
+                claims = auth.read_device(device, tasks.now().timestamp())
+                if claims["kind"] != auth.GOOGLE:
+                    raise svc.NotFound("project")  # a shop device never sees a project
+                g.email, g.has_device = claims["email"], True
+            else:
+                g.email, g.has_device = signed_in(request.headers).strip().lower(), False
+            return fn(*a, **kw)
+        return wrapped
 
-    @app.post("/v1/tracker/parse")
-    @staff_required
-    def tracker_parse():
-        return jsonify(items=tracker.parse(g.store, g.staff, body().get("text", "")))
+    def grant(emails: list[str], allowed: bool) -> None:
+        for e in emails:
+            if not allowed and (tasks.docs.get(st.ACCOUNTS, e) or tracker.projects(e)):
+                continue  # still signs in for a store or another project
+            signin_access.set(e, allowed)
 
-    @app.post("/v1/tracker/items")
-    @staff_required
-    def tracker_add():
-        return jsonify(items=tracker.add(g.store, g.staff, body().get("items") or []))
+    @app.get("/v1/projects")
+    @person_required
+    def projects():
+        return jsonify(projects=tracker.projects(g.email))
 
-    @app.patch("/v1/tracker/items/<item_id>")
-    @staff_required
-    def tracker_update(item_id: str):
-        return jsonify(tracker.update(g.store, g.staff, item_id, body()))
+    @app.get("/v1/projects/<pid>")
+    @person_required
+    def project(pid: str):
+        device = auth.sign_google(g.email, tasks.now().timestamp()) if g.has_device else None
+        return jsonify({**tracker.view(pid, g.email), "device": device})
 
-    @app.post("/v1/tracker/items/<item_id>/notes")
-    @staff_required
-    def tracker_note(item_id: str):
-        return jsonify(tracker.note(g.store, g.staff, item_id, body().get("text", "")))
+    @app.post("/v1/projects/<pid>/parse")
+    @person_required
+    def project_parse(pid: str):
+        return jsonify(items=tracker.parse(pid, g.email, body().get("text", "")))
 
-    @app.delete("/v1/tracker/items/<item_id>")
-    @staff_required
-    def tracker_remove(item_id: str):
-        tracker.remove(g.store, g.staff, item_id)
+    @app.post("/v1/projects/<pid>/items")
+    @person_required
+    def project_add(pid: str):
+        return jsonify(items=tracker.add(pid, g.email, body().get("items") or []))
+
+    @app.patch("/v1/projects/<pid>/items/<item_id>")
+    @person_required
+    def project_update(pid: str, item_id: str):
+        return jsonify(tracker.update(pid, g.email, item_id, body()))
+
+    @app.post("/v1/projects/<pid>/items/<item_id>/notes")
+    @person_required
+    def project_note(pid: str, item_id: str):
+        return jsonify(tracker.note(pid, g.email, item_id, body().get("text", "")))
+
+    @app.delete("/v1/projects/<pid>/items/<item_id>")
+    @person_required
+    def project_remove(pid: str, item_id: str):
+        tracker.remove(pid, g.email, item_id)
         return jsonify(ok=True)
 
-    @app.put("/v1/tracker/members")
-    @staff_required
-    def tracker_members():
-        return jsonify(tracker.set_members(g.store, g.staff, body().get("members") or []))
+    @app.put("/v1/projects/<pid>/members")
+    @person_required
+    def project_members(pid: str):
+        _, added, removed = tracker.set_members(pid, g.email, body().get("members") or [])
+        try:
+            grant(added, True)
+        except Exception as e:
+            log.error("store-tasks fail reason=project_signin_grant project=%s err=%r", pid, e)
+            raise svc.Invalid("Google would not add one of those accounts — check each is a real Google account")
+        grant(removed, False)
+        return jsonify(tracker.view(pid, g.email))
 
     @app.get("/v1/staff")
     @manager_required

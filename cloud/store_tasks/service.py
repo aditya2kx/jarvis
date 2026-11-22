@@ -225,12 +225,7 @@ class Tasks:
             return None
         role = s.get("role", auth.CREW)
         return {"session": auth.sign_session(s["id"], s["store"], role, account["email"], self.now().timestamp()),
-                "staff": public_staff(s), "tracker": self.tracker_name(s["store"], s["id"])}
-
-    def tracker_name(self, store_id: str, staff_id: str) -> str | None:
-        """The private tracker's name for one of its members; None tells everyone else nothing."""
-        b = self.docs.get(st.TRACKERS, store_id)
-        return b["name"] if b and staff_id in b.get("members", []) else None
+                "staff": public_staff(s)}
 
     def sign_in(self, account: dict, staff_id: str, pin: str) -> dict:
         s = self.docs.get(st.STAFF, staff_id)
@@ -252,7 +247,7 @@ class Tasks:
             self.docs.set(st.STAFF, staff_id, {"pin_misses": 0}, merge=True)
         role = s.get("role", auth.CREW)
         return {"session": auth.sign_session(staff_id, s["store"], role, account["email"], now),
-                "staff": public_staff(s), "tracker": self.tracker_name(s["store"], staff_id)}
+                "staff": public_staff(s)}
 
     # ── shop devices ────────────────────────────────────────────────────────
 
@@ -309,8 +304,15 @@ class Tasks:
         return auth.sign_device(account["store"], gen, self.now().timestamp())
 
     def google_device(self, email: str) -> str:
-        """After the Google sign-in hop: a device token for the one public link."""
-        return auth.sign_google(self.account(email)["email"], self.now().timestamp())
+        """After the Google sign-in hop: a device token for the one public link. A member of a project
+        (``tracker``) gets one too, without store access: store routes still refuse them."""
+        try:
+            email = self.account(email)["email"]
+        except auth.AuthError:
+            email = (email or "").strip().lower()
+            if not any(email in m["emails"] for p in self.docs.query(st.TRACKERS) for m in p.get("members", [])):
+                raise
+        return auth.sign_google(email, self.now().timestamp())
 
     # ── templates ───────────────────────────────────────────────────────────
 

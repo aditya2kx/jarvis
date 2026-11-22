@@ -1064,60 +1064,75 @@ Call the landlord
 """
 
 
-def _board(env):
-    lead = env.tasks.save_staff("palmetto", {"id": "cu77", "name": "Lee Manager", "role": "manager"}, "test")
-    env.tasks.set_pin("palmetto", lead["id"], "123456")
-    r = env.client.post("/v1/sessions", json={"staff_id": "cu77", "pin": "123456"}, headers=env.ipad).get_json()
-    assert r.get("tracker") is None  # no board yet
-    tr.Tracker(env.tasks).create("palmetto", "Leadership", ["cu77"], [env.crew["id"]], ["Austin", "Houston"], "test")
-    return {**env.ipad, "X-Staff-Session": r["session"]}
+LEE, SAM = "lee@gmail.example", "sam@gmail.example"
+
+
+def _project(env):
+    """Lee runs it; the crew member Dolce (who uses the store iPad) is on it by her own Google account."""
+    tr.Tracker(env.tasks).create("leads", "Leadership", [
+        {"id": "cu77", "name": "Lee Manager", "emails": [LEE]},
+        {"id": "m2", "name": "Dolce Johnson", "emails": [SAM]},
+    ], ["cu77"], ["Austin", "Houston"], "test")
+    return {"X-Test-Google": LEE}, {"X-Test-Google": SAM}
 
 
 def test_pasted_meeting_notes_become_items_per_owner(env):
-    lead_h = _board(env)
-    drafts = env.client.post("/v1/tracker/parse", json={"text": NOTES}, headers=lead_h).get_json()["items"]
-    crew = env.crew["id"]
+    lee, _ = _project(env)
+    drafts = env.client.post("/v1/projects/leads/parse", json={"text": NOTES}, headers=lee).get_json()["items"]
     assert [(d["title"], d["owners"], d["tags"]) for d in drafts] == [
         ("Branding material for events, with Sam Other", ["cu77"], ["Austin", "Houston"]),
         ("Order QR codes", ["cu77"], []),
-        ("Put up laminations", [crew, "cu77"], []),
-        ("100% shift coverage", [crew, "cu77"], []),
-        ("Call the landlord", [crew, "cu77"], []),
+        ("Put up laminations", ["m2", "cu77"], []),
+        ("100% shift coverage", ["m2", "cu77"], []),
+        ("Call the landlord", ["m2", "cu77"], []),
     ]
     assert drafts[2]["detail"] == "- Sink and filter\n- Frozen delivery\n  - Emailed already"
-    plain = env.client.post("/v1/tracker/parse", json={"text": "Buy an iPad\nCall the landlord"}, headers=lead_h)
+    plain = env.client.post("/v1/projects/leads/parse", json={"text": "Buy an iPad\nCall the landlord"}, headers=lee)
     assert [(d["title"], d["owners"]) for d in plain.get_json()["items"]] == [
         ("Buy an iPad", ["cu77"]), ("Call the landlord", ["cu77"])]
 
 
-def test_the_tracker_is_seen_only_by_its_members_and_keeps_what_changed(env):
-    lead_h = _board(env)
+def test_a_project_is_apart_from_the_store_and_seen_only_by_its_members(env):
+    lee, sam = _project(env)
     c = env.client
-    signed = c.post("/v1/sessions", json={"staff_id": env.crew["id"], "pin": "1234"}, headers=env.ipad).get_json()
-    assert signed["tracker"] == "Leadership"
-    assert c.get("/v1/tracker", headers=env.boss_h).status_code == 404  # a manager who is not on it
-    assert c.post("/v1/tracker/items", json={"items": [{"title": "x"}]}, headers=env.boss_h).status_code == 404
+    # A member signs in with Google without any store access; store routes still refuse them.
+    token = env.tasks.google_device(SAM)
+    dev = {"X-Shop-Device": token}
+    assert c.get("/v1/bootstrap", headers=dev).status_code == 403
+    assert c.get("/v1/projects", headers=dev).get_json()["projects"] == [{"id": "leads", "name": "Leadership"}]
+    with pytest.raises(auth.AuthError):
+        env.tasks.google_device("stranger@gmail.example")
+    # The store's people, its manager, and the shop device see nothing of it.
+    assert c.get("/v1/projects/leads", headers=env.boss_h).status_code == 404
+    assert c.get("/v1/projects", headers=env.ipad).get_json()["projects"] == []
+    shop = {"X-Shop-Device": auth.sign_device("palmetto", "g")}
+    assert c.get("/v1/projects/leads", headers=shop).status_code == 404
+    assert c.post("/v1/projects/leads/items", json={"items": [{"title": "x"}]}, headers=env.ipad).status_code == 404
 
-    made = c.post("/v1/tracker/items", headers=env.crew_h, json={"items": [
-        {"title": "Order QR codes", "owners": [env.crew["id"]], "tags": ["Houston", "Mars"], "due": "2026-11-25"}]})
+    seen = c.get("/v1/projects/leads", headers=dev).get_json()
+    assert (seen["me"], seen["admin"], seen["device"] is not None, "emails" in seen["members"][0]) == ("m2", False, True, False)
+    made = c.post("/v1/projects/leads/items", headers=sam, json={"items": [
+        {"title": "Order QR codes", "owners": ["m2"], "tags": ["Houston", "Mars"], "due": "2026-11-25"}]})
     item = made.get_json()["items"][0]
-    assert (item["tags"], item["due"], item["status"]) == (["Houston"], "2026-11-25", "open")
-    bad = c.post("/v1/tracker/items", json={"items": [{"title": "x", "owners": [env.boss["id"]]}]}, headers=lead_h)
+    assert (item["tags"], item["due"], item["status"], item["created_by"]) == (["Houston"], "2026-11-25", "open", "m2")
+    bad = c.post("/v1/projects/leads/items", json={"items": [{"title": "x", "owners": [env.boss["id"]]}]}, headers=lee)
     assert bad.status_code == 400
 
     env.clock.at += datetime.timedelta(hours=1)
-    done = c.patch(f"/v1/tracker/items/{item['id']}", json={"status": "done", "title": "Order 20 QR codes"},
-                   headers=lead_h).get_json()
+    done = c.patch(f"/v1/projects/leads/items/{item['id']}", json={"status": "done", "title": "Order 20 QR codes"},
+                   headers=lee).get_json()
     assert (done["status"], done["done_by"], done["title"]) == ("done", "cu77", "Order 20 QR codes")
     assert done["log"][-1]["was"] == {"title": "Order QR codes", "status": "open"}
-    noted = c.post(f"/v1/tracker/items/{item['id']}/notes", json={"text": "Arrived"}, headers=env.crew_h).get_json()
-    assert [(n["by"], n["text"]) for n in noted["notes"]] == [(env.crew["id"], "Arrived")]
-    view = c.get("/v1/tracker", headers=env.crew_h).get_json()
-    assert (view["name"], view["admin"], len(view["items"])) == ("Leadership", False, 1)
+    noted = c.post(f"/v1/projects/leads/items/{item['id']}/notes", json={"text": "Arrived"}, headers=sam).get_json()
+    assert [(n["by"], n["text"]) for n in noted["notes"]] == [("m2", "Arrived")]
 
-    assert c.put("/v1/tracker/members", json={"members": []}, headers=env.crew_h).status_code == 403
-    left = c.put("/v1/tracker/members", json={"members": []}, headers=lead_h).get_json()
-    assert left["members"] == ["cu77"] and c.get("/v1/tracker", headers=env.crew_h).status_code == 404
-    assert [h["members"] for h in env.tasks.docs.get(st.TRACKERS, "palmetto")["history"]] == [
-        ["cu77", env.crew["id"]], ["cu77"]]
-    assert c.delete(f"/v1/tracker/items/{item['id']}", headers=lead_h).status_code == 200
+    # Only its admin changes who is on it; Google sign-in follows, and the admin always stays.
+    assert c.put("/v1/projects/leads/members", json={"members": []}, headers=sam).status_code == 403
+    env.grants.clear()
+    after = c.put("/v1/projects/leads/members", headers=lee,
+                  json={"members": [{"name": "Ana Lead", "email": "Ana@Gmail.example"}]}).get_json()
+    assert [m["name"] for m in after["members"]] == ["Lee Manager", "Ana Lead"]
+    assert env.grants == [("ana@gmail.example", True), (SAM, False)]
+    assert c.get("/v1/projects/leads", headers=sam).status_code == 404
+    assert len(env.tasks.docs.get(st.TRACKERS, "leads")["history"]) == 2
+    assert c.delete(f"/v1/projects/leads/items/{item['id']}", headers=lee).status_code == 200

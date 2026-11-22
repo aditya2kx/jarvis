@@ -29,7 +29,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 if "BHAGA_DATASTORE" not in os.environ:
     os.environ["BHAGA_DATASTORE"] = "bigquery"
 
-from core.datastore import load_rows
+from core.datastore import fq, load_rows
 from core.datastore_reader import (
     read_item_daily_bq,
     read_kds_daily_bq,
@@ -876,7 +876,7 @@ def materialize(
                 _existing = {
                     str(r["date"])
                     for r in _bq.query(
-                        "SELECT date FROM `jarvis-bhaga-prod.bhaga.model_forecast_daily`"
+                        f"SELECT date FROM {fq('model_forecast_daily')}"
                         " WHERE date < CURRENT_DATE('America/Chicago')"
                     ).result()
                 }

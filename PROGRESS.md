@@ -1,3 +1,7 @@
+## 2026-11-22 — Houston nightly first run: ADP credential + model Sheet (Issue #547)
+
+**Symptom:** first Houston backfill after #546 (`bhaga-daily-refresh-98c56`) failed `adp` (`Credential 'adp_houston_login' not found`, before the user ID was typed, so no OTP) and `materialize_model_bq` (`KeyError: 'google_sheets'`). Square + KDS loaded. **Fix:** the ADP runner uses the profile's `adp_run.credential_handle` (both stores share `adp_palmetto_login`); materialize skips Sheet training exclusions for a store without a model Sheet. Houston nightly `bhaga-nightly-houston` resumed 2026-11-22 (22:30 CT).
+
 ## 2026-11-20 — Store Tasks: our own shift checklists, replacing ClickUp tasks
 
 **Why:** ClickUp is 21 paid seats at about $9.14 a seat a month, rising to $13 on 2027-03-04, and Houston adds 13–15 people. What the stores use is narrow: three daily checklists, a closing count form and deep-clean photos.

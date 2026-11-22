@@ -361,9 +361,19 @@ def _select_pay_period_for_target(
 # ── Credentials ────────────────────────────────────────────────────
 
 
+def _adp_credential_name(store: str) -> str:
+    """The profile's ``adp_run.credential_handle`` (stores sharing one ADP login), else ``adp_{store}_login``."""
+    path = STORE_PROFILES / f"{store}.json"
+    if path.exists():
+        handle = json.loads(path.read_text()).get("adp_run", {}).get("credential_handle")
+        if handle:
+            return handle
+    return f"adp_{store}_login"
+
+
 def _get_adp_password(store: str) -> str:
     """Pull ADP password via dual-backend get_secret (Keychain or GCP Secret Manager)."""
-    return cred_registry.get_secret(f"adp_{store}_login")
+    return cred_registry.get_secret(_adp_credential_name(store))
 
 
 # ── Login (shared by both scrapes) ─────────────────────────────────
@@ -376,7 +386,7 @@ def _get_adp_username(store: str) -> str:
     (e.g. an email). Same entry used by _get_adp_password() — single source
     of truth so password rotations don't require touching the username.
     """
-    cred_name = f"adp_{store}_login"
+    cred_name = _adp_credential_name(store)
     entry = cred_registry.lookup(cred_name)
     if not entry or "account" not in entry:
         raise RuntimeError(

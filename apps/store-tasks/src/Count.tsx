@@ -40,7 +40,7 @@ export function CountForm({ boot, session, date, names, readOnly, tryout, onClos
   // What is typed survives a locked screen or a closed tab until it is sent.
   useEffect(() => {
     if (!readOnly) localStorage.setItem(draftKey(boot.store.id, date), JSON.stringify(draft));
-  }, [draft, date, readOnly]);
+  }, [draft, boot.store.id, date, readOnly]);
 
   useEffect(() => {
     api

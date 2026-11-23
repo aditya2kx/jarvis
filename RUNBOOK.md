@@ -3175,6 +3175,13 @@ gcloud logging read 'resource.labels.service_name="store-tasks-api" AND textPayl
   account's password). A new grant can take a minute to apply; "You don't have access" right
   after adding someone usually just needs a reload.
 - **Someone forgot their PIN:** a manager sets a new one in Manage → People.
+- **A manager in more than one store:** make them a manager in each store (Manage → People, or
+  `admin manager --store <id> --name "<name>"`), then add their own Google account on each store's
+  Sign-in page (or `admin account --store <id> --email … --staff "<name>"`). The second store is
+  added to the same account; removing it there leaves their other stores and their Google sign-in.
+- **No shift alerts before a store opens:** each "past due" alert is sent once per store, day and
+  shift (`shift_alerts/<store>_<date>_<shift>`). Creating those docs ahead of time for the days
+  before opening holds them back (done for Houston through 2026-11-29; soft opening 2026-11-30).
 - **Closing counts missing from inventory:** the nightly reads them when the store profile has
   `"closing_source": "store_tasks"` and the job has `STORE_TASKS_API_URL` and
   `STORE_TASKS_INTERNAL_TOKEN`; otherwise it still reads the ClickUp form.

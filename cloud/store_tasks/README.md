@@ -98,7 +98,14 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   Unassigned with Hide done, the side panel or sheet, done bar, who is doing it, notes; `People.tsx`
   picker, which picks several people on a project; `Photos.tsx` grid, viewer and Add photo), so both
   work alike. A task has the people doing it, store tags, an optional due date, points, photos and
-  notes, and Duplicate; it stays open until ticked. Its photos are kept under `_projects/<id>/` and
+  notes, an optional priority (Urgent / High / Normal / Low, ClickUp's four), and Duplicate; it
+  stays open until ticked, and Start marks it In progress (`started_by`) on the way; Undo on a tick goes
+  back to In progress if it had been started. The list narrows by who is doing it and by priority (`FilterSelect`),
+  beside All / Mine / Unassigned, and sorts urgent first within each person's group. It can repeat with the store tasks' picker
+  (`Repeat.tsx`) and schedule rules (`Tasks._schedule`, `model.due_on`): ticking a repeating task
+  adds a fresh open copy (`repeat_of`) due on the schedule's next day after the later of its due
+  date and today, and undoing the tick takes that copy back unless someone has noted, changed or
+  photographed it. Its photos are kept under `_projects/<id>/` and
   served only to members (`GET /v1/projects/<id>/photos/<path>`), never by a store's photo route; Hide done
   starts on, as a project never starts over like a day. "Add a task" takes one task per line or pasted
   meeting notes (`tracker.parse`): a line of only names starts a group those people do, numbered or
@@ -139,8 +146,8 @@ account can only see its own store. Adding or removing an account in Manage → 
 adds or removes it on the app's Google sign-in list, so the two never drift.
 
 **More than one store.** A person's own account has a home store and may also open others
-(`also`: store → their staff id there, set by `admin account` for an email whose home is another
-store). The switcher lists each of their stores; picking one sends `X-Store` on every request and
+(`also`: store → their staff id there, set by `admin account`, or by a manager adding the email on the Sign-in page, for an email whose
+home is another store; removing it there drops only that store, and Google sign-in stays while one is left). The switcher lists each of their stores; picking one sends `X-Store` on every request and
 the API treats the account as that store's (`Tasks.account_in`), so roles, PIN-free sign-in and
 sessions are per store. A change queued offline in one store still lands there after a switch (its
 session names the store). The shop device and shared accounts have only their own store.

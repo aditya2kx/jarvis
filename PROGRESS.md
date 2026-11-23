@@ -1,3 +1,9 @@
+## 2026-11-23 — Leadership tasks: repeat, priority, filters
+
+Leadership tasks can have a priority (Urgent / High / Normal / Low), and the list filters by who is doing it and by priority. A project task (Leadership) takes the same Repeats picker as a store's tasks (Once / Every day / Weekly / Monthly, start and end dates). Ticking a repeating task adds a fresh copy due on its next day, with the same owners, stores and points; undoing the tick takes back the untouched copy. A project task can be **In progress** (Start, then Mark done) before it is done. The note box on every task (store and project) is multi-line and grows as you type; Ctrl/Cmd+Enter sends.
+
+**Access:** a manager adding an email whose account is home in another store now adds that store to it, instead of "that account already belongs to another store". Dolce Johnson, Linhchi Huynh and Liz O are managers in Austin and Houston and members of Leadership, each on their own Google account.
+
 ## 2026-11-22 — Houston connectors: Slack automations, Order Quality, Amex, Store Tasks
 
 **Store Tasks Houston:** store `houston` (`cloud/store_tasks/stores/houston.json`, no ClickUp, cutover 2026-11-22) with Austin's 119 active tasks and 39 closing-count fields (`admin copy-templates`), ADP crew from `bhaga_houston`, and managers Elizabeth Orourke, Dolce Johnson and Aditya Parikh on Google sign-in. One Google account can now open several stores (`also` on the account, `X-Store` header, store entries in the switcher).

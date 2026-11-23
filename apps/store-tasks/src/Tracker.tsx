@@ -1,12 +1,13 @@
-import { CalendarDays, Camera, Copy, ListChecks, MessageSquare, Pencil, Plus, Settings, Trash2, X } from "lucide-react";
+import { CalendarDays, Camera, CircleDot, Copy, Flag, ListChecks, MessageSquare, Pencil, Plus, Repeat2, Settings, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, ApiError, device, isOffline, type Project, type TrackerDraft, type TrackerItem } from "./api";
+import { api, ApiError, device, isOffline, PRIORITIES, type Priority, type Project, type TrackerDraft, type TrackerItem } from "./api";
 import { GoogleSignIn } from "./App";
 import { FeedbackButton } from "./Feedback";
-import { AddRow, DetailPane, DoneBar, FilterBar, matchesWords, Notes, SearchBox, searchWords, Section, TaskRow, WhoButton } from "./parts";
+import { AddRow, DetailPane, DoneBar, FilterBar, FilterSelect, matchesWords, Notes, SearchBox, searchWords, Section, TaskRow, WhoButton } from "./parts";
 import { PersonPicker } from "./People";
 import { AddPhotos, PhotoGrid } from "./Photos";
 import { ProjectSwitch, usePlaces } from "./Projects";
+import { RepeatFields, repeatLabel } from "./Repeat";
 import { setWhere, track } from "./steps";
 import { Avatar, Button, cx, dayLabel, Field, firstName, Input, inputClass, Notice, Sheet, time, useWide } from "./ui";
 
@@ -34,6 +35,16 @@ function Door({ id, notice }: { id: string; notice: string }) {
   );
 }
 
+const PRIORITY: Record<Priority, { label: string; tone: string; rank: number }> = {
+  urgent: { label: "Urgent", tone: "text-destructive", rank: 0 },
+  high: { label: "High", tone: "text-amber-600", rank: 1 },
+  normal: { label: "Normal", tone: "text-sky-600", rank: 2 },
+  low: { label: "Low", tone: "text-muted-foreground", rank: 3 },
+};
+// No priority sorts with Normal: it is neither pressing nor put off.
+const priorityRank = (i: TrackerItem) => (i.priority ? PRIORITY[i.priority].rank : PRIORITY.normal.rank);
+type PriorityPick = "any" | Priority | "none";
+
 const FILTERS = ["all", "mine", "unassigned"] as const;
 type Filter = (typeof FILTERS)[number];
 const FILTER_LABEL: Record<Filter, string> = { all: "All", mine: "Mine", unassigned: "Unassigned" };
@@ -46,6 +57,8 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
   const [filter, setFilter] = useState<Filter>("mine");
   // A project never starts over like a day does, so what is done stays out of the way unless asked for.
   const [hideDone, setHideDone] = useState(true);
+  const [who, setWho] = useState("anyone");
+  const [priority, setPriority] = useState<PriorityPick>("any");
   const [open, setOpen] = useState<string | null>(null);
   const [picking, setPicking] = useState<TrackerItem | null>(null);
   const [adding, setAdding] = useState<TrackerDraft[] | null>(null);
@@ -90,20 +103,24 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
     }
   };
 
-  const toggle = async (item: TrackerItem) => {
-    const status = item.status === "open" ? "done" : "open";
-    track("action", `${status === "done" ? "tick" : "undo"} project task ${item.title}`);
+  const setStatus = async (item: TrackerItem, status: TrackerItem["status"]) => {
+    track("action", `${status === "done" ? "tick" : status === "in_progress" ? "start" : "undo"} project task ${item.title}`);
     setError("");
     if (status === "done") navigator.vibrate?.(12);
-    put({ ...item, status, done_by: data?.me ?? null, done_at: new Date().toISOString() });
+    const at = new Date().toISOString();
+    const started = status === "open" ? { started_by: null, started_at: null } : status === "in_progress" && !item.started_by ? { started_by: data?.me ?? null, started_at: at } : {};
+    put({ ...item, ...started, status, done_by: status === "done" ? (data?.me ?? null) : null, done_at: status === "done" ? at : null });
     setJustDone((s) => new Set(s).add(item.id));
     try {
       put(await api.projectUpdate(id, item.id, { status }));
+      if (item.repeat) load(); // its next copy was added, or taken back
     } catch (e) {
       put(item);
-      setError(said(e, "No connection. That tick was not saved."));
+      setError(said(e, "No connection. That was not saved."));
     }
   };
+  // Undoing a tick goes back to where it was: in progress if someone had started it.
+  const toggle = (item: TrackerItem) => setStatus(item, item.status !== "done" ? "done" : item.started_by ? "in_progress" : "open");
 
   if (door !== null) return <Door id={id} notice={door} />;
   if (!data) {
@@ -117,14 +134,16 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
   const me = data.me;
   const words = searchWords(query);
   const found = (i: TrackerItem) => matchesWords(words, i.title, i.detail);
-  const inFilter = (i: TrackerItem, f: Filter) => f === "all" || (f === "mine" ? i.owners.includes(me) : !i.owners.length);
-  const visible = (i: TrackerItem) => !hideDone || i.status === "open" || justDone.has(i.id);
+  const narrowed = (i: TrackerItem) =>
+    (who === "anyone" || i.owners.includes(who)) && (priority === "any" || (priority === "none" ? !i.priority : i.priority === priority));
+  const inFilter = (i: TrackerItem, f: Filter) => narrowed(i) && (f === "all" || (f === "mine" ? i.owners.includes(me) : !i.owners.length));
+  const visible = (i: TrackerItem) => !hideDone || i.status !== "done" || justDone.has(i.id);
   const counts = Object.fromEntries(FILTERS.map((f) => [f, data.items.filter((i) => found(i) && visible(i) && inFilter(i, f)).length])) as Record<Filter, number>;
   // Grouped by who is doing it, in the order the members are listed; no one last.
   const order = data.members.map((m) => m.id);
   const rank = (i: TrackerItem) => (i.owners.length ? Math.min(...i.owners.map((o) => order.indexOf(o))) * 10 + i.owners.length : 1e6);
-  const shown = data.items.filter((i) => found(i) && visible(i) && inFilter(i, filter)).sort((a, b) => rank(a) - rank(b));
-  const left = data.items.filter((i) => i.status === "open" && inFilter(i, filter)).length;
+  const shown = data.items.filter((i) => found(i) && visible(i) && inFilter(i, filter)).sort((a, b) => rank(a) - rank(b) || priorityRank(a) - priorityRank(b));
+  const left = data.items.filter((i) => i.status !== "done" && inFilter(i, filter)).length;
   const item = data.items.find((i) => i.id === open) ?? null;
   const switchable = places.length > 1;
   const seenBy = `Only ${data.members.map((m) => firstName(m.name)).join(", ")} can see this`;
@@ -164,7 +183,20 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
       <div className="flex min-h-0 flex-1">
         <main className="min-w-0 flex-1 overflow-y-auto px-4 pb-10 pt-3 sm:px-6">
           <SearchBox query={query} onChange={setQuery} onDone={() => query.trim() && track("action", `search "${query.trim()}"`)} />
-          <FilterBar options={FILTERS.map((f) => ({ id: f, label: FILTER_LABEL[f], n: counts[f] }))} value={filter} onChange={setFilter} hideDone={hideDone} onHideDone={setHideDone} />
+          <FilterBar options={FILTERS.map((f) => ({ id: f, label: FILTER_LABEL[f], n: counts[f] }))} value={filter} onChange={setFilter} hideDone={hideDone} onHideDone={setHideDone}>
+            <FilterSelect
+              label="Who is doing it"
+              value={who}
+              onChange={setWho}
+              options={[{ id: "anyone", label: "Anyone" }, ...data.members.map((m) => ({ id: m.id, label: firstName(m.name) }))]}
+            />
+            <FilterSelect<PriorityPick>
+              label="Priority"
+              value={priority}
+              onChange={setPriority}
+              options={[{ id: "any", label: "Any priority" }, ...PRIORITIES.map((p) => ({ id: p, label: PRIORITY[p].label })), { id: "none", label: "No priority" }]}
+            />
+          </FilterBar>
           <p className="mb-2 text-sm text-muted-foreground">
             {left} left · {seenBy}
           </p>
@@ -219,8 +251,9 @@ export function ProjectScreen({ id, signInError }: { id: string; signInError: st
               onSave={(patch, offline) => save(item, patch, offline)}
               onChanged={put}
               onToggle={() => toggle(item)}
+              onStart={(on) => setStatus(item, on ? "in_progress" : "open")}
               onAssign={() => setPicking(item)}
-              onDuplicate={() => setAdding([{ title: item.title, detail: item.detail, owners: item.owners, tags: item.tags, due: item.due }])}
+              onDuplicate={() => setAdding([{ title: item.title, detail: item.detail, owners: item.owners, tags: item.tags, due: item.due, repeat: item.repeat, priority: item.priority }])}
               onRemoved={() => {
                 setOpen(null);
                 load();
@@ -316,7 +349,19 @@ function ProjectRow({ item, names, selected, onToggle, onOpen, onAssign }: RowPr
       onAssign={onAssign}
       meta={
         <>
+          {item.status === "in_progress" && (
+            <span className={cx(meta, "font-medium text-sky-700 dark:text-sky-400")}>
+              <CircleDot className="size-3.5" />
+              In progress
+            </span>
+          )}
           {done && item.done_at && <span className={cx(meta, "text-success")}>{[firstName(names.get(item.done_by ?? "")), when(item.done_at)].filter(Boolean).join(" · ")}</span>}
+          {item.priority && (
+            <span className={cx(meta, "font-medium", PRIORITY[item.priority].tone)}>
+              <Flag className="size-3.5 fill-current" />
+              {PRIORITY[item.priority].label}
+            </span>
+          )}
           {item.tags.map((t) => (
             <span key={t} className="rounded-full bg-muted px-1.5 font-medium">
               {t}
@@ -326,6 +371,12 @@ function ProjectRow({ item, names, selected, onToggle, onOpen, onAssign }: RowPr
             <span className={cx(meta, late && "font-medium text-destructive")}>
               <CalendarDays className="size-3.5" />
               {late ? "Was due" : "Due"} {dayLabel(item.due)}
+            </span>
+          )}
+          {item.repeat && (
+            <span className={meta}>
+              <Repeat2 className="size-3.5" />
+              {repeatLabel(item.repeat, today())}
             </span>
           )}
           {sub > 0 && (
@@ -359,13 +410,14 @@ interface DetailProps {
   onSave: (patch: Partial<TrackerDraft>, offline: string) => Promise<void>;
   onChanged: (item: TrackerItem) => void;
   onToggle: () => void;
+  onStart: (on: boolean) => void;
   onAssign: () => void;
   onDuplicate: () => void;
   onRemoved: () => void;
 }
 
 /** Laid out like a store task's detail: done, who, details, store and due date, notes. */
-function ProjectDetail({ project, item, names, onSave, onChanged, onToggle, onAssign, onDuplicate, onRemoved }: DetailProps) {
+function ProjectDetail({ project, item, names, onSave, onChanged, onToggle, onStart, onAssign, onDuplicate, onRemoved }: DetailProps) {
   const { me, tags } = project;
   const [editing, setEditing] = useState<{ title: string; detail: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -421,6 +473,8 @@ function ProjectDetail({ project, item, names, onSave, onChanged, onToggle, onAs
           done={done}
           readOnly={false}
           onToggle={onToggle}
+          onStart={onStart}
+          started={item.status === "in_progress" ? `In progress${item.started_by ? ` · ${firstName(names.get(item.started_by)) || "someone"}` : ""}${item.started_at ? ` since ${when(item.started_at)}` : ""}` : null}
           said={`Done${item.done_by ? ` by ${firstName(names.get(item.done_by)) || "someone"}` : ""}${item.done_at ? ` on ${when(item.done_at)}` : ""}`}
         />
       </div>
@@ -477,7 +531,18 @@ function ProjectDetail({ project, item, names, onSave, onChanged, onToggle, onAs
         )}
       </Section>
 
-      <Section title={tags.length ? "Store and due date" : "Due date"}>
+      <Section title="Priority">
+        <div className="flex flex-wrap gap-2">
+          {PRIORITIES.map((p) => (
+            <Chip key={p} on={item.priority === p} onClick={() => onSave({ priority: item.priority === p ? null : p }, "No connection. The priority was not saved.")}>
+              <Flag className={cx("size-4 fill-current", PRIORITY[p].tone)} />
+              {PRIORITY[p].label}
+            </Chip>
+          ))}
+        </div>
+      </Section>
+
+      <Section title={tags.length ? "Store, due date and repeat" : "Due date and repeat"}>
         <div className="flex flex-wrap items-center gap-2">
           {tags.map((t) => (
             <Chip key={t} on={item.tags.includes(t)} onClick={() => onSave({ tags: tags.filter((x) => flip(item.tags, t).includes(x)) }, "No connection. The store was not saved.")}>
@@ -490,6 +555,18 @@ function ProjectDetail({ project, item, names, onSave, onChanged, onToggle, onAs
             value={item.due ?? ""}
             onChange={(e) => onSave({ due: e.target.value || null }, "No connection. The due date was not saved.")}
             className="w-44"
+          />
+        </div>
+        <div className="mt-4">
+          <RepeatFields
+            key={item.id}
+            value={item.repeat ?? null}
+            onChange={(repeat) => onSave({ repeat }, "No connection. How often it repeats was not saved.")}
+            date={item.due ?? today()}
+            allowOnce
+            onceLabel="Once"
+            onceHint="Open until it is done."
+            repeatHint="When it is ticked, a fresh copy is added for the next time."
           />
         </div>
       </Section>

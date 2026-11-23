@@ -12,8 +12,9 @@ from __future__ import annotations
 import datetime
 import re
 import uuid
+from zoneinfo import ZoneInfo
 
-from cloud.store_tasks import auth
+from cloud.store_tasks import auth, model
 from cloud.store_tasks import service as svc
 from cloud.store_tasks import store as st
 
@@ -21,7 +22,11 @@ MAX_TITLE = 300
 MAX_DETAIL = 4000
 MAX_NOTE = 4000
 MAX_ADDED = 100
-EDITABLE = ("title", "detail", "owners", "tags", "due")
+EDITABLE = ("title", "detail", "owners", "tags", "due", "repeat", "priority")
+STATUSES = ("open", "in_progress", "done")
+PRIORITIES = ("urgent", "high", "normal", "low")  # ClickUp's four; unset = no priority
+TZ = ZoneInfo("America/Chicago")  # a project belongs to no store; the leads all work in Texas
+MAX_LOOKAHEAD_DAYS = 400  # a schedule with no day in the next year (it ended) makes no next copy
 # Photo paths start with this instead of a store id, so no store's photo route can reach them.
 PHOTO_ROOT = "_projects"
 
@@ -174,7 +179,18 @@ class Tracker:
             out["tags"] = [t for t in p.get("tags") or [] if t in (data["tags"] or [])]
         if "due" in data:
             out["due"] = datetime.date.fromisoformat(data["due"]).isoformat() if data["due"] else None
+        if "priority" in data:
+            if data["priority"] not in (None, *PRIORITIES):
+                raise svc.Invalid(f"priority is one of {', '.join(PRIORITIES)}")
+            out["priority"] = data["priority"]
+        if "repeat" in data:
+            # The same schedule rules as a store's repeating tasks.
+            r = svc.Tasks._schedule(data["repeat"], self.today()) if data["repeat"] else None
+            out["repeat"] = {k: list(v) if isinstance(v, tuple) else v for k, v in r.items()} if r else None
         return out
+
+    def today(self) -> datetime.date:
+        return self.tasks.now().astimezone(TZ).date()
 
     def parse(self, pid: str, email: str, text: str) -> list[dict]:
         p, me = self.member(pid, email)
@@ -191,6 +207,8 @@ class Tracker:
             fields = {"detail": "", "owners": [], "tags": [], "due": None, **self._clean(p, data)}
             if "title" not in fields:
                 raise svc.Invalid("say what needs doing")
+            if fields.get("repeat") and not fields["due"]:
+                fields["due"] = next_due(fields["repeat"], self.today() - datetime.timedelta(days=1))
             made.append({"id": f"a{uuid.uuid4().hex[:12]}", "project": pid, **fields, "status": "open",
                          "order": order + n, "created_by": me, "created_at": stamp,
                          "done_by": None, "done_at": None, "notes": [], "log": []})
@@ -208,17 +226,48 @@ class Tracker:
         p, me, item = self._item(pid, email, item_id)
         stamp = self.tasks.now().isoformat()
         patch = self._clean(p, {k: data[k] for k in EDITABLE if k in data})
-        if data.get("status") in ("open", "done") and data["status"] != item["status"]:
-            done = data["status"] == "done"
-            patch.update(status=data["status"], done_by=me if done else None, done_at=stamp if done else None)
+        if data.get("status") in STATUSES and data["status"] != item["status"]:
+            status = data["status"]
+            done = status == "done"
+            patch.update(status=status, done_by=me if done else None, done_at=stamp if done else None)
+            if status == "in_progress" and not item.get("started_by"):
+                patch.update(started_by=me, started_at=stamp)
+            elif status == "open":
+                patch.update(started_by=None, started_at=None)
+        if patch.get("repeat") and not patch.get("due", item.get("due")):
+            patch["due"] = next_due(patch["repeat"], self.today() - datetime.timedelta(days=1))
         changed = {k: v for k, v in patch.items() if item.get(k) != v}
         if not changed:
             return item
+        if changed.get("status") == "done" and (item.get("repeat") or {}) and "repeat" not in changed:
+            changed["next_id"] = self._next_copy(item, stamp)
+        if item["status"] == "done" and changed.get("status") in ("open", "in_progress") and item.get("next_id"):
+            self._drop_untouched(item["next_id"])
+            changed["next_id"] = None
         # What an item said before is kept beside it.
-        entry = {"at": stamp, "by": me, "was": {k: item.get(k) for k in changed if k not in ("done_by", "done_at")}}
+        entry = {"at": stamp, "by": me, "was": {k: item.get(k) for k in changed if k not in ("done_by", "done_at", "started_by", "started_at", "next_id")}}
         item = {**item, **changed, "updated_at": stamp, "updated_by": me, "log": (item.get("log") or []) + [entry]}
         self.docs.set(st.TRACKER_ITEMS, item_id, item)
         return item
+
+    def _next_copy(self, item: dict, stamp: str) -> str | None:
+        """A repeating item, ticked, comes back as a fresh open copy due on its next day."""
+        today = self.today()
+        due = datetime.date.fromisoformat(item["due"]) if item.get("due") else today
+        nxt = next_due(item["repeat"], max(due, today))
+        if nxt is None:
+            return None
+        copy = {k: item.get(k) for k in ("project", "title", "detail", "owners", "tags", "repeat", "priority", "order", "created_by")}
+        doc = {**copy, "id": f"a{uuid.uuid4().hex[:12]}", "due": nxt, "status": "open", "created_at": stamp,
+               "done_by": None, "done_at": None, "notes": [], "log": [], "repeat_of": item["id"]}
+        self.docs.set(st.TRACKER_ITEMS, doc["id"], doc)
+        return doc["id"]
+
+    def _drop_untouched(self, item_id: str) -> None:
+        """Undoing a tick takes back the copy it made, unless someone has already used that copy."""
+        nxt = self.docs.get(st.TRACKER_ITEMS, item_id)
+        if nxt and nxt["status"] == "open" and not (nxt.get("notes") or nxt.get("log") or nxt.get("photos")):
+            self.docs.delete(st.TRACKER_ITEMS, item_id)
 
     def note(self, pid: str, email: str, item_id: str, text: str, at: str | None = None, by: str | None = None) -> dict:
         """``by`` is for importing someone else's earlier update; members post as themselves."""
@@ -263,6 +312,16 @@ class Tracker:
         if me not in (item["created_by"], *p["admins"]):
             raise auth.AuthError("only the person who added it or who runs this project can delete it", 403)
         self.docs.delete(st.TRACKER_ITEMS, item_id)
+
+
+def next_due(repeat: dict, after: datetime.date) -> str | None:
+    """The first day after ``after`` the schedule falls on, as a store's repeating task would."""
+    t = model.Template.from_dict({"id": "", "store": "", "shift": "", "title": "", **repeat})
+    for n in range(1, MAX_LOOKAHEAD_DAYS + 1):
+        day = after + datetime.timedelta(days=n)
+        if model.due_on(t, day):
+            return day.isoformat()
+    return None
 
 
 def _member_id(p: dict, email: str) -> str | None:

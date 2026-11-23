@@ -1232,3 +1232,105 @@ def test_store_without_a_clickup_chat_posts_no_summaries(env):
     _second_store(env)
     sent = []
     assert summaries.post_due(env.tasks, "houston", lambda ch, text: sent.append(ch)) == [] and not sent
+
+
+def test_a_repeating_project_task_comes_back_due_on_its_next_day(env):
+    lee, _ = _project(env)
+    c = env.client
+    item = c.post("/v1/projects/leads/items", json={"items": [{"title": "Weekly 1:1s", "owners": ["cu77"]}]},
+                  headers=lee).get_json()["items"][0]
+    weekly = {"weekdays": [0], "every_weeks": 1, "month_days": [], "start_date": None, "end_date": None}
+    item = c.patch(f"/v1/projects/leads/items/{item['id']}", json={"repeat": weekly, "priority": "high"}, headers=lee).get_json()
+    assert item["due"] == "2026-11-23" and item["repeat"]["weekdays"] == [0]  # the clock is Thu Nov 19
+    done = c.patch(f"/v1/projects/leads/items/{item['id']}", json={"status": "done"}, headers=lee).get_json()
+    nxt = env.tasks.docs.get(st.TRACKER_ITEMS, done["next_id"])
+    assert (nxt["title"], nxt["due"], nxt["status"], nxt["owners"], nxt["priority"], nxt["repeat_of"]) == (
+        "Weekly 1:1s", "2026-11-30", "open", ["cu77"], "high", item["id"])
+    # Undoing the tick takes back the untouched copy, so there is never a duplicate.
+    c.patch(f"/v1/projects/leads/items/{item['id']}", json={"status": "open"}, headers=lee)
+    assert env.tasks.docs.get(st.TRACKER_ITEMS, nxt["id"]) is None
+    # Stopping the repeat leaves a one-off task: ticking it makes no copy.
+    c.patch(f"/v1/projects/leads/items/{item['id']}", json={"repeat": None}, headers=lee)
+    assert c.patch(f"/v1/projects/leads/items/{item['id']}", json={"status": "done"}, headers=lee).get_json().get("next_id") is None
+    bad = {**weekly, "every_weeks": 13}
+    assert c.patch(f"/v1/projects/leads/items/{item['id']}", json={"repeat": bad}, headers=lee).status_code == 400
+
+
+def test_a_used_copy_stays_when_the_tick_is_undone(env):
+    lee, _ = _project(env)
+    c = env.client
+    monthly = {"weekdays": [], "every_weeks": 1, "month_days": [1], "start_date": None, "end_date": None}
+    item = c.post("/v1/projects/leads/items", json={"items": [{"title": "Rent", "repeat": monthly}]},
+                  headers=lee).get_json()["items"][0]
+    assert item["due"] == "2026-12-01"
+    nxt = c.patch(f"/v1/projects/leads/items/{item['id']}", json={"status": "done"}, headers=lee).get_json()["next_id"]
+    assert env.tasks.docs.get(st.TRACKER_ITEMS, nxt)["due"] == "2027-01-01"
+    c.post(f"/v1/projects/leads/items/{nxt}/notes", json={"text": "paid early"}, headers=lee)
+    c.patch(f"/v1/projects/leads/items/{item['id']}", json={"status": "open"}, headers=lee)
+    assert env.tasks.docs.get(st.TRACKER_ITEMS, nxt) is not None
+
+
+def test_a_project_task_has_one_of_four_priorities_or_none(env):
+    lee, _ = _project(env)
+    c = env.client
+    item = c.post("/v1/projects/leads/items", json={"items": [{"title": "Fix the walk-in", "priority": "urgent"}]},
+                  headers=lee).get_json()["items"][0]
+    assert item["priority"] == "urgent"
+    url = f"/v1/projects/leads/items/{item['id']}"
+    assert c.patch(url, json={"priority": "asap"}, headers=lee).status_code == 400
+    item = c.patch(url, json={"priority": None}, headers=lee).get_json()
+    assert item["priority"] is None and item["log"][-1]["was"] == {"priority": "urgent"}
+
+
+def test_a_project_task_can_be_in_progress_before_it_is_done(env):
+    lee, sam = _project(env)
+    c = env.client
+    item = c.post("/v1/projects/leads/items", json={"items": [{"title": "Hire a closer"}]}, headers=lee).get_json()["items"][0]
+    url = f"/v1/projects/leads/items/{item['id']}"
+    item = c.patch(url, json={"status": "in_progress"}, headers=sam).get_json()
+    assert (item["status"], item["started_by"]) == ("in_progress", "m2")
+    item = c.patch(url, json={"status": "done"}, headers=lee).get_json()
+    assert (item["status"], item["done_by"], item["started_by"]) == ("done", "cu77", "m2")
+    item = c.patch(url, json={"status": "in_progress"}, headers=lee).get_json()  # undo goes back to in progress
+    assert (item["status"], item["done_by"], item["started_by"]) == ("in_progress", None, "m2")
+    item = c.patch(url, json={"status": "open"}, headers=lee).get_json()
+    assert item["started_by"] is None and item["log"][-1]["was"] == {"status": "in_progress"}
+
+
+def test_a_manager_adds_a_person_whose_account_is_home_in_another_store(env):
+    c = env.client
+    houston = json.loads((pathlib.Path(__file__).parent / "stores" / "houston.json").read_text())
+    env.tasks.put_store(model.StoreConfig.from_dict(houston))
+    hou_dolce = env.tasks.save_staff("houston", {"name": "Dolce Johnson", "role": "manager"}, "test")
+    env.tasks.save_account("houston", {"email": "dolce@gmail.example", "staff_id": hou_dolce["id"]}, "test")
+    r = c.post("/v1/accounts", json={"email": "Dolce@gmail.example", "staff_id": env.crew["id"]}, headers=env.boss_h)
+    assert r.status_code == 200 and r.get_json()["account"]["staff_id"] == env.crew["id"]
+    listed = {a["email"]: a for a in c.get("/v1/accounts", headers=env.boss_h).get_json()["accounts"]}
+    assert listed["dolce@gmail.example"]["staff_id"] == env.crew["id"]
+    assert c.get("/v1/bootstrap", headers={"X-Test-Google": "dolce@gmail.example", "X-Store": "palmetto"}).get_json()["own"]["staff"]["id"] == env.crew["id"]
+    # A shared iPad account elsewhere cannot be pulled in.
+    env.tasks.save_account("houston", {"email": "hou-ipad@gmail.example", "label": "Houston iPad"}, "test")
+    assert c.post("/v1/accounts", json={"email": "hou-ipad@gmail.example", "staff_id": env.crew["id"]}, headers=env.boss_h).status_code == 400
+    # Removing it here keeps Houston, and Google sign-in.
+    grants = len(env.grants)
+    assert c.delete("/v1/accounts/dolce@gmail.example", headers=env.boss_h).status_code == 200
+    assert env.tasks.docs.get(st.ACCOUNTS, "dolce@gmail.example")["also"] == {}
+    assert len(env.grants) == grants
+    assert c.get("/v1/bootstrap", headers={"X-Test-Google": "dolce@gmail.example"}).get_json()["store"]["id"] == "houston"
+
+
+def test_removing_a_persons_home_store_promotes_their_other_store(env):
+    c = env.client
+    houston = json.loads((pathlib.Path(__file__).parent / "stores" / "houston.json").read_text())
+    env.tasks.put_store(model.StoreConfig.from_dict(houston))
+    hou_dolce = env.tasks.save_staff("houston", {"name": "Dolce Johnson", "role": "manager"}, "test")
+    env.tasks.save_account("palmetto", {"email": "dolce@gmail.example", "staff_id": env.crew["id"]}, "test")
+    env.tasks.add_store_access("dolce@gmail.example", "houston", hou_dolce["id"], "test")
+    grants = len(env.grants)
+    assert c.delete("/v1/accounts/dolce@gmail.example", headers=env.boss_h).status_code == 200
+    a = env.tasks.docs.get(st.ACCOUNTS, "dolce@gmail.example")
+    assert (a["store"], a["staff_id"], a["also"]) == ("houston", hou_dolce["id"], {})
+    assert len(env.grants) == grants
+    assert "dolce@gmail.example" not in {x["email"] for x in c.get("/v1/accounts", headers=env.boss_h).get_json()["accounts"]}
+    assert c.get("/v1/bootstrap", headers={"X-Test-Google": "dolce@gmail.example"}).get_json()["own"]["staff"]["id"] == hou_dolce["id"]
+    assert env.tasks.remove_account("houston", "dolce@gmail.example") is True

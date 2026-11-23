@@ -497,7 +497,8 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
         email = email.strip().lower()
         if email == g.account["email"]:
             raise svc.Invalid("you are signed in with this account — remove it from another one")
-        tasks.remove_account(g.store, email)
+        if not tasks.remove_account(g.store, email):
+            return jsonify(ok=True)  # still opens another store, so Google sign-in stays
         try:
             signin_access.set(email, False)
         except Exception as e:

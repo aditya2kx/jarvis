@@ -216,15 +216,23 @@ export interface TrackerDraft {
   /** Which stores it is about. */
   tags: string[];
   due: string | null;
+  /** Ticking it adds a fresh copy due on the schedule's next day. Absent or null = once. */
+  repeat?: Repeat | null;
+  priority?: Priority | null;
 }
+
+export const PRIORITIES = ["urgent", "high", "normal", "low"] as const;
+export type Priority = (typeof PRIORITIES)[number];
 
 export interface TrackerItem extends TrackerDraft {
   id: string;
-  status: "open" | "done";
+  status: "open" | "in_progress" | "done";
   created_by: string;
   created_at: string;
   done_by: string | null;
   done_at: string | null;
+  started_by?: string | null;
+  started_at?: string | null;
   notes: TrackerNote[];
   photos?: Photo[];
 }

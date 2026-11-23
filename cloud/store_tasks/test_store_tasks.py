@@ -1317,3 +1317,20 @@ def test_a_manager_adds_a_person_whose_account_is_home_in_another_store(env):
     assert env.tasks.docs.get(st.ACCOUNTS, "dolce@gmail.example")["also"] == {}
     assert len(env.grants) == grants
     assert c.get("/v1/bootstrap", headers={"X-Test-Google": "dolce@gmail.example"}).get_json()["store"]["id"] == "houston"
+
+
+def test_removing_a_persons_home_store_promotes_their_other_store(env):
+    c = env.client
+    houston = json.loads((pathlib.Path(__file__).parent / "stores" / "houston.json").read_text())
+    env.tasks.put_store(model.StoreConfig.from_dict(houston))
+    hou_dolce = env.tasks.save_staff("houston", {"name": "Dolce Johnson", "role": "manager"}, "test")
+    env.tasks.save_account("palmetto", {"email": "dolce@gmail.example", "staff_id": env.crew["id"]}, "test")
+    env.tasks.add_store_access("dolce@gmail.example", "houston", hou_dolce["id"], "test")
+    grants = len(env.grants)
+    assert c.delete("/v1/accounts/dolce@gmail.example", headers=env.boss_h).status_code == 200
+    a = env.tasks.docs.get(st.ACCOUNTS, "dolce@gmail.example")
+    assert (a["store"], a["staff_id"], a["also"]) == ("houston", hou_dolce["id"], {})
+    assert len(env.grants) == grants
+    assert "dolce@gmail.example" not in {x["email"] for x in c.get("/v1/accounts", headers=env.boss_h).get_json()["accounts"]}
+    assert c.get("/v1/bootstrap", headers={"X-Test-Google": "dolce@gmail.example"}).get_json()["own"]["staff"]["id"] == hou_dolce["id"]
+    assert env.tasks.remove_account("houston", "dolce@gmail.example") is True

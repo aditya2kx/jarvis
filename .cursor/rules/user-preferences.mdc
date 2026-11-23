@@ -88,7 +88,7 @@ Maintained by `skills/user_model/`. Source corpus (gitignored) at `skills/user_m
 | User | Aditya Parikh (with Kajri Shah) | config.yaml profile.taxpayer_names |
 | Filing status | MFJ (2025 tax year, US) | config.yaml profile.filing_status |
 | Business | Palmetto Superfoods (smoothie + bowl franchise) — holding co | PROGRESS.md, raw-intake notes |
-| Stores | Austin (opened 2026-03-23, soft opening); Houston launching September 2026 | PROGRESS.md AKSHAYA section |
+| Stores | Austin (opened 2026-03-23, soft opening); Houston (Heights) soft opening 2026-11-30 | PROGRESS.md AKSHAYA section |
 | POS | Square — recipes/prices controlled by HQ | AKSHAYA & BHAGA agent docs |
 | Payroll | ADP RUN (small-business bundle, not Workforce Now). Time Tracker accessed via Playwright (no API for RUN) | BHAGA agent docs + handoff-tip-allocator-agent.md |
 | Inventory | MarketMan ($396/mo, known pain point) — being augmented by AKSHAYA | PROGRESS.md AKSHAYA |

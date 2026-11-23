@@ -1,0 +1,30 @@
+{
+  "id": "houston",
+  "name": "Houston",
+  "tz": "America/Chicago",
+  "shifts_dataset": "bhaga_houston",
+  "cutover_date": "2026-11-22",
+  "shifts": [
+    {
+      "id": "opening",
+      "label": "Opening",
+      "due": "06:00",
+      "team_from": "04:30",
+      "team_to": "07:00"
+    },
+    {
+      "id": "shift_change",
+      "label": "Shift Change",
+      "due": "13:00",
+      "team_from": "12:00",
+      "team_to": "14:00"
+    },
+    {
+      "id": "closing",
+      "label": "Closing",
+      "due": "17:30",
+      "team_from": "16:00",
+      "team_to": "18:30"
+    }
+  ]
+}

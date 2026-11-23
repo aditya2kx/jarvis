@@ -4,6 +4,8 @@
     python3 -m cloud.store_tasks.admin manager --store palmetto --name "First Last" --pin 123456
     python3 -m cloud.store_tasks.admin account --store palmetto --email a@b.com --staff "First Last"
     python3 -m cloud.store_tasks.admin account --store palmetto --email ipad@b.com --label "Front iPad"
+    python3 -m cloud.store_tasks.admin account --store houston --email a@b.com --staff "First Last"  # a@b.com already in palmetto: adds houston to its switcher
+    python3 -m cloud.store_tasks.admin copy-templates --from palmetto --store houston
     python3 -m cloud.store_tasks.admin cutover --store palmetto --date 2026-12-01
     python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]
     python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737
@@ -46,11 +48,31 @@ def seed(tasks: svc.Tasks, store_id: str) -> model.StoreConfig:
     return cfg
 
 
+def copy_templates(tasks: svc.Tasks, src: str, store_id: str) -> int:
+    """A new store starts with another store's active task list (subtasks under their copied
+    parents) and closing-count fields. Refuses a store that already has tasks."""
+    if tasks.templates(store_id):
+        raise svc.Invalid(f"{store_id} already has tasks")
+    shifts = {s.id for s in tasks.store(store_id).shifts}
+    rows = [t for t in tasks.templates(src) if t.active and t.shift in shifts]
+    ids: dict[str, str] = {}
+    for t in sorted(rows, key=lambda t: t.parent_id is not None):  # parents before their subtasks
+        if t.parent_id and t.parent_id not in ids:
+            continue
+        data = {k: v for k, v in t.to_dict().items() if k not in ("id", "store", "parent_id")}
+        ids[t.id] = tasks.save_template(store_id, {**data, "parent_id": ids.get(t.parent_id or "")},
+                                        f"copy-templates:{src}").id
+    cfg = tasks.store(store_id)
+    if not cfg.count_items:
+        tasks.put_store(dataclasses.replace(cfg, count_items=tasks.store(src).count_items))
+    return len(ids)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("seed", "manager", "account", "cutover", "photo-rules", "count-sections", "link-templates",
-                 "photo-sizes", "project"):
+                 "photo-sizes", "project", "copy-templates"):
         sp = sub.add_parser(name)
         if name == "project":
             sp.add_argument("--id", required=True, help="the project's address: /p/<id>")
@@ -62,7 +84,9 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--store", required=True)
         if name == "manager":
             sp.add_argument("--name", required=True)
-            sp.add_argument("--pin", required=True)
+            sp.add_argument("--pin", help="for the shop device; omit for a manager who signs in with Google")
+        if name == "copy-templates":
+            sp.add_argument("--from", dest="src", required=True, help="the store whose tasks are copied")
         if name == "account":
             sp.add_argument("--email", required=True, help="Google account allowed to sign in")
             sp.add_argument("--staff", help="the person this account belongs to; omit for a shared store account")
@@ -84,8 +108,11 @@ def main(argv: list[str] | None = None) -> int:
                  if s["name"].lower() == args.name.lower()]
         s = tasks.save_staff(args.store, {**(match[0] if match else {}), "name": args.name,
                                           "role": auth.MANAGER, "active": True}, "admin-cli")
-        tasks.set_pin(args.store, s["id"], args.pin)
+        if args.pin:
+            tasks.set_pin(args.store, s["id"], args.pin)
         print(f"manager {s['id']} ready")
+    elif args.cmd == "copy-templates":
+        print(f"{args.store}: copied {copy_templates(tasks, args.src, args.store)} tasks from {args.src}")
     elif args.cmd == "account":
         staff_id = None
         if args.staff:
@@ -94,6 +121,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"no person named {args.staff!r} in {args.store}", file=sys.stderr)
                 return 1
             staff_id = match[0]["id"]
+        home = tasks.docs.get(st.ACCOUNTS, args.email.strip().lower())
+        if home and home["store"] != args.store:
+            if not staff_id:
+                print(f"{args.email} signs in to {home['store']}; give --staff to add {args.store}", file=sys.stderr)
+                return 1
+            acct = tasks.add_store_access(args.email, args.store, staff_id, "admin-cli")
+            print(acct["email"], f"home {acct['store']}, also {sorted(acct['also'])}")
+            return 0
         acct = tasks.save_account(args.store, {"email": args.email, "staff_id": staff_id, "label": args.label}, "admin-cli")
         print(acct["email"], "Google sign-in:", access.Access(SIGNIN_SERVICE).set(acct["email"], True))
     elif args.cmd == "cutover":

@@ -263,10 +263,17 @@ export class ApiError extends Error {
 
 export const SHOP = "shop";
 const DEVICE_KEY = "st.device";
+const STORE_KEY = "st.store";
 /** This browser's sign-in: the shop's (from the shop code) or a Google account's (from the sign-in hop). */
 export const device = {
   get: () => localStorage.getItem(DEVICE_KEY),
   set: (token: string | null) => (token ? localStorage.setItem(DEVICE_KEY, token) : localStorage.removeItem(DEVICE_KEY)),
+};
+
+/** Which of a person's stores this browser is on; unset = the account's home store. */
+export const chosenStore = {
+  get: () => localStorage.getItem(STORE_KEY),
+  set: (id: string | null) => (id ? localStorage.setItem(STORE_KEY, id) : localStorage.removeItem(STORE_KEY)),
 };
 
 function authHeaders(token?: string): Record<string, string> {
@@ -274,6 +281,8 @@ function authHeaders(token?: string): Record<string, string> {
   const headers: Record<string, string> = { "X-Requested-With": "XMLHttpRequest" };
   const signedIn = device.get();
   if (signedIn) headers["X-Shop-Device"] = signedIn;
+  const store = chosenStore.get();
+  if (store) headers["X-Store"] = store;
   if (token) headers["X-Staff-Session"] = token;
   return headers;
 }
@@ -393,7 +402,11 @@ export const api = {
   removeAccount: (token: string, email: string) =>
     call<{ ok: true }>("DELETE", `/v1/accounts/${encodeURIComponent(email)}`, { token }),
   /** Where this Google account can go: its store's tasks, if any, and its projects. */
-  projects: () => call<{ store: { id: string; name: string } | null; projects: { id: string; name: string }[] }>("GET", "/v1/projects"),
+  projects: () =>
+    call<{ store: { id: string; name: string } | null; stores?: { id: string; name: string }[]; projects: { id: string; name: string }[] }>(
+      "GET",
+      "/v1/projects",
+    ),
   project: (id: string) => call<Project>("GET", `/v1/projects/${id}`),
   projectParse: (id: string, text: string) => call<{ items: TrackerDraft[] }>("POST", `/v1/projects/${id}/parse`, { body: { text } }),
   projectAdd: (id: string, items: TrackerDraft[]) => call<{ items: TrackerItem[] }>("POST", `/v1/projects/${id}/items`, { body: { items } }),

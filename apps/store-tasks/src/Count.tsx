@@ -16,7 +16,8 @@ function sections(items: CountItem[]): [string, CountItem[]][] {
   }
   return [...out];
 }
-const draftKey = (date: string) => `st.count.${date}`;
+// Austin's drafts predate a second store and keep their key.
+const draftKey = (store: string, date: string) => (store === "palmetto" ? `st.count.${date}` : `st.count.${store}.${date}`);
 
 interface Props {
   boot: Bootstrap;
@@ -31,14 +32,14 @@ interface Props {
 }
 
 export function CountForm({ boot, session, date, names, readOnly, tryout, onClose }: Props) {
-  const [draft, setDraft] = useState<Draft>(() => (readOnly ? null : JSON.parse(localStorage.getItem(draftKey(date)) ?? "null")) ?? EMPTY);
+  const [draft, setDraft] = useState<Draft>(() => (readOnly ? null : JSON.parse(localStorage.getItem(draftKey(boot.store.id, date)) ?? "null")) ?? EMPTY);
   const [saved, setSaved] = useState<Count | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   // What is typed survives a locked screen or a closed tab until it is sent.
   useEffect(() => {
-    if (!readOnly) localStorage.setItem(draftKey(date), JSON.stringify(draft));
+    if (!readOnly) localStorage.setItem(draftKey(boot.store.id, date), JSON.stringify(draft));
   }, [draft, date, readOnly]);
 
   useEffect(() => {
@@ -47,7 +48,7 @@ export function CountForm({ boot, session, date, names, readOnly, tryout, onClos
       .then(({ count }) => {
         if (!count) return;
         setSaved(count);
-        if (count.submitted_at && (readOnly || !localStorage.getItem(draftKey(date)) || Object.keys(draft.items).length === 0)) {
+        if (count.submitted_at && (readOnly || !localStorage.getItem(draftKey(boot.store.id, date)) || Object.keys(draft.items).length === 0)) {
           setDraft({ items: count.items, notes: count.notes, tips: count.tips ?? "" });
         }
       })
@@ -63,7 +64,7 @@ export function CountForm({ boot, session, date, names, readOnly, tryout, onClos
     setError("");
     try {
       await api.submitCount(session.token, date, draft);
-      localStorage.removeItem(draftKey(date));
+      localStorage.removeItem(draftKey(boot.store.id, date));
       onClose();
     } catch (e) {
       setError(isOffline(e) ? "No connection. Your count is saved on this device — send it when Wi-Fi is back." : (e as Error).message);

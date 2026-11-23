@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isOffline, SHOP, type Bootstrap, type Day, type Session, type Task } from "./api";
 import { CountForm } from "./Count";
 import { FeedbackButton } from "./Feedback";
-import { ProjectSwitch, usePlaces } from "./Projects";
+import { ProjectSwitch, storeKey, usePlaces } from "./Projects";
 import { shrink } from "./Photos";
 import { AddRow, DetailPane, FilterBar, matchesWords, SearchBox, searchWords, TaskRow } from "./parts";
 import { PersonPicker } from "./People";
@@ -306,7 +306,7 @@ export function DayScreen({ boot, session, onLock, onManage }: Props) {
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1">
             {switchable ? (
-              <ProjectSwitch places={places} current="store" label={boot.store.name} compact />
+              <ProjectSwitch places={places} current={storeKey(boot.store.id)} label={boot.store.name} compact />
             ) : (
               <span aria-hidden className="brand-mark brand-palm mr-1 hidden h-9 shrink-0 text-primary sm:inline-block" />
             )}

@@ -138,6 +138,13 @@ PINs and shop codes are stored as scrypt hashes; five wrong PINs lock that perso
 account can only see its own store. Adding or removing an account in Manage → Sign-in also
 adds or removes it on the app's Google sign-in list, so the two never drift.
 
+**More than one store.** A person's own account has a home store and may also open others
+(`also`: store → their staff id there, set by `admin account` for an email whose home is another
+store). The switcher lists each of their stores; picking one sends `X-Store` on every request and
+the API treats the account as that store's (`Tasks.account_in`), so roles, PIN-free sign-in and
+sessions are per store. A change queued offline in one store still lands there after a switch (its
+session names the store). The shop device and shared accounts have only their own store.
+
 ## Moving off ClickUp
 
 `cutover_date` on the store decides who owns a day: before it, days are mirrored from
@@ -167,6 +174,18 @@ python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]   # ta
 python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737   # closing-count sections, from ClickUp's latest closing update
 python3 -m cloud.store_tasks.admin link-templates --store palmetto   # link mirrored tasks to their definitions + earlier photos
 python3 -m cloud.store_tasks.admin photo-sizes --store palmetto      # thumbnail + screen-size copies of stored photos (Cloud Run job store-tasks-photo-sizes)
+```
+
+A store with no ClickUp (Houston) skips the mirror: seed it with its `cutover_date` already set,
+copy another store's task list and closing-count fields, then add people. Its shift summaries are
+not posted anywhere (they go to a ClickUp chat).
+
+```bash
+python3 -m cloud.store_tasks.admin seed --store houston
+python3 -m cloud.store_tasks.shared_sync --store houston                       # ADP crew from bhaga_houston
+python3 -m cloud.store_tasks.admin copy-templates --from palmetto --store houston
+python3 -m cloud.store_tasks.admin manager --store houston --name "First Last"  # no --pin: signs in with Google
+python3 -m cloud.store_tasks.admin account --store houston --email me@example.com --staff "First Last"
 ```
 
 Photos are served at `?size=thumb` (480 px) or `?size=view` (1600 px); copies live under

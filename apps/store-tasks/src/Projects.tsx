@@ -13,12 +13,20 @@ interface Place {
 
 let places: Promise<Place[]> | null = null;
 
+export const storeKey = (id: string) => `store:${id}`;
+
 /** Everywhere this Google account can go. A shop device or an account with no projects gets none. */
 function loadPlaces(): Promise<Place[]> {
   places ??= api
     .projects()
-    .then(({ store, projects }) => [
-      ...(store ? [{ key: "store", name: `${store.name} tasks`, hint: "Opening, shift change and closing lists", href: "/", Icon: Store }] : []),
+    .then(({ store, stores, projects }) => [
+      ...(stores ?? (store ? [store] : [])).map((s) => ({
+        key: storeKey(s.id),
+        name: `${s.name} tasks`,
+        hint: "Opening, shift change and closing lists",
+        href: `/?store=${encodeURIComponent(s.id)}`,
+        Icon: Store,
+      })),
       ...projects.map((p) => ({ key: p.id, name: p.name, hint: "Private project", href: `/p/${p.id}`, Icon: ListTodo })),
     ])
     .catch(() => {

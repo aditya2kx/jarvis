@@ -156,6 +156,8 @@ def wants_mirror(tasks: svc.Tasks, store_id: str) -> bool:
 def post_due(tasks: svc.Tasks, store_id: str, send) -> list[str]:
     """Post every summary that is due. ``send(channel_id, markdown)`` posts one message."""
     cfg = tasks.store(store_id)
+    if not channel(cfg):
+        return []  # a store without a ClickUp chat (Houston) has nowhere to post these
     day = cfg.today(tasks.now())
     sent = []
     for pid, kind in pending(tasks, store_id):

@@ -1,6 +1,6 @@
 import { ArrowLeft, Delete, Store } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, device, isOffline, SHOP, type Bootstrap, type Session, type Staff } from "./api";
+import { api, ApiError, chosenStore, device, isOffline, SHOP, type Bootstrap, type Session, type Staff } from "./api";
 import { DayScreen } from "./Day";
 import { Manage } from "./Manage";
 import { Avatar, cx, Notice } from "./ui";
@@ -29,8 +29,22 @@ export function takeSignIn(): string {
   return error ?? "";
 }
 
+/** Picked a store in the switcher (`/?store=<id>`): remember it and drop the other store's cached list. */
+function takeStore(): void {
+  const params = new URLSearchParams(location.search);
+  const id = params.get("store");
+  if (id === null) return;
+  if (id !== chosenStore.get()) localStorage.removeItem(BOOT_KEY);
+  chosenStore.set(id);
+  params.delete("store");
+  history.replaceState(null, "", location.pathname + (params.size ? `?${params}` : "") + location.hash);
+}
+
 export function App({ signInError }: { signInError: string }) {
-  const [boot, setBoot] = useState<Bootstrap | null>(() => JSON.parse(localStorage.getItem(BOOT_KEY) ?? "null"));
+  const [boot, setBoot] = useState<Bootstrap | null>(() => {
+    takeStore();
+    return JSON.parse(localStorage.getItem(BOOT_KEY) ?? "null");
+  });
   const [session, setSession] = useState<Session | null>(null);
   const [managing, setManaging] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
@@ -51,6 +65,12 @@ export function App({ signInError }: { signInError: string }) {
       })
       .catch(async (e) => {
         if (isOffline(e)) return;
+        if (e instanceof ApiError && e.status === 403 && chosenStore.get()) {
+          // The store picked earlier is no longer this account's: back to its home store.
+          chosenStore.set(null);
+          localStorage.removeItem(BOOT_KEY);
+          return loadBoot();
+        }
         if (e instanceof ApiError && e.status === 403 && device.get()) {
           // Signed in with Google but not part of a store: maybe on a project instead.
           const projects = await api.projects().catch(() => ({ projects: [] }));

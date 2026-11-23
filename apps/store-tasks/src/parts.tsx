@@ -1,4 +1,4 @@
-import { Check, MousePointerClick, Plus, Search, Send, UserPlus, X } from "lucide-react";
+import { Check, CircleDot, MousePointerClick, Play, Plus, Search, Send, UserPlus, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Avatar, Button, cx, firstName, inputClass, Sheet, Tick, time } from "./ui";
 
@@ -137,7 +137,16 @@ export function Section({ title, action, children }: { title: string; action?: R
 }
 
 /** Done (by whom, when, and undo) or the big Mark done button. */
-export function DoneBar({ done, said, readOnly, blocked, onToggle }: { done: boolean; said: string; readOnly: boolean; blocked?: boolean; onToggle: () => void }) {
+/** Mark done, and Undo. With `onStart`, a task can also be in progress first; `started` says by whom, while it is. */
+export function DoneBar({ done, said, readOnly, blocked, onToggle, started, onStart }: {
+  done: boolean;
+  said: string;
+  readOnly: boolean;
+  blocked?: boolean;
+  onToggle: () => void;
+  started?: string | null;
+  onStart?: (on: boolean) => void;
+}) {
   if (done) {
     return (
       <div className="pop flex items-center justify-between gap-3 rounded-xl bg-success/10 px-4 py-3">
@@ -153,11 +162,40 @@ export function DoneBar({ done, said, readOnly, blocked, onToggle }: { done: boo
       </div>
     );
   }
-  return readOnly ? null : (
+  const markDone = (
     <Button disabled={blocked} onClick={onToggle} className="min-h-13 w-full text-base">
       <Check className="size-5" />
       Mark done
     </Button>
+  );
+  if (onStart && started) {
+    return (
+      <div className="space-y-2">
+        <div className="pop flex items-center justify-between gap-3 rounded-xl bg-sky-500/10 px-4 py-3">
+          <p className="flex items-center gap-2 font-medium text-sky-700 dark:text-sky-400">
+            <CircleDot className="size-5" strokeWidth={2.5} />
+            <span>{started}</span>
+          </p>
+          {!readOnly && (
+            <Button variant="outline" onClick={() => onStart(false)}>
+              Undo
+            </Button>
+          )}
+        </div>
+        {!readOnly && markDone}
+      </div>
+    );
+  }
+  if (readOnly) return null;
+  if (!onStart) return markDone;
+  return (
+    <div className="flex gap-2">
+      <Button variant="outline" onClick={() => onStart(true)} className="min-h-13 shrink-0 px-5 text-base">
+        <Play className="size-4" />
+        Start
+      </Button>
+      {markDone}
+    </div>
   );
 }
 
@@ -189,6 +227,9 @@ export function WhoButton({ people, readOnly, onClick }: { people: Person[]; rea
     </button>
   );
 }
+
+/** The note box grows with what is typed (about 40 characters a line on a phone), up to 8 lines, then scrolls. */
+const noteRows = (text: string) => Math.min(8, text.split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / 40)), 0));
 
 /** A task's notes, oldest first, and the box to add one. `onSend` throws to keep the text. */
 export function Notes({ notes, names, readOnly, when = time, onSend }: {
@@ -225,13 +266,27 @@ export function Notes({ notes, names, readOnly, when = time, onSend }: {
         {!notes.length && readOnly && <p className="text-muted-foreground">No notes.</p>}
         {!readOnly && (
           <form
-            className="flex gap-2"
+            className="flex items-end gap-2"
             onSubmit={(e) => {
               e.preventDefault();
               send().catch(() => undefined);
             }}
           >
-            <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a note for the team…" className={inputClass} />
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter starts a new line, as in a message; Cmd/Ctrl+Enter sends from a keyboard.
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  send().catch(() => undefined);
+                }
+              }}
+              rows={noteRows(text)}
+              aria-label="Add a note"
+              placeholder="Add a note for the team…"
+              className={cx(inputClass, "resize-none py-2 leading-snug")}
+            />
             <Button type="submit" aria-label="Send note" disabled={!text.trim()} className="shrink-0 px-3">
               <Send className="size-4" />
             </Button>
@@ -303,6 +358,34 @@ export function FilterBar<F extends string>({ options, value, onChange, hideDone
         {children}
       </div>
     </div>
+  );
+}
+
+/** A narrowing beside the filter tabs (who, priority). The first option shows everything; any other is
+ * highlighted so a narrowed list is never mistaken for the whole one. */
+export function FilterSelect<V extends string>({ label, value, options, onChange }: {
+  label: string;
+  value: V;
+  options: { id: V; label: string }[];
+  onChange: (v: V) => void;
+}) {
+  const narrowed = value !== options[0]?.id;
+  return (
+    <select
+      aria-label={label}
+      value={value}
+      onChange={(e) => onChange(e.target.value as V)}
+      className={cx(
+        "min-h-9 max-w-40 rounded-lg border bg-card px-2 text-sm font-medium transition focus-visible:outline-2 focus-visible:outline-ring",
+        narrowed ? "border-primary text-primary" : "border-border text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {options.map((o) => (
+        <option key={o.id} value={o.id}>
+          {o.label}
+        </option>
+      ))}
+    </select>
   );
 }
 

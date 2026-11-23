@@ -211,16 +211,22 @@ class Tasks:
         return {**cur, "also": also}
 
     def accounts(self, store_id: str) -> list[dict]:
-        return sorted(self.docs.query(st.ACCOUNTS, store=store_id), key=lambda a: a["email"])
+        """Accounts that open this store: its own, and people's whose home is another store."""
+        rows = [a if a["store"] == store_id else self.account_in(a, store_id)
+                for a in self.docs.query(st.ACCOUNTS) if a["store"] == store_id or store_id in (a.get("also") or {})]
+        return sorted(rows, key=lambda a: a["email"])
 
     def save_account(self, store_id: str, data: dict, by: str) -> dict:
-        """A shared account (store iPad: people pick their name and enter a PIN) or a person's own."""
+        """A shared account (store iPad: people pick their name and enter a PIN) or a person's own.
+        A person whose account is home in another store gets this store added to it."""
         email = (data.get("email") or "").strip().lower()
         if "@" not in email or " " in email:
             raise Invalid("enter a Google account email")
         cur = self.docs.get(st.ACCOUNTS, email)
         if cur and cur.get("store") != store_id:
-            raise Invalid("that account already belongs to another store")
+            if not data.get("staff_id") or not cur.get("staff_id"):
+                raise Invalid("that account is a shared one in another store; pick a person's own account")
+            return self.account_in(self.add_store_access(email, store_id, data["staff_id"], by), store_id)
         staff_id = data.get("staff_id") or None
         if staff_id:
             s = self.docs.get(st.STAFF, staff_id)
@@ -228,15 +234,28 @@ class Tasks:
                 raise NotFound("staff")
         doc = {"id": email, "email": email, "store": store_id, "staff_id": staff_id,
                "label": (data.get("label") or "").strip(), "active": True,
-               "updated_at": self.now().isoformat(), "updated_by": by}
+               "updated_at": self.now().isoformat(), "updated_by": by, **({"also": cur["also"]} if cur and cur.get("also") else {})}
         self.docs.set(st.ACCOUNTS, email, doc)
         return doc
 
-    def remove_account(self, store_id: str, email: str) -> None:
+    def remove_account(self, store_id: str, email: str) -> bool:
+        """Takes this store off the account. True when no store is left (then Google sign-in goes too)."""
         a = self.docs.get(st.ACCOUNTS, email)
-        if a is None or a["store"] != store_id:
+        also = dict(a.get("also") or {}) if a else {}
+        if a is None or (a["store"] != store_id and store_id not in also):
             raise NotFound("account")
+        stamp = self.now().isoformat()
+        if a["store"] != store_id:
+            also.pop(store_id)
+            self.docs.set(st.ACCOUNTS, email, {**a, "also": also, "updated_at": stamp})
+            return False
+        if also:
+            # The next store becomes home rather than losing the person's other stores.
+            home = sorted(also)[0]
+            self.docs.set(st.ACCOUNTS, email, {**a, "store": home, "staff_id": also.pop(home), "also": also, "updated_at": stamp})
+            return False
         self.docs.delete(st.ACCOUNTS, email)
+        return True
 
     def own_session(self, account: dict) -> dict | None:
         """A person's own Google account is already proof of who they are: no PIN. A shop device is the shop."""

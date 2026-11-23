@@ -49,10 +49,15 @@ interface Props {
   date: string;
   /** False when editing a task that already repeats: it cannot become a one-day task. */
   allowOnce: boolean;
+  /** A store's task is for "this day"; a project's is open until it is done. */
+  onceLabel?: string;
+  onceHint?: string;
+  /** Said after the schedule, e.g. how the next one appears. */
+  repeatHint?: string;
 }
 
 /** How often a task comes back, as in ClickUp's recurring settings. */
-export function RepeatFields({ value, onChange, date, allowOnce }: Props) {
+export function RepeatFields({ value, onChange, date, allowOnce, onceLabel = "This day", onceHint = "On this day's list only.", repeatHint }: Props) {
   const [mode, setMode] = useState<Mode>(value ? modeOf(value) : "once");
   const r = value ?? EVERY_DAY;
   const dates = { start_date: r.start_date, end_date: r.end_date };
@@ -81,7 +86,7 @@ export function RepeatFields({ value, onChange, date, allowOnce }: Props) {
             onClick={() => pick(m.id)}
             className={cx("min-h-10 rounded-md px-1 text-sm font-medium transition", mode === m.id ? "bg-card text-foreground shadow-card" : "text-muted-foreground hover:text-foreground")}
           >
-            {m.label}
+            {m.id === "once" ? onceLabel : m.label}
           </button>
         ))}
       </div>
@@ -142,7 +147,7 @@ export function RepeatFields({ value, onChange, date, allowOnce }: Props) {
           </Field>
         </div>
       )}
-      <p className="text-sm text-muted-foreground">{value ? `${repeatLabel(value)}.` : "On this day's list only."}</p>
+      <p className="text-sm text-muted-foreground">{value ? [`${repeatLabel(value)}.`, repeatHint].filter(Boolean).join(" ") : onceHint}</p>
     </fieldset>
   );
 }

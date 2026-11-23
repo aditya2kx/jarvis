@@ -50,6 +50,7 @@ log = logging.getLogger("store_tasks")
 
 SESSION_HEADER = "X-Staff-Session"  # not Authorization: Google sign-in reads that header itself
 DEVICE_HEADER = "X-Shop-Device"
+STORE_HEADER = "X-Store"  # which of a person's stores the request is for; absent = the account's home store
 SYNC_EVERY = datetime.timedelta(hours=1)
 MIRROR_EVERY = datetime.timedelta(hours=2)
 WEBHOOKS_EVERY = datetime.timedelta(hours=6)
@@ -94,7 +95,8 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
         @functools.wraps(fn)
         def wrapped(*a, **kw):
             device = request.headers.get(DEVICE_HEADER, "")
-            g.account = tasks.device_account(device) if device else tasks.account(signed_in(request.headers))
+            g.home = tasks.device_account(device) if device else tasks.account(signed_in(request.headers))
+            g.account = tasks.account_in(g.home, request.headers.get(STORE_HEADER))
             g.has_device = bool(device)
             g.store = g.account["store"]
             return fn(*a, **kw)
@@ -105,6 +107,10 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
         @account_required
         def wrapped(*a, **kw):
             claims = auth.read_session(request.headers.get(SESSION_HEADER, ""), tasks.now().timestamp())
+            if claims["store"] != g.store and claims["acct"] == g.account["email"]:
+                # A change queued offline in another of the person's stores carries that store's session.
+                g.account = tasks.account_in(g.home, claims["store"])
+                g.store = g.account["store"]
             if claims["store"] != g.store or claims["acct"] != g.account["email"]:
                 raise auth.AuthError("sign in again")
             g.staff = claims
@@ -368,10 +374,10 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     def projects():
         """Everywhere this Google account can go: its store's tasks (if any) and its projects, for the switcher."""
         acct = tasks.docs.get(st.ACCOUNTS, g.email)
-        store = None
+        stores = []
         if acct and acct.get("active", True):
-            store = {"id": acct["store"], "name": tasks.store(acct["store"]).name}
-        return jsonify(store=store, projects=tracker.projects(g.email))
+            stores = [{"id": s, "name": tasks.store(s).name} for s in [acct["store"], *sorted(acct.get("also") or {})]]
+        return jsonify(store=stores[0] if stores else None, stores=stores, projects=tracker.projects(g.email))
 
     @app.get("/v1/projects/<pid>")
     @person_required

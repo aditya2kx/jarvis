@@ -126,5 +126,33 @@ class AcceptVariedCopyTests(unittest.TestCase):
         self.assertEqual(out, "")
 
 
+class StoreChatTests(unittest.TestCase):
+    """Austin seeds ClickUp; Houston (profile ``slack`` block) seeds a Slack DM draft and posts via Slack."""
+
+    def test_defaults_per_store(self):
+        self.assertEqual(tp.chat_defaults("palmetto", "running_channel")["destination"], "dm")
+        self.assertEqual(tp.chat_defaults("houston", "running_channel"), {
+            "destination": "slack_drafts", "channel_id": "C0CLVRS97NC",
+            "dm_user_id": "U0971TA8SLB", "workspace_id": "TC5MS0JEA",
+        })
+        self.assertEqual(tp.chat_defaults("houston", "shift_coverage_channel")["channel_id"], "C0CKZG0DLJJ")
+
+    def test_send_routes_by_destination(self):
+        from unittest import mock
+
+        with mock.patch("skills.slack_chat.post_message", return_value={"id": "1.2"}) as slack, \
+             mock.patch("skills.clickup_chat.post_message", return_value={"id": "m1"}) as clickup:
+            self.assertEqual(tp.send("slack_channel", "C1", "hi", "TC5MS0JEA"), "1.2")
+            self.assertEqual(tp.send("dm", "dm1", "hi", "9017956545"), "m1")
+        slack.assert_called_once_with("C1", "hi")
+        clickup.assert_called_once_with("dm1", "hi", team_id="9017956545")
+
+    def test_slack_channel_needs_no_lookup(self):
+        self.assertEqual(tp.resolve_target_channel({"destination": "slack_channel", "channel_id": "C1"}),
+                         ("slack_channel", "C1"))
+        self.assertEqual(tp.resolve_target_channel({"destination": "slack_drafts", "channel_id": "C1"}, "houston"),
+                         ("slack_drafts", "C0CLX9XK396"))
+
+
 if __name__ == "__main__":
     unittest.main()

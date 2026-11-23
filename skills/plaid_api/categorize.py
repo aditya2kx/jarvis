@@ -4,12 +4,13 @@ Never overwrites operator overrides. Idempotent reapply.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from skills.plaid_api.category_rules import CategoryRule, evaluate_rules
 
 _PROJECT = "jarvis-bhaga-prod"
-_DATASET = "bhaga"
+_DATASET = os.environ.get("BHAGA_BQ_DATASET") or os.environ.get("BQ_DATASET", "bhaga")
 
 
 def _fq(table: str) -> str:

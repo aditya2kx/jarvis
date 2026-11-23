@@ -187,6 +187,29 @@ class Tasks:
             raise auth.AuthError("this Google account has no access to Store Tasks", 403)
         return a
 
+    def account_in(self, account: dict, store_id: str | None) -> dict:
+        """The account as seen in one of its stores: its home store, or another it was added to
+        (``also``: store → the person's staff id there). A shop device has only its own store."""
+        if not store_id or store_id == account["store"] or account.get("shop"):
+            return account
+        also = account.get("also") or {}
+        if store_id not in also:
+            raise auth.AuthError("this Google account has no access to that store", 403)
+        return {**account, "store": store_id, "staff_id": also[store_id]}
+
+    def add_store_access(self, email: str, store_id: str, staff_id: str, by: str) -> dict:
+        """Let a person's account (home store elsewhere) also open ``store_id`` as ``staff_id``."""
+        cur = self.account(email.strip().lower())
+        s = self.docs.get(st.STAFF, staff_id)
+        if s is None or s.get("store") != store_id:
+            raise NotFound("staff")
+        if cur["store"] == store_id:
+            raise Invalid("that is the account's home store")
+        also = {**(cur.get("also") or {}), store_id: staff_id}
+        self.docs.set(st.ACCOUNTS, cur["email"], {"also": also, "updated_by": by,
+                                                  "updated_at": self.now().isoformat()}, merge=True)
+        return {**cur, "also": also}
+
     def accounts(self, store_id: str) -> list[dict]:
         return sorted(self.docs.query(st.ACCOUNTS, store=store_id), key=lambda a: a["email"])
 

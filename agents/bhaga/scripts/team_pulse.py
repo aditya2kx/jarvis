@@ -16,6 +16,7 @@ import argparse
 import datetime
 import json
 import logging
+import pathlib
 import sys
 from collections import defaultdict
 from typing import Any
@@ -42,6 +43,25 @@ There would be more such incentives/challenges program rolled out soon.
 """
 
 DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+STORE_PROFILES = pathlib.Path(__file__).resolve().parents[1] / "knowledge-base" / "store-profiles"
+
+
+def slack_profile(store: str) -> dict | None:
+    """The store profile's ``slack`` block — set for stores whose crew chat is Slack (Houston)."""
+    path = STORE_PROFILES / f"{store}.json"
+    return json.loads(path.read_text()).get("slack") if path.exists() else None
+
+
+def chat_defaults(store: str, channel_key: str) -> dict:
+    """Seed destination fields: ClickUp DM for Austin, the Slack drafts channel for a Slack store."""
+    slack = slack_profile(store)
+    if not slack:
+        return {"destination": "dm", "channel_id": DEFAULT_CHANNEL_ID,
+                "dm_user_id": DEFAULT_DM_USER_ID, "workspace_id": DEFAULT_WORKSPACE_ID}
+    return {"destination": "slack_drafts" if slack.get("drafts_channel") else "slack_dm",
+            "channel_id": slack[channel_key]["id"],
+            "dm_user_id": slack["operator_user_id"], "workspace_id": slack["team_id"]}
 
 
 def time_of_day_greeting(
@@ -314,10 +334,7 @@ def ensure_default_config(store: str = DEFAULT_STORE, *, updated_by: str = "team
         "hour_local": 8,
         "minute_local": 0,
         "timezone": DEFAULT_TZ,
-        "destination": "dm",
-        "channel_id": DEFAULT_CHANNEL_ID,
-        "dm_user_id": DEFAULT_DM_USER_ID,
-        "workspace_id": DEFAULT_WORKSPACE_ID,
+        **chat_defaults(store, "running_channel"),
         "template": DEFAULT_TEMPLATE,
         "updated_at": datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
         "updated_by": updated_by,
@@ -415,18 +432,35 @@ def record_post(
     )
 
 
-def resolve_target_channel(cfg: dict) -> tuple[str, str]:
-    """Return (destination, channel_id) ready for post_message."""
+def resolve_target_channel(cfg: dict, store: str = DEFAULT_STORE) -> tuple[str, str]:
+    """Return (destination, channel_id) ready for ``send``."""
     from skills.clickup_chat import ensure_dm_channel
+    from skills.slack_chat import open_dm
 
     dest = (cfg.get("destination") or "dm").strip().lower()
     workspace = str(cfg.get("workspace_id") or DEFAULT_WORKSPACE_ID)
+    if dest == "slack_channel":
+        return dest, str(cfg["channel_id"])
+    if dest == "slack_drafts":
+        return dest, str(slack_profile(store)["drafts_channel"]["id"])
+    if dest == "slack_dm":
+        return dest, open_dm(str(cfg["dm_user_id"]))
     if dest == "channel":
         cid = str(cfg.get("channel_id") or DEFAULT_CHANNEL_ID)
         return "channel", cid
     dm_user = str(cfg.get("dm_user_id") or DEFAULT_DM_USER_ID)
     ch = ensure_dm_channel([dm_user], team_id=workspace)
     return "dm", str(ch["id"])
+
+
+def send(dest: str, channel_id: str, content: str, workspace: str) -> str:
+    """Post through Slack or ClickUp by destination; returns the message id."""
+    from skills.clickup_chat import post_message
+    from skills.slack_chat import post_message as slack_post
+
+    if dest.startswith("slack_"):
+        return str(slack_post(channel_id, content).get("id") or "")
+    return str(post_message(channel_id, content, team_id=workspace).get("id") or "")
 
 
 def run_team_pulse(
@@ -480,12 +514,9 @@ def run_team_pulse(
             "leaderboard_rows": len(rows),
         }
 
-    from skills.clickup_chat import post_message
-
-    dest, channel_id = resolve_target_channel(cfg)
+    dest, channel_id = resolve_target_channel(cfg, store)
     workspace = str(cfg.get("workspace_id") or DEFAULT_WORKSPACE_ID)
-    created = post_message(channel_id, content, team_id=workspace)
-    message_id = str(created.get("id") or "")
+    message_id = send(dest, channel_id, content, workspace)
     record_post(
         store=store,
         post_date_ct=post_date,

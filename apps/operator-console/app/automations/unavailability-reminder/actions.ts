@@ -1,7 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { operatorEmail, DEFAULT_STORE } from "@/lib/auth/identity";
+import { operatorEmail } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
+import { SLACK_CHAT } from "@/lib/config/stores";
+import { parseSlackDestination, type SlackDestination } from "@/lib/automations/slackDestination";
 import { asAck, type ActionAck } from "@/lib/actions/types";
 import { adpDirectoryRoster, adpUnavailability, getAutomation } from "@/lib/bq/queries";
 import { insertAutomationPost, upsertAutomation } from "@/lib/bq/writes";
@@ -35,6 +38,8 @@ export type ReminderConfigInput = {
   lead_weeks: number;
   template: string;
   followup_template: string;
+  /** Slack stores only; ClickUp (Austin) keeps its saved destination. */
+  destination?: SlackDestination;
 };
 
 function check(input: ReminderConfigInput): void {
@@ -62,10 +67,25 @@ export async function saveReminderConfigAction(input: ReminderConfigInput): Prom
   if (denied) return denied;
   return asAck(async () => {
     check(input);
-    const prev = await getAutomation(DEFAULT_STORE, REMINDER_AUTOMATION_ID);
+    const store = await currentStore();
+    const slack = SLACK_CHAT[store];
+    const prev = await getAutomation(store, REMINDER_AUTOMATION_ID);
     const drafts = !prev || prev.destination === "drafts";
+    const delivery = slack
+      ? {
+          destination: parseSlackDestination(input.destination ?? prev?.destination),
+          channel_id: slack.coverageChannel.id,
+          dm_user_id: slack.operatorUserId,
+          workspace_id: slack.teamId,
+        }
+      : {
+          destination: drafts ? ("drafts" as const) : ("dm" as const),
+          channel_id: drafts ? prev?.channel_id || REMINDER_DRAFTS_CHANNEL_ID : "",
+          dm_user_id: prev?.dm_user_id || DM_USER_ID,
+          workspace_id: DEFAULT_WORKSPACE_ID,
+        };
     await upsertAutomation(
-      DEFAULT_STORE,
+      store,
       REMINDER_AUTOMATION_ID,
       {
         enabled: input.enabled,
@@ -73,10 +93,7 @@ export async function saveReminderConfigAction(input: ReminderConfigInput): Prom
         hour_local: input.hour_local,
         minute_local: input.minute_local,
         timezone: "America/Chicago",
-        destination: drafts ? "drafts" : "dm",
-        channel_id: drafts ? prev?.channel_id || REMINDER_DRAFTS_CHANNEL_ID : "",
-        dm_user_id: prev?.dm_user_id || DM_USER_ID,
-        workspace_id: DEFAULT_WORKSPACE_ID,
+        ...delivery,
         template: input.template,
         followup_template: input.followup_template,
         lead_weeks: input.lead_weeks,
@@ -89,23 +106,24 @@ export async function saveReminderConfigAction(input: ReminderConfigInput): Prom
 }
 
 /** Roster people with a blank week in this Friday's publish horizon, as `@First Last`. */
-async function flaggedNames(todayIso: string, leadWeeks: number): Promise<string[]> {
-  const [roster, rows] = await Promise.all([adpDirectoryRoster(DEFAULT_STORE), adpUnavailability(DEFAULT_STORE)]);
+async function flaggedNames(store: string, todayIso: string, leadWeeks: number): Promise<string[]> {
+  const [roster, rows] = await Promise.all([adpDirectoryRoster(store), adpUnavailability(store)]);
   const active = roster.filter((r) => r.employment_status === "Active").map((r) => r.employee);
   return unmarkedPeople(active, rows, checkWeeks(todayIso, leadWeeks)).map((n) => `@${displayName(n)}`);
 }
 
 /** Compose for a CT date (default today) from the saved config, or `draft` when given. */
 async function composeFor(dateIso: string | undefined, draft?: ReminderConfigInput) {
-  const cfg = await getAutomation(DEFAULT_STORE, REMINDER_AUTOMATION_ID);
+  const store = await currentStore();
+  const cfg = await getAutomation(store, REMINDER_AUTOMATION_ID);
   const today = dateIso && /^\d{4}-\d{2}-\d{2}$/.test(dateIso) ? dateIso : chicagoTodayIso();
   const days = draft?.days_of_week ?? (cfg ? parseDays(cfg.days_of_week) : REMINDER_DEFAULT_DAYS);
   const lead = clampLeadWeeks(draft?.lead_weeks ?? cfg?.lead_weeks);
   const template = draft?.template ?? (cfg?.template || REMINDER_DEFAULT_TEMPLATE);
   const followup = draft?.followup_template ?? (cfg?.followup_template || REMINDER_DEFAULT_FOLLOWUP);
   const text = reminderKind(today, days) === "reminder" ? template : followup;
-  const flagged = text.includes("{flagged}") ? await flaggedNames(today, lead) : [];
-  return { today, cfg, flagged, ...composeReminder(today, days, template, followup, lead, flagged) };
+  const flagged = text.includes("{flagged}") ? await flaggedNames(store, today, lead) : [];
+  return { store, today, cfg, flagged, ...composeReminder(today, days, template, followup, lead, flagged) };
 }
 
 export async function previewReminderAction(
@@ -122,23 +140,24 @@ export async function previewReminderAction(
 
 /**
  * Send today's saved message now; it counts as today's send, so the scheduled tick then skips
- * today. Drafts delivery starts the Cloud Run job, which types it into the drafts channel.
+ * today. Drafts delivery starts the Cloud Run job, which types it into the drafts channel; a
+ * Slack store's job posts through the Palmetto Texas Operator bot (Slack mentions need its roster lookup).
  */
 export async function sendReminderOnceAction(): Promise<ActionAck<{ message_id: string }>> {
   const denied = await actionDenied("sendReminderOnceAction");
   if (denied) return denied;
   return asAck(async () => {
     const by = await operatorEmail();
-    const { today, cfg, content } = await composeFor(undefined);
-    if (cfg?.destination === "drafts") {
-      const { executionName } = await triggerUnavailabilityReminder(DEFAULT_STORE);
+    const { store, today, cfg, content } = await composeFor(undefined);
+    if (cfg?.destination === "drafts" || SLACK_CHAT[store]) {
+      const { executionName } = await triggerUnavailabilityReminder(store);
       revalidatePath(PATH);
       return { message_id: executionName };
     }
     const dm = await ensureDmChannel([cfg?.dm_user_id || DM_USER_ID], DEFAULT_WORKSPACE_ID);
     const created = await postChatMessage(dm.id, content, DEFAULT_WORKSPACE_ID);
     await insertAutomationPost({
-      store: DEFAULT_STORE,
+      store,
       automation_id: REMINDER_AUTOMATION_ID,
       post_date_ct: today,
       destination: "dm",

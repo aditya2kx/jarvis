@@ -16,7 +16,7 @@ from PIL import Image
 from skills.google_signin import identity
 
 from agents.bhaga.scripts.ingest_inventory import rows_from_task
-from cloud.store_tasks import app as app_mod
+from cloud.store_tasks import admin, app as app_mod
 from cloud.store_tasks import auth, clickup_import as ci, clickup_webhooks as cw, events as ev, model, service as svc
 from cloud.store_tasks import notify, shared_sync, store as st, summaries, tracker as tr, verify_backfill
 
@@ -1099,7 +1099,7 @@ def test_a_project_is_apart_from_the_store_and_seen_only_by_its_members(env):
     token = env.tasks.google_device(SAM)
     dev = {"X-Shop-Device": token}
     assert c.get("/v1/bootstrap", headers=dev).status_code == 403
-    assert c.get("/v1/projects", headers=dev).get_json() == {"store": None, "projects": [{"id": "leads", "name": "Leadership"}]}
+    assert c.get("/v1/projects", headers=dev).get_json() == {"store": None, "stores": [], "projects": [{"id": "leads", "name": "Leadership"}]}
     tr.Tracker(env.tasks).create("owners", "Owners", [{"id": "o1", "name": "Lee", "emails": [OWNER]}], ["o1"], [], "test")
     both = c.get("/v1/projects", headers={"X-Test-Google": OWNER}).get_json()
     assert (both["store"]["id"], both["projects"]) == ("palmetto", [{"id": "owners", "name": "Owners"}])
@@ -1181,3 +1181,54 @@ def test_project_tasks_take_photos_that_only_members_can_see(env):
     mine = c.post(f"{url}/photo", data=shot(), headers=lee, content_type="multipart/form-data").get_json()["photos"][1]["path"]
     assert c.delete(f"{url}/photos/{mine}", headers=sam).status_code == 403
     assert [x["path"] for x in c.delete(f"{url}/photos/{path}", headers=lee).get_json()["photos"]] == [mine]
+
+
+def _second_store(env) -> dict:
+    """Houston, set up as `admin` does: its config, Austin's tasks, and the owner added as a manager there."""
+    cfg = json.loads((pathlib.Path(__file__).parent / "stores" / "houston.json").read_text())
+    env.tasks.put_store(model.StoreConfig.from_dict(cfg))
+    assert admin.copy_templates(env.tasks, "palmetto", "houston") == 5
+    boss = env.tasks.save_staff("houston", {"name": "Lee Manager", "role": "manager"}, "test")
+    env.tasks.add_store_access(OWNER, "houston", boss["id"], "test")
+    return boss
+
+
+def test_copy_templates_keeps_subtasks_under_their_copied_parent(env):
+    _second_store(env)
+    rows = {t.title: t for t in env.tasks.templates("houston")}
+    assert rows["Thu: blender"].parent_id == rows["Deep Clean"].id != "t2"
+    assert rows["Thu: blender"].weekdays == (3,) and rows["Thu: blender"].needs_photo
+    assert env.tasks.store("houston").count_items == env.tasks.store("palmetto").count_items
+    with pytest.raises(svc.Invalid):
+        admin.copy_templates(env.tasks, "palmetto", "houston")
+
+
+def test_person_in_two_stores_switches_between_them(env):
+    hou_boss = _second_store(env)
+    c, google = env.client, {"X-Test-Google": OWNER}
+    stores = c.get("/v1/projects", headers=google).get_json()["stores"]
+    assert [s["id"] for s in stores] == ["palmetto", "houston"]
+    boot = c.get("/v1/bootstrap", headers={**google, "X-Store": "houston"}).get_json()
+    assert boot["store"]["id"] == "houston" and boot["own"]["staff"]["id"] == hou_boss["id"]
+    hou = {**google, "X-Store": "houston", "X-Staff-Session": boot["own"]["session"]}
+    made = c.post("/v1/templates", json={"shift": "closing", "title": "Lock back door"}, headers=hou)
+    assert made.status_code == 200
+    assert "Lock back door" in {t.title for t in env.tasks.templates("houston")}
+    assert "Lock back door" not in {t.title for t in env.tasks.templates("palmetto")}
+    assert c.get("/v1/bootstrap", headers=google).get_json()["store"]["id"] == "palmetto"
+    # A change queued while on Austin still lands in Austin after switching to Houston.
+    aus = c.get("/v1/bootstrap", headers=google).get_json()["own"]["session"]
+    c.post("/v1/templates", json={"shift": "closing", "title": "Queued on Austin"}, headers={**hou, "X-Staff-Session": aus})
+    assert "Queued on Austin" in {t.title for t in env.tasks.templates("palmetto")}
+
+
+def test_store_not_on_the_account_is_refused(env):
+    _second_store(env)
+    assert env.client.get("/v1/bootstrap", headers={"X-Test-Google": OWNER, "X-Store": "dallas"}).status_code == 403
+    assert env.client.get("/v1/bootstrap", headers={**env.ipad, "X-Store": "houston"}).status_code == 403
+
+
+def test_store_without_a_clickup_chat_posts_no_summaries(env):
+    _second_store(env)
+    sent = []
+    assert summaries.post_due(env.tasks, "houston", lambda ch, text: sent.append(ch)) == [] and not sent

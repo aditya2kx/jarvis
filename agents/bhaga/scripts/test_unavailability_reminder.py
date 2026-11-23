@@ -205,5 +205,46 @@ class Run(unittest.TestCase):
         self.assertEqual((result["status"], sent), ("posted", [GOLDEN["cases"][2]["content"]]))
 
 
+class SlackStore(unittest.TestCase):
+    """Houston: Slack DM draft or a direct channel post, never the ClickUp browser job."""
+
+    CFG = {**Run.CFG, "workspace_id": "TC5MS0JEA", "dm_user_id": "U0971TA8SLB", "channel_id": "C0CKZG0DLJJ"}
+
+    def _run(self, dest, channel, flagged=(), day=28):
+        slack, clickup, started = [], [], []
+        with mock.patch.object(ur, "ensure_default_config", return_value={**self.CFG, "destination": dest}), \
+             mock.patch.object(ur.tp, "already_posted", return_value=False), \
+             mock.patch.object(ur.tp, "resolve_target_channel", return_value=(dest, channel)), \
+             mock.patch.object(ur.tp, "record_post", lambda **k: None), \
+             mock.patch.object(ur, "flagged_mentions", return_value=list(flagged)) as flags, \
+             mock.patch("skills.slack_chat.post_message",
+                        lambda ch, content: slack.append((ch, content)) or {"id": "1.2"}), \
+             mock.patch("skills.clickup_chat.post_message",
+                        lambda ch, content, team_id: clickup.append(content) or {"id": "m1"}):
+            result = ur.run_reminder(store="houston", now=dt.datetime(2026, 10, day, 10, tzinfo=CT),
+                                     start_browser_job=lambda: started.append(1) or True)
+        return result, slack, clickup, started, flags
+
+    def test_dm_draft_keeps_the_copy_header(self):
+        result, slack, clickup, started, _ = self._run("slack_dm", "D1")
+        self.assertEqual((result["status"], result["message_id"], clickup, started), ("posted", "1.2", [], []))
+        self.assertEqual(slack, [("D1", GOLDEN["cases"][0]["content"])])
+
+    def test_channel_post_drops_the_draft_header_and_asks_for_slack_mentions(self):
+        result, slack, _, _, flags = self._run("slack_channel", "C0CKZG0DLJJ", flagged=["<@U1>"], day=29)
+        self.assertEqual((result["kind"], slack[0][0]), ("followup", "C0CKZG0DLJJ"))
+        self.assertNotIn(ur.DRAFT_SEPARATOR, slack[0][1])
+        self.assertTrue(slack[0][1].startswith("<@U1> One last reminder"))
+        self.assertTrue(flags.call_args.kwargs["slack"])
+
+    def test_slack_mention_tags_the_matched_member(self):
+        members = [{"id": "U1", "username": "Dolce Johnson"}, {"id": "U2", "username": "Liz O'Rourke"},
+                   {"id": "U3", "username": "Samantha Flores"}, {"id": "U4", "username": "Ariana Flores"}]
+        self.assertEqual(ur.slack_mention("Johnson, Dolce", members), "<@U1>")
+        self.assertEqual(ur.slack_mention("Orourke, Elizabeth", members), "<@U2>")
+        self.assertEqual(ur.slack_mention("Flores, Dylan", members), "@Dylan Flores")
+        self.assertEqual(ur.slack_mention("Smith, Pat", members), "@Pat Smith")
+
+
 if __name__ == "__main__":
     unittest.main()

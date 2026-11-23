@@ -1,0 +1,43 @@
+display_information:
+  name: Palmetto Texas Operator
+  description: Store Tasks and team posts for Palmetto Superfoods stores
+  background_color: "#7C112A"
+features:
+  bot_user:
+    display_name: Palmetto Texas Operator
+    always_online: true
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  slash_commands:
+    - command: /task
+      url: https://store-tasks-slack-4yl5izovxq-uc.a.run.app/slack/commands
+      description: Add a one-off task to today's list
+      usage_hint: "[opening:|mid:|closing:] wipe the front door"
+      should_escape: false
+  shortcuts:
+    - name: Make this a task
+      type: message
+      callback_id: make_task
+      description: Turn this message into a task for today
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - channels:join
+      - channels:read
+      - chat:write
+      - commands
+      - groups:history
+      - groups:read
+      - im:write
+      - users:read
+      - users:read.email
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://store-tasks-slack-4yl5izovxq-uc.a.run.app/slack/interactions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

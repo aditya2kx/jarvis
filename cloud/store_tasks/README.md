@@ -138,6 +138,13 @@ PINs and shop codes are stored as scrypt hashes; five wrong PINs lock that perso
 account can only see its own store. Adding or removing an account in Manage → Sign-in also
 adds or removes it on the app's Google sign-in list, so the two never drift.
 
+**More than one store.** A person's own account has a home store and may also open others
+(`also`: store → their staff id there, set by `admin account` for an email whose home is another
+store). The switcher lists each of their stores; picking one sends `X-Store` on every request and
+the API treats the account as that store's (`Tasks.account_in`), so roles, PIN-free sign-in and
+sessions are per store. A change queued offline in one store still lands there after a switch (its
+session names the store). The shop device and shared accounts have only their own store.
+
 ## Moving off ClickUp
 
 `cutover_date` on the store decides who owns a day: before it, days are mirrored from
@@ -167,6 +174,18 @@ python3 -m cloud.store_tasks.admin photo-rules --store palmetto [--apply]   # ta
 python3 -m cloud.store_tasks.admin count-sections --store palmetto --channel 8cr6661-737   # closing-count sections, from ClickUp's latest closing update
 python3 -m cloud.store_tasks.admin link-templates --store palmetto   # link mirrored tasks to their definitions + earlier photos
 python3 -m cloud.store_tasks.admin photo-sizes --store palmetto      # thumbnail + screen-size copies of stored photos (Cloud Run job store-tasks-photo-sizes)
+```
+
+A store with no ClickUp (Houston) skips the mirror: seed it with its `cutover_date` already set,
+copy another store's task list and closing-count fields, then add people. Its shift summaries are
+not posted anywhere (they go to a ClickUp chat).
+
+```bash
+python3 -m cloud.store_tasks.admin seed --store houston
+python3 -m cloud.store_tasks.shared_sync --store houston                       # ADP crew from bhaga_houston
+python3 -m cloud.store_tasks.admin copy-templates --from palmetto --store houston
+python3 -m cloud.store_tasks.admin manager --store houston --name "First Last"  # no --pin: signs in with Google
+python3 -m cloud.store_tasks.admin account --store houston --email me@example.com --staff "First Last"
 ```
 
 Photos are served at `?size=thumb` (480 px) or `?size=view` (1600 px); copies live under
@@ -237,13 +256,18 @@ day's values, so the two "Mango" fields (a base, a fruit) land in the right sect
 
 ## Slack
 
-The bridge needs a Slack app in the workspace the crew uses, with a bot token
-(`chat:write`, `commands`), a `/task` slash command pointing at `/slack/commands`, and a
-message shortcut with callback id `make_task` pointing at `/slack/interactions`. Store its
-values as secrets `store-tasks-slack-bot-token`, `store-tasks-slack-signing-secret` and
-`store-tasks-slack-channels` (JSON `{"palmetto": "<channel id>"}`); the deploy workflow then
-deploys the bridge. Add a Pub/Sub push subscription on `store-tasks-events` to
-`<bridge url>/events?token=<store-tasks-push-token>`.
+The bridge posts as **Palmetto Texas Operator** (app `A0CKMG7KKHD`) in
+palmettosuperfoods.slack.com, defined by
+[`cloud/store_tasks_slack/slack-app-manifest.yaml`](../store_tasks_slack/slack-app-manifest.yaml).
+Change the app by editing the manifest and pushing it with `apps.manifest.update` (an app
+configuration token from api.slack.com/apps); the icon is `apps/store-tasks/public/icon-512.png`,
+uploaded on the app's Basic Information page. Secrets: `store-tasks-slack-bot-token`,
+`store-tasks-slack-signing-secret` and `store-tasks-slack-channels` (JSON
+`{"houston": "C0CLVRS97NC"}`); the deploy workflow deploys the bridge once they exist. Then add
+a Pub/Sub push subscription on `store-tasks-events` to
+`<bridge url>/events?token=<store-tasks-push-token>`. The Houston channels are private, so the
+bot is invited (`/invite @Palmetto Texas Operator`) rather than joining. The same bot token posts
+Houston's BHAGA automations (`skills/slack_chat`).
 
 | In Slack | Result |
 |---|---|

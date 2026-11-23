@@ -19,7 +19,8 @@ from skills.plaid_api.auth import get_access_token
 from skills.plaid_api.client import PlaidClient
 
 _PROJECT = os.environ.get("BQ_PROJECT", "jarvis-bhaga-prod")
-_DATASET = os.environ.get("BQ_DATASET", "bhaga")
+# BHAGA_BQ_DATASET is what the nightly sets per store (bhaga_houston); BQ_DATASET is the legacy name.
+_DATASET = os.environ.get("BHAGA_BQ_DATASET") or os.environ.get("BQ_DATASET", "bhaga")
 
 
 def _fq(table: str) -> str:

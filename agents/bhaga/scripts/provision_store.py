@@ -43,12 +43,21 @@ def store_env(profile: dict) -> dict[str, str]:
     }
 
 
-def run_request_body(profile: dict) -> dict:
-    """``jobs:run`` body for the store's nightly: same image, store args + env."""
+def run_request_body(profile: dict, module: str = "agents.bhaga.scripts.daily_refresh") -> dict:
+    """``jobs:run`` body for one of the store's jobs: same image, store args + env."""
     return {"overrides": {"containerOverrides": [{
-        "args": ["-m", "agents.bhaga.scripts.daily_refresh", "--store", profile["store_id"]],
+        "args": ["-m", module, "--store", profile["store_id"]],
         "env": [{"name": k, "value": v} for k, v in store_env(profile).items()],
     }]}}
+
+
+# Austin runs these from the webhook against `bhaga`; a Slack store gets its own
+# schedulers so each tick runs with the store's dataset. Both gate on the console
+# config (days, time, on/off) and post at most once per CT day, so the cron is only a tick.
+CHAT_AUTOMATIONS = {
+    "team-pulse": ("agents.bhaga.scripts.team_pulse", "0 8 * * *"),
+    "unavailability-reminder": ("agents.bhaga.scripts.unavailability_reminder", "5 8-20 * * *"),
+}
 
 
 def _sh(cmd: list[str], *, dry_run: bool, check: bool = True) -> subprocess.CompletedProcess:
@@ -87,11 +96,13 @@ def ensure_bucket(profile: dict, *, dry_run: bool) -> None:
              f"--member={member}", f"--role={role}"], dry_run=dry_run)
 
 
-def ensure_scheduler(profile: dict, *, schedule: str, paused: bool, dry_run: bool) -> None:
-    name = f"bhaga-nightly-{profile['store_id']}"
+def ensure_scheduler(profile: dict, *, schedule: str, paused: bool, dry_run: bool,
+                     name: str | None = None,
+                     module: str = "agents.bhaga.scripts.daily_refresh") -> None:
+    name = name or f"bhaga-nightly-{profile['store_id']}"
     uri = (f"https://{REGION}-run.googleapis.com/apis/run.googleapis.com/v1/"
            f"namespaces/{PROJECT}/jobs/{JOB}:run")
-    body = json.dumps(run_request_body(profile))
+    body = json.dumps(run_request_body(profile, module))
     verb = ("update" if _exists(["gcloud", "scheduler", "jobs", "describe", name,
                                  f"--project={PROJECT}", f"--location={REGION}"]) else "create")
     _sh(["gcloud", "scheduler", "jobs", verb, "http", name, f"--project={PROJECT}",
@@ -114,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
                           "both stores share one ADP login and one OTP doc.")
     cli.add_argument("--paused", action="store_true", help="Create the scheduler job paused.")
     cli.add_argument("--skip-dataset", action="store_true")
+    cli.add_argument("--chat-only", action="store_true",
+                     help="Only create the Slack store's team-pulse / unavailability-reminder schedulers.")
     cli.add_argument("--dry-run", action="store_true")
     args = cli.parse_args(argv)
 
@@ -121,10 +134,15 @@ def main(argv: list[str] | None = None) -> int:
     if profile.get("bq_dataset", "bhaga") == "bhaga":
         print(f"[provision] store {args.store} uses the default targets; nothing to provision")
         return 1
-    if not args.skip_dataset:
-        ensure_dataset(profile, dry_run=args.dry_run)
-    ensure_bucket(profile, dry_run=args.dry_run)
-    ensure_scheduler(profile, schedule=args.schedule, paused=args.paused, dry_run=args.dry_run)
+    if not args.chat_only:
+        if not args.skip_dataset:
+            ensure_dataset(profile, dry_run=args.dry_run)
+        ensure_bucket(profile, dry_run=args.dry_run)
+        ensure_scheduler(profile, schedule=args.schedule, paused=args.paused, dry_run=args.dry_run)
+    if profile.get("slack"):
+        for automation, (module, cron) in CHAT_AUTOMATIONS.items():
+            ensure_scheduler(profile, schedule=cron, paused=args.paused, dry_run=args.dry_run,
+                             name=f"bhaga-{automation}-{profile['store_id']}", module=module)
     return 0
 
 

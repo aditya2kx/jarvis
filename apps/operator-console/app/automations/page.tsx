@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { austinOnly } from "@/components/shell/AustinOnly";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { ManageAccess } from "@/components/access/ManageAccess";
 import { pageDenied, sectionAccess } from "@/components/access/guards";
@@ -8,7 +7,9 @@ import { OK_BADGE_CLASS } from "@/lib/run-status";
 import { formatDateTime } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getAutomation, listAutomationPosts } from "@/lib/bq/queries";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
+import { SLACK_CHAT, storeDisplayName } from "@/lib/config/stores";
+import { parseSlackDestination, slackDestinationLabel } from "@/lib/automations/slackDestination";
 import {
   AUTOMATION_ID,
   cadenceSummary,
@@ -25,20 +26,21 @@ export const dynamic = "force-dynamic";
 export default async function AutomationsPage() {
   const denied = await pageDenied("automations");
   if (denied) return denied;
-  const only = await austinOnly("Automations");
-  if (only) return only;
   const can = await sectionAccess("automations");
+  const store = await currentStore();
+  const slack = SLACK_CHAT[store] ?? null;
+  const chat = slack ? "Slack" : "ClickUp";
   let error: string | undefined;
   let cfg = null;
   let lastPost: string | null = null;
   let reminder = null;
   let reminderLast: string | null = null;
   try {
-    cfg = await getAutomation(DEFAULT_STORE, AUTOMATION_ID);
-    const posts = await listAutomationPosts(DEFAULT_STORE, AUTOMATION_ID, 1);
+    cfg = await getAutomation(store, AUTOMATION_ID);
+    const posts = await listAutomationPosts(store, AUTOMATION_ID, 1);
     lastPost = posts[0]?.posted_at ?? null;
-    reminder = await getAutomation(DEFAULT_STORE, REMINDER_AUTOMATION_ID);
-    const sent = await listAutomationPosts(DEFAULT_STORE, REMINDER_AUTOMATION_ID, 1);
+    reminder = await getAutomation(store, REMINDER_AUTOMATION_ID);
+    const sent = await listAutomationPosts(store, REMINDER_AUTOMATION_ID, 1);
     reminderLast = sent[0]?.posted_at ?? null;
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
@@ -74,7 +76,13 @@ export default async function AutomationsPage() {
         <p className="text-sm text-muted-foreground">
           Data unavailable: {error}. Apply migration 054 if tables are missing.
         </p>
-      ) : !can("team-pulse") ? null : (
+      ) : !can("team-pulse") ? null : slack ? (
+        <NotYetCard
+          title="Team pulse (Slack)"
+          blurb="Review-bonus leaderboard + motivating closer → Slack"
+          reason={`Turns on once Google reviews are connected for ${storeDisplayName(store)}.`}
+        />
+      ) : (
         <Link
           href="/automations/team-pulse"
           className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -116,7 +124,7 @@ export default async function AutomationsPage() {
           <Card className="transition-colors hover:bg-muted/40">
             <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
               <div>
-                <CardTitle className="text-base">Unavailability reminder (ClickUp)</CardTitle>
+                <CardTitle className="text-base">Unavailability reminder ({chat})</CardTitle>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Drafts a ready-to-post nudge for you to update ADP unavailability before the Friday publish
                 </p>
@@ -127,6 +135,14 @@ export default async function AutomationsPage() {
             </CardHeader>
             <CardContent className="flex flex-col gap-1 text-sm text-muted-foreground">
               <p>{reminderCadence}</p>
+              {slack && (
+                <p>
+                  Destination:{" "}
+                  <span className="text-foreground">
+                    {slackDestinationLabel(parseSlackDestination(reminder?.destination), slack, "coverage")}
+                  </span>
+                </p>
+              )}
               <p>
                 Last sent: <span className="text-foreground">{reminderLast ? formatDateTime(reminderLast) : "—"}</span>
               </p>
@@ -135,7 +151,13 @@ export default async function AutomationsPage() {
         </Link>
       )}
 
-      {can("monthly-recognition") ? (
+      {!can("monthly-recognition") ? null : slack ? (
+        <NotYetCard
+          title="Monthly recognition"
+          blurb="MVP + High Five winners → Square gift cards, email, and the team post"
+          reason={`Reads winners from ClickUp today; ${storeDisplayName(store)}'s Slack source comes with its first award month.`}
+        />
+      ) : (
         <Link
           href="/automations/monthly-recognition"
           className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -155,7 +177,22 @@ export default async function AutomationsPage() {
             </CardContent>
           </Card>
         </Link>
-      ) : null}
+      )}
     </div>
+  );
+}
+
+function NotYetCard({ title, blurb, reason }: { title: string; blurb: string; reason: string }) {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
+        <div>
+          <CardTitle className="text-base">{title}</CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">{blurb}</p>
+        </div>
+        <Badge variant="secondary">Not set up</Badge>
+      </CardHeader>
+      <CardContent className="text-sm text-muted-foreground">{reason}</CardContent>
+    </Card>
   );
 }

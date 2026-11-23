@@ -7,6 +7,7 @@ import {
   planHorizonAdditions,
 } from "@/lib/inventory/restockHorizon";
 import { isConsolePreview } from "@/lib/config/preview";
+import type { SlackDestination } from "@/lib/automations/slackDestination";
 
 // Every write here mirrors the exact statement cloud/webhook/handler.py uses
 // (see handler.py::_restock_set_schedule/_restock_clear_orders/
@@ -1108,8 +1109,8 @@ export type AutomationUpsert = {
   hour_local: number;
   minute_local: number;
   timezone: string;
-  /** `drafts` (unavailability reminder): typed into `channel_id` through the ClickUp web app. */
-  destination: "dm" | "channel" | "drafts";
+  /** `drafts` (unavailability reminder): typed into `channel_id` through the ClickUp web app. `slack_*`: a Slack store. */
+  destination: "dm" | "channel" | "drafts" | SlackDestination;
   channel_id: string;
   dm_user_id: string;
   workspace_id: string;

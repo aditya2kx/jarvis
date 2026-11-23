@@ -23,6 +23,13 @@ import {
   reminderKind,
 } from "@/lib/automations/unavailabilityReminder";
 import {
+  parseSlackDestination,
+  SLACK_DESTINATIONS,
+  slackDestinationLabel,
+  type SlackChat,
+  type SlackDestination,
+} from "@/lib/automations/slackDestination";
+import {
   previewReminderAction,
   saveReminderConfigAction,
   sendReminderOnceAction,
@@ -32,12 +39,14 @@ type Props = {
   initial: AutomationRow | null;
   posts: AutomationPostRow[];
   todayIso: string;
+  /** Set for a Slack store (Houston); null = ClickUp (Austin). */
+  slack: SlackChat | null;
 };
 
 const textareaClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-export function ReminderEditor({ initial, posts, todayIso }: Props) {
+export function ReminderEditor({ initial, posts, todayIso, slack }: Props) {
   const { run, isPending, stage, error } = useConsoleAction();
   const [enabled, setEnabled] = useState(() => {
     const v = initial?.enabled as unknown;
@@ -49,7 +58,11 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
   const [hour, setHour] = useState(initial?.hour_local ?? REMINDER_DEFAULT_HOUR);
   const [minute, setMinute] = useState(initial?.minute_local ?? 0);
   const [leadWeeks, setLeadWeeks] = useState(() => clampLeadWeeks(initial?.lead_weeks));
-  const drafts = !initial || initial.destination === "drafts";
+  const [slackDest, setSlackDest] = useState<SlackDestination>(() =>
+    parseSlackDestination(initial?.destination),
+  );
+  const drafts = slack ? false : !initial || initial.destination === "drafts";
+  const draftsLabel = slack ? slackDestinationLabel(slackDest, slack, "coverage") : null;
   const [template, setTemplate] = useState(initial?.template || REMINDER_DEFAULT_TEMPLATE);
   const [followup, setFollowup] = useState(
     initial?.followup_template || REMINDER_DEFAULT_FOLLOWUP,
@@ -64,6 +77,7 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
     [days, hour, minute],
   );
   const firstDay = days.length ? DAY_LABELS[Math.min(...days)] : "—";
+  const sendLabel = slack ? "Send now" : drafts ? "Send draft now" : "DM me now";
   const input = {
     enabled,
     days_of_week: days,
@@ -72,6 +86,7 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
     lead_weeks: leadWeeks,
     template,
     followup_template: followup,
+    ...(slack ? { destination: slackDest } : {}),
   };
 
   function toggleDay(d: number) {
@@ -93,8 +108,12 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
 
   async function onSendNow() {
     await run(() => sendReminderOnceAction(), {
-      saving: drafts ? "Starting…" : "Sending…",
-      done: drafts ? "Started — the draft lands in #jarvis-drafts in a few minutes." : "Sent to your DM.",
+      saving: drafts || slack ? "Starting…" : "Sending…",
+      done: slack
+        ? "Started — it lands in Slack in a few minutes (uses the saved destination)."
+        : drafts
+          ? "Started — the draft lands in #jarvis-drafts in a few minutes."
+          : "Sent to your DM.",
     });
   }
 
@@ -211,13 +230,42 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Checked every 15 minutes; sends you one draft per day, at or after this time
+            {slack ? "Checked hourly" : "Checked every 15 minutes"}; sends one message per day, at or after this time
             {drafts ? ", typed into #jarvis-drafts so @mentions are real and copy-paste keeps them" : ""}.
             Weeks ahead = how far the Friday publish reaches; the follow-up tags everyone with a week
             in that horizon (from the week after next) that has no ADP unavailability.
           </p>
         </CardContent>
       </Card>
+
+      {slack && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Where to post</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex flex-wrap gap-2">
+              {SLACK_DESTINATIONS.map((d) => (
+                <Button
+                  key={d}
+                  type="button"
+                  variant={slackDest === d ? "default" : "outline"}
+                  className="min-h-11"
+                  aria-pressed={slackDest === d}
+                  onClick={() => setSlackDest(d)}
+                >
+                  {slackDestinationLabel(d, slack, "coverage")}
+                </Button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Drafts keep a copy-ready header for you to forward; posting to the channel sends the
+              message straight to the crew. Slack members are @-tagged when a single member matches
+              the ADP name.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -295,11 +343,12 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
           disabled={isPending}
           onClick={() => void onSendNow()}
         >
-          {drafts ? "Send draft now" : "DM me now"}
+          {sendLabel}
         </Button>
       </div>
       <p className="-mt-2 text-xs text-muted-foreground">
-        {drafts ? "Send draft now" : "DM me now"} sends today’s saved message and counts as today’s send.
+        {sendLabel} sends today’s saved message{draftsLabel ? ` (${draftsLabel.toLowerCase()})` : ""} and counts as
+        today’s send.
       </p>
       {(stage || error) && (
         <p className={`text-sm ${error ? "text-destructive" : "text-muted-foreground"}`}>
@@ -317,7 +366,7 @@ export function ReminderEditor({ initial, posts, todayIso }: Props) {
             <pre className="whitespace-pre-wrap rounded-md bg-muted/50 p-3 text-sm">{preview.content}</pre>
             {preview.flagged.length > 0 && (
               <p className="text-xs text-muted-foreground">
-                {preview.flagged.length} tagged for a blank week in the horizon. In ClickUp each
+                {preview.flagged.length} tagged for a blank week in the horizon. In {slack ? "Slack" : "ClickUp"} each
                 becomes a real mention when a single member matches the name.
               </p>
             )}

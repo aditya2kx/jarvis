@@ -68,6 +68,33 @@ export const RECOGNITION: Record<
   },
 };
 
+type SlackChannel = { id: string; name: string };
+
+/**
+ * Crew chat for stores on Slack — mirrors store-profiles/<store>.json `slack`. A store
+ * missing here (Austin) is on ClickUp. The Palmetto Texas Operator bot posts for it.
+ */
+export const SLACK_CHAT: Partial<
+  Record<
+    StoreId,
+    {
+      teamId: string;
+      operatorUserId: string;
+      draftsChannel: SlackChannel;
+      runningChannel: SlackChannel;
+      coverageChannel: SlackChannel;
+    }
+  >
+> = {
+  houston: {
+    teamId: "TC5MS0JEA",
+    operatorUserId: "U0971TA8SLB",
+    draftsChannel: { id: "C0CLX9XK396", name: "palmetto-app-drafts" },
+    runningChannel: { id: "C0CLVRS97NC", name: "running-houston-heights-palmetto" },
+    coverageChannel: { id: "C0CKZG0DLJJ", name: "shifts-coverage-trade-houston-heights" },
+  },
+};
+
 export function storeDisplayName(store: string): string {
   return STORE_DISPLAY[store] ?? store;
 }

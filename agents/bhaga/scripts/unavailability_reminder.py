@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import tempfile
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -63,6 +64,7 @@ DEFAULT_FOLLOWUP = (
     "Please keep your ADP unavailability updated at least {lead_weeks} weeks ahead."
 )
 
+DRAFT_SEPARATOR = "\n\n---\n\n"
 _HEADERS = {
     "reminder": "Unavailability reminder for Shift Coverage & Trades — copy and post:",
     "followup": "Unavailability follow-up — post as a reply in this week's reminder thread:",
@@ -124,7 +126,7 @@ def compose(
         .replace("{lead_weeks}", str(lead_weeks))
         .strip()
     )
-    return kind, f"{_HEADERS[kind]}\n\n---\n\n{body}"
+    return kind, f"{_HEADERS[kind]}{DRAFT_SEPARATOR}{body}"
 
 
 def is_due(now: dt.datetime, *, days: list[int], hour: int, minute: int, enabled: bool) -> bool:
@@ -291,24 +293,42 @@ def _as_date(v: Any) -> dt.date | None:
     return dt.date.fromisoformat(str(v)[:10])
 
 
-def unmarked_mentions(store: str, weeks: list[dt.date], workspace_id: str) -> list[tuple[str, list[dt.date]]]:
+def slack_mention(canonical: str, members: list[dict]) -> str:
+    """``<@id>`` for the one Slack member; falls back to a unique last name (Elizabeth Orourke → Liz O'Rourke)."""
+    m = match_member(canonical, members)
+    if not m:
+        last = re.sub(r"[^a-z]", "", _name_parts(canonical)[1])
+        hits = [x for x in members
+                if last and re.sub(r"[^a-z]", "", ((x.get("username") or "").lower().split() or [""])[-1]) == last]
+        m = hits[0] if len(hits) == 1 else None
+    return f"<@{m['id']}>" if m else f"@{tp.display_name(canonical)}"
+
+
+def unmarked_mentions(store: str, weeks: list[dt.date], workspace_id: str,
+                      *, slack: bool = False) -> list[tuple[str, list[dt.date]]]:
     """(mention token, weeks with no unavailability) for each active person who has such a week."""
     from skills.clickup_chat import list_members
+    from skills.slack_chat import list_members as slack_members
 
     if not weeks:
         return []
     weeks = sorted(weeks)
     rows = load_unavailability(store, weeks[0], weeks[-1] + dt.timedelta(days=6))
     names = unmarked_weeks(load_roster(store), rows, weeks)
-    members = list_members(workspace_id)
-    aliases = load_mention_aliases(store)
     logger.info("unavailability_reminder: flagged %d of the roster for weeks %s",
                 len(names), [w.isoformat() for w in weeks])
+    if slack:
+        members = slack_members()
+        return [(slack_mention(n, members), empty) for n, empty in names.items()]
+    members = list_members(workspace_id)
+    aliases = load_mention_aliases(store)
     return [(mention(n, members, aliases), empty) for n, empty in names.items()]
 
 
-def flagged_mentions(store: str, today: dt.date, lead_weeks: int, workspace_id: str) -> list[str]:
-    return [m for m, _weeks in unmarked_mentions(store, check_weeks(today, lead_weeks), workspace_id)]
+def flagged_mentions(store: str, today: dt.date, lead_weeks: int, workspace_id: str,
+                     *, slack: bool = False) -> list[str]:
+    weeks = check_weeks(today, lead_weeks)
+    return [m for m, _weeks in unmarked_mentions(store, weeks, workspace_id, slack=slack)]
 
 
 def ensure_default_config(store: str, *, updated_by: str) -> dict:
@@ -328,10 +348,12 @@ def ensure_default_config(store: str, *, updated_by: str) -> dict:
         "hour_local": DEFAULT_HOUR,
         "minute_local": 0,
         "timezone": tp.DEFAULT_TZ,
-        "destination": "drafts",
-        "channel_id": DRAFTS_CHANNEL_ID,
-        "dm_user_id": tp.DEFAULT_DM_USER_ID,
-        "workspace_id": tp.DEFAULT_WORKSPACE_ID,
+        **(tp.chat_defaults(store, "shift_coverage_channel") if tp.slack_profile(store) else {
+            "destination": "drafts",
+            "channel_id": DRAFTS_CHANNEL_ID,
+            "dm_user_id": tp.DEFAULT_DM_USER_ID,
+            "workspace_id": tp.DEFAULT_WORKSPACE_ID,
+        }),
         "template": DEFAULT_TEMPLATE,
         "followup_template": DEFAULT_FOLLOWUP,
         "lead_weeks": DEFAULT_LEAD_WEEKS,
@@ -413,14 +435,12 @@ def run_reminder(
     flagged: list[str] = []
     if "{flagged}" in (template if kind == "reminder" else followup):
         try:
-            flagged = flagged_mentions(store, today, lead, workspace)
+            flagged = flagged_mentions(store, today, lead, workspace, slack=dest.startswith("slack_"))
         except Exception as exc:  # noqa: BLE001 — the reminder still goes out untagged
             logger.error("BREADCRUMB unavailability_reminder flags failed store=%s date=%s: %s", store, today, exc)
     kind, content = compose(today, days, template, followup, lead_weeks=lead, flagged=flagged)
     if dry_run:
         return {"status": "dry_run", "kind": kind, "content": content, "flagged": flagged, **base}
-
-    from skills.clickup_chat import post_message
 
     sent: dict[str, Any] = {}
     message_id = ""
@@ -434,9 +454,10 @@ def run_reminder(
             dest = "dm"
             content += f"\n\n(Sent by the API because the browser send failed: {str(exc)[:160]})"
     if dest != "drafts":
-        dest, channel_id = tp.resolve_target_channel({**cfg, "destination": dest})
-        created = post_message(channel_id, content, team_id=workspace)
-        message_id = str(created.get("id") or "")
+        dest, channel_id = tp.resolve_target_channel({**cfg, "destination": dest}, store)
+        if dest == "slack_channel":
+            content = content.split(DRAFT_SEPARATOR, 1)[-1]
+        message_id = tp.send(dest, channel_id, content, workspace)
     tp.record_post(
         store=store, post_date_ct=today, destination=dest, channel_id=channel_id,
         message_id=message_id or None, content=content, dry_run=False, trigger=trigger,

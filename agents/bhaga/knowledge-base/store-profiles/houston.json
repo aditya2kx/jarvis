@@ -20,6 +20,24 @@
     "close_local_time": "18:00",
     "_doc": "From the Square location's business_hours (2026-11-16)."
   },
+  "slack": {
+    "team_id": "TC5MS0JEA",
+    "workspace": "palmettosuperfoods.slack.com",
+    "running_channel": {
+      "id": "C0CLVRS97NC",
+      "name": "running-houston-heights-palmetto"
+    },
+    "shift_coverage_channel": {
+      "id": "C0CKZG0DLJJ",
+      "name": "shifts-coverage-trade-houston-heights"
+    },
+    "drafts_channel": {
+      "id": "C0CLX9XK396",
+      "name": "palmetto-app-drafts"
+    },
+    "operator_user_id": "U0971TA8SLB",
+    "_doc": "Houston's crew chat is Slack, not ClickUp. Team pulse and the unavailability reminder post as the Palmetto bot (skills/slack_chat, secret store-tasks-slack-bot-token); drafts go to drafts_channel (slack_drafts), or to operator_user_id by DM (slack_dm)."
+  },
   "square": {
     "oauth_secret": "square_palmetto_oauth",
     "location_id": "L6AQ95CN5NG4W",

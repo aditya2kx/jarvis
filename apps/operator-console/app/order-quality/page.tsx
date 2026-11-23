@@ -1,6 +1,5 @@
 import { kdsBySource, kdsOrderInvestigation, orderQualityByGrain } from "@/lib/bq/queries";
-import { austinOnly } from "@/components/shell/AustinOnly";
-import { DEFAULT_STORE } from "@/lib/auth/identity";
+import { currentStore } from "@/lib/config/current-store";
 import { dateSortKey, formatDate } from "@/lib/format";
 import { storeDisplayName } from "@/lib/config/stores";
 import { BarChartCard } from "@/components/charts/BarChartCard";
@@ -65,8 +64,7 @@ export default async function OrderQualityPage({
 }) {
   const denied = await pageDenied("order-quality");
   if (denied) return denied;
-  const only = await austinOnly("Order Quality");
-  if (only) return only;
+  const store = await currentStore();
   const can = await sectionAccess("order-quality");
   const sp = await searchParams;
   const win = await resolvePageRange(sp.range, sp.from, sp.to);
@@ -207,7 +205,7 @@ export default async function OrderQualityPage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Order Quality"
-        subtitle={`KDS prep time and on-time performance · ${storeDisplayName(DEFAULT_STORE)}`}
+        subtitle={`KDS prep time and on-time performance · ${storeDisplayName(store)}`}
         right={
           <>
             <FilterPills

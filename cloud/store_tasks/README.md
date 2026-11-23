@@ -237,13 +237,18 @@ day's values, so the two "Mango" fields (a base, a fruit) land in the right sect
 
 ## Slack
 
-The bridge needs a Slack app in the workspace the crew uses, with a bot token
-(`chat:write`, `commands`), a `/task` slash command pointing at `/slack/commands`, and a
-message shortcut with callback id `make_task` pointing at `/slack/interactions`. Store its
-values as secrets `store-tasks-slack-bot-token`, `store-tasks-slack-signing-secret` and
-`store-tasks-slack-channels` (JSON `{"palmetto": "<channel id>"}`); the deploy workflow then
-deploys the bridge. Add a Pub/Sub push subscription on `store-tasks-events` to
-`<bridge url>/events?token=<store-tasks-push-token>`.
+The bridge posts as **Palmetto Texas Operator** (app `A0CKMG7KKHD`) in
+palmettosuperfoods.slack.com, defined by
+[`cloud/store_tasks_slack/slack-app-manifest.yaml`](../store_tasks_slack/slack-app-manifest.yaml).
+Change the app by editing the manifest and pushing it with `apps.manifest.update` (an app
+configuration token from api.slack.com/apps); the icon is `apps/store-tasks/public/icon-512.png`,
+uploaded on the app's Basic Information page. Secrets: `store-tasks-slack-bot-token`,
+`store-tasks-slack-signing-secret` and `store-tasks-slack-channels` (JSON
+`{"houston": "C0CLVRS97NC"}`); the deploy workflow deploys the bridge once they exist. Then add
+a Pub/Sub push subscription on `store-tasks-events` to
+`<bridge url>/events?token=<store-tasks-push-token>`. The Houston channels are private, so the
+bot is invited (`/invite @Palmetto Texas Operator`) rather than joining. The same bot token posts
+Houston's BHAGA automations (`skills/slack_chat`).
 
 | In Slack | Result |
 |---|---|

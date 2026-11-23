@@ -637,6 +637,16 @@ gcloud scheduler jobs create http bhaga-unavailability-reminder \
 BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.unavailability_reminder --dry-run --date 2026-10-29
 BHAGA_DATASTORE=bigquery python3 -m agents.bhaga.scripts.unavailability_reminder --once --in-browser-job   # laptop with a session
 ```
+
+**Houston (Slack).** A store whose profile has a `slack` block posts through `skills/slack_chat` as the
+Palmetto Texas Operator bot, not ClickUp: `slack_drafts` (copy-ready draft in `#palmetto-app-drafts`,
+the default), `slack_dm` (draft to the operator) or `slack_channel` (straight to
+`#shifts-coverage-trade-houston-heights`), picked on the console page with Houston selected. The webhook
+tick serves `bhaga` only, so Houston has its own job schedulers running the module with the store's
+dataset: `python3 -m agents.bhaga.scripts.provision_store --store houston --chat-only` creates
+`bhaga-unavailability-reminder-houston` (`5 8-20 * * *`) and `bhaga-team-pulse-houston` (`0 8 * * *`;
+its config row stays off until Houston's Google reviews are wired). Same day/time gate and once-per-day
+dedupe as Austin.
 Logs: `unavailability_reminder result=` on `bhaga-webhook` (`status=queued` = job started);
 `[unavailability-reminder] mode=` and `unavailability_reminder: sent kind=… dest=… chips=` on the job;
 `BREADCRUMB unavailability_reminder failed` / `… browser send failed` / `… flags failed`.

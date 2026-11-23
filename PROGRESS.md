@@ -1,3 +1,7 @@
+## 2026-11-22 — Houston connectors: Slack automations, Order Quality, Amex
+
+Houston's crew chat is Slack (palmettosuperfoods.slack.com), posted by the new **Palmetto Texas Operator** bot (`skills/slack_chat`, app `A0CKMG7KKHD`, manifest `cloud/store_tasks_slack/slack-app-manifest.yaml`). The unavailability reminder drafts into `#palmetto-app-drafts` by default (console picker: drafts / DM / straight to `#shifts-coverage-trade-houston-heights`) on its own `bhaga-unavailability-reminder-houston` scheduler; team pulse waits for Houston Google reviews; monthly recognition stays Austin-only until Houston has a Slack recognition source. Order Quality serves Houston. **Fix:** Plaid sync/categorize now honour `BHAGA_BQ_DATASET` — Houston's Amex had been routed to Austin's `bhaga`.
+
 ## 2026-11-22 — Houston nightly first run: ADP credential + model Sheet (Issue #547)
 
 **Symptom:** first Houston backfill after #546 (`bhaga-daily-refresh-98c56`) failed `adp` (`Credential 'adp_houston_login' not found`, before the user ID was typed, so no OTP) and `materialize_model_bq` (`KeyError: 'google_sheets'`). Square + KDS loaded. **Fix:** the ADP runner uses the profile's `adp_run.credential_handle` (both stores share `adp_palmetto_login`); materialize skips Sheet training exclusions for a store without a model Sheet. Houston nightly `bhaga-nightly-houston` resumed 2026-11-22 (22:30 CT).

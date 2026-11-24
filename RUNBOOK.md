@@ -1886,8 +1886,17 @@ A save based on a stale version is refused. Check:
 `bq query 'SELECT store, version, created_by, created_at, note FROM bhaga.labor_schedule_rules ORDER BY version DESC'`.
 The rules also carry **Staffing basics** (versioned the same way; versions saved before them load the
 defaults and are labeled "before staffing basics"): orders one person handles per hour (default 4),
-minimum people while staffed (1), staffed hours (6:30 AM–8:30 PM, open/close duties included) and the
-shortest draft shift (4.5 h — ADP's shortest regular shift). The **Needed** line is
+minimum people while staffed (1), staffed hours and the
+shortest draft shift (4.5 h — ADP's shortest regular shift). **Staffed hours come from Square** (2026-11-23):
+each weekday's window is the store's Square location `business_hours` minus **In before open** and plus
+**Stay after close** (`staffing.prepMin` / `closeoutMin`, default 30 min each; a day Square lists no hours
+for is closed and drafts nothing). The Labor page reads Square live (cached 1 h per console instance); every
+nightly `bhaga-daily-refresh` copies the hours into `<dataset>.square_location_hours` (migration 099,
+`[store_hours]` log line, never fatal) — the page falls back to the newest copy with an amber note when
+Square can't be reached, and calls out a change (live vs last night, or between copies) for 14 days. The
+fixed `openMin`/`closeMin` (6:30 AM–8:30 PM) apply only when neither is available. Check:
+`bq query 'SELECT * FROM bhaga_houston.square_location_hours ORDER BY as_of_date DESC, day_of_week LIMIT 14'`.
+The **Needed** line is
 ⌈median orders for that weekday + hour over the last 8 weeks ÷ orders per person⌉, never below the
 minimum, then day & time rules replace it in their window (e.g. closing duties: 2 people 7:30–8:30 PM).
 The weekly hours goal is a ceiling for order-driven draft shifts, not a target. Drafts start tomorrow.

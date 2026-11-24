@@ -52,7 +52,8 @@ import { PunchGapsPanel } from "@/components/labor/PunchGapsPanel";
 import { PunchFixesNotInHoursNotice } from "@/components/labor/PunchFixesNotInHoursNotice";
 import { buildPunchGaps, mergePunchDays, type PunchGap } from "@/lib/labor/punch-gaps";
 import { scheduleRulesHistory } from "@/lib/labor/schedule-rules-store";
-import type { RulesVersion } from "@/lib/labor/schedule-inputs";
+import type { RulesVersion, StoreHours } from "@/lib/labor/schedule-inputs";
+import { storeHours } from "@/lib/labor/store-hours";
 import { SyncAdpButton } from "@/components/labor/SyncAdpButton";
 import { isConsolePreview } from "@/lib/config/preview";
 import { TRAINING_HISTORY_FROM } from "@/lib/labor/new-hire-training";
@@ -220,6 +221,7 @@ export default async function LaborPage({
   let trendDays: TrendDay[] = [];
   let deliveryDates: string[] = [];
   let rulesHistory: RulesVersion[] = [];
+  let openingHours: StoreHours | null = null;
   let unavailability: UnavailabilityRow[] = [];
   let unavailabilityEvents: UnavailabilityEventRow[] = [];
   let upcomingShifts: LaborScheduledShiftDayRow[] = [];
@@ -311,6 +313,7 @@ export default async function LaborPage({
       hires,
       pastShifts,
       trend,
+      hours,
     ] = await Promise.all([
       punchWin ? laborByGrain(punchWin, grain, stat) : Promise.resolve([]),
       storeConfig(store),
@@ -381,8 +384,10 @@ export default async function LaborPage({
           }).catch(() => [])
         : Promise.resolve([]),
       laborTrendDays(todayIso).catch(() => []),
+      storeHours(store),
     ]);
     trendDays = trend;
+    openingHours = hours;
     hireDates = hires;
     trainingActuals = pastShifts;
     unavailabilityEvents = unavailEvents;
@@ -881,6 +886,7 @@ export default async function LaborPage({
               goalHoursWeek={goalLaborHoursWeek}
               deliveryDates={deliveryDates}
               rulesHistory={rulesHistory}
+              storeHours={openingHours}
               unavailability={unavailability}
               activeStaff={activeStaff}
               savedPushRows={savedPushRows}

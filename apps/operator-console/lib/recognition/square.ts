@@ -48,6 +48,12 @@ async function squareFetch(path: string, init: { method?: string; body?: unknown
   return body;
 }
 
+/** A Square location (name, timezone, business_hours). Needs MERCHANT_PROFILE_READ. */
+export async function getLocation(locationId: string): Promise<Record<string, unknown>> {
+  const body = await squareFetch(`/v2/locations/${encodeURIComponent(locationId)}`);
+  return (body.location as Record<string, unknown>) ?? {};
+}
+
 /** Can this token read gift cards? Returns null when OK, else the reason. */
 export async function giftCardScopeProblem(): Promise<string | null> {
   try {

@@ -153,6 +153,22 @@ def _load_profile(store: str) -> dict:
     return json.loads((STORE_PROFILES / f"{store}.json").read_text())
 
 
+def _snapshot_store_hours(store: str) -> None:
+    """Copy the store's Square opening hours into BQ (Labor page fallback). Never fatal."""
+    try:
+        from skills.square_api import location_hours  # noqa: PLC0415
+        profile = json.loads((STORE_PROFILES / f"{store}.json").read_text())
+        location_id = (profile.get("square") or {}).get("location_id")
+        if not location_id:
+            print(f"[store_hours] SKIP store={store}: no square.location_id in profile")
+            return
+        n = location_hours.snapshot(store, location_id, datetime.datetime.now(CT).date())
+        print(f"[store_hours] store={store} location={location_id} rows={n}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[store_hours] WARN store={store}: snapshot failed (Labor page keeps the "
+              f"last copy): {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
 def _assert_store_targets(store: str) -> None:
     """Refuse to run when the env points this store at another store's data.
 
@@ -3235,6 +3251,7 @@ def _run_refresh(run_id: str) -> int:
                 print(f"[schema] applied migrations: {applied}", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001
             print(f"[schema] WARN: ensure_schema failed: {exc}", file=sys.stderr)
+        _snapshot_store_hours(args.store)
 
     # ── Completeness gate ────────────────────────────────────────────
     # Refuse to run for a refresh_date whose data sources are still in

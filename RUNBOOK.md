@@ -957,7 +957,9 @@ Two steps now close this, mirroring what the console workflow adopted in #240:
 `Route 100% traffic to latest revision` (removes the cause) and `Verify deployed units run this
 commit` (fails the workflow if the serving revision's image digest is not the one built from
 `github.sha`). The job is checked by tag, the service by digest — Cloud Run resolves tags to
-digests on the revision.
+digests on the revision. The pushed tag is an OCI image index (amd64 image + build attestation) and
+the revision records the amd64 manifest's digest, so the check accepts the index digest or its
+`linux/amd64` child (#552).
 
 To check by hand, or if the verify step fails:
 

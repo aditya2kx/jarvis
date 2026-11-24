@@ -35,7 +35,7 @@ export function MobileTabBar({ allowedHrefs }: { allowedHrefs?: readonly string[
     <nav
       aria-label="Main"
       data-testid="mobile-tab-bar"
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg supports-[backdrop-filter]:bg-background/75 md:hidden"
+      className="fixed inset-x-0 bottom-[calc(var(--vp-gap,0px)*-1)] z-40 border-t border-border bg-background/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg supports-[backdrop-filter]:bg-background/75 md:hidden"
     >
       <div className="mx-auto flex h-[var(--tabbar-h)] max-w-lg items-stretch gap-1 px-2 py-1">
         {tabs.map((item) => {

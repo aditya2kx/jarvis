@@ -13,6 +13,7 @@ import { getAccess } from "@/lib/access/server";
 import { allowedHrefs } from "@/lib/access/policy";
 import { currentStore } from "@/lib/config/current-store";
 import { StoreGuard } from "@/components/shell/StoreGuard";
+import { ViewportGap } from "@/components/shell/ViewportGap";
 
 // Inter's optical-size axis gives 12–13px table and chart text the open "text" cut and
 // page titles the tighter "display" cut; figures are tabular where numbers stack.
@@ -40,7 +41,8 @@ export const metadata: Metadata = {
 };
 
 // viewport-fit=cover lets the shell paint under the notch / home indicator; Topbar and
-// MobileTabBar pad by env(safe-area-inset-*) so nothing interactive sits there.
+// MobileTabBar pad by env(safe-area-inset-*) so nothing interactive sits there. --vp-gap
+// (ViewportGap) makes up an iOS home-screen viewport that stops short of the screen.
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
@@ -79,7 +81,8 @@ export default async function RootLayout({
           <ActionToastProvider>
             <StoreGuard store={store}>
             <IapLoginBeacon />
-            <div className="flex h-dvh overflow-hidden">
+            <ViewportGap />
+            <div className="flex h-[calc(100dvh+var(--vp-gap,0px))] overflow-hidden">
               <Sidebar allowedHrefs={navHrefs} />
               <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                 <Topbar store={store} canViewAs={access.realIsOwner && !access.viewingAs} />

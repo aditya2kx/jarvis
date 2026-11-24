@@ -1,3 +1,7 @@
+## 2026-11-24 — Console on the iPhone home screen; Houston labor rules
+
+The Operator Console added to an iPhone home screen no longer leaves a strip under the tab bar. On iOS 26 a home-screen web app's viewport stops short of the screen by the status-bar inset, so `ViewportGap` publishes the shortfall as `--vp-gap`, and the shell, tab bar, sheets and toasts make it up. It is 0 in Safari tabs and on desktop. Houston's labor rules start as a copy of Austin's store-wide ones (`bhaga_houston.labor_schedule_rules` v1, from Austin v33): staffing basics and training counts, without Austin's staff rules or trainer names.
+
 ## 2026-11-23 — Leadership tasks: repeat, priority, filters
 
 Leadership tasks can have a priority (Urgent / High / Normal / Low), and the list filters by who is doing it and by priority. A project task (Leadership) takes the same Repeats picker as a store's tasks (Once / Every day / Weekly / Monthly, start and end dates). Ticking a repeating task adds a fresh copy due on its next day, with the same owners, stores and points; undoing the tick takes back the untouched copy. A project task can be **In progress** (Start, then Mark done) before it is done. The note box on every task (store and project) is multi-line and grows as you type; Ctrl/Cmd+Enter sends.

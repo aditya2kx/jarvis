@@ -23,6 +23,12 @@ export const STORE_GCS_CACHE_BUCKET: Record<StoreId, string> = {
   houston: "bhaga-scrape-cache-houston",
 };
 
+/** Square location per store (store profile `square.location_id`) — its business hours set the staffed window. */
+export const STORE_SQUARE_LOCATION: Record<StoreId, string> = {
+  palmetto: "L9DDZF3CQS8AK",
+  houston: "L6AQ95CN5NG4W",
+};
+
 /** Which store the operator is looking at; shared by every page like the Period cookie. */
 export const STORE_COOKIE = "oc_store";
 

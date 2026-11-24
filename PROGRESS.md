@@ -1,3 +1,7 @@
+## 2026-11-24 — Labor: staffed hours from Square (Issue #558)
+
+The Labor page's staffed window now follows each store's Square opening hours per weekday, minus "In before open" and plus "Stay after close" (30 min each by default, in Scheduling rules). Houston (9–6) had been drafting against Austin's 6:30 AM–8:30 PM. The page reads Square live (1 h cache); the nightly copies the hours to `square_location_hours` (migration 099) as a fallback and change history.
+
 ## 2026-11-24 — Console on the iPhone home screen; Houston labor rules
 
 The Operator Console added to an iPhone home screen no longer leaves a strip under the tab bar. On iOS 26 a home-screen web app's viewport stops short of the screen by the status-bar inset, so `ViewportGap` publishes the shortfall as `--vp-gap`, and the shell, tab bar, sheets and toasts make it up. It is 0 in Safari tabs and on desktop. Houston's labor rules start as a copy of Austin's store-wide ones (`bhaga_houston.labor_schedule_rules` v1, from Austin v33): staffing basics and training counts, without Austin's staff rules or trainer names.

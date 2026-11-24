@@ -164,6 +164,9 @@ BQ_TARGETS: list[Target] = [
     # (rows only on a console Apply to ADP) — same class. NOT BQ_TARGETS entries.
     # migration 097 (Issue #450): adp_hire_dates rides the pay_info scrape (MERGE, rows only
     # change when someone is hired) — its scraped_at_utc is not a nightly signal. NOT a BQ_TARGETS entry.
+    # migration 099 (Issue #558): square_location_hours is a best-effort nightly copy of Square
+    # opening hours (a Labor page fallback; a miss only logs [store_hours]) — not a pipeline
+    # freshness signal. NOT a BQ_TARGETS entry.
     # migration 040 (Issue #166): adp_payroll_liability is a sparse paycheck
     # calibration snapshot (check_date), not a nightly freshness signal —
     # intentionally NOT a BQ_TARGETS entry (same class as store_config /

@@ -9,15 +9,20 @@
  */
 
 import { isOpenLane, type CoveragePersonDay } from "@/lib/labor/coverage-model";
-import type { TrainingRules } from "@/lib/labor/schedule-inputs";
+import { DEFAULT_STAFFING, type TrainingRules } from "@/lib/labor/schedule-inputs";
 import type { ShiftKind } from "@/lib/labor/shift-draft";
 
-/** ADP open / close by clock time: starts by 7:30 AM = opener, ends 8 PM or later = closer. */
-export const OPENER_BY = 7 * 60 + 30;
-export const CLOSER_FROM = 20 * 60;
+/** A day's staffed window (staffedWindow); absent = the fixed fallback window. */
+export type Staffed = readonly [number, number] | null | undefined;
 
-export function shiftKindOf(startMin: number, endMin: number): ShiftKind {
-  return startMin <= OPENER_BY ? "open" : endMin >= CLOSER_FROM ? "close" : "mid";
+const window = (w: Staffed): readonly [number, number] => w ?? [DEFAULT_STAFFING.openMin, DEFAULT_STAFFING.closeMin];
+/** Opener: starts within an hour of the staffed open (Austin, staffed 6:30 AM: by 7:30 AM). */
+export const openerBy = (w: Staffed) => window(w)[0] + 60;
+/** Closer: ends within 30 min of the staffed close (Austin, staffed to 8:30 PM: 8 PM or later). */
+export const closerFrom = (w: Staffed) => window(w)[1] - 30;
+
+export function shiftKindOf(startMin: number, endMin: number, staffed?: Staffed): ShiftKind {
+  return startMin <= openerBy(staffed) ? "open" : endMin >= closerFrom(staffed) ? "close" : "mid";
 }
 
 /** Minutes of [s, e) that at least one span covers. */
@@ -173,6 +178,8 @@ export function trainingProgress(args: {
   employees: readonly string[];
   hireDates: ReadonlyMap<string, string>;
   days: ReadonlyMap<string, CoveragePersonDay[]>;
+  /** That day's staffed window, for telling openers and closers apart. */
+  staffedOn?: (iso: string) => Staffed;
 }): Map<string, TrainingStatus> {
   const { rules, todayIso } = args;
   const out = new Map<string, TrainingStatus>();
@@ -219,7 +226,11 @@ export function trainingProgress(args: {
       if (iso < todayIso) t.worked += 1;
       if (t.cleared) continue;
       const spans = spansOf(mine);
-      const kind = shiftKindOf(Math.min(...spans.map(([s]) => s)), Math.max(...spans.map(([, e]) => e)));
+      const kind = shiftKindOf(
+        Math.min(...spans.map(([s]) => s)),
+        Math.max(...spans.map(([, e]) => e)),
+        args.staffedOn?.(iso),
+      );
       const training = isTrainingShift(trainingLeftOf(t), kind);
       if (training) t.trainingDates.push(iso);
       const withExperienced = lanes

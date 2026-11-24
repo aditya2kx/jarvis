@@ -125,7 +125,9 @@ import {
   type DayRule,
   type RulesVersion,
   type ScheduleRules,
+  staffedWindow,
   type StaffingBasics,
+  type StoreHours,
   type TrainingRules,
 } from "@/lib/labor/schedule-inputs";
 import { payPeriodStartFor } from "@/lib/payroll/openPeriod";
@@ -159,16 +161,27 @@ type LaneOff = LaneBlock<UnavailabilityRow>;
 const isRuleRow = (r: UnavailabilityRow) => r.row_key.startsWith("rule|");
 
 /** Axis must span open hours so the need line isn't clipped on sparse days. */
-function withOpenHours(b: { startMin: number; endMin: number }, s: StaffingBasics) {
+function withOpenHours(b: { startMin: number; endMin: number }, w: [number, number] | null) {
+  if (!w) return b;
   return {
-    startMin: Math.min(b.startMin, Math.floor(s.openMin / 60) * 60),
-    endMin: Math.max(b.endMin, Math.ceil(s.closeMin / 60) * 60),
+    startMin: Math.min(b.startMin, Math.floor(w[0] / 60) * 60),
+    endMin: Math.max(b.endMin, Math.ceil(w[1] / 60) * 60),
   };
 }
 
-type NeedCtx = { staffing: StaffingBasics; dayRules: DayRule[]; deliveries: ReadonlySet<string> };
+type NeedCtx = {
+  staffing: StaffingBasics;
+  hours: StoreHours | null;
+  dayRules: DayRule[];
+  deliveries: ReadonlySet<string>;
+};
 
-const floorOf = (s: StaffingBasics) => [{ fromMin: s.openMin, toMin: s.closeMin, min: s.minPeople }];
+const windowOn = (ctx: Pick<NeedCtx, "staffing" | "hours">, iso: string) =>
+  staffedWindow(ctx.staffing, ctx.hours, isoWeekdayMon0(iso.slice(0, 10)));
+const floorOf = (ctx: Pick<NeedCtx, "staffing" | "hours">, iso: string) => {
+  const w = windowOn(ctx, iso);
+  return w ? [{ fromMin: w[0], toMin: w[1], min: ctx.staffing.minPeople }] : [];
+};
 const soloOf = (s: StaffingBasics): SoloRule | null =>
   s.soloMaxOrders == null ? null : { maxOrders: s.soloMaxOrders, minMin: s.soloMinMin };
 
@@ -179,13 +192,13 @@ function dayCoverage(
   ctx: NeedCtx,
 ) {
   const base = axisBounds(people);
-  const bounds = demand?.length ? withOpenHours(base, ctx.staffing) : base;
+  const bounds = demand?.length ? withOpenHours(base, windowOn(ctx, iso)) : base;
   const points = occupancySeries(people, bounds.startMin, bounds.endMin, 15);
   const need = demand?.length
     ? applyDayRules(
         iso,
         points.map((p) => p.min),
-        needSeries(iso, points, demand, ctx.staffing.ordersPerPerson, floorOf(ctx.staffing), soloOf(ctx.staffing)),
+        needSeries(iso, points, demand, ctx.staffing.ordersPerPerson, floorOf(ctx, iso), soloOf(ctx.staffing)),
         ctx.dayRules,
         ctx.deliveries,
       )
@@ -1086,6 +1099,7 @@ export function LaborCoveragePanel({
   goalHoursWeek,
   deliveryDates,
   rulesHistory = NO_RULES_HISTORY,
+  storeHours = null,
   unavailability = NO_UNAVAILABILITY,
   activeStaff,
   savedPushRows = NO_PUSH_ROWS,
@@ -1112,6 +1126,8 @@ export function LaborCoveragePanel({
   deliveryDates?: string[];
   /** Saved scheduling-rules versions, newest (live) first. */
   rulesHistory?: RulesVersion[];
+  /** Opening hours from Square (or its nightly copy); null = the saved fixed staffed window. */
+  storeHours?: StoreHours | null;
   /** ADP unavailability (pending + approved); drawn on the lanes, and the draft works around it. */
   unavailability?: UnavailabilityRow[];
   /** People on the ADP schedule ahead — the only ones the draft suggests (drops departed staff). */
@@ -1219,8 +1235,8 @@ export function LaborCoveragePanel({
   const forecast = useMemo(() => forecastFor(rules.staffing), [forecastFor, rules.staffing]);
   const needDemand = forecast.demand;
   const inputs = useMemo<NeedCtx>(
-    () => ({ staffing: rules.staffing, dayRules: rules.dayRules, deliveries: new Set(deliveryDates ?? []) }),
-    [rules.staffing, rules.dayRules, deliveryDates],
+    () => ({ staffing: rules.staffing, hours: storeHours, dayRules: rules.dayRules, deliveries: new Set(deliveryDates ?? []) }),
+    [rules.staffing, storeHours, rules.dayRules, deliveryDates],
   );
   const staffUnavailability = useMemo(
     () => (active ? unavailability.filter((r) => active.has(r.employee)) : unavailability),
@@ -1323,8 +1339,15 @@ export function LaborCoveragePanel({
   );
   const progressFor = useCallback(
     (t: TrainingRules) =>
-      trainingProgress({ todayIso, rules: t, employees: baseRoster.map((a) => a.employee), hireDates, days: trainingDays }),
-    [todayIso, baseRoster, hireDates, trainingDays],
+      trainingProgress({
+        todayIso,
+        rules: t,
+        employees: baseRoster.map((a) => a.employee),
+        hireDates,
+        days: trainingDays,
+        staffedOn: (iso) => windowOn({ staffing: rules.staffing, hours: storeHours }, iso),
+      }),
+    [todayIso, baseRoster, hireDates, trainingDays, rules.staffing, storeHours],
   );
   const training = rules.staffing.training;
   const progress = useMemo(() => progressFor(training), [progressFor, training]);
@@ -1459,8 +1482,10 @@ export function LaborCoveragePanel({
     if (!demand?.length) return null;
     const meal: MealRule = { afterMin: r.staffing.mealAfterMin, unpaidMin: r.staffing.unpaidMealMin };
     const unavail = [...unavailability, ...ruleUnavailability(r.staffRules)];
+    const staffedOn = (iso: string) => windowOn({ staffing: r.staffing, hours: storeHours }, iso);
     const inputs: NeedCtx = {
       staffing: r.staffing,
+      hours: storeHours,
       dayRules: r.dayRules,
       deliveries: new Set(deliveryDates ?? []),
     };
@@ -1528,7 +1553,7 @@ export function LaborCoveragePanel({
           perTrainer: r.staffing.training.traineesPerTrainer,
           left,
           experiencedOn: on.flatMap(([who, s, e]): [number, number][] =>
-            trainsKind(r.staffing.training, who, shiftKindOf(s, e)) ? [[s, e]] : [],
+            trainsKind(r.staffing.training, who, shiftKindOf(s, e, staffedOn(iso))) ? [[s, e]] : [],
           ),
           midTrainers: on.flatMap(([who, s, e]): [number, number][] =>
             trainsKind(r.staffing.training, who, "mid") ? [[s, e]] : [],
@@ -1553,7 +1578,7 @@ export function LaborCoveragePanel({
           const dayPeople = peopleByDay.get(iso)!;
           const cov = dayCoverage(iso, dayPeople.filter(countsTowardNeed(iso)), demand, inputs);
           const mins = cov.points.map((p) => p.min);
-          const floorOnly = floorSeries(iso, cov.points, demand, floorOf(inputs.staffing), soloOf(inputs.staffing));
+          const floorOnly = floorSeries(iso, cov.points, demand, floorOf(inputs, iso), soloOf(inputs.staffing));
           return {
             iso,
             mins,
@@ -1593,6 +1618,7 @@ export function LaborCoveragePanel({
         prefer?: DraftPreference,
       ) =>
         draftDay({
+          staffed: staffedOn(d.iso),
           prefer,
           daysLeft,
           pins,
@@ -1620,6 +1646,7 @@ export function LaborCoveragePanel({
       for (const d of state) {
         for (const { seg: slot, nth } of openSlotsOn(d.iso, peopleByDay.get(d.iso)!)) {
           const fill = fillOpenShift({
+            staffed: staffedOn(d.iso),
             iso: d.iso,
             startMin: slot.startMin,
             endMin: slot.endMin,
@@ -1715,6 +1742,7 @@ export function LaborCoveragePanel({
         const before = trainingOn(d.iso, d.shifts);
         if (!before && !freed) break;
         d.shifts = fillClearedTrainees({
+          staffed: staffedOn(d.iso),
           iso: d.iso,
           shifts: d.shifts,
           roster,
@@ -1731,6 +1759,7 @@ export function LaborCoveragePanel({
         if (!before) continue;
         const training = trainingOn(d.iso, d.shifts)!;
         const shifts = draftTrainingDay({
+          staffed: staffedOn(d.iso),
           iso: d.iso,
           roster,
           weekHours,
@@ -1751,6 +1780,7 @@ export function LaborCoveragePanel({
         const needHours = () => d.shifts.reduce((a, s) => a + (s.training ? 0 : s.hours), 0);
         const was = needHours();
         d.shifts = trimCoveredByTraining({
+          staffed: staffedOn(d.iso),
           mins: d.mins,
           onFloor: d.cover,
           need: d.need,
@@ -1821,6 +1851,7 @@ export function LaborCoveragePanel({
     active,
     progressFor,
     firstMonth,
+    storeHours,
   ]);
   const drafts = useMemo(() => buildDrafts(rules), [buildDrafts, rules]);
   const savedDrafts = useMemo(
@@ -1841,7 +1872,13 @@ export function LaborCoveragePanel({
   );
 
   const { publish: publishSuggested } = useSuggestedHours();
-  const staffedHours = Math.max(1, (rules.staffing.closeMin - rules.staffing.openMin) / 60);
+  const staffedHours = useCallback(
+    (iso: string) => {
+      const w = windowOn({ staffing: rules.staffing, hours: storeHours }, iso);
+      return Math.max(1, w ? (w[1] - w[0]) / 60 : 0);
+    },
+    [rules.staffing, storeHours],
+  );
   useEffect(() => {
     const byDay = new Map<string, number>();
     const concurrent = new Map<string, number>();
@@ -1854,7 +1891,7 @@ export function LaborCoveragePanel({
         const h = added.reduce((a, s) => a + s.hours, 0);
         if (h > 0) {
           byDay.set(iso, h);
-          concurrent.set(iso, h / staffedHours);
+          concurrent.set(iso, h / staffedHours(iso));
           const people = new Map<string, number>();
           for (const s of added) people.set(s.employee ?? "", (people.get(s.employee ?? "") ?? 0) + s.hours);
           perPerson.set(iso, people);
@@ -1871,17 +1908,18 @@ export function LaborCoveragePanel({
     for (const iso of strip) {
       if (iso <= todayIso) continue;
       const day = drafts?.byDay.get(iso) ?? [];
+      const staffed = windowOn({ staffing: rules.staffing, hours: storeHours }, iso);
       for (const seg of lanesFor(iso).filter(isOpenLane).flatMap((p) => p.segments)) {
         const taker = day.find((s) => s.fillsOpen && s.startMin === seg.startMin && s.endMin === seg.endMin);
-        rows.push({ date: iso, startMin: seg.startMin, endMin: seg.endMin, hours: seg.hours, source: "adp", suggested: showDraft ? (taker?.employee ?? null) : null });
+        rows.push({ date: iso, startMin: seg.startMin, endMin: seg.endMin, hours: seg.hours, source: "adp", suggested: showDraft ? (taker?.employee ?? null) : null, kind: shiftKindOf(seg.startMin, seg.endMin, staffed) });
       }
       if (!showDraft) continue;
       for (const s of newShifts(day)) {
-        if (!s.employee) rows.push({ date: iso, startMin: s.startMin, endMin: s.endMin, hours: s.hours, source: "draft" });
+        if (!s.employee) rows.push({ date: iso, startMin: s.startMin, endMin: s.endMin, hours: s.hours, source: "draft", kind: shiftKindOf(s.startMin, s.endMin, staffed) });
       }
     }
     publishOpen(rows, rules.staffing.maxWeekHours);
-  }, [strip, todayIso, drafts, lanesFor, showDraft, rules.staffing.maxWeekHours, publishOpen]);
+  }, [strip, todayIso, drafts, lanesFor, showDraft, rules.staffing, storeHours, publishOpen]);
 
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [dropped, setDropped] = useState(0);
@@ -2143,6 +2181,7 @@ export function LaborCoveragePanel({
               onDiscard={() => setEditedRules(null)}
               savedVersion={savedVersion}
               history={rulesHistory}
+              storeHours={storeHours}
               employees={baseRoster.map((a) => a.employee).sort()}
               trainees={[...progress.values()]}
               firstMonth={[...firstMonth.values()]}
@@ -2231,6 +2270,7 @@ export function LaborCoveragePanel({
           {activeDay > todayIso ? (
             <OpenShiftDayList
               dayLabel={`${label.weekday} ${label.monthDay}`}
+              staffed={windowOn({ staffing: rules.staffing, hours: storeHours }, activeDay)}
               shifts={dayOpen}
               adds={dayAdds}
               selected={selected}

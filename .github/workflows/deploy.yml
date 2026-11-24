@@ -145,9 +145,15 @@ jobs:
           set -euo pipefail
           fail=0
 
-          expected_digest="$(gcloud artifacts docker images describe \
-            ${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }} \
-            --format='value(image_summary.digest)')"
+          # The pushed tag is an OCI image index (amd64 image + build attestation)
+          # and Cloud Run records the amd64 manifest's digest, so the index digest
+          # alone never matches (#549/#552). Accept the index or its linux/amd64 child.
+          webhook_ref="${{ env.REGISTRY }}/bhaga-webhook:${{ github.sha }}"
+          expected_digests="$(
+            gcloud artifacts docker images describe "$webhook_ref" --format='value(image_summary.digest)'
+            docker buildx imagetools inspect --raw "$webhook_ref" \
+              | jq -r '.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest'
+          )"
           serving_rev="$(gcloud run services describe bhaga-webhook \
             --region ${{ env.REGION }} --project ${{ env.PROJECT_ID }} \
             --format=json | jq -r '.status.traffic[] | select(.percent == 100) | .revisionName')"
@@ -156,9 +162,9 @@ jobs:
             --format='value(spec.containers[0].image)')"
           echo "webhook: serving revision $serving_rev"
           echo "webhook: serving image    $serving_image"
-          echo "webhook: expected digest  $expected_digest"
-          if [ "${serving_image##*@}" != "$expected_digest" ]; then
-            echo "::error::bhaga-webhook serves $serving_image, not ${{ github.sha }} ($expected_digest). Traffic is pinned to an older revision — run: gcloud run services update-traffic bhaga-webhook --to-latest --region ${{ env.REGION }}"
+          echo "webhook: expected digests" $expected_digests
+          if ! grep -qxF "${serving_image##*@}" <<< "$expected_digests"; then
+            echo "::error::bhaga-webhook serves $serving_image, not ${{ github.sha }} (" $expected_digests "). Traffic is pinned to an older revision — run: gcloud run services update-traffic bhaga-webhook --to-latest --region ${{ env.REGION }}"
             fail=1
           fi
 

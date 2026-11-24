@@ -399,6 +399,50 @@ def dedup_sessions(*, dry_run: bool = False) -> dict[str, Any]:
     }
 
 
+def dedup_sessions_for_pr(pr: int, *, dry_run: bool = False) -> dict[str, Any]:
+    """Fast path for CI: drop this PR's sessions that also sit on a *merged* PR.
+
+    Full ``dedup_sessions`` walks every ledger row (too slow for the cost gate).
+    ``find_duplicate_sessions`` is one BQ query; we only remove uids whose other
+    owner already has ``merged_at`` so the open PR keeps its own Cursor-Agent
+    build cost.
+    """
+    rec = load_record(pr)
+    sessions = list(rec["build"].get("sessions") or [])
+    uids = {_store._session_uid(s) for s in sessions}
+    if not uids:
+        return {"duplicates": 0, "removed": [], "dry_run": dry_run}
+
+    drop_uids: set[str] = set()
+    kept_on: dict[str, str] = {}
+    for other_key, uid in _store.find_duplicate_sessions(pr, uids):
+        other_pr: int | str
+        key_s = str(other_key)
+        if key_s.isdigit():
+            other_pr = int(key_s)
+        elif key_s.startswith("branch:"):
+            other_pr = key_s  # provisional branch key — load_record accepts it
+        else:
+            other_pr = key_s
+        other = load_record(other_pr)
+        if other.get("merged_at"):
+            drop_uids.add(str(uid))
+            kept_on[str(uid)] = key_s
+
+    if not drop_uids:
+        return {"duplicates": 0, "removed": [], "dry_run": dry_run}
+
+    kept = [s for s in sessions if _store._session_uid(s) not in drop_uids]
+    removed = [
+        {"pr": pr, "session_uid": uid, "kept_on": kept_on.get(uid, "?")}
+        for uid in sorted(drop_uids)
+    ]
+    if not dry_run:
+        rec["build"]["sessions"] = kept
+        save_record(rec)
+    return {"duplicates": len(drop_uids), "removed": removed, "dry_run": dry_run}
+
+
 def set_meta(pr: int, **fields: Any) -> dict[str, Any]:
     rec = load_record(pr)
     for k in ("title", "requirement", "branch", "created_at", "merged_at", "session_started_at"):
@@ -1397,6 +1441,10 @@ def main(argv: list[str] | None = None) -> int:
         "dedup-sessions",
         help="Remove build sessions duplicated across PR ledgers (same ts + cost)",
     )
+    dd.add_argument(
+        "--pr", type=int,
+        help="Fast CI path: only drop this PR's sessions that also sit on a merged PR",
+    )
     dd.add_argument("--dry-run", action="store_true", help="Report only; do not write files")
 
     bt = sub.add_parser("backfill-titles", help="Fill null titles/branches from GitHub")
@@ -1410,6 +1458,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "dedup-sessions":
+        if args.pr is not None:
+            result = dedup_sessions_for_pr(args.pr, dry_run=args.dry_run)
+            n = result["duplicates"]
+            if n == 0:
+                print(f"dedup-sessions --pr {args.pr}: no sessions shared with a merged PR.")
+                return 0
+            prefix = "would remove" if args.dry_run else "removed"
+            print(
+                f"dedup-sessions --pr {args.pr}: {prefix} {len(result['removed'])} "
+                f"session(s) kept on merged PRs"
+            )
+            for row in result["removed"][:20]:
+                print(f"  uid {row['session_uid']} → kept on {row['kept_on']}")
+            return 0
         result = dedup_sessions(dry_run=args.dry_run)
         n = result["duplicates"]
         if n == 0:

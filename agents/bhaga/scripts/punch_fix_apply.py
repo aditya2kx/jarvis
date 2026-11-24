@@ -172,7 +172,9 @@ def _resync_in_session(page, dashboard_url: str, store: str, applied: list[dict]
     for attempt in range(1, RESYNC_ATTEMPTS + 1):
         page.wait_for_timeout(_resync_wait_s() * 1000)
         page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
-        path = runner._timecard_within_session(page, target_date=target_date, store=store)
+        path, _periods = runner._timecard_within_session(
+            page, target_date=target_date, store=store
+        )
         runner._write_target_meta(path, target_date)
         punches = shift_backend.parse_xlsx(path, employee_aliases=aliases)
         missing = [r for r in missing if not punch_in_export(r, punches)]

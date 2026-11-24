@@ -36,6 +36,7 @@ import {
   daysLabel,
   minToTime,
   moveItem,
+  staffedWindow,
   uncoveredWindows,
   timeToMin,
   type DayRule,
@@ -45,6 +46,8 @@ import {
   type StaffingBasics,
   type StaffRule,
   type StaffRuleKind,
+  type StoreHours,
+  type OpenHours,
   type TimeWindow,
   type TrainingRules,
 } from "@/lib/labor/schedule-inputs";
@@ -67,9 +70,9 @@ const chip = (on: boolean) =>
 type RowRule = Omit<DayRule, "people"> & { people: number | null };
 
 /** One "else" row per uncovered window: what the order-based need covers today, shaped like a rule. */
-function elseRows(dayRules: DayRule[], staffing: StaffingBasics): RowRule[] {
+function elseRows(dayRules: DayRule[], staffing: StaffingBasics, hours: StoreHours | null): RowRule[] {
   const ids = new Set(dayRules.map((r) => r.id));
-  const out = uncoveredWindows(dayRules, staffing);
+  const out = uncoveredWindows(dayRules, staffing, hours);
   return out.flatMap((u) =>
     u.groups.flatMap((g) =>
       g.windows.map(([fromMin, toMin]): RowRule => {
@@ -361,6 +364,18 @@ function clock(min: number): string {
   return `${((h + 11) % 12) + 1}${m ? `:${String(m).padStart(2, "0")}` : ""} ${h < 12 ? "AM" : "PM"}`;
 }
 
+/** "Every day 9 AM–6 PM" / "Weekdays 7 AM–8 PM · Sat, Sun 8 AM–6 PM · closed …". */
+function hoursLabel(days: ([number, number] | null)[]): string {
+  const groups = new Map<string, number[]>();
+  days.forEach((d, i) => {
+    const key = d ? `${clock(d[0])}–${clock(d[1])}` : "closed";
+    groups.set(key, [...(groups.get(key) ?? []), i]);
+  });
+  return [...groups].map(([hours, ds]) => `${daysLabel(ds)} ${hours}`).join(" · ");
+}
+
+const spans = (days: OpenHours[]) => days.map((d): [number, number] | null => (d ? [d.openMin, d.closeMin] : null));
+
 function trainingSummary(t: TrainingRules): string {
   if (!t.experienced.length) return "";
   const marked = t.trained.length ? `, ${t.trained.length} marked trained` : "";
@@ -369,7 +384,7 @@ function trainingSummary(t: TrainingRules): string {
 }
 
 function staffingSummary(s: StaffingBasics): string {
-  return `${s.ordersPerPerson} orders/person · min ${s.minPeople}${s.soloMaxOrders != null ? ` · alone only ≤${s.soloMaxOrders} orders/h for ≥${s.soloMinMin}m` : ""}${s.laborCapPct != null ? ` · cap ${Math.round(s.laborCapPct * 100)}% of sales` : ""}${s.trendWeights ? ` · trend ${s.trendWeights.join("/")}` : ""} · ${clock(s.openMin)}–${clock(s.closeMin)} · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.firstMonthWeekHours != null ? ` · ≤${s.firstMonthWeekHours}h/week in first month` : ""}${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}${s.unpaidMealMin ? ` · ${s.unpaidMealMin}m unpaid meal over ${s.mealAfterMin / 60}h` : ""}${trainingSummary(s.training)}`;
+  return `${s.ordersPerPerson} orders/person · min ${s.minPeople}${s.soloMaxOrders != null ? ` · alone only ≤${s.soloMaxOrders} orders/h for ≥${s.soloMinMin}m` : ""}${s.laborCapPct != null ? ` · cap ${Math.round(s.laborCapPct * 100)}% of sales` : ""}${s.trendWeights ? ` · trend ${s.trendWeights.join("/")}` : ""} · staffed ${s.prepMin}m before open to ${s.closeoutMin}m after close · ${s.minShiftMin / 60}–${s.maxShiftMin / 60}h shifts · ≤${s.maxWeekHours}h/week each${s.firstMonthWeekHours != null ? ` · ≤${s.firstMonthWeekHours}h/week in first month` : ""}${s.minWeekShifts ? ` · ≥${s.minWeekShifts} shifts/week each` : ""}${s.shiftTimes === "need" ? " · follow the need" : ""}${s.unpaidMealMin ? ` · ${s.unpaidMealMin}m unpaid meal over ${s.mealAfterMin / 60}h` : ""}${trainingSummary(s.training)}`;
 }
 
 function rulesSummary(v: RulesVersion): string {
@@ -462,6 +477,58 @@ function TimeInput({
       className="h-7 w-28 text-xs"
       aria-label={label}
     />
+  );
+}
+
+/** Opening hours read from Square, plus how long staff are in before open and after close. */
+function StoreHoursFields({
+  staffing,
+  hours,
+  onChange,
+}: {
+  staffing: StaffingBasics;
+  hours: StoreHours;
+  onChange: (patch: Partial<StaffingBasics>) => void;
+}) {
+  const quarter = (v: number) => Math.min(180, Math.round(v / 15) * 15);
+  const staffed = ALL_DAYS.map((d) => staffedWindow(staffing, hours, d));
+  const changed = hours.changed;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-xs text-muted-foreground">
+        Store hours from Square{hours.source === "snapshot" ? ` (copy from ${weekLabel(hours.asOf.slice(0, 10))})` : ""}
+      </span>
+      <span className="text-xs text-foreground">{hoursLabel(spans(hours.days))}</span>
+      <span className="flex flex-wrap items-end gap-x-4 gap-y-2">
+        <NumberField
+          label="In before open"
+          unit="min"
+          step={15}
+          min={0}
+          value={staffing.prepMin}
+          onChange={(v) => onChange({ prepMin: quarter(v) })}
+        />
+        <NumberField
+          label="Stay after close"
+          unit="min"
+          step={15}
+          min={0}
+          value={staffing.closeoutMin}
+          onChange={(v) => onChange({ closeoutMin: quarter(v) })}
+        />
+      </span>
+      <span className="text-xs text-muted-foreground">Staffed: {hoursLabel(staffed)}</span>
+      {hours.source === "snapshot" ? (
+        <span className="text-xs text-amber-700 dark:text-amber-300">
+          Couldn&apos;t reach Square — using last night&apos;s copy.
+        </span>
+      ) : null}
+      {changed ? (
+        <span className="text-xs text-amber-700 dark:text-amber-300">
+          Square hours changed {weekLabel(changed.on.slice(0, 10))} — were {hoursLabel(spans(changed.before))}.
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -627,6 +694,7 @@ export function ScheduleInputsPanel({
   forecast = [],
   trainees = [],
   firstMonth = [],
+  storeHours = null,
 }: {
   rules: ScheduleRules;
   onChange: (next: ScheduleRules) => void;
@@ -649,6 +717,8 @@ export function ScheduleInputsPanel({
   history: RulesVersion[];
   /** Drafted hours per future week: saved rules (before) vs these rules (after). */
   forecast?: WeekForecast[];
+  /** Opening hours from Square (or its nightly copy); null = the fixed staffed window below. */
+  storeHours?: StoreHours | null;
 }) {
   const router = useRouter();
   const { run, isPending } = useConsoleAction();
@@ -673,7 +743,7 @@ export function ScheduleInputsPanel({
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
   const conflicts = dayRuleConflicts(rules.dayRules);
-  const ghosts = elseRows(rules.dayRules, rules.staffing);
+  const ghosts = elseRows(rules.dayRules, rules.staffing, storeHours);
   const dayOrder = useReorder(rules.dayRules, (dayRules) =>
     onChange({ ...rules, dayRules }),
   );
@@ -804,24 +874,31 @@ export function ScheduleInputsPanel({
                     </span>
                   ) : null}
                 </div>
-                <div className="flex flex-col gap-1">
-                  <span className="text-xs text-muted-foreground">
-                    Staffed hours (incl. open/close duties)
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <TimeInput
-                      value={rules.staffing.openMin}
-                      onChange={(v) => setStaffing({ openMin: v })}
-                      label="Staffed from"
-                    />
-                    <span className="text-xs text-muted-foreground">to</span>
-                    <TimeInput
-                      value={rules.staffing.closeMin}
-                      onChange={(v) => setStaffing({ closeMin: v })}
-                      label="Staffed until"
-                    />
-                  </span>
-                </div>
+                {storeHours ? (
+                  <StoreHoursFields staffing={rules.staffing} hours={storeHours} onChange={setStaffing} />
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs text-muted-foreground">
+                      Staffed hours (incl. open/close duties)
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <TimeInput
+                        value={rules.staffing.openMin}
+                        onChange={(v) => setStaffing({ openMin: v })}
+                        label="Staffed from"
+                      />
+                      <span className="text-xs text-muted-foreground">to</span>
+                      <TimeInput
+                        value={rules.staffing.closeMin}
+                        onChange={(v) => setStaffing({ closeMin: v })}
+                        label="Staffed until"
+                      />
+                    </span>
+                    <span className="text-xs text-amber-700 dark:text-amber-300">
+                      Square hours unavailable — using these fixed hours.
+                    </span>
+                  </div>
+                )}
                 <NumberField
                   label="Shortest shift"
                   unit="hours"

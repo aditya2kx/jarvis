@@ -82,9 +82,13 @@ export type StaffingBasics = {
    * scales the 8-week hourly pattern. null = the plain 8-week median.
    */
   trendWeights: number[] | null;
-  /** Staffed window (first clock-in → end of closing duties), minute of day. */
+  /** Staffed window (first clock-in → end of closing duties), minute of day — only when Square hours are unavailable. */
   openMin: number;
   closeMin: number;
+  /** Staff arrive this long before the store's Square opening time… */
+  prepMin: number;
+  /** …and stay this long after its closing time. */
+  closeoutMin: number;
   /** Shortest shift the draft proposes. */
   minShiftMin: number;
   /** Longest shift the draft proposes ("need" shift times only). */
@@ -140,6 +144,32 @@ export type ShiftTimes = "history" | "need";
 
 export type ScheduleRules = { staffing: StaffingBasics; dayRules: DayRule[]; staffRules: StaffRule[] };
 
+/** One day's opening hours, minute of day; null = closed. */
+export type OpenHours = { openMin: number; closeMin: number } | null;
+
+/** The store's opening hours per weekday (Mon = 0) from Square. Read at page load, never saved in the rules. */
+export type StoreHours = {
+  days: OpenHours[];
+  /** "square" = read live; "snapshot" = the nightly copy, because Square couldn't be reached. */
+  source: "square" | "snapshot";
+  /** When Square was read, or the date of the copy. */
+  asOf: string;
+  /** The latest change in the nightly copies (last 60 days): the day it was seen and the hours before. */
+  changed: { on: string; before: OpenHours[] } | null;
+};
+
+/** First clock-in → end of closing duties for a weekday; null when the store is closed. */
+export function staffedWindow(
+  s: StaffingBasics,
+  hours: StoreHours | null | undefined,
+  weekday: number,
+): [number, number] | null {
+  if (!hours) return [s.openMin, s.closeMin];
+  const d = hours.days[weekday];
+  if (!d) return null;
+  return [Math.max(0, d.openMin - s.prepMin), Math.min(24 * 60, d.closeMin + s.closeoutMin)];
+}
+
 /** One saved, immutable version of a store's rules (labor_schedule_rules row). */
 export type RulesVersion = {
   version: number;
@@ -174,6 +204,8 @@ export const DEFAULT_STAFFING: StaffingBasics = {
   trendWeights: null,
   openMin: 6 * 60 + 30,
   closeMin: 20 * 60 + 30,
+  prepMin: 30,
+  closeoutMin: 30,
   minShiftMin: 270,
   maxShiftMin: 8 * 60,
   shiftTimes: "history",
@@ -235,13 +267,18 @@ export type UncoveredWindows = { deliveryDays: boolean; groups: UncoveredGroup[]
  * with identical gaps grouped. Delivery days get their own list only when a rule
  * treats them differently.
  */
-export function uncoveredWindows(rules: readonly DayRule[], staffing: StaffingBasics): UncoveredWindows[] {
+export function uncoveredWindows(
+  rules: readonly DayRule[],
+  staffing: StaffingBasics,
+  hours?: StoreHours | null,
+): UncoveredWindows[] {
   const forKind = (deliveryDays: boolean): UncoveredGroup[] => {
     const skip: DeliveryMode = deliveryDays ? "skip" : "only";
     const groups = new Map<string, UncoveredGroup>();
     for (const d of ALL_DAYS) {
       const covering = rules.filter((r) => r.delivery !== skip && r.days.includes(d));
-      let gaps: [number, number][] = [[staffing.openMin, staffing.closeMin]];
+      const staffed = staffedWindow(staffing, hours, d);
+      let gaps: [number, number][] = staffed ? [staffed] : [];
       for (const r of covering) {
         gaps = gaps.flatMap(([s, e]): [number, number][] =>
           r.toMin <= s || r.fromMin >= e
@@ -459,6 +496,13 @@ function parseStaffing(raw: unknown): StaffingBasics {
   if (!isMin(s.openMin) || !isMin(s.closeMin) || s.closeMin <= s.openMin) {
     throw new Error("Staffed hours need a start before the end");
   }
+  const prepMin = s.prepMin ?? DEFAULT_STAFFING.prepMin;
+  const closeoutMin = s.closeoutMin ?? DEFAULT_STAFFING.closeoutMin;
+  for (const v of [prepMin, closeoutMin]) {
+    if (!Number.isInteger(v) || v < 0 || v > 180 || v % 15) {
+      throw new Error("Time before open and after close must be 0–3 hours in 15-minute steps");
+    }
+  }
   if (!Number.isInteger(s.minShiftMin) || s.minShiftMin! < 60 || s.minShiftMin! > 12 * 60) {
     throw new Error("Shortest shift must be 1–12 hours");
   }
@@ -525,6 +569,8 @@ function parseStaffing(raw: unknown): StaffingBasics {
     trendWeights: trendWeights?.map(Number) ?? null,
     openMin: s.openMin,
     closeMin: s.closeMin,
+    prepMin,
+    closeoutMin,
     minShiftMin: s.minShiftMin!,
     maxShiftMin,
     shiftTimes,

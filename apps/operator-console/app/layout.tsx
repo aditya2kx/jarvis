@@ -41,8 +41,8 @@ export const metadata: Metadata = {
 };
 
 // viewport-fit=cover lets the shell paint under the notch / home indicator; Topbar and
-// MobileTabBar pad by env(safe-area-inset-*) so nothing interactive sits there. --vp-gap
-// (ViewportGap) makes up an iOS home-screen viewport that stops short of the screen.
+// MobileTabBar pad by env(safe-area-inset-*) so nothing interactive sits there. --vp-gap /
+// --dvh-gap (ViewportGap) make up an iOS home-screen viewport that stops short of the screen.
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
@@ -82,7 +82,7 @@ export default async function RootLayout({
             <StoreGuard store={store}>
             <IapLoginBeacon />
             <ViewportGap />
-            <div className="flex h-[calc(100dvh+var(--vp-gap,0px))] overflow-hidden">
+            <div className="flex h-[calc(100dvh+var(--dvh-gap,0px))] overflow-hidden">
               <Sidebar allowedHrefs={navHrefs} />
               <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                 <Topbar store={store} canViewAs={access.realIsOwner && !access.viewingAs} />

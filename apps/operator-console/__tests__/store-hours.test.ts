@@ -8,6 +8,7 @@ import {
   type OpenHours,
   type StoreHours,
 } from "@/lib/labor/schedule-inputs";
+import { draftDay } from "@/lib/labor/shift-draft";
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const period = (day: string, start: string, end: string) => ({
@@ -107,5 +108,44 @@ describe("resolveStoreHours", () => {
     ];
     expect(resolveStoreHours(null, copies, today)!.changed).toEqual({ on: "2026-11-23", before: nineToSix });
     expect(resolveStoreHours(null, copies, "2026-12-15")!.changed).toBeNull();
+  });
+});
+
+describe("history drafts follow the staffed window", () => {
+  it("re-anchors Austin history blocks to Houston's hours and labels them against it", () => {
+    const mins = Array.from({ length: 40 }, (_, i) => 510 + i * 15);
+    const shifts = draftDay({
+      iso: "2026-12-01",
+      mins,
+      onFloor: mins.map(() => 0),
+      need: mins.map(() => 2),
+      roster: [],
+      weekHours: new Map(),
+      busy: new Set(),
+      staffed: [510, 1110],
+    });
+    expect(shifts.length).toBeGreaterThan(0);
+    for (const s of shifts) {
+      expect(s.startMin).toBeGreaterThanOrEqual(510);
+      // Closers keep Austin's 15-min tail past the staffed close on Tuesdays.
+      expect(s.endMin).toBeLessThanOrEqual(1110 + 15);
+    }
+    expect(shifts.some((s) => s.kind === "open")).toBe(true);
+    expect(shifts.some((s) => s.kind === "close")).toBe(true);
+  });
+
+  it("leaves Austin's history unchanged under Austin's staffed window", () => {
+    const mins = Array.from({ length: 57 }, (_, i) => 390 + i * 15);
+    const args = {
+      iso: "2026-12-01",
+      mins,
+      onFloor: mins.map(() => 0),
+      need: mins.map(() => 2),
+      roster: [],
+      weekHours: new Map(),
+      busy: new Set<string>(),
+    };
+    const times = (xs: { startMin: number; endMin: number }[]) => xs.map((x) => [x.startMin, x.endMin]);
+    expect(times(draftDay({ ...args, staffed: [390, 1230] }))).toEqual(times(draftDay(args)));
   });
 });

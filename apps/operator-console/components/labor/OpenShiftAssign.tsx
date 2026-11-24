@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { LABOR_CHART_COLORS } from "@/lib/charts/palette";
 import { formatClockMin } from "@/lib/labor/coverage-model";
 import { shiftKey, timeText, type ShiftChange } from "@/lib/labor/adp-changes";
+import { shiftKindOf, type Staffed } from "@/lib/labor/new-hire-training";
 import type { DraftShift } from "@/lib/labor/shift-draft";
 import { cn } from "@/lib/utils";
 
@@ -25,9 +26,6 @@ export function shortDay(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
   return new Date(y!, m! - 1, d!).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
-
-const kindOf = (s: { startMin: number; endMin: number }) =>
-  s.startMin <= 450 ? "open" : s.endMin >= 1200 ? "close" : "mid";
 
 const time = (s: { startMin: number; endMin: number }) =>
   `${formatClockMin(s.startMin)}–${formatClockMin(s.endMin)}`;
@@ -76,6 +74,7 @@ export function OpenShiftDayList({
   onAdd,
   onOpen,
   onUndo,
+  staffed,
 }: {
   dayLabel: string;
   shifts: DayOpenShift[];
@@ -93,7 +92,10 @@ export function OpenShiftDayList({
   /** The open shift's sheet: assign, change its times or delete it on one screen. */
   onOpen: (shift: DayOpenShift) => void;
   onUndo: (key: string) => void;
+  /** The day's staffed window — opener / closer labels follow it. */
+  staffed?: Staffed;
 }) {
+  const kindOf = (s: { startMin: number; endMin: number }) => shiftKindOf(s.startMin, s.endMin, staffed);
   const add = (
     <Button size="xs" variant="outline" onClick={onAdd}>
       <PlusIcon /> Add open shift

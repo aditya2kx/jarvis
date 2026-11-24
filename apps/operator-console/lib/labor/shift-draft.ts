@@ -10,11 +10,12 @@
  */
 
 import {
-  CLOSER_FROM,
+  closerFrom,
   isTrainingShift,
-  OPENER_BY,
+  openerBy,
   overlapMinutes,
   shiftKindOf,
+  type Staffed,
   type TrainingLeft,
 } from "@/lib/labor/new-hire-training";
 import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
@@ -226,6 +227,24 @@ const snapDown = (t: number) => Math.floor(t / GRID) * GRID;
 const snapUp = (t: number) => Math.ceil(t / GRID) * GRID;
 
 /**
+ * Historical blocks re-anchored to the day's staffed window: openers move with the staffed open and
+ * closers keep their historical tail past the staffed close; everything else stays inside the window.
+ * The history is Austin's, staffed 6:30 AM–8:30 PM, so that window returns it unchanged.
+ */
+function anchorTemplates(templates: ShiftTemplate[], staffed: Staffed): ShiftTemplate[] {
+  if (!staffed) return templates;
+  const [open, close] = staffed;
+  const [histOpen, histClose] = HISTORY_WINDOW;
+  return templates.flatMap((t) => {
+    const startMin = t.kind === "open" ? t.startMin - histOpen + open : Math.max(t.startMin, open);
+    const endMin = t.kind === "close" ? t.endMin - histClose + close : Math.min(t.endMin, close);
+    return endMin - startMin >= 60 ? [{ ...t, startMin, endMin }] : [];
+  });
+}
+
+const HISTORY_WINDOW = [hm(6, 30), hm(20, 30)] as const;
+
+/**
  * Median open / mid / close blocks per weekday (Mon = 0), ADP punches
  * 2026-07-27 → 2026-09-25, rounded to 15 min. The 6:30 opener and 7:30 second
  * opener follow the labor floor; open end, mid and close follow history.
@@ -292,6 +311,8 @@ type DraftDayArgs = {
   /** Slot ids start with this (default `iso`) — keeps separate draft passes on a day apart. */
   slotPrefix?: string;
   training?: DraftTraining;
+  /** The day's staffed window: "history" shifts are clipped to it, and it tells openers from closers. */
+  staffed?: Staffed;
 };
 
 /**
@@ -314,7 +335,7 @@ function draftCore(
   },
 ): DraftShift[] | null {
   const dow = isoWeekdayMon0(args.iso);
-  const templates = args.templates ?? HISTORICAL_TEMPLATES[dow]!;
+  const templates = anchorTemplates(args.templates ?? HISTORICAL_TEMPLATES[dow]!, args.staffed);
   const minLen = args.minShiftMin ?? 240;
   const maxLen = Math.max(minLen, args.maxShiftMin ?? 8 * 60);
   const overlap = args.handoverOverlapMin ?? 0;
@@ -330,7 +351,7 @@ function draftCore(
       if (!(args.training?.left.get(a.employee)?.[kind] ?? 0) || busy.has(a.employee) || !worksOn(a, args.iso)) return false;
       return shiftSpans(a, dow).some(([ws, we]) => {
         const [s, e] = freeSegment(ws, we, args.unavailable?.get(a.employee));
-        return e - s >= minLen && (kind === "open" ? s <= OPENER_BY : e >= CLOSER_FROM);
+        return e - s >= minLen && (kind === "open" ? s <= openerBy(args.staffed) : e >= closerFrom(args.staffed));
       });
     });
 
@@ -675,10 +696,11 @@ export function fillOpenShift(args: {
   /** Earlier open shifts with the same times that day. */
   nth?: number;
   training?: DraftTraining;
+  staffed?: Staffed;
 }): DraftShift | null {
   const { startMin: s, endMin: e } = args;
   const dow = isoWeekdayMon0(args.iso);
-  const kind = shiftKindOf(s, e);
+  const kind = shiftKindOf(s, e, args.staffed);
   const hours = paidHours(s, e, args.meal);
   const weekOf = (a: Availability) => args.weekHours.get(a.employee) ?? 0;
   const slot = openShiftSlot(args.iso, s, e, args.nth);
@@ -765,6 +787,7 @@ export function fillClearedTrainees(args: {
   pins?: DraftPins;
   training?: DraftTraining;
   retryOpen?: boolean;
+  staffed?: Staffed;
 }): DraftShift[] {
   return args.shifts.map((s) => {
     if (s.employee || s.training || !s.slot || args.pins?.get(s.slot) === null) return s;
@@ -811,6 +834,7 @@ export function draftTrainingDay(args: {
   meal?: MealRule;
   /** `left` is mutated as new hires get openers / closers. */
   training: DraftTraining;
+  staffed?: Staffed;
 }): DraftShift[] {
   const { training } = args;
   const dow = isoWeekdayMon0(args.iso);
@@ -846,7 +870,7 @@ export function draftTrainingDay(args: {
     const room = snapDown((weekCap(a) - (args.weekHours.get(a.employee) ?? 0)) * 60);
     const fit = kinds.flatMap((kind) =>
       trainers.flatMap(([ts, te], i) => {
-        if (full(i) || shiftKindOf(ts, te) !== kind) return [];
+        if (full(i) || shiftKindOf(ts, te, args.staffed) !== kind) return [];
         return shiftSpans(a, dow).flatMap(([ws, we]) => {
           const [fs, fe] = freeSegment(Math.max(ts, ws), Math.min(te, we), args.unavailable?.get(a.employee));
           let s = snapUp(fs);
@@ -857,7 +881,7 @@ export function draftTrainingDay(args: {
           const hours = paidHours(s, e, args.meal);
           const ok =
             e - s >= minLen &&
-            shiftKindOf(s, e) === kind &&
+            shiftKindOf(s, e, args.staffed) === kind &&
             overlapMinutes(s, e, [[ts, te]]) >= training.overlapMin &&
             (args.weekHours.get(a.employee) ?? 0) + hours <= weekCap(a);
           return ok ? [{ kind, i, s, e, hours }] : [];
@@ -910,6 +934,7 @@ export function trimCoveredByTraining(args: {
   periodShifts?: Map<string, number>;
   /** Mutated as shifts go. */
   busy: Set<string>;
+  staffed?: Staffed;
 }): DraftShift[] {
   const trainees = args.shifts.filter((s) => s.training);
   if (!trainees.length) return args.shifts;
@@ -921,7 +946,7 @@ export function trimCoveredByTraining(args: {
   for (const t of trainees) shift(t.startMin, t.endMin, 1);
   const spare = (s: number, e: number) => args.mins.every((t, i) => t < s || t >= e || cover[i]! > args.need[i]!);
   const shadowed = (s: DraftShift) => {
-    const kind = shiftKindOf(s.startMin, s.endMin);
+    const kind = shiftKindOf(s.startMin, s.endMin, args.staffed);
     return (
       !!s.employee &&
       args.trains(s.employee, kind) &&
@@ -964,7 +989,7 @@ export function trimCoveredByTraining(args: {
       const [os, oe] = [Math.max(o.startMin, st), Math.min(o.endMin, en)];
       return { ...o, startMin: os, endMin: oe, hours: paidHours(os, oe, args.meal) };
     };
-    next.set(s, { ...s, kind: shiftKindOf(st, en), startMin: st, endMin: en, hours, options: s.options?.map(clip) });
+    next.set(s, { ...s, kind: shiftKindOf(st, en, args.staffed), startMin: st, endMin: en, hours, options: s.options?.map(clip) });
   }
   return args.shifts.flatMap((s) => {
     const n = next.get(s);

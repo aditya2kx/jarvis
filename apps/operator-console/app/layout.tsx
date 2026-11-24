@@ -14,6 +14,7 @@ import { allowedHrefs } from "@/lib/access/policy";
 import { currentStore } from "@/lib/config/current-store";
 import { StoreGuard } from "@/components/shell/StoreGuard";
 import { ViewportGap } from "@/components/shell/ViewportGap";
+import { PullToRefresh } from "@/components/shell/PullToRefresh";
 
 // Inter's optical-size axis gives 12–13px table and chart text the open "text" cut and
 // page titles the tighter "display" cut; figures are tabular where numbers stack.
@@ -88,9 +89,11 @@ export default async function RootLayout({
                 <Topbar store={store} canViewAs={access.realIsOwner && !access.viewingAs} />
                 {access.viewingAs ? <ViewAsBanner email={access.viewingAs} /> : null}
                 <HealthBanner />
-                <main className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+1.5rem)] md:p-6">
-                  {children}
-                </main>
+                <PullToRefresh>
+                  <main className="flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+1.5rem)] md:p-6">
+                    {children}
+                  </main>
+                </PullToRefresh>
               </div>
             </div>
             <MobileTabBar allowedHrefs={navHrefs} />

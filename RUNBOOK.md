@@ -1928,7 +1928,9 @@ draft rows show "first month · ≤20h/week". It only limits the draft — it ne
 **New-hire training (Issue #450)** is part of the same versioned rules (Schedule inputs › **New-hire
 training**): anyone hired on or after 2026-08-01 (`TRAINING_FROM`; every new hire from now on) trains beside an experienced person
 (the operator picks the list in the console, or an agent saves it with `/prod-ops experienced-staff <FirstName> …` — a new rules version, first names resolved against Active ADP Directory staff; empty = gate off) for at least the set overlap (default 3 h) until they've
-done the set number of supervised openers and closers (default 2 + 2). Each kind clears on its own:
+done the set number of supervised openers and closers (default 2 + 2). An opener starts within an hour of
+that day's staffed open and a closer ends within 30 min of its staffed close (both from Square store hours:
+Austin 7:30 AM / 8 PM, Houston 9:30 AM / 6 PM); the draft's history blocks move with the same window. Each kind clears on its own:
 after their supervised closers they close with anyone or alone (likewise openers). **Supervised
 mids** (`training.midShifts`, default 1 — 2026-11-02; versions saved before it load 1): until a new
 hire has done that many mids beside any experienced person (any trainer, one-kind trainers too,

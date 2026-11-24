@@ -5,6 +5,7 @@
  */
 
 import { isoWeekdayMon0 } from "@/lib/labor/staffing-need";
+import { shiftKindOf } from "@/lib/labor/new-hire-training";
 import type { ShiftKind } from "@/lib/labor/shift-draft";
 
 export type OpenShift = {
@@ -16,14 +17,9 @@ export type OpenShift = {
   source: "adp" | "draft";
   /** Someone the draft suggests for an ADP open shift. */
   suggested?: string | null;
+  /** Opener / mid / closer against that day's staffed window (absent = the fixed fallback window). */
+  kind?: ShiftKind;
 };
-
-const hm = (h: number, m = 0) => h * 60 + m;
-
-/** Opener starts by 7:30 AM, closer runs to 8 PM or later, else mid — same as the draft's labels. */
-export function shiftKind(startMin: number, endMin: number): ShiftKind {
-  return startMin <= hm(7, 30) ? "open" : endMin >= hm(20) ? "close" : "mid";
-}
 
 export type Cell = { shifts: number; hours: number };
 
@@ -45,7 +41,7 @@ export function summarizeOpenShifts(rows: OpenShift[]): OpenShiftSummary {
   const unfilled = empty();
   const perDate = new Map<string, number>();
   for (const r of rows) {
-    const c = grid[isoWeekdayMon0(r.date)]![shiftKind(r.startMin, r.endMin)];
+    const c = grid[isoWeekdayMon0(r.date)]![r.kind ?? shiftKindOf(r.startMin, r.endMin)];
     c.shifts += 1;
     c.hours += r.hours;
     total.shifts += 1;

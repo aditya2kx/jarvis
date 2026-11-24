@@ -28,7 +28,7 @@ def week_hours(location: dict) -> list[tuple[int, int] | None]:
     """
     spans: list[tuple[int, int] | None] = [None] * 7
     for p in (location.get("business_hours") or {}).get("periods") or []:
-        if p.get("day_of_week") not in DAYS:
+        if p.get("day_of_week") not in DAYS or not p.get("start_local_time") or not p.get("end_local_time"):
             continue
         d = DAYS.index(p["day_of_week"])
         start, end = _minute(p["start_local_time"]), _minute(p["end_local_time"])

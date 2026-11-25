@@ -118,9 +118,7 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   the list and the open task side by side.
 - **Pull to refresh.** Pull down at the top of a list and let go: the app reloads (fresh tasks
   and any new version; queued ticks are kept). Each screen's list scrolls, not the page, so
-  neither Safari nor the home-screen app has a built-in one. In the iPhone home-screen app the
-  page, sheets and toasts measure how far iOS stops short of the bottom edge and make it up
-  (`src/viewport.ts`, same fix as the Operator Console).
+  neither Safari nor the home-screen app has a built-in one.
 - **Offline.** The app shell and the day are kept on the device. Ticks and assignments made
   offline queue on the device and send when the connection returns; a repeated tick is a
   no-op. Photos and notes need a connection.

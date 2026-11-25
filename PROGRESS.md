@@ -1,3 +1,7 @@
+## 2026-11-25 — ADP blank SPA after Timecard blocked Earnings (Issue #566)
+
+Nightly for 2026-11-24 got Timecard, Schedule and pay_info, then failed Earnings: after `goto(dashboard)` the ADP URL stayed on `runpayrollmain2/.../v2/` but the page was blank, so `Reports-btn` never appeared (Slack alert; evidence PNG white). Fix: wait for the v2 nav chrome and reload on a blank shell before Earnings / Schedule / Timecard gaps (`_goto_v2_dashboard`). Re-scrape Earnings with `--force-scrape` after deploy (a plain Retry-Dates would be recompute-only because `adp_shifts` already exists).
+
 ## 2026-11-24 — Labor: staffed hours from Square (Issue #558)
 
 The Labor page's staffed window now follows each store's Square opening hours per weekday, minus "In before open" and plus "Stay after close" (30 min each by default, in Scheduling rules). Houston (9–6) had been drafting against Austin's 6:30 AM–8:30 PM. The page reads Square live (1 h cache); the nightly copies the hours to `square_location_hours` (migration 099) as a fallback and change history.

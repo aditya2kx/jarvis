@@ -1,3 +1,7 @@
+## 2026-11-25 — Store Tasks: managers see and issue shop codes (Issue #568)
+
+Manage → Sign-in lists every store a manager can open (Austin + Houston for multi-store accounts) with the shop code in plaintext, Copy, and Issue new (blank = random 6 digits). Legacy hash-only rows show needs-rotate. Prior codes go to `shop_code_history`. Shop devices still cannot add tasks.
+
 ## 2026-11-25 — ADP blank SPA after Timecard blocked Earnings (Issue #566)
 
 Nightly for 2026-11-24 got Timecard, Schedule and pay_info, then failed Earnings: after `goto(dashboard)` the ADP URL stayed on `runpayrollmain2/.../v2/` but the page was blank, so `Reports-btn` never appeared (Slack alert; evidence PNG white). Fix: wait for the v2 nav chrome and reload on a blank shell before Earnings / Schedule / Timecard gaps (`_goto_v2_dashboard`). Re-scrape Earnings with `--force-scrape` after deploy (a plain Retry-Dates would be recompute-only because `adp_shifts` already exists).

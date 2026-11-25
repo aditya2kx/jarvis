@@ -283,63 +283,107 @@ function PersonForm({ token, value, onClose, onSaved }: { token: string; value: 
 }
 
 function ShopCodeCard({ token }: { token: string }) {
-  const load = useCallback(() => api.shopCode(token), [token]);
+  const load = useCallback(() => api.shopCodes(token), [token]);
   const [data, error, reload] = useLoad(load);
-  const [code, setCode] = useState("");
+  const [custom, setCustom] = useState<Record<string, string>>({});
+  const [busyStore, setBusyStore] = useState<string | null>(null);
   const [failed, setFailed] = useState("");
-  const [saved, setSaved] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [flash, setFlash] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
   if (error) return <Notice tone="error">{error}</Notice>;
   if (!data) return <p className="text-muted-foreground">Loading…</p>;
 
-  const save = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
+  const run = async (store: string, code?: string) => {
+    setBusyStore(store);
     setFailed("");
+    setFlash(null);
     try {
-      const r = await api.setShopCode(token, code);
+      const r = await api.setShopCode(token, { store, code });
       if (r.device) device.set(r.device);
-      setCode("");
-      setSaved(true);
+      setCustom((c) => ({ ...c, [store]: "" }));
+      setFlash(store);
       reload();
     } catch (err) {
       setFailed((err as Error).message);
     } finally {
-      setBusy(false);
+      setBusyStore(null);
+    }
+  };
+
+  const copy = async (store: string, code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(store);
+      setTimeout(() => setCopied((c) => (c === store ? null : c)), 1500);
+    } catch {
+      setFailed("Could not copy — select the code and copy it yourself.");
     }
   };
 
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold">Shop device</h2>
+      <h2 className="text-lg font-semibold">Shop devices</h2>
       <p className="text-muted-foreground">
-        The shop iPad needs no Google account. Open {data.url ? <span className="font-medium text-foreground break-all">{data.url}</span> : "the Store Tasks link"} on it, tap
-        “Set up this iPad for the shop” and enter this 6-digit code once; it stays signed in as the shop. Crew pick who is doing each task, and a manager signs in with their PIN to manage.
+        Each store has one 6-digit code. On the iPad open{" "}
+        {data.url ? <span className="font-medium text-foreground break-all">{data.url}</span> : "the Store Tasks link"}, tap
+        “Set up this iPad for the shop”, and enter that store’s code once. Crew use the shop as-is (no Google); managers sign in with their PIN to manage. Issuing or changing a code signs that store’s shop devices out.
       </p>
-      <form onSubmit={save} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-end">
-        <Field label={data.set ? "New shop code" : "Shop code"}>
-          <Input
-            inputMode="numeric"
-            autoComplete="off"
-            maxLength={6}
-            placeholder="6 digits"
-            value={code}
-            onChange={(e) => {
-              setSaved(false);
-              setCode(e.target.value.replace(/\D/g, ""));
-            }}
-          />
-        </Field>
-        <Button type="submit" disabled={code.length !== 6 || busy} className="sm:w-48">
-          {busy ? "Saving…" : data.set ? "Change code" : "Set code"}
-        </Button>
-      </form>
+      <ul className="space-y-3">
+        {data.stores.map((row) => {
+          const digits = custom[row.store!] ?? "";
+          const busy = busyStore === row.store;
+          return (
+            <li key={row.store} className="rounded-xl border border-border bg-card p-4 space-y-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h3 className="font-semibold">{row.name ?? row.store}</h3>
+                {row.updated_at && (
+                  <p className="text-sm text-muted-foreground">
+                    {row.needs_rotate ? "Set before digits were kept" : "Updated"}{" "}
+                    {new Date(row.updated_at).toLocaleString()}
+                  </p>
+                )}
+              </div>
+              {row.code ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-mono text-2xl tracking-[0.35em] text-foreground">{row.code}</p>
+                  <Button type="button" variant="outline" className="sm:w-auto" onClick={() => copy(row.store!, row.code!)}>
+                    {copied === row.store ? "Copied" : "Copy"}
+                  </Button>
+                </div>
+              ) : row.needs_rotate ? (
+                <Notice>Code is set but the digits weren’t stored. Issue a new one to see it (shop iPads will need the new code).</Notice>
+              ) : (
+                <p className="text-sm text-muted-foreground">No shop code yet.</p>
+              )}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void run(row.store!, digits.length === 6 ? digits : undefined);
+                }}
+                className="flex flex-col gap-2 sm:flex-row sm:items-end"
+              >
+                <Field label="Custom code (optional)">
+                  <Input
+                    inputMode="numeric"
+                    autoComplete="off"
+                    maxLength={6}
+                    placeholder="Leave blank to issue"
+                    value={digits}
+                    onChange={(e) => setCustom((c) => ({ ...c, [row.store!]: e.target.value.replace(/\D/g, "") }))}
+                  />
+                </Field>
+                <Button type="submit" disabled={busy || (digits.length > 0 && digits.length !== 6)} className="sm:w-48">
+                  {busy ? "Saving…" : row.set ? (digits.length === 6 ? "Change code" : "Issue new code") : digits.length === 6 ? "Set code" : "Issue code"}
+                </Button>
+              </form>
+              {flash === row.store && <Notice>Saved. Share the code above with that store’s iPad.</Notice>}
+            </li>
+          );
+        })}
+      </ul>
+      {data.stores.length === 0 && <Notice>You’re not a manager on any store yet.</Notice>}
       {failed && <Notice tone="error">{failed}</Notice>}
-      {saved && <Notice>Saved. Shop devices that used the old code enter the new one.</Notice>}
-      {data.set && !saved && data.updated_at && (
-        <p className="text-sm text-muted-foreground">Set {new Date(data.updated_at).toLocaleDateString()}. Changing it signs every shop device out.</p>
-      )}
     </section>
   );
 }

@@ -41,12 +41,15 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
   Google account goes straight in as them, no PIN. The tick records that person and the time.
   Sessions last 12 hours and a shared account locks after 3 idle minutes.
 - **The shop device.** The shop iPad has no Google account. On the one link it taps "Set up this
-  iPad for the shop" and enters the store's 6-digit shop code once (a manager sets it in Manage → Sign-in); it then keeps a
-  device token, renewed whenever the app loads, and works as "Shop". Crew never sign in there:
-  they pick who is doing each task, and a tick from the shop counts for the task's assignee.
-  A manager taps Manager and enters their PIN to manage; it falls back to the shop after 3 idle
-  minutes. Changing the code signs every shop device out. Ten wrong codes within 15 minutes,
-  from anywhere, pause shop sign-in for 15 minutes; devices already signed in keep working.
+  iPad for the shop" and enters the store's 6-digit shop code once (a manager sees and issues it in
+  Manage → Sign-in — every store they manage is listed, digits in plaintext, or leave blank to
+  auto-issue); it then keeps a device token, renewed whenever the app loads, and works as "Shop".
+  Crew never sign in there: they pick who is doing each task, and a tick from the shop counts for
+  the task's assignee. A manager taps Manager and enters their PIN to manage; it falls back to the
+  shop after 3 idle minutes. Changing the code signs every shop device on that store out (prior
+  codes stay in `shop_code_history`). Ten wrong codes within 15 minutes, from anywhere, pause shop
+  sign-in for 15 minutes; devices already signed in keep working. A code set before digits were
+  stored shows as “needs rotate” until a manager issues a new one.
 - **One origin.** The app's nginx passes `/v1/` on to the API. On the sign-in hop it re-sends
   Google's signed assertion as `X-Signin-Assertion` (Google's front end drops `x-goog-*` headers
   between services) and the API verifies it against the hop's audience. Calling the API without
@@ -140,7 +143,7 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
 | Shared account (store iPad) | Google sign-in → device token (`X-Shop-Device`, kind `google`) | See the store's shifts and staff names |
 | Shop device | shop code → device token (`X-Shop-Device`) | Tick, assign, add photos and notes as "Shop" (no PIN); cannot add or change tasks; managers sign in on it with their PIN |
 | Crew | Google sign-in + PIN session (`X-Staff-Session`) | Read days, tick, undo own ticks, assign anyone, add photos and notes, remove own photos, send the count, add a one-off task and delete their own |
-| Manager | Google sign-in + 6-digit PIN session, or their own Google account | Also: how-to text and example photos, templates, people and PINs, sign-in accounts, history, undo anyone's tick, remove any photo or one-off task |
+| Manager | Google sign-in + 6-digit PIN session, or their own Google account | Also: how-to text and example photos, templates, people and PINs, sign-in accounts, **see and issue shop codes** (plaintext on Manage → Sign-in for every store they manage; omit digits to auto-issue; rotate signs that store’s shop devices out), history, undo anyone's tick, remove any photo or one-off task |
 | A project member | Their own Google account (sign-in hop → device token, kind `google`); no staff record, PIN or store access | `/v1/projects*`: see, add, change, tick and comment on that project's action items. Everyone else, the shop device included, gets 404; store routes still refuse a project-only account. Only its admin changes who is on it, which also adds or removes them on the Google sign-in list |
 | Scheduler, nightly job, Slack bridge | `Authorization: Bearer` internal token | `/internal/*` |
 

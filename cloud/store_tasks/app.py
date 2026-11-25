@@ -18,6 +18,7 @@ consume its events. See cloud/store_tasks/README.md.
     POST /v1/projects/<id>/feedback  the same from a project; it goes to the store of whoever runs it
     POST /v1/projects/<id>/items/<item>/photo, DELETE …/photos/<path>, GET /v1/projects/<id>/photos/<path>
     GET|POST /v1/templates (+ /order), /v1/staff, /v1/accounts, GET /v1/history, GET /v1/feedback   (manager)
+    GET /v1/shop-codes, PUT /v1/shop-code and /v1/shop-codes/<store>  manager shop codes (plaintext; omit code to issue)
     /v1/projects[/<id> (+ /parse, /items, /items/<id>/notes, /members)]   private projects, by Google account (members)
     POST /webhooks/clickup/<s>/<list> ClickUp change (signed with that webhook's secret)
     POST /internal/tick              scheduled: alerts, shared-shift sync, ClickUp webhooks + mirror, chat summaries
@@ -511,13 +512,40 @@ def create_app(tasks: svc.Tasks | None = None, signed_in=None, signin_access=Non
     def shop_code():
         return jsonify(**tasks.shop_code(g.store), url=os.environ.get("STORE_TASKS_HOME_URL", ""))
 
+    @app.get("/v1/shop-codes")
+    @manager_required
+    def shop_codes():
+        """Every store this manager can open, with plaintext shop codes (legacy rows need rotate)."""
+        return jsonify(
+            stores=tasks.shop_codes_for(g.home, session_store=g.store, session_role=g.staff["role"]),
+            url=os.environ.get("STORE_TASKS_HOME_URL", ""),
+        )
+
     @app.put("/v1/shop-code")
     @manager_required
     def set_shop_code():
-        tasks.set_shop_code(g.store, str(body().get("code", "")), g.staff["sid"])
+        """Set digits, or omit ``code`` to issue a random one. Optional ``store`` for another managed store."""
+        b = body()
+        store_id = str(b.get("store") or g.store)
+        tasks.require_manager_on(
+            g.home, store_id, session_store=g.store, session_role=g.staff["role"])
+        code = b.get("code")
+        tasks.set_shop_code(store_id, None if code in (None, "") else str(code), g.staff["sid"])
         # Changed from the shop device itself: it keeps working with the new code.
-        return jsonify(**tasks.shop_code(g.store), url=os.environ.get("STORE_TASKS_HOME_URL", ""),
-                       device=tasks.renew_device(g.account, g.has_device and bool(g.account.get("shop"))))
+        on_shop = g.has_device and bool(g.account.get("shop")) and g.account["store"] == store_id
+        return jsonify(**tasks.shop_code(store_id), url=os.environ.get("STORE_TASKS_HOME_URL", ""),
+                       device=tasks.renew_device(g.account, on_shop))
+
+    @app.put("/v1/shop-codes/<store_id>")
+    @manager_required
+    def set_shop_code_for(store_id: str):
+        tasks.require_manager_on(
+            g.home, store_id, session_store=g.store, session_role=g.staff["role"])
+        code = body().get("code")
+        tasks.set_shop_code(store_id, None if code in (None, "") else str(code), g.staff["sid"])
+        on_shop = g.has_device and bool(g.account.get("shop")) and g.account["store"] == store_id
+        return jsonify(**tasks.shop_code(store_id), url=os.environ.get("STORE_TASKS_HOME_URL", ""),
+                       device=tasks.renew_device(g.account, on_shop))
 
     @app.get("/v1/history")
     @manager_required

@@ -17,7 +17,8 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 STORES = "stores"
 STAFF = "staff"
 ACCOUNTS = "accounts"  # Google accounts allowed in, keyed by email
-SHOP_CODES = "shop_codes"  # per store: the shop code's hash and generation
+SHOP_CODES = "shop_codes"  # per store: plaintext code + hash and generation (managers see the digits)
+SHOP_CODE_HISTORY = "shop_code_history"  # superseded codes (hash + optional plaintext), append-only
 GUARDS = "guards"
 POSTS = "posts"
 WEBHOOKS = "webhooks"

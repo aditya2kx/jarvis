@@ -158,7 +158,10 @@ def test_shop_device_signs_in_with_the_store_code_and_ticks_for_the_assignee(env
     c = env.client
     assert c.put("/v1/shop-code", json={"code": "482913"}, headers=env.crew_h).status_code == 403
     assert c.put("/v1/shop-code", json={"code": "4829"}, headers=env.boss_h).status_code == 400
-    assert c.put("/v1/shop-code", json={"code": "482913"}, headers=env.boss_h).get_json()["set"] is True
+    saved = c.put("/v1/shop-code", json={"code": "482913"}, headers=env.boss_h).get_json()
+    assert saved["set"] is True and saved["code"] == "482913" and saved["needs_rotate"] is False
+    assert c.get("/v1/shop-code", headers=env.boss_h).get_json()["code"] == "482913"
+    assert c.get("/v1/shop-code", headers=env.crew_h).status_code == 403
     assert c.post("/v1/shop/enroll", json={"code": "000000"}).status_code == 403
     device = c.post("/v1/shop/enroll", json={"code": "482913"}).get_json()["device"]
     shop = {"X-Shop-Device": device}
@@ -197,6 +200,48 @@ def test_wrong_shop_codes_pause_shop_sign_in(env):
     assert env.client.post("/v1/shop/enroll", json={"code": "482913"}).status_code == 429
     env.clock.at += datetime.timedelta(seconds=auth.CODE_LOCK_SECONDS + 1)
     assert env.client.post("/v1/shop/enroll", json={"code": "482913"}).status_code == 200
+
+
+def test_managers_see_and_issue_shop_codes_across_stores(env):
+    """Plaintext codes for every managed store; omit code to issue; legacy hash-only needs rotate."""
+    hou_boss = _second_store(env)
+    c = env.client
+    # Own Google account (not the shared iPad): lists every store the person manages.
+    aus_boot = c.get("/v1/bootstrap", headers={"X-Test-Google": OWNER}).get_json()
+    aus = {"X-Test-Google": OWNER, "X-Staff-Session": aus_boot["own"]["session"]}
+    listed = c.get("/v1/shop-codes", headers=aus).get_json()
+    by_id = {r["store"]: r for r in listed["stores"]}
+    assert set(by_id) == {"palmetto", "houston"}
+    assert by_id["palmetto"]["set"] is False and by_id["houston"]["code"] is None
+
+    issued = c.put("/v1/shop-codes/houston", json={}, headers=aus).get_json()
+    assert issued["set"] and auth.valid_shop_code(issued["code"]) and issued["needs_rotate"] is False
+    assert c.post("/v1/shop/enroll", json={"code": issued["code"]}).status_code == 200
+
+    # Austin legacy: hash only → needs_rotate until a new code is issued.
+    h = auth.hash_pin("111222")
+    env.tasks.docs.set(st.SHOP_CODES, "palmetto", {
+        "id": "palmetto", "code_hash": h["pin_hash"], "code_salt": h["pin_salt"], "gen": "old",
+        "updated_at": "2026-11-01T00:00:00+00:00", "updated_by": "legacy"})
+    legacy = c.get("/v1/shop-codes", headers=aus).get_json()["stores"]
+    aus_row = next(r for r in legacy if r["store"] == "palmetto")
+    assert aus_row["set"] and aus_row["code"] is None and aus_row["needs_rotate"] is True
+    rotated = c.put("/v1/shop-code", json={}, headers=aus).get_json()
+    assert rotated["code"] != "111222" and rotated["needs_rotate"] is False
+    assert c.post("/v1/shop/enroll", json={"code": "111222"}).status_code == 403
+    assert c.post("/v1/shop/enroll", json={"code": rotated["code"]}).status_code == 200
+    hist = env.tasks.docs.query(st.SHOP_CODE_HISTORY, store="palmetto")
+    assert len(hist) == 1 and hist[0]["code_hash"] == h["pin_hash"]
+
+    assert c.get("/v1/shop-codes", headers=env.crew_h).status_code == 403
+    # Shared-iPad manager session still sees the current store's code.
+    shared = c.get("/v1/shop-codes", headers=env.boss_h).get_json()["stores"]
+    assert [r["store"] for r in shared] == ["palmetto"] and shared[0]["code"] == rotated["code"]
+    # From a Houston session, a manager who also owns Austin can still rotate Austin.
+    hou_session = c.get("/v1/bootstrap", headers={"X-Test-Google": OWNER, "X-Store": "houston"}).get_json()["own"]["session"]
+    hou = {"X-Test-Google": OWNER, "X-Store": "houston", "X-Staff-Session": hou_session}
+    assert hou_boss["role"] == "manager"
+    assert c.put("/v1/shop-codes/palmetto", json={"code": "333444"}, headers=hou).get_json()["code"] == "333444"
 
 
 def test_day_is_generated_once_with_only_todays_deep_clean(env):

@@ -1,11 +1,14 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App, takeSignIn } from "./App";
+import { PullToRefresh } from "./PullToRefresh";
 import { ProjectScreen } from "./Tracker";
 import "./index.css";
 import { recordErrors } from "./steps";
+import { watchViewportGap } from "./viewport";
 
 recordErrors();
+watchViewportGap();
 
 if ("serviceWorker" in navigator && import.meta.env.PROD) {
   navigator.serviceWorker.register("/sw.js");
@@ -18,5 +21,6 @@ const project = /^\/p\/([\w-]+)\/?$/.exec(location.pathname)?.[1];
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     {project ? <ProjectScreen id={project} signInError={signInError} /> : <App signInError={signInError} />}
+    <PullToRefresh />
   </StrictMode>,
 );

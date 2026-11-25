@@ -131,7 +131,7 @@ function Viewer({ token, photo, caption, position, onClose, onStep, onRemove }: 
 
   const round = "rounded-full bg-white/10 p-2.5 text-white hover:bg-white/20";
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-black/95" role="dialog" aria-modal="true" aria-label="Photo" onClick={onClose}>
+    <div className="fixed inset-x-0 top-0 bottom-[calc(var(--vp-gap,0px)*-1)] z-50 flex flex-col bg-black/95" role="dialog" aria-modal="true" aria-label="Photo" onClick={onClose}>
       <div className="flex items-center justify-between gap-3 p-3 pt-[max(0.75rem,env(safe-area-inset-top))] text-white" onClick={(e) => e.stopPropagation()}>
         <p className="min-w-0 truncate text-sm">{[caption, position].filter(Boolean).join("  ·  ")}</p>
         <div className="flex shrink-0 gap-2">

@@ -147,7 +147,8 @@ nightly inventory (BHAGA) ──GET /internal/stores/<s>/closing-counts──▶
 | A project member | Their own Google account (sign-in hop → device token, kind `google`); no staff record, PIN or store access | `/v1/projects*`: see, add, change, tick and comment on that project's action items. Everyone else, the shop device included, gets 404; store routes still refuse a project-only account. Only its admin changes who is on it, which also adds or removes them on the Google sign-in list |
 | Scheduler, nightly job, Slack bridge | `Authorization: Bearer` internal token | `/internal/*` |
 
-PINs and shop codes are stored as scrypt hashes; five wrong PINs lock that person for five minutes. An
+PINs are stored as scrypt hashes; shop codes keep a scrypt hash for enroll plus the plaintext
+digits for managers on Manage → Sign-in. Five wrong PINs lock that person for five minutes. An
 account can only see its own store. Adding or removing an account in Manage → Sign-in also
 adds or removes it on the app's Google sign-in list, so the two never drift.
 

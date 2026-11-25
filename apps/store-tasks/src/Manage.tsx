@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, device, type Bootstrap, type Account, type HistoryDay, type Session, type Staff, type Template } from "./api";
 import { FeedbackButton, FeedbackList } from "./Feedback";
 import { repeatLabel } from "./Repeat";
+import { shopCodeButtonLabel, shopCodeStatus } from "./shopCodeUi";
 import { setWhere } from "./steps";
 import { blankDraft, TaskForm, type TaskDraft } from "./TaskForm";
 import { addDays, Button, cx, dayLabel, Field, Input, inputClass, Notice, Sheet } from "./ui";
@@ -344,14 +345,14 @@ function ShopCodeCard({ token }: { token: string }) {
                   </p>
                 )}
               </div>
-              {row.code ? (
+              {shopCodeStatus(row) === "shown" ? (
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="font-mono text-2xl tracking-[0.35em] text-foreground">{row.code}</p>
                   <Button type="button" variant="outline" className="sm:w-auto" onClick={() => copy(row.store!, row.code!)}>
                     {copied === row.store ? "Copied" : "Copy"}
                   </Button>
                 </div>
-              ) : row.needs_rotate ? (
+              ) : shopCodeStatus(row) === "needs_rotate" ? (
                 <Notice>Code is set but the digits weren’t stored. Issue a new one to see it (shop iPads will need the new code).</Notice>
               ) : (
                 <p className="text-sm text-muted-foreground">No shop code yet.</p>
@@ -374,7 +375,7 @@ function ShopCodeCard({ token }: { token: string }) {
                   />
                 </Field>
                 <Button type="submit" disabled={busy || (digits.length > 0 && digits.length !== 6)} className="sm:w-48">
-                  {busy ? "Saving…" : row.set ? (digits.length === 6 ? "Change code" : "Issue new code") : digits.length === 6 ? "Set code" : "Issue code"}
+                  {shopCodeButtonLabel(row, digits.length, busy)}
                 </Button>
               </form>
               {flash === row.store && <Notice>Saved. Share the code above with that store’s iPad.</Notice>}

@@ -189,6 +189,14 @@ def test_shop_device_signs_in_with_the_store_code_and_ticks_for_the_assignee(env
     # A new code signs old devices out.
     c.put("/v1/shop-code", json={"code": "771204"}, headers=env.boss_h)
     assert c.get("/v1/bootstrap", headers=shop).status_code == 401
+    # Changing the code while signed in as shop renews this device so it keeps working.
+    shop2 = {"X-Shop-Device": c.post("/v1/shop/enroll", json={"code": "771204"}).get_json()["device"]}
+    boss2 = c.post("/v1/sessions", json={"staff_id": env.boss["id"], "pin": "123456"}, headers=shop2).get_json()
+    renewed = c.put("/v1/shop-code", json={"code": "880011"},
+                    headers={**shop2, "X-Staff-Session": boss2["session"]}).get_json()
+    assert renewed["code"] == "880011" and renewed["device"]
+    assert c.get("/v1/bootstrap", headers={"X-Shop-Device": renewed["device"]}).status_code == 200
+    assert c.get("/v1/bootstrap", headers=shop2).status_code == 401
 
 
 def test_wrong_shop_codes_pause_shop_sign_in(env):

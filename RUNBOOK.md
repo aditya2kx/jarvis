@@ -1830,7 +1830,17 @@ Every run on 154 had worked. The `Dockerfile` now installs `google-chrome-stable
 `test_cloud_image_pins_the_chrome_version` fails if the pin is removed. To move to a newer
 Chrome: bump `CHROME_VERSION`, deploy, then run
 `python3 scripts/trigger_dated_refresh.py --date <yesterday> --force-scrape` and confirm
-`earnings prep: session alive` and `schedule OK`. If the session dies, revert the bump.
+`v2-shell-ready` (and `schedule OK`). If the session dies, revert the bump.
+
+**ADP blank SPA after Timecard → Earnings (2026-11-24).** After a successful Timecard scrape the
+bundle returns to the dashboard URL for Earnings. ADP can keep a valid `runpayrollmainN/.../v2/`
+URL while the chrome never paints (white page; `Reports-btn` never mounts) — Slack that night:
+`adp_earnings: TimeoutError: … waiting for locator("[data-test-id=\"Reports-btn\"]")`, evidence
+`adp-bundle-earnings-fail-*.png` is blank. `_goto_v2_dashboard` now waits for a nav landmark
+(Reports/Time/People/Taxes) and reloads on a blank shell before Earnings / Schedule / Timecard
+gaps. Grep `v2-shell-blank` / `v2-shell-ready`. A `Retry-Dates` of a night that already has
+`adp_shifts` is recompute-only — re-scrape Earnings with
+`python3 scripts/trigger_dated_refresh.py --date YYYY-MM-DD --force-scrape`.
 
 **ADP Timecard pay-period selection (2026-07-17).** Nightly mode must select the **single**
 pay period that contains `target_date` — not Select All. The runner enumerates Pay Period

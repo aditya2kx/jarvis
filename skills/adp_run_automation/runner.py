@@ -1256,6 +1256,69 @@ def _save_evidence(page, label: str, *, html: bool = False) -> str:
 # ── Shared Reports navigation ─────────────────────────────────────
 
 
+def _await_v2_shell(page, *, tag: str, max_retries: int = 2) -> None:
+    """Wait until the ADP v2 chrome is actually painted (not a blank SPA).
+
+    ``page.goto`` to the dashboard can leave a white content area with a valid
+    ``runpayrollmain*/v2/`` URL — the Reports / Time nav never mounts (seen
+    2026-11-24 after the Timecard scrape, before Earnings). Waiting only on the
+    URL then times out on ``Reports-btn``. Reload and retry; same blank-SPA
+    recovery as ``_navigate_to_reports_landing``.
+    """
+    shell = page.locator(
+        '[data-test-id="Reports-btn"], [data-test-id="Time-btn"], '
+        '[data-test-id="People-btn"], [data-test-id="Taxes-btn"]'
+    )
+    for attempt in range(1, max_retries + 2):
+        try:
+            shell.first.wait_for(state="visible", timeout=15_000)
+            print(f"[{tag}] step=v2-shell-ready (attempt {attempt}) url={page.url}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{tag}] step=v2-shell-blank (attempt {attempt}): "
+                  f"{type(exc).__name__}: {exc}; url={page.url}")
+            if attempt > max_retries:
+                break
+            print(f"[{tag}] step=reload-after-blank-shell (attempt {attempt})")
+            page.reload(wait_until="domcontentloaded", timeout=30_000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=8_000)
+            except Exception:  # noqa: BLE001
+                pass
+            page.wait_for_timeout(2_000)
+    _save_evidence(page, f"{tag}-blank-shell", html=True)
+    raise TimeoutError(
+        f"ADP v2 shell never painted after {max_retries + 1} attempts "
+        f"(no Reports/Time/People/Taxes nav). url={page.url}"
+    )
+
+
+def _goto_v2_dashboard(page, dashboard_url: str, *, tag: str, store: str) -> None:
+    """Return to the captured dashboard URL and wait for a live v2 shell.
+
+    Keeps the session on the same domain (no second OTP). Re-logs in only if
+    the URL leaves the post-login pattern.
+    """
+    print(f"[{tag}] step=goto-dashboard url={page.url} → {dashboard_url}")
+    page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
+    try:
+        page.wait_for_load_state("networkidle", timeout=30_000)
+    except Exception:  # noqa: BLE001
+        pass
+    if POST_LOGIN_URL_RE.search(page.url):
+        print(f"[{tag}] step=session-alive url={page.url}")
+    else:
+        try:
+            page.wait_for_url(POST_LOGIN_URL_RE, timeout=10_000)
+            print(f"[{tag}] step=redirected-to-v2 url={page.url}")
+        except Exception:  # noqa: BLE001
+            print(f"[{tag}] step=session-lapse url={page.url}; re-running login")
+            _ensure_logged_in(page, store=store)
+            print(f"[{tag}] step=post-relogin url={page.url}")
+            page.wait_for_timeout(2_000)
+    _await_v2_shell(page, tag=tag)
+
+
 def _navigate_to_reports_landing(page, *, max_retries: int = 2) -> None:
     """Navigate from the ADP dashboard to the Reports listing page.
 
@@ -1276,6 +1339,7 @@ def _navigate_to_reports_landing(page, *, max_retries: int = 2) -> None:
     Time / Custom / Benefits / H-R / etc. accordion sections).
     """
     tag = "adp_reports"
+    _await_v2_shell(page, tag=tag, max_retries=max_retries)
 
     for attempt in range(1, max_retries + 2):
         print(f"[{tag}] step=click-reports-btn (attempt {attempt})")
@@ -2954,29 +3018,9 @@ def download_adp_bundle(
                 # hitting it triggers re-auth + a second OTP. Using the captured
                 # dashboard_url keeps us on the same domain and preserves the
                 # session. (2026-05-27 fix: single OTP per bundle)
-                print(f"[adp_bundle] step=reset-page-before-earnings "
-                      f"url={page.url}")
-                page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
-                try:
-                    page.wait_for_load_state("networkidle", timeout=30_000)
-                except Exception:  # noqa: BLE001
-                    pass
-                if POST_LOGIN_URL_RE.search(page.url):
-                    print(f"[adp_bundle] earnings prep: session alive "
-                          f"(url={page.url})")
-                else:
-                    try:
-                        page.wait_for_url(POST_LOGIN_URL_RE, timeout=10_000)
-                        print(f"[adp_bundle] earnings prep: redirected to v2 "
-                              f"(url={page.url})")
-                    except Exception:  # noqa: BLE001
-                        print(f"[adp_bundle] earnings: UNEXPECTED session lapse "
-                              f"after timecard (url={page.url}, "
-                              f"dashboard_url={dashboard_url}); re-running login")
-                        _ensure_logged_in(page, store=store)
-                        print(f"[adp_bundle] earnings: post-relogin "
-                              f"url={page.url}")
-                        page.wait_for_timeout(2_000)
+                _goto_v2_dashboard(
+                    page, dashboard_url, tag="adp_bundle.earnings", store=store,
+                )
 
                 window_start, window_end = er_window_start, er_window_end
                 # Always custom-range + Employment=All. "Last payroll" dropped
@@ -3007,19 +3051,9 @@ def download_adp_bundle(
             try:
                 # Reuse the live session. Reset to the dashboard first (same
                 # domain → no re-auth), then open Team Schedule and scrape.
-                print(f"[adp_bundle] step=reset-page-before-schedule url={page.url}")
-                page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
-                try:
-                    page.wait_for_load_state("networkidle", timeout=30_000)
-                except Exception:  # noqa: BLE001
-                    pass
-                if not POST_LOGIN_URL_RE.search(page.url):
-                    try:
-                        page.wait_for_url(POST_LOGIN_URL_RE, timeout=10_000)
-                    except Exception:  # noqa: BLE001
-                        print(f"[adp_bundle] schedule: UNEXPECTED session lapse "
-                              f"(url={page.url}); re-running login")
-                        _ensure_logged_in(page, store=store)
+                _goto_v2_dashboard(
+                    page, dashboard_url, tag="adp_bundle.schedule", store=store,
+                )
                 payloads, requests = _schedule_within_session(page, weeks=schedule_weeks)
                 path = _write_schedule_json(payloads, store=store, requests=requests)
                 result["schedule_json"] = path
@@ -3035,9 +3069,9 @@ def download_adp_bundle(
 
         if needs_gaps:
             try:
-                page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60_000)
-                if not POST_LOGIN_URL_RE.search(page.url):
-                    page.wait_for_url(POST_LOGIN_URL_RE, timeout=10_000)
+                _goto_v2_dashboard(
+                    page, dashboard_url, tag="adp_bundle.timecard_gaps", store=store,
+                )
                 page.wait_for_timeout(1500)
                 payload = _timecard_gaps_within_session(page)
                 path = _write_timecards_ui_json(payload, store=store)

@@ -57,7 +57,7 @@ export function Sheet({ title, onClose, children }: { title: string; onClose: ()
   useEscape(onClose);
 
   return (
-    <div className="fade fixed inset-0 z-40 flex items-end justify-center bg-foreground/45 backdrop-blur-[2px] sm:items-center sm:p-6" onClick={onClose}>
+    <div className="fade fixed inset-x-0 top-0 bottom-[calc(var(--vp-gap,0px)*-1)] z-40 flex items-end justify-center bg-foreground/45 backdrop-blur-[2px] sm:items-center sm:p-6" onClick={onClose}>
       <div
         role="dialog"
         aria-modal="true"
@@ -102,7 +102,7 @@ export function shiftTone(due: string): { tone: Tone; Icon: LucideIcon } {
 /** A short confirmation that goes away by itself. */
 export function Toast({ text }: { text: string }) {
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-[max(1.25rem,env(safe-area-inset-bottom))] z-50 flex justify-center px-4">
+    <div className="pointer-events-none fixed inset-x-0 bottom-[calc(max(1.25rem,env(safe-area-inset-bottom))-var(--vp-gap,0px))] z-50 flex justify-center px-4">
       <p role="status" className="pop rounded-full bg-foreground px-4 py-2.5 text-sm font-medium text-background shadow-float">
         {text}
       </p>

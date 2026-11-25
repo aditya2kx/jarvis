@@ -3194,9 +3194,15 @@ gcloud logging read 'resource.labels.service_name="store-tasks-api" AND textPayl
   --project jarvis-bhaga-prod --freshness 1d --limit 20
 ```
 
+- **Shop iPad code:** Manage → Sign-in lists every store you manage with the 6-digit code in
+  plaintext (Copy / Issue new / optional custom digits). One active code per store; issuing or
+  changing it signs that store’s shop devices out. A code set before digits were kept shows
+  “needs rotate” until you issue a new one. Same link for every store:
+  `https://store-tasks-887772634501.us-central1.run.app` — the code picks the store.
 - **A lost or stolen iPad:** Manage → Sign-in → remove its Google account (and change that
   account's password). A new grant can take a minute to apply; "You don't have access" right
-  after adding someone usually just needs a reload.
+  after adding someone usually just needs a reload. For a shop device (no Google), issue a new
+  shop code so the old enrollment stops working.
 - **Someone forgot their PIN:** a manager sets a new one in Manage → People.
 - **A manager in more than one store:** make them a manager in each store (Manage → People, or
   `admin manager --store <id> --name "<name>"`), then add their own Google account on each store's

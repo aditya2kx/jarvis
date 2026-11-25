@@ -7,6 +7,7 @@ import datetime
 import io
 import json
 import os
+import secrets
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -294,20 +295,98 @@ class Tasks:
     # ── shop devices ────────────────────────────────────────────────────────
 
     def shop_code(self, store_id: str) -> dict:
+        """Managers see the digits. A legacy hash-only row is ``set`` but ``needs_rotate``."""
         d = self.docs.get(st.SHOP_CODES, store_id) or {}
-        return {"set": bool(d.get("code_hash")), "updated_at": d.get("updated_at")}
+        code = d.get("code")
+        hashed = bool(d.get("code_hash"))
+        return {
+            "store": store_id,
+            "set": hashed,
+            "code": code if isinstance(code, str) and auth.valid_shop_code(code) else None,
+            "needs_rotate": hashed and not (isinstance(code, str) and auth.valid_shop_code(code)),
+            "updated_at": d.get("updated_at"),
+        }
 
-    def set_shop_code(self, store_id: str, code: str, by: str) -> None:
-        """A new code also signs out every device that used the old one."""
+    def shop_codes_for(self, account: dict, *, session_store: str | None = None,
+                       session_role: str | None = None) -> list[dict]:
+        """Every store this person manages, with that store's shop code (if any).
+
+        A person's own Google account lists home + ``also``. A shared iPad account has no
+        staff link — then only the store of the current manager PIN session is listed.
+        """
+        rows = []
+        seen: set[str] = set()
+        for store_id, staff_id in self._account_stores(account):
+            s = self.docs.get(st.STAFF, staff_id) if staff_id else None
+            if not s or s.get("role") != auth.MANAGER:
+                continue
+            seen.add(store_id)
+            cfg = self.docs.get(st.STORES, store_id) or {"id": store_id, "name": store_id}
+            rows.append({**self.shop_code(store_id), "name": cfg.get("name") or store_id})
+        if (session_role == auth.MANAGER and session_store and session_store not in seen
+                and self.docs.get(st.STORES, session_store)):
+            cfg = self.docs.get(st.STORES, session_store) or {"id": session_store, "name": session_store}
+            rows.append({**self.shop_code(session_store), "name": cfg.get("name") or session_store})
+        return sorted(rows, key=lambda r: r["name"].lower())
+
+    def _account_stores(self, account: dict) -> list[tuple[str, str | None]]:
+        if account.get("shop"):
+            return []
+        out = [(account["store"], account.get("staff_id"))]
+        for store_id, staff_id in (account.get("also") or {}).items():
+            out.append((store_id, staff_id))
+        return out
+
+    def require_manager_on(self, account: dict, store_id: str, *,
+                           session_store: str | None = None, session_role: str | None = None) -> None:
+        """Manager on ``store_id`` via own-account link, or via PIN session on that store (shared iPad)."""
+        if session_role == auth.MANAGER and session_store == store_id:
+            return
+        try:
+            acc = self.account_in(account, store_id)
+        except auth.AuthError as e:
+            raise auth.AuthError("managers only", 403) from e
+        s = self.docs.get(st.STAFF, acc.get("staff_id") or "")
+        if not s or s.get("role") != auth.MANAGER:
+            raise auth.AuthError("managers only", 403)
+
+    def _fresh_shop_code(self) -> str:
+        """Six digits that no store already uses."""
+        for _ in range(64):
+            code = f"{secrets.randbelow(1_000_000):06d}"
+            if any(auth.pin_matches(code, _as_pin(d)) for d in self.docs.query(st.SHOP_CODES) if d.get("code_hash")):
+                continue
+            return code
+        raise Invalid("could not pick a free shop code — try again")
+
+    def set_shop_code(self, store_id: str, code: str | None, by: str) -> str:
+        """Set or issue a code. Empty/None → random. A new code signs out every shop device on this store.
+        Returns the digits (so Manage can show them). Prior code is kept in ``shop_code_history``."""
+        if self.docs.get(st.STORES, store_id) is None:
+            raise NotFound("store")
+        code = (code or "").strip() or self._fresh_shop_code()
         if not auth.valid_shop_code(code):
             raise Invalid("the shop code is 6 digits")
         for other in self.docs.query(st.SHOP_CODES):
             if other["id"] != store_id and auth.pin_matches(code, _as_pin(other)):
                 raise Invalid("another store uses that code — pick a different one")
+        prev = self.docs.get(st.SHOP_CODES, store_id)
+        now = self.now().isoformat()
+        if prev and prev.get("code_hash"):
+            hid = f"{store_id}_{prev.get('updated_at') or now}_{uuid.uuid4().hex[:8]}"
+            self.docs.set(st.SHOP_CODE_HISTORY, hid, {
+                "id": hid, "store": store_id,
+                "code_hash": prev["code_hash"], "code_salt": prev.get("code_salt"),
+                "code": prev.get("code"),
+                "was_updated_at": prev.get("updated_at"), "was_updated_by": prev.get("updated_by"),
+                "superseded_at": now, "superseded_by": by,
+            })
         h = auth.hash_pin(code)
         self.docs.set(st.SHOP_CODES, store_id, {
-            "id": store_id, "code_hash": h["pin_hash"], "code_salt": h["pin_salt"], "gen": uuid.uuid4().hex,
-            "updated_at": self.now().isoformat(), "updated_by": by})
+            "id": store_id, "code": code,
+            "code_hash": h["pin_hash"], "code_salt": h["pin_salt"], "gen": uuid.uuid4().hex,
+            "updated_at": now, "updated_by": by})
+        return code
 
     def enroll_shop(self, code: str) -> dict:
         """The code names the store. Wrong codes from anywhere count together, so guessing is slow."""

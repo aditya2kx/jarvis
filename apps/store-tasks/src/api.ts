@@ -183,9 +183,20 @@ export interface Account {
 }
 
 export interface ShopCode {
+  store?: string;
+  name?: string;
   set: boolean;
+  /** Digits managers can copy; null when unset or a legacy hash-only row. */
+  code: string | null;
+  /** True when a code exists but digits were never stored — rotate to reveal a new one. */
+  needs_rotate: boolean;
   updated_at: string | null;
   /** Where the shop device opens the app. */
+  url?: string;
+}
+
+export interface ShopCodes {
+  stores: ShopCode[];
   url: string;
 }
 
@@ -346,7 +357,14 @@ export const api = {
     call<{ session: string; staff: Staff }>("POST", "/v1/sessions", { body: { staff_id, pin } }),
   enrollShop: (code: string) => call<{ device: string }>("POST", "/v1/shop/enroll", { body: { code } }),
   shopCode: (token: string) => call<ShopCode>("GET", "/v1/shop-code", { token }),
-  setShopCode: (token: string, code: string) => call<ShopCode & { device: string | null }>("PUT", "/v1/shop-code", { token, body: { code } }),
+  shopCodes: (token: string) => call<ShopCodes>("GET", "/v1/shop-codes", { token }),
+  /** Omit ``code`` (or pass "") to issue a random 6-digit code. ``store`` targets another managed store. */
+  setShopCode: (token: string, opts: { code?: string; store?: string } = {}) =>
+    call<ShopCode & { device: string | null; url: string }>(
+      "PUT",
+      opts.store ? `/v1/shop-codes/${encodeURIComponent(opts.store)}` : "/v1/shop-code",
+      { token, body: { code: opts.code ?? "" } },
+    ),
   day: (token: string, date: string) => call<Day>("GET", `/v1/days/${date}`, { token }),
   complete: (token: string, id: string, at: string, note = "") =>
     call<Task>("POST", `/v1/tasks/${id}/complete`, { token, body: { at, note } }),

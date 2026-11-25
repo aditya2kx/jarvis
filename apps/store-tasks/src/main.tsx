@@ -5,10 +5,8 @@ import { PullToRefresh } from "./PullToRefresh";
 import { ProjectScreen } from "./Tracker";
 import "./index.css";
 import { recordErrors } from "./steps";
-import { watchViewportGap } from "./viewport";
 
 recordErrors();
-watchViewportGap();
 
 if ("serviceWorker" in navigator && import.meta.env.PROD) {
   navigator.serviceWorker.register("/sw.js");

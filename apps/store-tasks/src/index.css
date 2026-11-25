@@ -109,12 +109,9 @@
 }
 
 html,
-body {
-  height: 100%;
-}
-
+body,
 #root {
-  height: calc(100% + var(--dvh-gap, 0px));
+  height: 100%;
 }
 
 body {

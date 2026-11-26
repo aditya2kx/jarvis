@@ -129,6 +129,8 @@ import {
   type StaffingBasics,
   type StoreHours,
   type TrainingRules,
+  dropInactiveStaff,
+  pastLastDay,
 } from "@/lib/labor/schedule-inputs";
 import { payPeriodStartFor } from "@/lib/payroll/openPeriod";
 import { AdpScheduleFinalize } from "@/components/labor/AdpScheduleFinalize";
@@ -1183,6 +1185,20 @@ export function LaborCoveragePanel({
     [open, actuals, scheduledForCoverage, laborTypes],
   );
 
+  const saved = rulesHistory[0];
+  const savedVersion = saved?.version ?? 0;
+  // Directory-active people not past their last working day; null when the roster reads failed (then nobody is dropped).
+  const active = useMemo(() => {
+    if (!activeStaff) return null;
+    const gone = pastLastDay(saved?.rules.staffRules ?? [], todayIso);
+    return new Set(activeStaff.filter((name) => !gone.has(name)));
+  }, [activeStaff, saved, todayIso]);
+  // Rules for people who have left are dropped here, and so from the next save too.
+  const savedRules = useMemo(() => {
+    const raw = saved?.rules ?? DEFAULT_RULES;
+    return activeStaff ? dropInactiveStaff(raw, new Set(activeStaff), todayIso) : raw;
+  }, [saved, activeStaff, todayIso]);
+
   const baseRoster = useMemo(() => {
     const hours = new Map<string, number>();
     for (const r of actuals)
@@ -1190,19 +1206,12 @@ export function LaborCoveragePanel({
     for (const r of scheduled) {
       hours.set(r.employee, (hours.get(r.employee) ?? 0) + (r.scheduled_hours || 0));
     }
-    if (activeStaff) {
-      const active = new Set(activeStaff);
+    if (active) {
       for (const name of hours.keys()) if (!active.has(name)) hours.delete(name);
       for (const name of active) if (!hours.has(name)) hours.set(name, 0);
     }
     return adpRoster(hours);
-  }, [actuals, scheduled, activeStaff]);
-  // Directory-active people only; null when the roster reads failed (then nobody is dropped).
-  const active = useMemo(() => (activeStaff ? new Set(activeStaff) : null), [activeStaff]);
-
-  const saved = rulesHistory[0];
-  const savedVersion = saved?.version ?? 0;
-  const savedRules = saved?.rules ?? DEFAULT_RULES;
+  }, [actuals, scheduled, active]);
   // Unsaved edits preview in the draft immediately; null = showing the saved version.
   const [editedRules, setEditedRules] = useState<ScheduleRules | null>(null);
   const [rulesBase, setRulesBase] = useState(savedVersion);

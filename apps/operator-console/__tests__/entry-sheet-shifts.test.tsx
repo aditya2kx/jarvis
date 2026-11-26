@@ -74,11 +74,62 @@ describe("EntrySheet — shifts", () => {
   };
   const save = () => screen.getByRole("button", { name: "Save to changes" }) as HTMLButtonElement;
 
-  it("a shift: Delete stages straight away", () => {
+  it("a shift: Delete stages straight away and goes back to the person", () => {
     const p = sheet(SHIFT);
     expect(screen.getByText("Published")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     expect(p.onStageShift).toHaveBeenCalledWith({ kind: "shift-delete", employee: "Lee, Ana", ...base });
+    expect(p.onTarget).toHaveBeenCalledWith({ mode: "person", employee: "Lee, Ana" });
+    expect(p.onClose).not.toHaveBeenCalled();
+  });
+
+  describe("person drawer: bulk actions on ticked shifts", () => {
+    const first = { date: "2026-10-30", employee: "Lee, Ana", startMin: 420, endMin: 780 };
+    const second = { date: "2026-11-01", employee: "Lee, Ana", startMin: 840, endMin: 1200 };
+    const tickBoth = () => fireEvent.click(screen.getByRole("button", { name: "Select all" }));
+
+    it("no ticks: the usual Add buttons, no bulk bar", () => {
+      sheet({ mode: "person", employee: "Lee, Ana" });
+      expect(screen.queryByTestId("person-shift-bulk")).toBeNull();
+      expect(screen.getByRole("button", { name: "Add shift" })).toBeTruthy();
+    });
+
+    it("Delete stages a delete per ticked shift and keeps the drawer open", () => {
+      const p = sheet({ mode: "person", employee: "Lee, Ana" });
+      tickBoth();
+      expect(screen.getByTestId("person-shift-bulk").textContent).toMatch(/2 shifts selected/);
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+      expect(p.onStageShift.mock.calls.map((c) => c[0])).toEqual([
+        { kind: "shift-delete", ...first },
+        { kind: "shift-delete", ...second },
+      ]);
+      expect(p.onClose).not.toHaveBeenCalled();
+      expect(p.onTarget).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("person-shift-bulk")).toBeNull();
+    });
+
+    it("Make open stages make-open for just the ticked shift", () => {
+      const p = sheet({ mode: "person", employee: "Lee, Ana" });
+      fireEvent.click(screen.getByLabelText("Select Sun, Nov 1 · 2 PM–8 PM"));
+      fireEvent.click(screen.getByRole("button", { name: "Make open" }));
+      expect(p.onStageShift.mock.calls.map((c) => c[0])).toEqual([{ kind: "shift-to-open", ...second }]);
+    });
+
+    it("Give to stages a reassign per ticked shift, offering everyone but this person", async () => {
+      const p = sheet({ mode: "person", employee: "Lee, Ana" });
+      tickBoth();
+      fireEvent.click(screen.getByRole("combobox", { name: "Give the selected shifts to" }));
+      const opts = await screen.findAllByRole("option");
+      expect(opts.map((o) => o.textContent)).toEqual(["Bo, Kim"]);
+      opts[0]!.focus();
+      fireEvent.keyDown(opts[0]!, { key: "Enter" });
+      await waitFor(() =>
+        expect(p.onStageShift.mock.calls.map((c) => c[0])).toEqual([
+          { kind: "shift-reassign", ...first, toEmployee: "Bo, Kim" },
+          { kind: "shift-reassign", ...second, toEmployee: "Bo, Kim" },
+        ]),
+      );
+    });
   });
 
   it("a shift: new times stage an edit; Save waits for a change", () => {

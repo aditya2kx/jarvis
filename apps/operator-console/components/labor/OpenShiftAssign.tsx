@@ -30,7 +30,7 @@ export function shortDay(iso: string): string {
 const time = (s: { startMin: number; endMin: number }) =>
   `${formatClockMin(s.startMin)}–${formatClockMin(s.endMin)}`;
 
-function SelectBox({
+export function SelectBox({
   checked,
   disabled,
   label,

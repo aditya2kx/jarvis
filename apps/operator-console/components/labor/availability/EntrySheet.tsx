@@ -2,6 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import { ChevronRightIcon } from "lucide-react";
+import { SelectBox } from "@/components/labor/OpenShiftAssign";
 import { StagedBadge } from "@/components/labor/StagedBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -266,17 +267,28 @@ export function EntrySheet({
             <PersonBody
               key={key}
               employee={target.employee}
+              roster={roster}
               todayIso={todayIso}
               offRows={offRows}
               shifts={shifts}
               canAvailability={canAvailability}
               stagedShift={stagedShift}
               onTarget={onTarget}
+              onStageShift={onStageShift}
             />
           ) : target.mode === "add" || target.mode === "entry" ? (
             <SheetBody key={key} target={target} roster={roster} todayIso={todayIso} offRows={offRows} shifts={shifts} onClose={onClose} onStage={onStage} />
           ) : (
-            <ShiftBody key={key} target={target} roster={roster} todayIso={todayIso} offRows={offRows} shifts={shifts} onClose={onClose} onStage={onStageShift} />
+            <ShiftBody
+              key={key}
+              target={target}
+              roster={roster}
+              todayIso={todayIso}
+              offRows={offRows}
+              shifts={shifts}
+              onClose={target.mode === "shift" ? () => onTarget({ mode: "person", employee: target.employee }) : onClose}
+              onStage={onStageShift}
+            />
           )
         ) : null}
       </SheetContent>
@@ -357,28 +369,51 @@ function OpensRow({
   );
 }
 
+const shiftRowKey = (x: Times & { date: string }) => `${x.date}|${x.startMin}|${x.endMin}`;
+
 function PersonBody({
   employee,
+  roster,
   todayIso,
   offRows,
   shifts,
   canAvailability,
   stagedShift,
   onTarget,
+  onStageShift,
 }: {
   employee: string;
+  roster: string[];
   todayIso: string;
   offRows: UnavailabilityRow[];
   shifts: ScheduledShift[];
   canAvailability: boolean;
   stagedShift: (key: string) => ShiftChange | undefined;
   onTarget: (t: SheetTarget) => void;
+  onStageShift: (c: ShiftChange) => void;
 }) {
   const tomorrow = addDays(todayIso, 1);
   const upcoming = personShifts(shifts, employee, tomorrow);
   const [allShifts, setAllShifts] = useState(false);
   const horizon = addDays(tomorrow, SHIFT_DAYS);
   const shown = allShifts ? upcoming : upcoming.filter((x) => x.date < horizon);
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const chosen = shown.filter((x) => picked.has(shiftRowKey(x)));
+  const allPicked = shown.length > 0 && chosen.length === shown.length;
+  const toggle = (keys: string[], on: boolean) =>
+    setPicked((p) => {
+      const next = new Set(p);
+      for (const k of keys) {
+        if (on) next.add(k);
+        else next.delete(k);
+      }
+      return next;
+    });
+  const stageChosen = (make: (x: { date: string; employee: string } & Times) => ShiftChange) => {
+    for (const x of chosen) onStageShift(make({ date: x.date, employee, startMin: x.startMin, endMin: x.endMin }));
+    setPicked(new Set());
+  };
+  const others = roster.filter((n) => n !== employee);
   const mine = offRows.filter((r) => r.employee === employee);
   const pending = collapseWeekly(mine.filter((r) => r.status === "pending" && !fromRule(r)));
   const lines = approvedByPerson(mine, todayIso)[0]?.lines ?? [];
@@ -396,25 +431,46 @@ function PersonBody({
       </SheetHeader>
       <div className="flex flex-col gap-5 px-4">
         <section className="flex flex-col gap-1.5" data-testid="person-shifts">
-          <h4 className="text-xs font-medium text-muted-foreground">Upcoming shifts</h4>
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-xs font-medium text-muted-foreground">Upcoming shifts</h4>
+            {shown.length > 1 ? (
+              <Button
+                variant="link"
+                size="xs"
+                className="h-6 px-0 text-xs"
+                onClick={() => toggle(shown.map(shiftRowKey), !allPicked)}
+              >
+                {allPicked ? "Clear" : "Select all"}
+              </Button>
+            ) : null}
+          </div>
           {shown.length ? (
             shown.map((x) => {
               const change = stagedShift(shiftKey({ kind: "shift-delete", employee, ...x }));
+              const k = shiftRowKey(x);
               return (
-                <OpensRow
-                  key={`${x.date}-${x.startMin}`}
-                  className={cn(change && "bg-primary/5")}
-                  onClick={() => onTarget({ mode: "shift", employee, shift: x })}
-                >
-                  <span className={cn(change?.kind === "shift-delete" && "line-through opacity-60")}>
-                    {dayLabel(x.date)} · {timeText(x)}
-                  </span>
-                  {change ? (
-                    <StagedBadge remove={change.kind === "shift-delete"}>{stagedShiftText(change)}</StagedBadge>
-                  ) : x.draft ? (
-                    <Badge variant="outline">Draft</Badge>
-                  ) : null}
-                </OpensRow>
+                <div key={k} className="flex items-center">
+                  <label className="-ml-2 flex size-10 shrink-0 cursor-pointer items-center justify-center">
+                    <SelectBox
+                      checked={picked.has(k)}
+                      label={`Select ${dayLabel(x.date)} · ${timeText(x)}`}
+                      onChange={(on) => toggle([k], on)}
+                    />
+                  </label>
+                  <OpensRow
+                    className={cn("min-w-0 flex-1", (change || picked.has(k)) && "bg-primary/5")}
+                    onClick={() => onTarget({ mode: "shift", employee, shift: x })}
+                  >
+                    <span className={cn(change?.kind === "shift-delete" && "line-through opacity-60")}>
+                      {dayLabel(x.date)} · {timeText(x)}
+                    </span>
+                    {change ? (
+                      <StagedBadge remove={change.kind === "shift-delete"}>{stagedShiftText(change)}</StagedBadge>
+                    ) : x.draft ? (
+                      <Badge variant="outline">Draft</Badge>
+                    ) : null}
+                  </OpensRow>
+                </div>
               );
             })
           ) : (
@@ -480,14 +536,50 @@ function PersonBody({
           </section>
         ) : null}
       </div>
-      <SheetFooter className="flex-row justify-end">
-        {canAvailability ? (
-          <Button variant="outline" onClick={() => onTarget({ mode: "add", employee, date: todayIso })}>
-            Add unavailability
-          </Button>
-        ) : null}
-        <Button onClick={() => onTarget({ mode: "shift-add", employee, date: tomorrow })}>Add shift</Button>
-      </SheetFooter>
+      {chosen.length ? (
+        <SheetFooter className="flex-col gap-2 border-t" data-testid="person-shift-bulk">
+          <p className="text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {chosen.length} {chosen.length === 1 ? "shift" : "shifts"} selected
+            </span>{" "}
+            · each waits in Changes to ADP until you apply.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {others.length ? (
+              <Select
+                value={null}
+                onValueChange={(v) => v && stageChosen((x) => ({ kind: "shift-reassign", ...x, toEmployee: String(v) }))}
+              >
+                <SelectTrigger className="h-9 min-w-32 flex-1" aria-label="Give the selected shifts to">
+                  <SelectValue placeholder="Give to…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {others.map((n) => (
+                    <SelectItem key={n} value={n}>
+                      {n}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+            <Button variant="outline" className="h-9" onClick={() => stageChosen((x) => ({ kind: "shift-to-open", ...x }))}>
+              Make open
+            </Button>
+            <Button variant="destructive" className="h-9" onClick={() => stageChosen((x) => ({ kind: "shift-delete", ...x }))}>
+              Delete
+            </Button>
+          </div>
+        </SheetFooter>
+      ) : (
+        <SheetFooter className="flex-row justify-end">
+          {canAvailability ? (
+            <Button variant="outline" onClick={() => onTarget({ mode: "add", employee, date: todayIso })}>
+              Add unavailability
+            </Button>
+          ) : null}
+          <Button onClick={() => onTarget({ mode: "shift-add", employee, date: tomorrow })}>Add shift</Button>
+        </SheetFooter>
+      )}
     </>
   );
 }

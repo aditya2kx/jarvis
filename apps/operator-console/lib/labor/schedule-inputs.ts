@@ -380,6 +380,42 @@ export function staffLimits(rules: StaffRule[]): Map<string, StaffLimits> {
   return out;
 }
 
+/** People whose last working day is before `todayIso` — gone, even while ADP still lists them as Active. */
+export function pastLastDay(rules: StaffRule[], todayIso: string): Set<string> {
+  const lastDay = new Map<string, string>();
+  for (const r of rules) if (r.kind === "last_day" && r.date) lastDay.set(r.employee, r.date);
+  return new Set([...lastDay].filter(([, d]) => d < todayIso).map(([employee]) => employee));
+}
+
+/**
+ * Rules without inactive people. Anyone ADP doesn't list as Active loses every staff rule and
+ * training mention; anyone past their last day keeps only that rule, which holds them off until
+ * ADP terminates them. Returns `rules` itself when nothing changes.
+ */
+export function dropInactiveStaff(rules: ScheduleRules, adpActive: ReadonlySet<string>, todayIso: string): ScheduleRules {
+  const gone = pastLastDay(rules.staffRules, todayIso);
+  const keep = (name: string) => adpActive.has(name) && !gone.has(name);
+  const staffRules = rules.staffRules.filter(
+    (r) => !r.employee || keep(r.employee) || (r.kind === "last_day" && adpActive.has(r.employee)),
+  );
+  const t = rules.staffing.training;
+  const pick = <T>(rec: Record<string, T>) => Object.fromEntries(Object.entries(rec).filter(([name]) => keep(name)));
+  const training: TrainingRules = {
+    ...t,
+    experienced: t.experienced.filter(keep),
+    trained: t.trained.filter(keep),
+    trainsOnly: pick(t.trainsOnly),
+    trainedOnly: pick(t.trainedOnly),
+  };
+  const same =
+    staffRules.length === rules.staffRules.length &&
+    training.experienced.length === t.experienced.length &&
+    training.trained.length === t.trained.length &&
+    Object.keys(training.trainsOnly).length === Object.keys(t.trainsOnly).length &&
+    Object.keys(training.trainedOnly).length === Object.keys(t.trainedOnly).length;
+  return same ? rules : { ...rules, staffRules, staffing: { ...rules.staffing, training } };
+}
+
 const DELIVERY_MODES = new Set<string>(["any", "only", "skip"]);
 const KINDS = new Set<string>([
   "target_week_hours",

@@ -8,6 +8,8 @@ import {
   DEFAULT_RULES,
   DEFAULT_STAFFING,
   DEFAULT_TRAINING,
+  dropInactiveStaff,
+  pastLastDay,
   parseScheduleRules,
   rulesFromPatch,
   minToTime,
@@ -552,5 +554,46 @@ describe("rulesFromPatch (preview ?rules= link)", () => {
   it("ignores links that don't decode or would fail a save", () => {
     expect(rulesFromPatch(DEFAULT_RULES, "not-json")).toBeNull();
     expect(rulesFromPatch(DEFAULT_RULES, enc({ staffing: { laborCapPct: 3 } }))).toBeNull();
+  });
+});
+
+describe("dropInactiveStaff", () => {
+  const rules = {
+    ...DEFAULT_RULES,
+    staffing: {
+      ...DEFAULT_STAFFING,
+      training: {
+        ...DEFAULT_TRAINING,
+        experienced: ["Amy", "Ximena", "Kenya"],
+        trained: ["Kenya"],
+        trainsOnly: { Ximena: "open" as const, Amy: "close" as const },
+      },
+    },
+    staffRules: [
+      { id: "a", employee: "Amy", kind: "target_week_hours" as const, value: 30 },
+      { id: "k", employee: "Kenya", kind: "last_day" as const, value: 0, date: "2026-10-19" },
+      { id: "x1", employee: "Ximena", kind: "target_week_hours" as const, value: 25 },
+      { id: "x2", employee: "Ximena", kind: "last_day" as const, value: 0, date: "2026-11-20" },
+      { id: "e", employee: "Eileen", kind: "last_day" as const, value: 0, date: "2026-11-26" },
+      { id: "new", employee: "", kind: "target_week_hours" as const, value: 30 },
+    ],
+  };
+  const adpActive = new Set(["Amy", "Ximena", "Eileen"]);
+
+  it("past last day = gone; today's last day still works", () => {
+    expect([...pastLastDay(rules.staffRules, "2026-11-26")].sort()).toEqual(["Kenya", "Ximena"]);
+  });
+
+  it("drops everything for people ADP terminated; keeps only the last day of people past it", () => {
+    const out = dropInactiveStaff(rules, adpActive, "2026-11-26");
+    expect(out.staffRules.map((r) => r.id)).toEqual(["a", "x2", "e", "new"]);
+    expect(out.staffing.training.experienced).toEqual(["Amy"]);
+    expect(out.staffing.training.trained).toEqual([]);
+    expect(out.staffing.training.trainsOnly).toEqual({ Amy: "close" });
+  });
+
+  it("returns the same rules when everyone is active", () => {
+    const active = new Set(["Amy", "Ximena", "Eileen", "Kenya"]);
+    expect(dropInactiveStaff(rules, active, "2026-10-01")).toBe(rules);
   });
 });

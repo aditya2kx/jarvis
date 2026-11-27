@@ -12,10 +12,10 @@ const shift = (employee: string | null, hours: number, extra: Partial<DraftShift
 afterEach(cleanup);
 
 describe("DayStripTags", () => {
-  it("reads a cleared week's unassigned drafts as open, assigned ones as draft, and hides short", () => {
+  it("keeps ADP opens separate; all new draft suggestions (assigned or not) under draft; hides short", () => {
     render(<DayStripTags open={1} drafts={[shift(null, 6), shift(null, 4), shift("Ann", 7)]} shortHours={5} />);
-    expect(screen.getByText("+3 open")).toBeInTheDocument();
-    expect(screen.getByText("+1 draft · 7h")).toBeInTheDocument();
+    expect(screen.getByText("+1 open")).toBeInTheDocument();
+    expect(screen.getByText("+3 draft · 17h")).toBeInTheDocument();
     expect(screen.queryByText(/short/)).toBeNull();
   });
 

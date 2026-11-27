@@ -16,7 +16,7 @@ export function draftAssignedShifts(shifts: DraftShift[]): DraftShift[] {
   return newShifts(shifts).filter((s) => !!s.employee);
 }
 
-/** Day-strip open count: ADP open lanes plus unassigned draft shifts. */
-export function dayStripOpenCount(chip: { open: number }, drafts: DraftShift[] = []): number {
-  return chip.open + draftOpenShifts(drafts).length;
+/** Day-strip open count: ADP open lanes only — draft suggestions stay under the draft tag. */
+export function dayStripOpenCount(chip: { open: number }): number {
+  return chip.open;
 }
